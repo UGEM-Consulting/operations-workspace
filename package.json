@@ -1,0 +1,34 @@
+{
+  "name": "operations-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web",
+    "apps/api"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n web,api \"npm run dev:web\" \"npm run dev:api\"",
+    "dev:web": "npm run dev --workspace=@operations/web",
+    "dev:api": "npm run dev --workspace=@operations/api",
+    "build": "npm run build --workspaces",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces --if-present",
+    "migration:run": "npm run migration:run --workspace=@operations/api",
+    "migration:revert": "npm run migration:revert --workspace=@operations/api",
+    "migration:generate": "npm run migration:generate --workspace=@operations/api --",
+    "setup:local": "node scripts/setup-local.mjs",
+    "seed:demo": "npm run seed:demo --workspace=@operations/api",
+    "verification:demo": "npm run verification:demo --workspace=@operations/api --"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "~5.9.3",
+    "eslint": "^9.39.0",
+    "typescript-eslint": "^8.46.0",
+    "@eslint/js": "^9.39.0"
+  }
+}

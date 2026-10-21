@@ -1,0 +1,8 @@
+@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+:root { --background: #f6f8fa; --foreground: #172b3a; --card: #fff; --card-foreground: #172b3a; --primary: #087e72; --primary-foreground: #fff; --muted: #edf1f4; --muted-foreground: #657581; --accent: #e5f3ef; --border: #e1e7ec; --ring: #087e72; }
+.dark { --background: #111b24; --foreground: #e4edf3; --card: #182630; --card-foreground: #e4edf3; --primary: #63d6bb; --primary-foreground: #10251e; --muted: #22323f; --muted-foreground: #a2b4c2; --accent: #233e3a; --border: #2c3d49; --ring: #63d6bb; }
+@theme inline { --color-background: var(--background); --color-foreground: var(--foreground); --color-card: var(--card); --color-card-foreground: var(--card-foreground); --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground); --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground); --color-accent: var(--accent); --color-border: var(--border); --color-ring: var(--ring); --font-sans: Arial, Helvetica, sans-serif; }
+body { background: var(--background); color: var(--foreground); }
+* { border-color: var(--border); }
+a, button { -webkit-tap-highlight-color: transparent; }
