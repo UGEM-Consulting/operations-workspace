@@ -1,6 +1,6 @@
 # Operations Workspace
 
-The workspace supports simple invitation links, verified applicant claiming, manager review, approval/rejection, field-specific correction requests and secure resubmission to the existing Operations Workspace foundation. Next.js handles presentation and a same-origin server boundary; NestJS owns authentication, permissions, user management, and PostgreSQL. IT provisioning, external messaging, identity-document uploads and reopening closed applications remain out of scope. Applicants are not internal staff users.
+The workspace supports simple invitation links, verified applicant claiming, manager review, approval/rejection, field-specific correction requests and secure resubmission to the existing Operations Workspace foundation. Next.js handles presentation and a same-origin server boundary; NestJS owns authentication, permissions, user management, and PostgreSQL. Manual IT onboarding checklists and manager completion notices are implemented. External provisioning/messaging, identity-document uploads and reopening closed applications remain out of scope. Applicants are not internal staff users.
 
 ## Stack and architecture
 
@@ -24,10 +24,10 @@ packages/shared/  Reserved for future transport types
 
 ## Local setup
 
-Use Node 24 LTS (`nvm install && nvm use`), npm 10+, and PostgreSQL 16 (native or Docker Compose). Run from the repository root:
+Use Node 22.12+ (22.x) or Node 24 LTS (`nvm install && nvm use` selects 22.12.0 locally), npm 10+, and PostgreSQL 16 (native or Docker Compose). Run from the repository root:
 
 ```sh
-npm ci
+npm run setup:dependencies
 npm run setup:local
 # Start PostgreSQL if not already running natively:
 docker compose up -d postgres
@@ -35,6 +35,12 @@ npm run migration:run
 npm run seed:demo
 npm run dev
 ```
+
+Development commands accept Node 22.12+ (22.x) and Node 24.x. `npm run setup:dependencies` runs `npm ci` with the macOS SDK headers configured on Node 22 before dependency install scripts execute. Use it for clean local installs: plain `npm ci` can fail before the root hook on Macs whose compiler cannot find C++ headers. On macOS with Node 22, the root install hook checks whether Argon2 loads and rebuilds it from the same package source only if the shipped native binary fails. This uses the installed Xcode Command Line Tools, Python and Node headers; the first repair may download headers. Web-only installations without Argon2 and other runtimes/platforms are unchanged. If installation scripts were skipped, run `npm run repair:native` from the root before starting the API. The helper explicitly includes the installed macOS SDK C++ headers when available. This follows Argon2’s [documented source-build option](https://github.com/ranisalt/node-argon2#faq), without changing Argon2id parameters, hashes, accounts or sessions.
+
+If the web reports “The authentication service is unavailable” and the API compiles but never listens, stop the development command, run `npm run repair:native`, then restart `npm run dev`. Compilation success alone does not mean the API is listening. If the error persists, check API startup and local PostgreSQL availability; do not bypass session verification. Production deployment instructions below retain Node 24; no cloud runtime was changed.
+
+Node 22.12.0 validation: clean dependency installation, type checks, lint, 42 enabled tests, both production builds and a local API/PostgreSQL health check passed. The 67 database integration tests were not selected. Cross-runtime Argon2id verification passed between Node 22.12.0 and Node 24, including incorrect-password rejection. The existing transitive lint package `eslint-visitor-keys@5.0.1` declares Node 22.13+ and emits an npm engine warning on 22.12.0; lint runs successfully here, but that dependency does not officially support this exact minor version. No dependency versions, password parameters or database records were changed.
 
 `setup:local` creates missing application environment files, generates separate random session/BFF secrets and random demo passwords, and preserves existing nonempty values. Files are Git-ignored. Read the generated credentials privately in `apps/api/.env`; passwords are never printed. If you previously copied the example containing `ALLOW_DEMO_SEED=false`, explicitly change it to `true` for this local demo. The seed is idempotent: existing accounts are never reset, reactivated, or promoted. It refuses production, non-`example.test` addresses, duplicate demo emails, and missing/short passwords. Do not use this script against real employees or production databases.
 
@@ -65,7 +71,7 @@ Every protected request reloads the user from PostgreSQL. User edits increment a
 | --- | --- | --- | --- |
 | Current user, logout, dashboard | Yes | Yes | Yes |
 | Onboarding invitations/applications | Yes | Yes | No |
-| IT placeholder | Yes | No | Yes |
+| Approved IT onboarding requests/checklists | Yes | No | Yes |
 | Settings and user administration | Yes | No | No |
 
 A global NestJS guard requires authentication and explicit role metadata; endpoints without a role policy are denied. Health, login, logout and applicant routes are explicitly public to the staff guard. Applicant record routes independently enforce restricted applicant sessions. Login/logout still require the BFF boundary and CSRF checks. The API returns permitted navigation and role landing destinations. Next.js uses those results and calls API page authorization endpoints rather than copying the permission matrix. `canAccessAssignedApplication` provides a tested foundation requiring a database-loaded assignment for managers; future controllers must invoke it after loading records. Onboarding record endpoints enforce this policy against database assignments.
@@ -179,7 +185,7 @@ No additional secrets or environment variables are needed. `NODE_ENV=production`
 
 ## Manager review and applicant corrections
 
-The Onboarding dashboard now shows awaiting review (SUBMITTED + RESUBMITTED), changes requested, resubmitted, approved and rejected counts across the manager's entire scope. Application review supports name/email/MC/team-lead/reference search, status filters, sorting and 10/20/50-row pages. SYSTEM_ADMIN sees all records; managers only see their own assigned records. IT cannot access applicant records or review actions yet.
+The Onboarding dashboard now shows awaiting review (SUBMITTED + RESUBMITTED), changes requested, resubmitted, approved and rejected counts across the manager's entire scope. Application review supports name/email/MC/team-lead/reference search, status filters, sorting and 10/20/50-row pages. SYSTEM_ADMIN sees all records; managers only see their own assigned records. IT can access only approved onboarding profiles/checklists, not application drafts or review actions.
 
 Open a submitted application's review page to view submitted information, decisions, reviewer identity, comments, old/new resubmission values and an activity timeline. Approval and rejection require explicit confirmation. Approval also requires confirmation of final MC, team lead and job title; the manager may correct those values in the approval dialog. Rejection and correction requests require a reason; corrections also require at least one flagged personal field. The correction dialog clearly identifies applicant-visible instructions; approval/rejection comments remain internal. Approved/rejected applications cannot be edited or reopened, including by administrators.
 
@@ -189,7 +195,7 @@ For a complete fictional demo:
 2. As the manager, open **Applications → Review details → Request changes**. Supply an applicant-facing reason and flag fields such as phone or Telegram.
 3. As the applicant, visit `/apply/draft` and select **Check status**, or visit `/apply/resume` and use a fresh verification code. A consumed invitation token is never reused for corrections.
 4. Update only the highlighted fields. **Save corrections** retains CHANGES_REQUESTED; **Resubmit application** moves it to RESUBMITTED.
-5. The manager sees the resubmission in the dashboard, compares previous/submitted values, and approves with confirmation. The approved record is ready for Milestone 5; no provisioning tasks or external accounts are created.
+5. The manager sees the resubmission in the dashboard, compares previous/submitted values, and approves with confirmation. Approval atomically creates an internal IT request and six checklist tasks; no external accounts are created.
 
 Correction drafts remain private to the applicant until resubmission. First/last names, personal/work phone numbers, American names, Telegram, MC, team lead and job title can be flagged. Verified email cannot change. Applicant employment answers remain distinct from the manager-confirmed assignments recorded at approval. A correction request grants 30 days of application access independently of invitation-token expiry, without extending the one-hour applicant session. Reverification is still required after session expiry. Production email verification remains disabled.
 
@@ -216,7 +222,7 @@ The migration check verifies rollback/reapplication, preservation/backfill of ex
 
 ## Verification and remaining concerns
 
-Verification covers 81 tests, including all existing authentication/invitation regressions and the full submitted → changes requested → correction draft → resubmitted → approved integration flow. It also covers rejection privacy, required reasons/confirmations, immutable terminal states, cross-manager and IT denial, stale/concurrent decisions, field restrictions, fresh verification after invitation expiry, queue pagination/search and review throttling, concurrent invitation claiming, optional expected-email restrictions and confirmed employment assignments. Type checks, warning-free lint, frontend/backend production builds and the default non-database test run all passed.
+Verification covers 88 tests, including all existing authentication/invitation regressions and the full submitted → changes requested → correction draft → resubmitted → approved integration flow. It also covers rejection privacy, required reasons/confirmations, immutable terminal states, cross-manager and IT denial, stale/concurrent decisions, field restrictions, fresh verification after invitation expiry, queue pagination/search and review throttling, concurrent invitation claiming, optional expected-email restrictions and confirmed employment assignments. Type checks, warning-free lint, frontend/backend production builds and the default non-database test run all passed.
 
 A real Next.js BFF HTTP smoke test passed the complete invitation-to-approval workflow, including fresh returning verification, manager/applicant views, submitted comparisons, private correction drafts, query forwarding, terminal state and health. The browser tool still could not initialize, so responsive visual checks, keyboard dialog interactions and full browser form behavior require manual QA. HTTP tests do not replace these checks.
 
@@ -228,7 +234,7 @@ A new invitation is unclaimed: expectedEmail optionally restricts who can claim 
 
 Legacy invitation email restrictions, employment details, drafts, submissions, reviews, approvals and pending verification challenges are preserved by the additive migration. Deprecated employment fields on the creation API are accepted as optional prefills for older clients; the manager UI no longer asks for them. New approvals require `employmentConfirmed: true` and an `employment` object containing MC, team lead and job title. This intentional API validation change prevents an approval from skipping assignment confirmation. Previous approvals are not reopened or invalidated.
 
-The approval transaction writes final assignments to the existing invitation columns used by the IT-ready record contract and records previous/final assignments in review history. Applicant-submitted values stay intact for comparison. There are currently no implemented IT provisioning workflows to migrate; the existing APPROVED/readyForIt contract is preserved.
+The approval transaction writes final assignments to the existing invitation columns used by the IT-ready record contract and records previous/final assignments in review history. Applicant-submitted values stay intact for comparison. The existing APPROVED/readyForIt contract is preserved. New approvals now create linked manual IT onboarding requests; historical approvals are not automatically backfilled.
 
 After a production build, verify migration compatibility only on a dedicated local disposable database:
 
@@ -254,7 +260,7 @@ Both phone fields are separate. International formatting is accepted: optional l
 
 Existing records missing required details remain viewable. New submission/resubmission or approval requires completion. Managers can request corrections to the new fields; required missing/invalid fields are included automatically. Existing correction rounds also allow completing newly required fields from the last submitted revision, and those fields remain editable while corrections are saved. Saved correction answers remain private until resubmission. Existing APPROVED applications remain approved even if they lack newly required data; their details show missing information without reopening them.
 
-Manager review, applicant review summaries and correction forms show both phones and both American names. The authorized review response includes `itDetails`, with the legal first/last names retained separately and an American-name-based `proposedDisplayName`. No display name is proposed when either American name is missing; legal names are not substituted or overwritten. This prepares future IT onboarding data and does not provision accounts or expand IT access.
+Manager review, applicant review summaries and correction forms show both phones and both American names. The authorized review response includes `itDetails`, with the legal first/last names retained separately and an American-name-based `proposedDisplayName`. No display name is proposed when either American name is missing; legal names are not substituted or overwritten. The IT onboarding profile uses this projection with manager-approved assignments; no external accounts are provisioned.
 
 After building, verify this migration only on a disposable LOCAL test database:
 
@@ -263,3 +269,96 @@ ALLOW_DISPOSABLE_DB_RESET=true TEST_DATABASE_URL="postgresql://operations:operat
 ```
 
 Rollback restores legacy field identifiers and keeps canonical JSON values, including collected work numbers, so data is not discarded. Reapplication is safe. Existing review/invitation migration checks were updated for the additional migration. Verification includes frontend/backend validation, missing/blank values, international/invalid phones, separate phone preservation, corrections to required fields, legacy approval access, migration rollback/reapply, and the full Next.js HTTP workflow. Browser visual/keyboard QA remains manual when browser automation is unavailable. No dependencies were added, external services configured, or cloud deployments performed.
+
+## Milestone 5 — Manual IT onboarding
+
+Run `npm run migration:run` before starting the updated API. `1792650000000-ItOnboarding.ts` adds requests, checklist tasks, metadata-only activity and recipient-scoped portal notifications. The local development database was migrated during implementation. Existing approved applications remain approved; the migration does not queue old approvals or invent missing staff data. New manager/admin approvals create one IT request and six tasks atomically; duplicate approval retries cannot create duplicate requests.
+
+1. Complete and approve a fictional application using the existing walkthrough.
+2. Sign in as `it@example.test` using the private generated password in `apps/api/.env`. Open **IT tasks**, then the approved American display name.
+3. Review the approved profile, including separate American/legal names, personal/work phone numbers and the manager-confirmed MC, team lead and job title. Internal review comments and unapproved applicant data are not included.
+4. The work phone is labeled **Applicant Provided** until IT explicitly verifies it. Record the **Actual Assigned RingCentral Phone Number** separately, even if it equals the applicant work phone. Saving does not overwrite either applicant phone.
+5. Update Google Workspace, Dispatch group membership, RingCentral, SMS, call recording and approved business software tasks to Pending, In Progress, Blocked or Completed. Blocked requires a reason. Record fictional manual setup notes only; never enter passwords or tokens.
+6. RingCentral completion requires its actual assigned number. Finishing the last task additionally requires work-phone verification. All six completed tasks close the request and create one notification for the responsible manager in the same transaction.
+7. As the manager, refresh **Dispatcher onboarding** to see the completion update, open the application to see IT progress, and mark the notice as read.
+
+The application remains APPROVED as the review result; IT progress is separate and derived from task states/completion timestamp. Pending/active requests can be updated with version checks; completed requests are immutable. No Google Workspace/RingCentral account, SMS, recording or software installation is performed by these controls. This is a manual fictional demonstration, not an external integration.
+
+IT/admin can search and filter the approved queue with server-side pagination (20 rows/page, API maximum 50). Managers cannot operate IT tasks and receive only their own application progress and portal notifications. Notification lists show the latest 50 notices with unread counts; updates appear on refresh, without realtime push or email delivery. Approved business-software selection/authorization is a manual company process recorded in task notes; there is no software catalog/integration yet.
+
+After `npm run build`, repeat the local HTTP and migration checks:
+
+```sh
+ALLOW_LOCAL_REVIEW_SMOKE=true node scripts/review-smoke.cjs
+# Destructive: LOCAL disposable *_test database only.
+ALLOW_DISPOSABLE_DB_RESET=true TEST_DATABASE_URL="postgresql://operations:operations@localhost:5432/operations_m2_test" node scripts/it-migration-check.cjs
+```
+
+The HTTP smoke test now covers invitation → verification → draft/submission/corrections → approval → IT profile → separate phone verification/assignment → checklist completion → manager portal notification/read acknowledgement. It deliberately leaves a fictional completed onboarding record. Migration checks verify up/down/reapplication, existing approval preservation, uniqueness and refusal to discard IT workflow data. Earlier review/invitation/required-detail migration scripts were updated and checked against the new migration stack.
+
+88 tests pass, including rollback of an approval when checklist creation fails, role/CSRF/session restrictions, malformed input, conflicting IT edits, phone separation, completion requirements, duplicate final updates and notification ownership. Type checks, lint and independent production builds pass. Interactive browser visual/dialog/keyboard QA remains manual.
+
+## Vercel/Render demo readiness
+
+Both applications build independently and retain the existing Vercel/Render configuration. No additional environment variables or external credentials are required for manual IT onboarding. Apply migrations through a controlled backend release step; keep matching BFF secrets/origin, HTTPS production cookies, PostgreSQL and Node 24 configured as documented above. No resources were created or deployed.
+
+The staff approval/IT demo is ready for hosting after environment setup and approved demo-account/data provisioning. The local seed intentionally refuses production and must not be weakened. End-to-end applicant verification on hosted production domains still needs an approved production email-delivery mechanism; the development CLI is deliberately disabled there. A complete hosted applicant-to-IT demo is therefore blocked on that setup. Retention/backups, edge rate limits, manual browser QA and previously documented dependency advisories remain production-readiness work. See [IT architecture](docs/it-onboarding.md).
+
+## First real administrator bootstrap
+
+`seed:demo` remains fictional-only and refuses production. Use the separate **manual** `admin:bootstrap` command for a first real administrator. It creates one ACTIVE SYSTEM_ADMIN with the existing Argon2id password helper. It refuses if **any** SYSTEM_ADMIN exists (even inactive), or if the normalized email belongs to any existing user. It never overwrites, promotes, reactivates or resets an account. After bootstrap, use authenticated Settings for further staff management. Bootstrap is not account recovery.
+
+Build the API using Node 24 and apply reviewed migrations explicitly before bootstrap. No new migration is needed. Nothing runs during startup or normal builds. The command requires an interactive terminal and asks for the password twice with echo suppressed (12–128 characters, no control characters). Use a unique password from your password manager. Do not pass a password as an argument, environment variable, pipe, shell command, or job command; do not record the terminal session. Exit status is nonzero on failure. Success prints only a generic confirmation.
+
+Required configuration uses the existing validated API environment: `NODE_ENV`, `DATABASE_URL`, `DATABASE_SSL`, `WEB_ORIGIN`, `CORS_ORIGINS`, `SESSION_SECRET`, `BFF_SHARED_SECRET` (different secrets, each at least 32 characters). Production requires an HTTPS WEB_ORIGIN. Also set:
+
+```dotenv
+BOOTSTRAP_ADMIN_EMAIL=administrator@example.test
+BOOTSTRAP_ADMIN_FIRST_NAME=Avery
+BOOTSTRAP_ADMIN_LAST_NAME=Example
+```
+
+Those are fictional illustrations; the authorized operator supplies the real identity privately. No default password exists. Names are trimmed (1–100 characters); email is trimmed, lowercased and validated (maximum 254 characters).
+
+### Render paid shell: explicit one-time execution
+
+[Render supports interactive shells on paid services](https://render.com/docs/ssh). Open the API service's Dashboard **Shell**, or an authorized SSH session, after deploying the build containing this command. From the repository root, use the existing API environment and set the three BOOTSTRAP_ADMIN_* identity values. For this CLI, select the database's **external hostname URL** and set `DATABASE_SSL=true`; internal Render certificates are self-signed, so the CLI's verified-TLS policy uses the external connection. Ensure the database allowlist admits the executing service's outbound address. Supply database configuration privately through Render's environment controls or a hidden shell input, never by pasting a credential-bearing export into shell history. Do not change the service's normal start/build command.
+
+```sh
+npm run admin:bootstrap
+# Equivalent when already in apps/api:
+npm run admin:bootstrap --workspace=@operations/api
+# Direct compiled entry point from the repository root:
+node apps/api/dist/database/admin-bootstrap.js
+```
+
+Use **one** of these commands once, then enter and confirm the initial password at the hidden prompt. This is an interactive shell operation, not a background one-off job: unattended jobs cannot answer the prompt. Remove temporary BOOTSTRAP_ADMIN_* environment entries afterward. Keep database credentials and server secrets private. Log in through the existing frontend; all normal session, CSRF, status and permission protections apply.
+
+### Render Free: locally executed one-time CLI
+
+[Free services do not provide shell access or one-off jobs](https://render.com/docs/free). On a trusted local computer, check out the same release and use Node 24. Temporarily allow only that computer's public IP in the database external-access allowlist; restore the previous restrictions afterward. [Render's external database connection uses TLS](https://render.com/docs/postgresql-creating-connecting). Use the **external** URL with its full DNS hostname, port and database name. Remove URL SSL query parameters (`sslmode`, `ssl`, `sslcert`, `sslkey`, `sslrootcert`); this command requires `DATABASE_SSL=true`, which uses `rejectUnauthorized: true`. Never disable certificate verification or use an IP in place of the hostname.
+
+From the repository root:
+
+```sh
+npm ci
+npm run build --workspace=@operations/api
+# Create a private Git-ignored configuration file before editing it.
+touch .env.admin-bootstrap
+chmod 600 .env.admin-bootstrap
+```
+
+Edit `.env.admin-bootstrap` privately with the required API configuration and three identity variables listed above. Set `NODE_ENV=production`, the target external `DATABASE_URL`, `DATABASE_SSL=true`, the deployed HTTPS origin, and the API's required secrets. **Do not put the administrator password in this file.** Confirm the target database privately; this command does not migrate it automatically. If migrations are not applied, the authorized release operator must apply them separately using the existing migration command/configuration.
+
+```sh
+# From repository root; dotenv reads this file from the API workspace directory.
+DOTENV_CONFIG_PATH=../../.env.admin-bootstrap npm run admin:bootstrap
+```
+
+Inherited environment values override dotenv files: start from a clean terminal and remove conflicting exported API variables before running. The private file must contain all required API values so the local development `.env` is not used. Enter and confirm the password interactively. Remove the temporary file after use, clear temporary environment values, and restore external access restrictions. Do not enable HTTP bootstrap, change startup scripts, or weaken `seed:demo` for Free hosting.
+
+The bootstrap transaction takes the existing administrator advisory lock and a PostgreSQL SHARE ROW EXCLUSIVE lock on users. This serializes concurrent bootstrap attempts and all user writes while checking for administrators/duplicate email and inserting; one concurrent invocation succeeds and others refuse. Failed operations roll back. Hashing happens before the lock. Normal database timeouts bound lock waits; reruns refuse once an administrator exists. No connection strings, raw database errors, passwords, hashes or session secrets are printed. JavaScript cannot guarantee memory zeroization; run on a trusted host and exit afterward.
+
+Bootstrap tests use random passwords and fictional identities in the dedicated disposable `TEST_DATABASE_URL` ending in `_test`; never point them at a real environment. Run the default suite plus the existing opt-in PostgreSQL suite, type checks, lint and builds. The production bootstrap was not executed during implementation.
+
+Bootstrap verification: all 109 tests passed with the opt-in local PostgreSQL suite, along with type checks, lint and both production builds. Pseudo-terminal checks confirmed hidden entry, mismatch rejection, Ctrl+C cancellation and EOF cancellation without echoing passwords. Only fictional test accounts in the disposable database were created; no real account, production connection or deployment was performed. Existing dependency advisories described above remain unchanged; no packages were added or upgraded.

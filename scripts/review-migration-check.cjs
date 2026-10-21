@@ -9,8 +9,9 @@ const { databaseOptions } = require('../apps/api/dist/database/options.js');
  const db=await new DataSource(databaseOptions({DATABASE_URL:url.toString(),DATABASE_SSL:false})).initialize();
  try {
   await db.runMigrations();
-  const latest=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');assert.equal(latest[0].name,'ApplicantRequiredDetails1792640000000');
+  const latest=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');assert.equal(latest[0].name,'ItOnboarding1792650000000');
   await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');
+  await db.undoLastMigration(); // Remove the empty IT schema before checking prior migrations.
   await db.undoLastMigration(); // Remove required-detail naming before checking older schemas.
   await db.undoLastMigration(); // Remove simplified invitations before testing the original review migration.
   await db.undoLastMigration();
@@ -18,6 +19,7 @@ const { databaseOptions } = require('../apps/api/dist/database/options.js');
   const [inv]=await db.query(`INSERT INTO invitations ("managerId",email,"tokenHash","mcName","teamLead","jobTitle","expiresAt") VALUES ($1,'migration.applicant@example.test',repeat('a',64),'Independent','Independent','Dispatcher',now()+interval '7 days') RETURNING id`,[user.id]);
   const [app]=await db.query(`INSERT INTO dispatcher_applications ("invitationId","assignedManagerId",status,fields,version,"submittedAt") VALUES ($1,$2,'SUBMITTED',$3,2,now()) RETURNING id`,[inv.id,user.id,JSON.stringify({firstName:'Fictional',lastName:'Migration'})]);
   await db.runMigrations();
+  await db.undoLastMigration();
   await db.undoLastMigration();
   await db.undoLastMigration(); // Review rollback guard is tested against its own schema.
   const submissions=await db.query('SELECT fields FROM application_submissions WHERE "applicationId"=$1',[app.id]);assert.equal(submissions.length,1);assert.equal(submissions[0].fields.firstName,'Fictional');

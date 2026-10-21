@@ -1,3 +1,5 @@
+import { createItRequest } from '../it/create-request';
+import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
 import { provisioningDetails, requiredApplicantFields } from './application-requirements';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
@@ -56,9 +58,12 @@ export class ReviewService {
    .addSelect('u.firstName','reviewerFirstName').addSelect('u.lastName','reviewerLastName')
    .where('r.applicationId = :id',{id}).orderBy('r.applicationVersion','ASC').getRawAndEntities();
   const activity = await this.db.getRepository(ApplicationActivity).find({where:{invitationId:invitation.id},order:{createdAt:'ASC'}});
+  const itRequest=await this.db.getRepository(ItOnboardingRequest).findOneBy({applicationId:id});
+  const itTasks=itRequest?await this.db.getRepository(ItOnboardingTask).findBy({requestId:itRequest.id}):[];
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
+   itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt}:null,
    requiredFields:requiredApplicantFields(submissions.at(-1)?.fields ?? {}), itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
    canReview:['SUBMITTED','RESUBMITTED'].includes(application.status), readyForIt:application.status === 'APPROVED' };
  }
@@ -99,6 +104,7 @@ export class ReviewService {
    await em.save(application);
    const review = await em.getRepository(ApplicationReview).save({applicationId:id,reviewerId:user.id,decisionType:input.decisionType,
     reason:input.reason?.trim() || null,requestedFields,previousStatus,newStatus:nextStatus,applicationVersion:application.version,employment:input.employment ?? null,previousEmployment});
+   if(nextStatus==='APPROVED')await createItRequest(em,application,review,submitted?.fields??{},invitation);
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});
    return {id:review.id,status:application.status,version:application.version,readyForIt:application.status==='APPROVED'};

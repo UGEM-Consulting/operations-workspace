@@ -1,6 +1,10 @@
 // Transport/CSRF checks only. Business permissions remain in NestJS.
 export function allowedEndpoint(method: string, path: string): boolean {
-  return (method === 'POST' && ['applicant/begin','applicant/verify','applicant/submit','applicant/logout','onboarding/invitations'].includes(path)) ||
+  return (method === 'GET' && ['it/onboarding','notifications'].includes(path)) ||
+    (method === 'GET' && /^it\/onboarding\/[0-9a-f-]{36}$/.test(path)) ||
+    (method === 'PATCH' && /^it\/onboarding\/[0-9a-f-]{36}\/(contact|tasks\/[A-Z_]+)$/.test(path)) ||
+    (method === 'POST' && /^notifications\/[0-9a-f-]{36}\/read$/.test(path)) ||
+    (method === 'POST' && ['applicant/begin','applicant/verify','applicant/submit','applicant/logout','onboarding/invitations'].includes(path)) ||
     (method === 'PATCH' && path === 'applicant/draft') ||
     (method === 'GET' && ['applicant/application','onboarding/invitations','onboarding/applications','onboarding/review-queue','onboarding/summary'].includes(path)) ||
     (method === 'GET' && /^onboarding\/applications\/[0-9a-f-]{36}$/.test(path)) ||

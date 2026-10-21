@@ -9,8 +9,8 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
  const db=await new DataSource(databaseOptions({DATABASE_URL:url.toString(),DATABASE_SSL:false})).initialize();
  try {
   await db.runMigrations();
-  assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'ApplicantRequiredDetails1792640000000');
-  await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await db.undoLastMigration();await db.undoLastMigration();
+  assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'ItOnboarding1792650000000');
+  await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await db.undoLastMigration();await db.undoLastMigration();await db.undoLastMigration();
   const [user]=await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Fictional','Legacy','legacy.staff@example.test','DISPATCHER_MANAGER','INACTIVE') RETURNING id`);
   const [inv]=await db.query(`INSERT INTO invitations ("managerId",email,"tokenHash","mcName","teamLead","jobTitle","expiresAt","consumedAt") VALUES ($1,'legacy.applicant@example.test',repeat('b',64),'Legacy fictional MC','Independent','Dispatcher',now()+interval '7 days',now()) RETURNING id`,[user.id]);
   const [app]=await db.query(`INSERT INTO dispatcher_applications ("invitationId","assignedManagerId",status,fields,version,"submittedAt","applicantAccessUntil") VALUES ($1,$2,'APPROVED',$3,3,now(),now()+interval '7 days') RETURNING id`,[inv.id,user.id,JSON.stringify({firstName:'Fictional',lastName:'Legacy'})]);
@@ -23,8 +23,9 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
   assert.equal((await db.query('SELECT fields FROM application_submissions WHERE "applicationId"=$1',[app.id]))[0].fields.mcName,migrated.mcName);
   assert.equal((await db.query('SELECT reason FROM application_reviews WHERE id=$1',[review.id]))[0].reason,'Preserve legacy review');
   assert.equal((await db.query('SELECT email FROM applicant_challenges WHERE "invitationId"=$1',[inv.id]))[0].email,migrated.email);
-  await db.undoLastMigration();await db.undoLastMigration();await db.runMigrations();
+  await db.undoLastMigration();await db.undoLastMigration();await db.undoLastMigration();await db.runMigrations();
   await db.query(`INSERT INTO invitations ("managerId","tokenHash","telegramRequired","expiresAt") VALUES ($1,repeat('c',64),false,now()+interval '7 days')`,[user.id]);
+  await db.undoLastMigration();
   await db.undoLastMigration(); // Check the optional-invitation migration guard itself.
   let refused=false;try{await db.undoLastMigration();}catch{refused=true;}assert.equal(refused,true);
   assert.equal((await db.query('SELECT count(*)::integer AS count FROM invitations'))[0].count,2);

@@ -1,8 +1,107 @@
 @import "tailwindcss";
 @custom-variant dark (&:is(.dark *));
-:root { --background: #f6f8fa; --foreground: #172b3a; --card: #fff; --card-foreground: #172b3a; --primary: #087e72; --primary-foreground: #fff; --muted: #edf1f4; --muted-foreground: #657581; --accent: #e5f3ef; --border: #e1e7ec; --ring: #087e72; }
-.dark { --background: #111b24; --foreground: #e4edf3; --card: #182630; --card-foreground: #e4edf3; --primary: #63d6bb; --primary-foreground: #10251e; --muted: #22323f; --muted-foreground: #a2b4c2; --accent: #233e3a; --border: #2c3d49; --ring: #63d6bb; }
-@theme inline { --color-background: var(--background); --color-foreground: var(--foreground); --color-card: var(--card); --color-card-foreground: var(--card-foreground); --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground); --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground); --color-accent: var(--accent); --color-border: var(--border); --color-ring: var(--ring); --font-sans: Arial, Helvetica, sans-serif; }
-body { background: var(--background); color: var(--foreground); }
-* { border-color: var(--border); }
-a, button { -webkit-tap-highlight-color: transparent; }
+
+/* Verified UGEM website palette; see docs/branding.md for sources and adaptations. */
+:root {
+  color-scheme: light;
+  --brand-orange: hsl(17.82 100% 55.1%);
+  --brand-ink: #000;
+  --brand-panel: #282828;
+  --brand-panel-foreground: #fff;
+  --background: #f7f7f7;
+  --foreground: #282828;
+  --card: #fff;
+  --card-foreground: #282828;
+  /* Original orange with white text fails normal-text contrast. */
+  --primary: #ac3500;
+  --primary-foreground: #fff;
+  --muted: #ededed;
+  --muted-foreground: #626262;
+  --accent: #fff0e9;
+  --accent-foreground: #802800;
+  --border: #d1cecc;
+  --input: #8c8581;
+  --ring: #ac3500;
+  --destructive: #b42318;
+  --destructive-foreground: #fff;
+  --success: #17633e;
+  --success-background: #e7f4eb;
+  --warning: #805000;
+  --warning-background: #fff4d6;
+  --danger-background: #ffebe9;
+  --radius: 0.75rem;
+}
+.dark {
+  color-scheme: dark;
+  --background: #151515;
+  --foreground: #f4f4f4;
+  --card: #222;
+  --card-foreground: #f4f4f4;
+  --primary: #ff8552;
+  --primary-foreground: #151515;
+  --muted: #303030;
+  --muted-foreground: #b9b5b3;
+  --accent: #3b2921;
+  --accent-foreground: #ffb593;
+  --border: #4a4542;
+  --input: #938780;
+  --ring: #ff8552;
+  --destructive: #ffaca3;
+  --destructive-foreground: #151515;
+  --success: #8ee0b1;
+  --success-background: #183529;
+  --warning: #f4d28a;
+  --warning-background: #3a2e18;
+  --danger-background: #422421;
+}
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-background: var(--success-background);
+  --color-warning: var(--warning);
+  --color-warning-background: var(--warning-background);
+  --color-danger-background: var(--danger-background);
+  --color-brand-orange: var(--brand-orange);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-panel: var(--brand-panel);
+  --color-brand-panel-foreground: var(--brand-panel-foreground);
+  --font-sans: var(--font-epilogue), Arial, Helvetica, sans-serif;
+  --font-display: var(--font-anton), Impact, sans-serif;
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+}
+@layer base {
+  * { border-color: var(--border); }
+  body { background: var(--background); color: var(--foreground); }
+  h1 { font-family: var(--font-anton), Impact, sans-serif; font-weight: 400; line-height: 1.2; }
+  a, button { -webkit-tap-highlight-color: transparent; }
+  :where(a, button, input, select, textarea, summary):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
+  }
+  :where(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea) {
+    border-color: var(--input);
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+  :where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--primary); }
+  :where(input, select, textarea):disabled { cursor: not-allowed; opacity: 0.65; }
+  ::selection { background: var(--accent); color: var(--accent-foreground); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+}

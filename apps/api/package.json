@@ -14,7 +14,9 @@
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/database/data-source.ts",
     "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "seed:demo": "ts-node src/database/seed.ts",
-    "verification:demo": "ts-node src/database/demo-verification.ts"
+    "verification:demo": "ts-node src/database/demo-verification.ts",
+    "admin:bootstrap": "node dist/database/admin-bootstrap.js",
+    "predev": "node ../../scripts/check-node.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",

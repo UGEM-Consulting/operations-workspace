@@ -6,7 +6,7 @@ import { StatusBadge } from './status-badge';
 export function Applications({data,filters}:{data:ApplicationList;filters:Record<string,string>}) {
  const pageLink=(page:number)=>`/onboarding/applications?${new URLSearchParams({...filters,page:String(page)})}`;
  return <div className="space-y-6">
-  <div><h1 className="text-2xl font-semibold">Application review</h1><p className="mt-2 text-muted-foreground">Review submissions in your scope. Correction drafts stay private until resubmitted.</p></div>
+  <div><h1 className="text-2xl font-normal">Application review</h1><p className="mt-2 text-muted-foreground">Review submissions in your scope. Correction drafts stay private until resubmitted.</p></div>
   <Card className="p-5"><form action="/onboarding/applications" className="grid items-end gap-4 sm:grid-cols-2 lg:grid-cols-5">
    <label className="text-sm lg:col-span-2">Search<input name="search" defaultValue={filters.search} placeholder="Name, email, MC, team lead or reference" maxLength={100} className={inputClass}/></label>
    <label className="text-sm">Status<select name="status" defaultValue={filters.status} className={inputClass}><option value="ALL">All statuses</option><option value="AWAITING_REVIEW">Awaiting review</option>{applicationStatuses.map(status=><option key={status} value={status}>{status.replaceAll('_',' ')}</option>)}</select></label>

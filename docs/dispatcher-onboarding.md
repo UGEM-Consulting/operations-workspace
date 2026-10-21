@@ -4,7 +4,7 @@
 
 `invitations` belongs to its creating manager (or administrator), stores optional expected email, the bound verified email, final manager-confirmed employment assignments, configurable Telegram requirement, SHA-256 token hash, and creation/expiry/opened/consumed/revoked/completed timestamps. A 32-byte random token is returned only once in the invitation URL. `dispatcher_applications` has a unique foreign key to its invitation and a responsible manager foreign key. Creation of both records and the initial audit event is transactional.
 
-Managers see only their own invitations/applications. Administrators see all records; no broader manager grant/delegation mechanism is introduced. IT cannot access onboarding. Detail endpoints load assignments before owner/admin checks and return 404 for someone else's record. Applicant draft answers are excluded from staff listings, and staff detail views require submission. Applicants never become internal User records.
+Managers see only their own invitations/applications. Administrators see all records; no broader manager grant/delegation mechanism is introduced. IT cannot access application/draft endpoints; it can access only the approved snapshot/checklist described in it-onboarding.md. Detail endpoints load assignments before owner/admin checks and return 404 for someone else's record. Applicant draft answers are excluded from staff listings, and staff detail views require submission. Applicants never become internal User records.
 
 `application_activity` stores event, invitation, optional staff actor and timestamp; no token, verification code or field snapshots. Events cover invitation creation/revocation, verified access, draft saves and submission. Application changes and their activity events commit together. There is no editing or deletion of audit events through the API.
 
@@ -14,7 +14,7 @@ Managers see only their own invitations/applications. Administrators see all rec
 - Draft saves keep DRAFT; correction saves keep CHANGES_REQUESTED.
 - Milestone 4 extends review/correction transitions; see [manager review](manager-review.md).
 
-The policy lives in `modules/onboarding/transitions.ts`. CHANGES_REQUESTED, RESUBMITTED, APPROVED and REJECTED are supported by the review migration. Future IT_IN_PROGRESS and COMPLETED require another policy/migration. Invitation COMPLETED means the application was submitted, not approved.
+The policy lives in `modules/onboarding/transitions.ts`. CHANGES_REQUESTED, RESUBMITTED, APPROVED and REJECTED are supported by the review migration. IT task progress is tracked on a separate request and does not overwrite manager approval state. Invitation COMPLETED means the application was submitted, not approved.
 
 Draft saves carry an integer version. Stale saves return 409 instead of silently overwriting another tab's work. Revocation, save and submission serialize against the invitation row; submission produces exactly one submission event. The unique invitation foreign key prevents duplicate application rows. Submission requires first/last names, separate personal/work phones, both trimmed American names, any invitation-required Telegram and explicit accuracy confirmation, independently of frontend React Hook Form/Zod checks. Employment answers are supplied by applicants and can be flagged for corrections. Final manager-confirmed assignments are stored separately on the invitation during approval; applicant DTOs cannot overwrite those canonical assignments.
 

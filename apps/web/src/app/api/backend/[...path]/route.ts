@@ -15,7 +15,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const name = process.env.NODE_ENV === 'production' ? `__Host-${suffix}` : suffix;
     const cookie = req.cookies.get(name);
     const query = new URLSearchParams();
-    if (path === 'onboarding/review-queue') {
+    if (path === 'onboarding/review-queue' || path === 'it/onboarding') {
       for (const name of ['page','pageSize','status','search','sort','direction']) {
         const value = req.nextUrl.searchParams.get(name);
         if (value !== null) query.set(name,value);

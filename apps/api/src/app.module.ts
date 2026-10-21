@@ -1,3 +1,4 @@
+import { ItModule } from './modules/it/it.module';
 import { OnboardingModule } from './modules/onboarding/onboarding.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { Module } from '@nestjs/common';
@@ -12,6 +13,6 @@ import { HealthModule } from './modules/health/health.module';
     ...databaseOptions(validateEnvironment({ NODE_ENV: config.get('NODE_ENV'), PORT: config.get('PORT'),
       DATABASE_URL: config.get('DATABASE_URL'), DATABASE_SSL: config.get('DATABASE_SSL'),
       CORS_ORIGINS: config.get('CORS_ORIGINS'), SESSION_SECRET: config.get('SESSION_SECRET'), BFF_SHARED_SECRET: config.get('BFF_SHARED_SECRET'), WEB_ORIGIN: config.get('WEB_ORIGIN'), SESSION_TTL_SECONDS: config.get('SESSION_TTL_SECONDS') })), retryAttempts: 3,
-  }) }), HealthModule, AuthModule, OnboardingModule,
+  }) }), HealthModule, AuthModule, OnboardingModule, ItModule,
 ] })
 export class AppModule {}

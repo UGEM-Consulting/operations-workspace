@@ -1,3 +1,4 @@
+import { ItModule } from '../src/modules/it/it.module';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -35,7 +36,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   db=await new DataSource(databaseOptions(env)).initialize();await db.runMigrations();await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');
   const hash=await hashPassword(password);
   for(const [index,role] of [Role.DISPATCHER_MANAGER,Role.DISPATCHER_MANAGER,Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].entries())await db.getRepository(User).save({firstName:'Fictional',lastName:'Staff',email:`staff${index}@example.test`,role,status:UserStatus.ACTIVE,passwordHash:hash});
-  const module=await Test.createTestingModule({imports:[ConfigModule.forRoot({isGlobal:true,ignoreEnvFile:true,load:[()=>env]}),TypeOrmModule.forRoot(databaseOptions(env)),AuthModule,OnboardingModule]}).compile();
+  const module=await Test.createTestingModule({imports:[ConfigModule.forRoot({isGlobal:true,ignoreEnvFile:true,load:[()=>env]}),TypeOrmModule.forRoot(databaseOptions(env)),AuthModule,OnboardingModule,ItModule]}).compile();
   app=module.createNestApplication();closeSessions=installSessions(app,env);configureApp(app,env.CORS_ORIGINS);await app.init();
   const agents=[];for(let i=0;i<4;i++){const agent=request.agent(app.getHttpServer());await agent.post('/api/auth/login').set(headers).send({email:`staff${i}@example.test`,password}).expect(200);agents.push(agent);}[manager,other,admin,itAgent]=agents;
  },30000);
@@ -397,5 +398,87 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(detail.body.requiredFields).toEqual(expect.arrayContaining(['workPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName']));
   expect((await flow.applicant.get('/api/applicant/application').set(headers).expect(200)).body.application.status).toBe('APPROVED');
   await decision(admin,flow.id,{version:3,decisionType:'REQUEST_CHANGES',reason:'Attempt reopen',requestedFields:['workPhoneNumber']}).expect(409);
+ });
+ async function approvedItFlow(){
+  const flow=await submittedApplication();
+  await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,reason:'Internal approval note',employment:{mcName:'Fictional Approved MC',teamLead:'Fictional Approved Lead',jobTitle:'Dispatcher'}}).expect(201);
+  const queue=await itAgent.get('/api/it/onboarding').set(headers).expect(200);return {...flow,requestId:queue.body.items[0].id as string};
+ }
+ it('creates one IT request/checklist in the approval transaction using approved employment and American names',async()=>{
+  const flow=await approvedItFlow();const detail=await itAgent.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
+  expect(detail.body.tasks).toHaveLength(6);expect(detail.body.tasks.every((task:{status:string})=>task.status==='PENDING')).toBe(true);
+  expect(detail.body.request.profile).toMatchObject({mcName:'Fictional Approved MC',teamLead:'Fictional Approved Lead',preferredAmericanFirstName:answers.preferredAmericanFirstName,preferredAmericanLastName:answers.preferredAmericanLastName,proposedDisplayName:'Alex Demo',personalPhoneNumber:answers.personalPhoneNumber,workPhoneNumber:answers.workPhoneNumber});
+  expect(detail.body.request.workPhoneVerifiedAt).toBeNull();expect(detail.body.request.assignedRingCentralPhoneNumber).toBeNull();expect(JSON.stringify(detail.body)).not.toContain('Internal approval note');
+  await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true}).expect(409);
+  expect((await itAgent.get('/api/it/onboarding').set(headers)).body.total).toBe(1);
+ });
+ it('enforces IT/admin roles, approval-only projections, session identity and CSRF',async()=>{
+  const flow=await approvedItFlow();await admin.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
+  await manager.get('/api/it/onboarding').set(headers).expect(403);await other.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(403);
+  await flow.applicant.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(401);await request(app.getHttpServer()).get('/api/it/onboarding').set(headers).expect(401);
+  await itAgent.get(`/api/it/onboarding/${flow.id}`).set(headers).expect(404);
+  await itAgent.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(403);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set({...headers,origin:'https://evil.example'}).send({version:0,workPhoneVerified:true}).expect(403);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true,profile:{mcName:'Spoofed'}}).expect(400);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true,assignedRingCentralPhoneNumber:'not a phone'}).expect(400);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/GOOGLE_WORKSPACE`).set(headers).send({version:0,status:'UNKNOWN'}).expect(400);
+ });
+ it('records blocked/in-progress tasks and separate actual RingCentral phone without overwriting applicant numbers',async()=>{
+  const flow=await approvedItFlow();
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/GOOGLE_WORKSPACE`).set(headers).send({version:0,status:'BLOCKED'}).expect(400);
+  let result=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/GOOGLE_WORKSPACE`).set(headers).send({version:0,status:'BLOCKED',notes:'Waiting for fictional software authorization'}).expect(200);
+  expect(result.body.request.status).toBe('BLOCKED');
+  result=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/GOOGLE_WORKSPACE`).set(headers).send({version:1,status:'IN_PROGRESS',notes:'Fictional manual setup underway'}).expect(200);
+  expect(result.body.request.status).toBe('IN_PROGRESS');
+  const assigned='+1 202 555 0190';result=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:2,workPhoneVerified:true,assignedRingCentralPhoneNumber:assigned}).expect(200);
+  expect(result.body.request.assignedRingCentralPhoneNumber).toBe(assigned);expect(result.body.request.workPhoneVerifiedAt).not.toBeNull();expect(result.body.request.profile.workPhoneNumber).toBe(answers.workPhoneNumber);expect(result.body.request.profile.personalPhoneNumber).toBe(answers.personalPhoneNumber);
+  expect((await flow.applicant.get('/api/applicant/application').set(headers)).body.application.fields.workPhoneNumber).toBe(answers.workPhoneNumber);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/RINGCENTRAL`).set(headers).send({version:3,status:'COMPLETED'}).expect(200);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:4,workPhoneVerified:true,assignedRingCentralPhoneNumber:''}).expect(400);
+ });
+ it('prevents stale concurrent IT edits and leaves completed onboarding immutable',async()=>{
+  const flow=await approvedItFlow();const results=await Promise.all(['GOOGLE_WORKSPACE','DISPATCH_GROUP'].map(key=>itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${key}`).set(headers).send({version:0,status:'IN_PROGRESS'})));
+  expect(results.map(result=>result.status).sort()).toEqual([200,409]);
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
+ });
+ it('requires phone verification and assigned number for completion, sends one manager notification, and preserves approval',async()=>{
+  const flow=await approvedItFlow();
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
+  let data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190'}).expect(200);
+  for(const task of data.body.tasks.slice(0,5))data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED',notes:'Fictional manual check completed'}).expect(200);
+  const last=data.body.tasks[5];const version=data.body.request.version;
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${last.key}`).set(headers).send({version,status:'COMPLETED'}).expect(400);
+  expect((await manager.get('/api/notifications').set(headers)).body.items).toHaveLength(0);
+  data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version,workPhoneVerified:true,assignedRingCentralPhoneNumber:'+1 202 555 0190'}).expect(200);
+  const finalVersion=data.body.request.version;
+  const finished=await Promise.all([1,2].map(()=>itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${last.key}`).set(headers).send({version:finalVersion,status:'COMPLETED',notes:'Fictional approved business software confirmed'})));
+  expect(finished.map(result=>result.status).sort()).toEqual([200,409]);
+  data=await itAgent.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);expect(data.body.request.status).toBe('COMPLETED');
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:finalVersion+1,workPhoneVerified:false}).expect(409);
+  const notices=await manager.get('/api/notifications').set(headers).expect(200);expect(notices.body.unread).toBe(1);expect(notices.body.items).toHaveLength(1);
+  expect(notices.body.items[0].displayName).toBe('Alex Demo');expect((await other.get('/api/notifications').set(headers)).body.items).toHaveLength(0);
+  await other.post(`/api/notifications/${notices.body.items[0].id}/read`).set(headers).send({}).expect(404);
+  await itAgent.get('/api/notifications').set(headers).expect(403);
+  await manager.post(`/api/notifications/${notices.body.items[0].id}/read`).set({...headers,'x-csrf-protection':''}).send({}).expect(403);
+  await manager.post(`/api/notifications/${notices.body.items[0].id}/read`).set(headers).send({}).expect(201);
+  expect((await manager.get('/api/notifications').set(headers)).body.unread).toBe(0);
+  const review=await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200);expect(review.body.application.status).toBe('APPROVED');expect(review.body.itOnboarding.status).toBe('COMPLETED');
+  expect(data.body.activity.filter((event:{event:string})=>event.event==='IT_ONBOARDING_COMPLETED')).toHaveLength(1);
+ });
+ it('rolls back approval, assignments and audit history if checklist creation fails',async()=>{
+  const flow=await submittedApplication();
+  await db.query(`CREATE FUNCTION fail_it_task_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test-only checklist failure'; END; $$; CREATE TRIGGER fail_it_task_test BEFORE INSERT ON it_onboarding_tasks FOR EACH ROW EXECUTE FUNCTION fail_it_task_test();`);
+  try{await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true}).expect(500);}finally{await db.query('DROP TRIGGER fail_it_task_test ON it_onboarding_tasks; DROP FUNCTION fail_it_task_test()');}
+  expect((await db.getRepository(DispatcherApplication).findOneByOrFail({id:flow.id})).status).toBe('SUBMITTED');
+  expect((await itAgent.get('/api/it/onboarding').set(headers)).body.total).toBe(0);
+  expect((await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers)).body.reviews).toHaveLength(0);
+  expect(await db.getRepository(ApplicationActivity).countBy({invitationId:flow.invitation.id,event:'APPLICATION_APPROVED'})).toBe(0);
+ });
+ it('paginates and filters the approved IT queue without exposing unapproved records',async()=>{
+  await submittedApplication();const flow=await approvedItFlow();
+  const result=await itAgent.get('/api/it/onboarding?pageSize=1&status=PENDING&search=Alex').set(headers).expect(200);
+  expect(result.body.total).toBe(1);expect(result.body.items[0].id).toBe(flow.requestId);expect(result.body.items).toHaveLength(1);
+  await itAgent.get('/api/it/onboarding?pageSize=1000').set(headers).expect(400);
+  await itAgent.get('/api/it/onboarding?status=APPROVED').set(headers).expect(400);
  });
 });
