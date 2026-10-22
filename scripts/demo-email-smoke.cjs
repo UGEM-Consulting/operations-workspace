@@ -87,9 +87,13 @@ async function ready(url) {
   const page = await admin('/settings/demo-mailbox'); assert.equal(page.status,200); const html = await page.text();
   assert.ok(html.includes('Demo Environment') && html.includes('Fictional Data Only') && html.includes('smoke.applicant@example.test'));
   const messages = await result(await admin('/api/backend/demo-mailbox'),200); const message = messages.find(row => row.challengeId===challenge.challengeId); assert.ok(message);
-  assert.equal((await manager('/api/backend/demo-mailbox')).status,403); assert.equal((await applicant('/api/backend/demo-mailbox')).status,401);
+  const managerPage = await manager('/onboarding/demo-mailbox'); assert.equal(managerPage.status,200);
+  const managerHtml = await managerPage.text(); assert.ok(managerHtml.includes('smoke.applicant@example.test'));
+  const invitationsPage = await manager('/onboarding/invitations'); assert.ok((await invitationsPage.text()).includes('/onboarding/demo-mailbox'));
+  assert.ok((await result(await manager('/api/backend/demo-mailbox'),200)).some(row => row.id===message.id)); assert.equal((await applicant('/api/backend/demo-mailbox')).status,401);
   stage = 'authorized reveal and applicant verification';
-  const delivery = await result(await admin(`/api/backend/demo-mailbox/${message.id}/reveal`,'POST',{}));
+  const delivery = await result(await manager(`/api/backend/demo-mailbox/${message.id}/reveal`,'POST',{}));
+  assert.ok(!managerHtml.includes(delivery.code));
   assert.ok(!html.includes(delivery.code));
   await result(await applicant('/api/backend/applicant/verify','POST',{ challengeId:challenge.challengeId, code:delivery.code }));
   stage = 'draft and submission';

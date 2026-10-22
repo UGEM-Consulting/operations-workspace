@@ -15,7 +15,7 @@ import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 import { OnboardingModule } from '../src/modules/onboarding/onboarding.module';
 import { DemoEmailService } from '../src/modules/demo-email/demo-email.service';
 import { initializeDemoIdentity } from '../src/modules/demo-email/isolation';
-import { ApplicantChallenge, ApplicationActivity } from '../src/modules/onboarding/entities';
+import { ApplicantChallenge, ApplicationActivity, Invitation } from '../src/modules/onboarding/entities';
 import { issueDemoCode } from '../src/database/demo-verification';
 
 const integration = process.env.DEMO_TEST_DATABASE_URL ? describe : describe.skip;
@@ -28,7 +28,8 @@ integration('Isolated demo mailbox and applicant workflow (dedicated demo test D
   const headers = { origin: env.WEB_ORIGIN, 'x-workspace-key': env.BFF_SHARED_SECRET, 'x-csrf-protection': '1' };
   const password = randomBytes(24).toString('base64url');
   type Agent = ReturnType<typeof request.agent>;
-  let admin: Agent, manager: Agent, itAgent: Agent;
+  let admin: Agent, manager: Agent, itAgent: Agent, otherManager: Agent;
+  let managerId: string, otherManagerId: string;
   const create = async () => {
     const response = await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
     return { token: response.body.url.split('/').pop() as string, id: response.body.id as string };
@@ -58,6 +59,10 @@ integration('Isolated demo mailbox and applicant workflow (dedicated demo test D
       await agent.post('/api/auth/login').set(headers).send({ email: `${role.toLowerCase()}@example.test`, password }).expect(200); agents.push(agent);
     }
     [admin, manager, itAgent] = agents;
+    managerId = (await db.getRepository(User).findOneByOrFail({ email: 'dispatcher_manager@example.test' })).id;
+    otherManagerId = (await db.getRepository(User).save({ firstName: 'Fictional', lastName: 'Other Manager', email: 'other.manager@example.test', role: Role.DISPATCHER_MANAGER, status: UserStatus.ACTIVE, passwordHash: hash })).id;
+    otherManager = request.agent(app.getHttpServer());
+    await otherManager.post('/api/auth/login').set(headers).send({ email: 'other.manager@example.test', password }).expect(200);
   }, 30000);
   beforeEach(async () => { await db.query('TRUNCATE invitations, applicant_sessions, login_attempts CASCADE'); });
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) await db.destroy(); });
@@ -75,18 +80,52 @@ integration('Isolated demo mailbox and applicant workflow (dedicated demo test D
     expect(storedChallenge.codeHash === code).toBe(false);
     expect((await db.getRepository(ApplicationActivity).findBy({ invitationId: inv.id })).map(row => row.event)).toEqual(expect.arrayContaining(['DEMO_VERIFICATION_DELIVERED', 'DEMO_VERIFICATION_VIEWED']));
   });
-  it('denies unauthenticated, manager, IT and applicant mailbox access and enforces reveal CSRF', async () => {
+  it('denies unauthenticated, IT and applicant mailbox access and enforces reveal CSRF', async () => {
     const inv = await create(), challenge = await begin(inv.token), item = await message(challenge.challengeId);
-    for (const agent of [manager, itAgent]) {
+    for (const agent of [itAgent]) {
       await agent.get('/api/demo-mailbox').set(headers).expect(403);
       await agent.post(`/api/demo-mailbox/${item.id}/reveal`).set(headers).send({}).expect(403);
     }
     await request(app.getHttpServer()).get('/api/demo-mailbox').set(headers).expect(401);
-    await admin.post(`/api/demo-mailbox/${item.id}/reveal`).set({ ...headers, 'x-csrf-protection': '' }).send({}).expect(403);
+    for (const agent of [admin, manager]) {
+      await agent.post(`/api/demo-mailbox/${item.id}/reveal`).set({ ...headers, 'x-csrf-protection': '' }).send({}).expect(403);
+      await agent.post(`/api/demo-mailbox/${item.id}/reveal`).set({ ...headers, origin: 'https://foreign.example.test' }).send({}).expect(403);
+    }
     const applicant = request.agent(app.getHttpServer());
     await applicant.post('/api/applicant/verify').set(headers).send({ challengeId: challenge.challengeId, code: await reveal(item.id) }).expect(201);
     await applicant.get('/api/demo-mailbox').set(headers).expect(401);
     await applicant.post(`/api/demo-mailbox/${item.id}/reveal`).set(headers).send({}).expect(401);
+  });
+  it('lists and reveals only the manager-owned invitations while administrators retain all access', async () => {
+    const own = await create(), challenge = await begin(own.token), ownMessage = await message(challenge.challengeId);
+    const other = await otherManager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
+    const otherChallenge = await begin(other.body.url.split('/').pop()), otherMessage = await message(otherChallenge.challengeId);
+    const list = await manager.get('/api/demo-mailbox').set(headers).expect(200);
+    expect(list.body.map((row: { id: string }) => row.id)).toEqual([ownMessage.id]);
+    expect(list.body[0].code).toBeUndefined(); expect(list.body[0].ciphertext).toBeUndefined();
+    expect((await admin.get('/api/demo-mailbox').set(headers)).body).toHaveLength(2);
+    const revealed = await manager.post(`/api/demo-mailbox/${ownMessage.id}/reveal`).set(headers).send({}).expect(201);
+    expect(revealed.body.code).toMatch(/^\d{8}$/);
+    expect(await db.getRepository(ApplicationActivity).findOneBy({ invitationId: own.id, event: 'DEMO_VERIFICATION_VIEWED', actorId: managerId })).not.toBeNull();
+    await manager.post(`/api/demo-mailbox/${otherMessage.id}/reveal`).set(headers).send({ managerId }).expect(404);
+    await otherManager.post(`/api/demo-mailbox/${ownMessage.id}/reveal`).set(headers).send({}).expect(404);
+    expect((await otherManager.get('/api/demo-mailbox').set(headers)).body.map((row: { id: string }) => row.id)).toEqual([otherMessage.id]);
+    expect(await db.getRepository(ApplicationActivity).countBy({ invitationId: other.body.id, event: 'DEMO_VERIFICATION_VIEWED' })).toBe(0);
+  });
+  it('rechecks persisted invitation ownership after listing a message', async () => {
+    const inv = await create(), challenge = await begin(inv.token), item = await message(challenge.challengeId);
+    await manager.get('/api/demo-mailbox').set(headers).expect(200);
+    await db.getRepository(Invitation).update(inv.id, { managerId: otherManagerId });
+    expect((await manager.get('/api/demo-mailbox').set(headers)).body).toEqual([]);
+    await manager.post(`/api/demo-mailbox/${item.id}/reveal`).set(headers).send({}).expect(404);
+    await otherManager.post(`/api/demo-mailbox/${item.id}/reveal`).set(headers).send({}).expect(201);
+  });
+  it('never reveals revoked or expired invitation codes to their manager', async () => {
+    const inv = await create(), challenge = await begin(inv.token), item = await message(challenge.challengeId);
+    await db.getRepository(Invitation).update(inv.id, { expiresAt: new Date(Date.now() - 1000) });
+    await manager.post(`/api/demo-mailbox/${item.id}/reveal`).set(headers).send({}).expect(404);
+    await db.getRepository(Invitation).update(inv.id, { expiresAt: new Date(Date.now() + 60000), revokedAt: new Date() });
+    await manager.post(`/api/demo-mailbox/${item.id}/reveal`).set(headers).send({}).expect(404);
   });
   it('rejects real applicant/staff emails and the database also enforces fictional identities', async () => {
     const inv = await create();
@@ -143,10 +182,12 @@ integration('Isolated demo mailbox and applicant workflow (dedicated demo test D
   it('keeps the production provider disabled independently of runtime development mode', async () => {
     const service = new DemoEmailService(db, new ConfigService({ NODE_ENV: 'development', DEPLOYMENT_PURPOSE: 'production', DEMO_EMAIL_MODE: false }));
     await expect(service.assertAvailable()).rejects.toThrow('not configured');
+    const user = await db.getRepository(User).findOneByOrFail({ id: managerId });
+    await expect(service.mailbox(user)).rejects.toThrow('Not Found');
   });
   it('demonstrates invitation, verification, submission, corrections, independent return verification and approval', async () => {
     const inv = await create(), challenge = await begin(inv.token), applicant = request.agent(app.getHttpServer());
-    const verified = await applicant.post('/api/applicant/verify').set(headers).send({ challengeId: challenge.challengeId, code: await reveal((await message(challenge.challengeId)).id) }).expect(201);
+    const verified = await applicant.post('/api/applicant/verify').set(headers).send({ challengeId: challenge.challengeId, code: (await manager.post(`/api/demo-mailbox/${(await message(challenge.challengeId)).id}/reveal`).set(headers).send({}).expect(201)).body.code }).expect(201);
     const id = verified.body.applicationId;
     const fields = { firstName: 'Fictional', lastName: 'Applicant', preferredAmericanFirstName: 'Alex', preferredAmericanLastName: 'Demo', personalPhoneNumber: '+1 202 555 0123', workPhoneNumber: '+44 20 7946 0958', mcName: 'Independent', teamLead: 'Independent', jobTitle: 'Dispatcher' };
     await applicant.patch('/api/applicant/draft').set(headers).send({ version: 0, ...fields }).expect(200);
@@ -154,7 +195,7 @@ integration('Isolated demo mailbox and applicant workflow (dedicated demo test D
     await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({ version: 2, decisionType: 'REQUEST_CHANGES', requestedFields: ['firstName'], reason: 'Please correct the fictional name.' }).expect(201);
     await applicant.post('/api/applicant/logout').set(headers).send({}).expect(201);
     const resumed = await applicant.post('/api/applicant/begin').set(headers).send({ applicationId: id, email: 'applicant@example.test' }).expect(201);
-    await applicant.post('/api/applicant/verify').set(headers).send({ challengeId: resumed.body.challengeId, code: await reveal((await message(resumed.body.challengeId)).id) }).expect(201);
+    await applicant.post('/api/applicant/verify').set(headers).send({ challengeId: resumed.body.challengeId, code: (await manager.post(`/api/demo-mailbox/${(await message(resumed.body.challengeId)).id}/reveal`).set(headers).send({}).expect(201)).body.code }).expect(201);
     await applicant.patch('/api/applicant/draft').set(headers).send({ version: 3, firstName: 'Corrected Fictional' }).expect(200);
     await applicant.post('/api/applicant/submit').set(headers).send({ version: 4, accurate: true }).expect(201);
     const result = await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({ version: 5, decisionType: 'APPROVE', confirmed: true, employmentConfirmed: true, employment: { mcName: 'Independent', teamLead: 'Independent', jobTitle: 'Dispatcher' } }).expect(201);

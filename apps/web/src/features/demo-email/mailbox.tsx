@@ -22,7 +22,7 @@ export function DemoMailbox({ messages }: { messages: Message[] }) {
     finally { setBusy(false); }
   }
   return <div className="mt-6 space-y-4">
-    <p className="text-sm text-muted-foreground">Administrator-only simulated delivery. Use the applicant’s verification reference to locate their fictional message. Each reveal is audited. Codes remain valid for ten minutes and one successful verification.</p>
+    <p className="text-sm text-muted-foreground">Demo-only simulated delivery. Managers can access only their own invitations; administrators can access all demo invitations. Use the applicant’s verification reference to locate their fictional message. Each reveal is audited. Codes remain valid for ten minutes and one successful verification.</p>
     <Button variant="outline" onClick={() => window.location.reload()}>Refresh mailbox</Button>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {!messages.length && <Card className="p-6">No pending verification messages. Ask the applicant to select Verify access.</Card>}

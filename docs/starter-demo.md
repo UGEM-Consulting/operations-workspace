@@ -10,7 +10,7 @@ Empty unclaimed invitations may remain only when their applications are still IN
 
 Conversion serializes user/workflow writes in a transaction, records the operator UUID, deployment UUID, exact frontend origin and timestamp, and writes a STARTER_DEMO_CONVERTED event without personal data. The operator's ID, name, email, role and password hash remain unchanged. authVersion increases and staff sessions are cleared so the operator must sign in again. Repeating the same conversion is idempotent; another UUID/origin cannot take over. Changing NODE_ENV or enabling an environment flag alone does not convert a database.
 
-Runtime checks permit the one bound active operator email exception; every other staff/applicant identity remains fictional. The operator cannot be disabled/demoted during demo use or change to a different real email. Database triggers enforce the exception too, including during login lastLoginAt updates. Mailbox authorization, encrypted storage, code hashing/expiry, attempt limits, CSRF, one-time invitation claims and applicant sessions remain unchanged.
+Runtime checks permit the one bound active operator email exception; every other staff/applicant identity remains fictional. The operator cannot be disabled/demoted during demo use or change to a different real email. Database triggers enforce the exception too, including during login lastLoginAt updates. Mailbox authorization (administrators see all demo messages; managers see only their own invitations), encrypted storage, code hashing/expiry, attempt limits, CSRF, one-time invitation claims and applicant sessions remain unchanged.
 
 ## Short setup for the current starter
 
@@ -49,7 +49,7 @@ Runtime checks permit the one bound active operator email exception; every other
 
    Keep the existing start command `npm run start:render --workspace=@operations/api`. The internal Render database URL can stay internal with DATABASE_SSL=false; the local file uses the external TLS connection. Changing purpose before conversion intentionally prevents startup, so follow this order.
 6. On the existing Vercel frontend, keep API_BASE_URL, WEB_ORIGIN and BFF_SHARED_SECRET unchanged. Set `DEPLOYMENT_PURPOSE=demo` in the project's Production environment. Deploy the simulator frontend and redeploy after changing environment values. Confirm **Demo Environment — Fictional Data Only** on login, applicant and staff pages.
-7. Sign in using the existing administrator credentials. Open Settings → Demo mailbox to reveal fictional applicant verification codes. The pending empty invitation can still be used. Create fictional manager/IT accounts in Settings if needed; use @example.test. The rest of the application/review/IT workflow is unchanged.
+7. Sign in using the existing administrator credentials. Administrators open Settings → Demo mailbox to reveal fictional applicant verification codes. Dispatcher Managers use Invitations → Open demo verification codes for their own invitations; no terminal or administrator handoff is required for their demonstration. The pending empty invitation can still be used. Create fictional manager/IT accounts in Settings if needed; use @example.test. The rest of the application/review/IT workflow is unchanged.
 
 No separate Vercel project, Render service, domain or database is required for this expressly designated starter demo. The database is now a demo database, not a place to start collecting real employee data. Production-purpose configurations still refuse simulated verification.
 
@@ -59,7 +59,7 @@ No reset or cleanup is implemented or executed automatically. When the owner exp
 
 ## Repeatable local verification
 
-The regression suite uses only local disposable databases (TEST_DATABASE_URL ending in _test and DEMO_TEST_DATABASE_URL ending in _demo_test). Starter tests cover operator/password preservation, session revocation, idempotence/concurrent conversion, refusal on extra staff/answers, pending-link preservation, the narrowly bound email exception and administrator-only claiming/mailbox access. Test fixtures explicitly reset only those local databases, not the hosted starter.
+The regression suite uses only local disposable databases (TEST_DATABASE_URL ending in _test and DEMO_TEST_DATABASE_URL ending in _demo_test). Starter tests cover operator/password preservation, session revocation, idempotence/concurrent conversion, refusal on extra staff/answers, pending-link preservation, the narrowly bound email exception and administrator/owner-scoped manager mailbox access. Test fixtures explicitly reset only those local databases, not the hosted starter.
 
 After building, repeat the converted-starter HTTP check with:
 

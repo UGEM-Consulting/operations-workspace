@@ -7,6 +7,7 @@ import { Environment, validateEnvironment } from '../../config/environment';
 import { ApplicantChallenge, ApplicationActivity, Invitation, DispatcherApplication } from '../onboarding/entities';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, User, UserStatus } from '../users/user.entity';
+import { canAccessAssignedApplication } from '../auth/policy';
 import { assertDemoIdentity } from './isolation';
 import { DemoMailboxMessage } from './mailbox.entity';
 
@@ -54,21 +55,22 @@ export class DemoEmailService implements OnModuleInit {
     // Also safely handles non-demo challenges; no verification/session semantics change.
     await em.getRepository(DemoMailboxMessage).delete({ challengeId });
   }
-  private async administrator(user: User) {
+  private async mailboxAccess(user: User) {
     if (!this.env) throw new NotFoundException();
-    if (user.role !== Role.SYSTEM_ADMIN || user.status !== UserStatus.ACTIVE) throw new ForbiddenException();
+    if (![Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER].includes(user.role) || user.status !== UserStatus.ACTIVE) throw new ForbiddenException();
     await this.assertAvailable();
   }
   async mailbox(user: User) {
-    await this.administrator(user);
+    await this.mailboxAccess(user);
     await onboardingLimit(this.db, 'demo-mailbox-list:' + user.id, 60, 60);
     return this.db.query(`SELECT m.id, m."challengeId", c.email, c."expiresAt", m."createdAt" FROM demo_mailbox m
       JOIN applicant_challenges c ON c.id=m."challengeId" JOIN invitations i ON i.id=c."invitationId"
       WHERE c."consumedAt" IS NULL AND c."expiresAt">now() AND i."revokedAt" IS NULL
-      ORDER BY m."createdAt" DESC LIMIT 50`);
+        AND ($1::uuid IS NULL OR i."managerId"=$1)
+      ORDER BY m."createdAt" DESC LIMIT 50`, [user.role === Role.SYSTEM_ADMIN ? null : user.id]);
   }
   async reveal(user: User, id: string) {
-    await this.administrator(user);
+    await this.mailboxAccess(user);
     await onboardingLimit(this.db, 'demo-mailbox-reveal:' + user.id, 30, 60);
     return this.db.transaction(async em => {
       const message = await em.getRepository(DemoMailboxMessage).createQueryBuilder('m').addSelect('m.ciphertext').where('m.id=:id', { id }).getOne();
@@ -76,6 +78,8 @@ export class DemoEmailService implements OnModuleInit {
       // Match verify() lock order. Consumed/expired/revoked challenges cannot be revealed.
       const challenge = await em.getRepository(ApplicantChallenge).findOne({ where: { id: message.challengeId }, lock: { mode: 'pessimistic_write' } });
       const inv = challenge?.invitationId ? await em.getRepository(Invitation).findOne({ where: { id: challenge.invitationId }, lock: { mode: 'pessimistic_write' } }) : null;
+      // Recheck the persisted owner under the invitation lock before decrypting any code.
+      if (inv && !canAccessAssignedApplication(user, { assignedManagerId: inv.managerId })) throw new NotFoundException();
       const app = inv ? await em.getRepository(DispatcherApplication).findOneBy({ invitationId: inv.id }) : null;
       if (!challenge?.email?.endsWith('@example.test') || challenge.consumedAt || challenge.expiresAt.getTime() <= Date.now() || !inv || !app || inv.revokedAt
         || (inv.expectedEmail && inv.expectedEmail !== challenge.email)

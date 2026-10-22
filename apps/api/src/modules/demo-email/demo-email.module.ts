@@ -4,7 +4,7 @@ import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
 import { DemoEmailService } from './demo-email.service';
 @Controller('demo-mailbox')
-@Roles(Role.SYSTEM_ADMIN)
+@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class DemoMailboxController {
   constructor(private readonly delivery: DemoEmailService) {}
   @Get() list(@Req() req: AuthRequest) { return this.delivery.mailbox(req.currentUser); }
