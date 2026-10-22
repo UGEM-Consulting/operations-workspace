@@ -345,7 +345,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await applicant.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);
   await applicant.get('/api/applicant/application').set(headers).expect(200);
  },25000);
- it.each(['workPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName'] as const)('requires %s before a new submission',async field=>{
+ it.each(['preferredAmericanFirstName','preferredAmericanLastName'] as const)('requires %s before a new submission',async field=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer());await verify(applicant,inv.token);
   const fields={...answers}; delete (fields as Partial<typeof answers>).accurate;
   await applicant.patch('/api/applicant/draft').set(headers).send({version:0,...fields,[field]:'   '}).expect(200);
@@ -383,9 +383,9 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // Simulate a pre-update correction request whose original flags did not include new fields.
   await db.query(`UPDATE application_reviews SET "requestedFields"='["telegram"]' WHERE "applicationId"=$1`,[flow.id]);
   const own=await flow.applicant.get('/api/applicant/application').set(headers).expect(200);
-  expect(own.body.editableFields).toEqual(expect.arrayContaining(['workPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName']));
-  await flow.applicant.patch('/api/applicant/draft').set(headers).send({version:3,workPhoneNumber:answers.workPhoneNumber,preferredAmericanFirstName:answers.preferredAmericanFirstName,preferredAmericanLastName:answers.preferredAmericanLastName}).expect(200);
-  expect((await flow.applicant.get('/api/applicant/application').set(headers)).body.editableFields).toContain('workPhoneNumber');
+  expect(own.body.editableFields).toEqual(expect.arrayContaining(['preferredAmericanFirstName','preferredAmericanLastName']));
+  await flow.applicant.patch('/api/applicant/draft').set(headers).send({version:3,preferredAmericanFirstName:answers.preferredAmericanFirstName,preferredAmericanLastName:answers.preferredAmericanLastName}).expect(200);
+  expect((await flow.applicant.get('/api/applicant/application').set(headers)).body.editableFields).not.toContain('workPhoneNumber');
   await flow.applicant.post('/api/applicant/submit').set(headers).send({version:4,accurate:true}).expect(201);
   await decision(manager,flow.id,{version:5,decisionType:'APPROVE',confirmed:true}).expect(201);
  });
@@ -395,7 +395,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await db.query(`UPDATE application_submissions SET fields=fields-'workPhoneNumber'-'preferredAmericanFirstName'-'preferredAmericanLastName' WHERE "applicationId"=$1`,[flow.id]);
   const detail=await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200);
   expect(detail.body.readyForIt).toBe(true);expect(detail.body.application.status).toBe('APPROVED');expect(detail.body.itDetails.proposedDisplayName).toBeNull();
-  expect(detail.body.requiredFields).toEqual(expect.arrayContaining(['workPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName']));
+  expect(detail.body.requiredFields).toEqual(expect.arrayContaining(['preferredAmericanFirstName','preferredAmericanLastName']));
   expect((await flow.applicant.get('/api/applicant/application').set(headers).expect(200)).body.application.status).toBe('APPROVED');
   await decision(admin,flow.id,{version:3,decisionType:'REQUEST_CHANGES',reason:'Attempt reopen',requestedFields:['workPhoneNumber']}).expect(409);
  });
@@ -440,6 +440,30 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const flow=await approvedItFlow();const results=await Promise.all(['GOOGLE_WORKSPACE','DISPATCH_GROUP'].map(key=>itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${key}`).set(headers).send({version:0,status:'IN_PROGRESS'})));
   expect(results.map(result=>result.status).sort()).toEqual([200,409]);
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
+ });
+ it('rolls back and reapplies the optional-work-phone completion constraint on an empty workflow',async()=>{
+  await db.undoLastMigration();
+  await db.runMigrations();
+  expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('OptionalApplicantWorkPhone1792680000000');
+ });
+ it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
+  const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
+  await applicant.patch('/api/applicant/draft').set(headers).send({version:0,...answers,accurate:undefined,workPhoneNumber:undefined}).expect(200);
+  await applicant.post('/api/applicant/submit').set(headers).send({version:1,accurate:true}).expect(201);
+  await decision(manager,verified.id,{version:2,decisionType:'APPROVE',confirmed:true}).expect(201);
+  const queue=await itAgent.get('/api/it/onboarding').set(headers).expect(200),id=queue.body.items[0].id;
+  const initial=await itAgent.get(`/api/it/onboarding/${id}`).set(headers).expect(200);
+  expect(initial.body.request.profile.workPhoneNumber).toBeNull();
+  await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(400);
+  await itAgent.patch(`/api/it/onboarding/${id}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
+  let data=await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190'}).expect(200);
+  for(const task of data.body.tasks)data=await itAgent.patch(`/api/it/onboarding/${id}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED'}).expect(200);
+  expect(data.body.request.status).toBe('COMPLETED');expect(data.body.request.workPhoneVerifiedAt).toBeNull();
+  expect(data.body.request.profile.workPhoneNumber).toBeNull();
+  expect(data.body.request.profile.personalPhoneNumber).toBe(answers.personalPhoneNumber);
+  expect(data.body.request.assignedRingCentralPhoneNumber).toBe('+1 202 555 0190');
+  expect((await manager.get('/api/notifications').set(headers)).body.items).toHaveLength(1);
+  await expect(db.undoLastMigration()).rejects.toThrow('Cannot restore mandatory');
  });
  it('requires phone verification and assigned number for completion, sends one manager notification, and preserves approval',async()=>{
   const flow=await approvedItFlow();

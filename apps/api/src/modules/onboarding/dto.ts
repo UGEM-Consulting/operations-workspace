@@ -38,7 +38,6 @@ export class SubmitDto extends DraftDto {
  @trim() @IsString() @MinLength(1) @MaxLength(100) declare firstName: string;
  @trim() @IsString() @MinLength(1) @MaxLength(100) declare lastName: string;
  @trim() @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) declare personalPhoneNumber: string;
- @trim() @IsString() @MinLength(1) @MaxLength(40) @Matches(INTERNATIONAL_PHONE_PATTERN) declare workPhoneNumber: string;
  @trim() @IsString() @MinLength(1) @MaxLength(100) declare preferredAmericanFirstName: string;
  @trim() @IsString() @MinLength(1) @MaxLength(100) declare preferredAmericanLastName: string;
  @Equals(true) accurate!: boolean;

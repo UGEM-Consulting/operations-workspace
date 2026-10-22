@@ -12,7 +12,7 @@ export const applicationDraftSchema = z.object({
 export const applicationDraftResolver = zodResolver(applicationDraftSchema);
 export const applicationSubmitSchema = (telegramRequired:boolean) => applicationDraftSchema.extend({
  firstName:z.string().trim().min(1,'First Name is required').max(100),lastName:z.string().trim().min(1,'Last Name is required').max(100),
- personalPhoneNumber:phone.refine(value=>!!value,'Personal Phone Number is required'),workPhoneNumber:phone.refine(value=>!!value,'Work Phone Number is required'),
+ personalPhoneNumber:phone.refine(value=>!!value,'Personal Phone Number is required'),workPhoneNumber:phone,
  preferredAmericanFirstName:z.string().trim().min(1,'American First Name is required').max(100),preferredAmericanLastName:z.string().trim().min(1,'American Last Name is required').max(100),
  telegram:telegramRequired?z.string().trim().min(1,'Telegram is required').max(100):z.string().trim().max(100),
  mcName:z.string().trim().min(1,'MC name or Independent is required').max(150),teamLead:z.string().trim().min(1,'Team lead or Independent is required').max(150),jobTitle:z.string().trim().min(1,'Job title is required').max(100),

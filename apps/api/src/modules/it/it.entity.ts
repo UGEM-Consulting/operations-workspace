@@ -5,8 +5,8 @@ export const IT_CHECKLIST = [
  {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Manually record completion of the approved Workspace account setup using the American display name.'},
  {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Confirm membership in the approved Dispatch group.'},
  {key:'RINGCENTRAL',label:'RingCentral',description:'Confirm setup and record the actual assigned RingCentral phone number separately.'},
- {key:'SMS',label:'SMS',description:'Confirm approved SMS capability and settings.'},
- {key:'CALL_RECORDING',label:'Call recording',description:'Confirm the company-approved recording configuration.'},
+ {key:'SMS',label:'SMS',description:'Confirm approved RingCentral SMS capability and settings.'},
+ {key:'CALL_RECORDING',label:'Call recording',description:'Confirm the company-approved RingCentral recording configuration.'},
  {key:'BUSINESS_SOFTWARE',label:'Approved business software',description:'Confirm only the business software authorized for this dispatcher. Use notes for fictional software names; never store credentials.'},
 ] as const;
 export interface ItProfile {

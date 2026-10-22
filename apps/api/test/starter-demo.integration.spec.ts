@@ -1,3 +1,4 @@
+import { StarterDemo1792670000000 } from '../src/database/migrations/1792670000000-StarterDemo';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -125,6 +126,7 @@ integration('Explicit starter conversion (local disposable database)', () => {
     const delivered=await admin.post(`/api/demo-mailbox/${messages.body[0].id}/reveal`).set(headers).send({}).expect(201);
     await applicant.post('/api/applicant/verify').set(headers).send({challengeId:challenge.body.challengeId,code:delivered.body.code}).expect(201);
     await applicant.get('/api/demo-mailbox').set(headers).expect(401);
-    await expect(db.undoLastMigration()).rejects.toThrow();
+    const runner=db.createQueryRunner();
+    try { await expect(new StarterDemo1792670000000().down(runner)).rejects.toThrow(); } finally { await runner.release(); }
   });
 });

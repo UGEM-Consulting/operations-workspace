@@ -1,6 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { DraftDto } from '../src/modules/onboarding/dto';
+import { DraftDto, SubmitDto } from '../src/modules/onboarding/dto';
 import { INTERNATIONAL_PHONE_PATTERN, requiredApplicantFields } from '../src/modules/onboarding/application-requirements';
 import { createFormControl } from 'react-hook-form';
 import { applicationDraftResolver, applicationValidationFeedback, applicationSubmitSchema } from '../../web/src/features/onboarding/application-schema';
@@ -10,7 +10,7 @@ it.each(['+996 (555) 123-456','+44 20 7946 0958','(202) 555-0123','+33.1.23.45.6
  expect(applicationSubmitSchema(false).safeParse({...valid,personalPhoneNumber:number,workPhoneNumber:number}).success).toBe(true);
  expect(await validate(plainToInstance(DraftDto,{version:0,personalPhoneNumber:number,workPhoneNumber:number}))).toHaveLength(0);
 });
-it.each(['workPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName'])('requires nonblank %s in the frontend and backend merged-field validation',field=>{
+it.each(['preferredAmericanFirstName','preferredAmericanLastName'])('requires nonblank %s in the frontend and backend merged-field validation',field=>{
  expect(applicationSubmitSchema(false).safeParse({...valid,[field]:'   '}).success).toBe(false);
  expect(requiredApplicantFields({...valid,[field]:'   '})).toContain(field);
 });
@@ -51,4 +51,13 @@ it('keeps missing accuracy confirmation on review and prioritizes personal error
  const multiple=applicationSubmitSchema(false).safeParse({...valid,firstName:'',mcName:'',accurate:false});
  expect(multiple.success).toBe(false);
  if(!multiple.success)expect(applicationValidationFeedback(multiple.error.issues)).toMatchObject({step:0,field:'firstName'});
+});
+
+it('accepts a first application without a work phone while preserving the required personal phone',async()=>{
+ const withoutWorkPhone: Partial<typeof valid>={...valid}; delete withoutWorkPhone.workPhoneNumber;
+ expect(applicationSubmitSchema(false).safeParse({...withoutWorkPhone,workPhoneNumber:''}).success).toBe(true);
+ expect(requiredApplicantFields(withoutWorkPhone)).toEqual([]);
+ expect(await validate(plainToInstance(SubmitDto,{version:1,...withoutWorkPhone}))).toHaveLength(0);
+ expect(await validate(plainToInstance(SubmitDto,{version:1,...withoutWorkPhone,workPhoneNumber:''}))).toHaveLength(0);
+ expect(requiredApplicantFields({...withoutWorkPhone,personalPhoneNumber:''})).toContain('personalPhoneNumber');
 });

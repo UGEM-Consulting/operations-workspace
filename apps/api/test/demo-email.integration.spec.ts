@@ -1,3 +1,4 @@
+import { StarterDemo1792670000000 } from '../src/database/migrations/1792670000000-StarterDemo';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -176,7 +177,8 @@ integration('Isolated demo mailbox and applicant workflow (dedicated demo test D
     expect(inv.id).toBeTruthy();
   });
   it('refuses rollback that would remove an active demo identity', async () => {
-    await expect(db.undoLastMigration()).rejects.toThrow();
+    const runner=db.createQueryRunner();
+    try { await expect(new StarterDemo1792670000000().down(runner)).rejects.toThrow(); } finally { await runner.release(); }
     expect((await db.query("SELECT purpose FROM deployment_identity WHERE id=true"))[0].purpose).toBe('demo');
   });
   it('keeps the production provider disabled independently of runtime development mode', async () => {

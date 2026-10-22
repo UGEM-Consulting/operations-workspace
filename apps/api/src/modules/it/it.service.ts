@@ -73,7 +73,7 @@ export class ItService {
    const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:id});
    if(tasks.length!==IT_CHECKLIST.length)throw new ConflictException('The checklist is incomplete. Contact an administrator.');
    if(tasks.every(item=>item.status==='COMPLETED')){
-    if(!request.workPhoneVerifiedAt||!request.assignedRingCentralPhoneNumber)throw new BadRequestException('Verify the applicant work phone and record the assigned RingCentral number before completing onboarding.');
+    if((request.profile.workPhoneNumber?.trim()&&!request.workPhoneVerifiedAt)||!request.assignedRingCentralPhoneNumber)throw new BadRequestException('Record the assigned RingCentral number and verify any existing applicant-provided work phone before completing onboarding.');
     request.completedAt=new Date();
     await em.getRepository(PortalNotification).save({recipientId:request.managerId,requestId:id,kind:'IT_ONBOARDING_COMPLETED'});
     await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'IT_ONBOARDING_COMPLETED',metadata:{}});
