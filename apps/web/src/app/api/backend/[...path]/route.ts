@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { backendConfig } from '@/lib/auth';
 import { allowedEndpoint, validMutation } from '@/lib/bff-policy';
+import { backendFailureCode } from '@/lib/backend-connection';
 export const runtime = 'nodejs';
+// Allow a sleeping Render Free API time to start; keep the request deadline
+// below Vercel's function budget. Requires Vercel Fluid Compute.
+export const maxDuration = 120;
 async function proxy(req: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const path = (await context.params).path.join('/');
   if (!allowedEndpoint(req.method, path)) return NextResponse.json({ message: 'Not found' }, { status: 404 });
@@ -24,12 +28,18 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const upstream = await fetch(`${base}/api/${path}${query.size ? `?${query}` : ''}`, { method: req.method, body,
       headers: { 'content-type': 'application/json', 'x-workspace-key': key, origin,
         'x-csrf-protection': '1', 'x-forwarded-proto': process.env.NODE_ENV === 'production' ? 'https' : 'http',
-        cookie: cookie ? `${name}=${cookie.value}` : '' }, cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(15000) });
+        cookie: cookie ? `${name}=${cookie.value}` : '' }, cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(90000) });
     const response = new NextResponse(upstream.status === 204 ? null : await upstream.text(), {
       status: upstream.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
     });
     for (const value of upstream.headers.getSetCookie()) response.headers.append('set-cookie', value);
     return response;
-  } catch { return NextResponse.json({ message: 'The service is unavailable. Please try again.' }, { status: 503 }); }
+  } catch (error) {
+    const code = backendFailureCode(error);
+    console.error('Backend proxy unavailable:', code);
+    return NextResponse.json({ message: code === 'BACKEND_TIMEOUT'
+      ? 'The service is taking too long to respond. It may be starting up. Please wait a minute and try again.'
+      : 'The service is unavailable. Please try again.' }, { status: 503, headers: { 'cache-control': 'no-store' } });
+  }
 }
 export { proxy as GET, proxy as POST, proxy as PATCH };

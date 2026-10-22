@@ -2,14 +2,11 @@ import 'server-only';
 import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { readBackendConfig } from './backend-connection';
 export interface StaffUser { id: string; firstName: string; lastName: string; email: string; role: string; status: string; }
 export interface Identity { user: StaffUser; navigation: { key: string; href: string; label: string }[]; landingPage: string; }
 export function backendConfig() {
-  const base = process.env.API_BASE_URL;
-  const key = process.env.BFF_SHARED_SECRET;
-  const origin = process.env.WEB_ORIGIN;
-  if (!base || !key || !origin) throw new Error('Authentication environment is not configured');
-  return { base: base.replace(/\/$/, ''), key, origin };
+  return readBackendConfig(process.env);
 }
 export async function apiRequest(path: string) {
   const { base, key } = backendConfig();

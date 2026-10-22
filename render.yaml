@@ -5,7 +5,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm ci --include=dev && npm run build --workspace=@operations/api
-    startCommand: npm run start --workspace=@operations/api
+    startCommand: npm run start:render --workspace=@operations/api
     healthCheckPath: /api/health
     autoDeployTrigger: off
     envVars:
