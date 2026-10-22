@@ -10,7 +10,7 @@ export interface Review { id:string;reviewer:{id:string;firstName:string;lastNam
 export interface ReviewDetail { application:Application;invitation:Invitation;reviews:Review[];submissions:{id:string;version:number;fields:Fields;createdAt:string}[];activity:{id:string;event:string;createdAt:string}[];canReview:boolean;readyForIt:boolean;itOnboarding:{id:string;status:string;completedAt:string|null}|null;requiredFields:FieldName[];itDetails:{legalFirstName:string|null;legalLastName:string|null;preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;personalPhoneNumber:string|null;workPhoneNumber:string|null}; }
 export interface ApplicationList { items:(Application & {email:string;mcName:string;teamLead:string})[];total:number;page:number;pageSize:number;pageCount:number; }
 export interface ReviewSummary { awaitingReview:number;changesRequested:number;resubmitted:number;approved:number;rejected:number; }
-export const inputClass = 'mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+export { inputClass } from '@/components/ui/field';
 export async function readApi<T>(path: string): Promise<T> {
  const response = await fetch(`/api/backend/${path}`, { cache: 'no-store' });
  if (!response.ok) throw new Error(response.status === 401 ? 'Please verify your access again.' : 'Unable to load this information. Please try again.');

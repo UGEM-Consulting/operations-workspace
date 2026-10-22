@@ -1,3 +1,4 @@
+import { StatusBadge, statusLabel, type StatusTone } from '@/components/ui/status-badge';
 export const taskStatuses=['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'] as const;
 export type TaskStatus=typeof taskStatuses[number];
 export interface ItProfile {legalFirstName:string|null;legalLastName:string|null;preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;personalPhoneNumber:string|null;workPhoneNumber:string|null;personalEmail:string|null;mcName:string;teamLead:string;jobTitle:string;}
@@ -6,4 +7,5 @@ export interface ItTask {id:string;key:string;label:string;description:string;st
 export interface ItDetail {request:ItRequest;tasks:ItTask[];activity:{id:string;event:string;createdAt:string;metadata:Record<string,string|boolean|null>}[];}
 export interface ItQueue {items:ItRequest[];total:number;page:number;pageCount:number;pageSize:number;}
 export interface Notifications {items:{id:string;requestId:string;applicationId:string;displayName:string|null;createdAt:string;readAt:string|null}[];unread:number;}
-export function ProgressBadge({status}:{status:TaskStatus}) {return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${status==='COMPLETED'?'bg-success-background text-success':status==='BLOCKED'?'bg-warning-background text-warning':'bg-accent'}`}>{status.replaceAll('_',' ')}</span>;}
+const tones: Record<TaskStatus, StatusTone> = { PENDING:'neutral', IN_PROGRESS:'info', BLOCKED:'warning', COMPLETED:'success' };
+export function ProgressBadge({status}:{status:TaskStatus}) { return <StatusBadge label={statusLabel(status)} tone={tones[status]} />; }

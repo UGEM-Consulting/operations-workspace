@@ -1,5 +1,4 @@
 import type { ApplicationStatus } from './types';
-export function StatusBadge({status}:{status:ApplicationStatus}) {
- const color = status==='APPROVED' ? 'bg-success-background text-success' : status==='REJECTED' ? 'bg-danger-background text-destructive' : status==='CHANGES_REQUESTED' ? 'bg-warning-background text-warning' : 'bg-accent text-foreground';
- return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${color}`}>{status.replaceAll('_',' ')}</span>;
-}
+import { StatusBadge as Badge, statusLabel, type StatusTone } from '@/components/ui/status-badge';
+const tones: Record<ApplicationStatus, StatusTone> = { INVITED:'neutral', DRAFT:'neutral', SUBMITTED:'info', RESUBMITTED:'info', CHANGES_REQUESTED:'warning', APPROVED:'success', REJECTED:'danger' };
+export function StatusBadge({status}:{status:ApplicationStatus}) { return <Badge label={statusLabel(status)} tone={tones[status]} />; }

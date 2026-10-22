@@ -47,7 +47,7 @@ it('directs hidden employment resolver errors back to the employment step',async
 it('keeps missing accuracy confirmation on review and prioritizes personal errors when several steps need corrections',()=>{
  const accuracy=applicationSubmitSchema(false).safeParse({...valid,accurate:false});
  expect(accuracy.success).toBe(false);
- if(!accuracy.success)expect(applicationValidationFeedback(accuracy.error.issues)).toMatchObject({step:3,field:'accurate'});
+ if(!accuracy.success)expect(applicationValidationFeedback(accuracy.error.issues)).toMatchObject({step:2,field:'accurate'});
  const multiple=applicationSubmitSchema(false).safeParse({...valid,firstName:'',mcName:'',accurate:false});
  expect(multiple.success).toBe(false);
  if(!multiple.success)expect(applicationValidationFeedback(multiple.error.issues)).toMatchObject({step:0,field:'firstName'});

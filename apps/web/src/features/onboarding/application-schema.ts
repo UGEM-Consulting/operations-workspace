@@ -23,9 +23,9 @@ export type ApplicationValues = z.infer<typeof applicationDraftSchema>;
 // Used for both resolver errors and the stricter final-submission validation.
 export function applicationValidationFeedback(issues: readonly { path: readonly PropertyKey[]; message: string }[]) {
  const personal = ['firstName','lastName','personalPhoneNumber','workPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName','telegram'];
- const stepFor = (name: string) => personal.includes(name) ? 0 : ['mcName','teamLead','jobTitle'].includes(name) ? 1 : 3;
+ const stepFor = (name: string) => personal.includes(name) ? 0 : ['mcName','teamLead','jobTitle'].includes(name) ? 1 : 2;
  const first = [...issues].sort((a,b) => stepFor(String(a.path[0])) - stepFor(String(b.path[0])))[0];
- return { step: first ? stepFor(String(first.path[0])) : 3,
+ return { step: first ? stepFor(String(first.path[0])) : 2,
   field: first ? String(first.path[0]) as keyof ApplicationValues : undefined,
   message: `Please correct the highlighted fields. ${[...new Set(issues.map(issue => issue.message))].join(' ')}` };
 }

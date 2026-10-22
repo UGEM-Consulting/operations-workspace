@@ -4,17 +4,17 @@ import { usePathname } from "next/navigation";
 import { LayoutDashboard, UserPlus, Mail, Files, Monitor, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, it: Monitor, settings: Settings };
-export function Navigation({ items }: { items: { key: string; href: string; label: string }[] }) {
+export function Navigation({ items, collapsed = false, onNavigate }: { items: { key: string; href: string; label: string }[]; collapsed?: boolean; onNavigate?: () => void }) {
   const pathname = usePathname();
   // Highlight the most specific authorized destination, including its detail pages.
   const activeHref = items.filter(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
     .sort((a, b) => b.href.length - a.href.length)[0]?.href;
-  return <nav aria-label="Main navigation" className="flex gap-1 overflow-x-auto p-3 md:flex-col md:overflow-visible md:p-4">
+  return <nav aria-label="Main navigation" className="flex flex-col gap-1 px-3">
     {items.map(({ key, href, label }) => {
       const Icon = icons[key] ?? LayoutDashboard;
-      return <Link key={href} href={href} aria-current={activeHref === href ? "page" : undefined}
-        className={cn("flex shrink-0 items-center gap-3 rounded-lg px-3 py-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", activeHref === href && "bg-accent font-semibold text-primary")}>
-        <Icon aria-hidden="true" className="size-4 shrink-0" />{label}
+      return <Link key={href} href={href} onClick={onNavigate} title={collapsed ? label : undefined} aria-label={collapsed ? label : undefined} aria-current={activeHref === href ? "page" : undefined}
+        className={cn("flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3 py-3 text-sm text-[#c6c2bf] transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-[#ffad87]", activeHref === href && "bg-white/10 font-semibold text-white", collapsed && 'justify-center px-1')}>
+        <Icon aria-hidden="true" className={cn("size-[18px] shrink-0", activeHref === href && 'text-[#ffad87]')} />{!collapsed && label}
       </Link>;
     })}
   </nav>;
