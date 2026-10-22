@@ -16,6 +16,9 @@ export function bootstrapIdentity(input: NodeJS.ProcessEnv) {
     || hasControlCharacters(firstName + lastName)) {
     throw new BootstrapError('Provide a valid BOOTSTRAP_ADMIN_EMAIL and non-empty first/last names (maximum 100 characters each).');
   }
+  if ((input.DEPLOYMENT_PURPOSE === 'demo' || input.DEMO_EMAIL_MODE === 'true') && !email.endsWith('@example.test')) {
+    throw new BootstrapError('Demo administrator bootstrap requires a fictional example.test email.');
+  }
   return { email, firstName, lastName };
 }
 

@@ -1,8 +1,11 @@
+import { digest } from './verification-code';
+export { digest } from './verification-code';
+import { DemoEmailService } from '../demo-email/demo-email.service';
 import { requiredApplicantFields } from './application-requirements';
 import { onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
-import { createHash, randomBytes } from 'node:crypto';
-import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 // Standalone ts-node commands must load our express-session type augmentation too.
@@ -12,7 +15,6 @@ import { User, Role } from '../users/user.entity';
 import { canAccessAssignedApplication } from '../auth/policy';
 import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation } from './entities';
 import { BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, VerifyApplicantDto } from './dto';
-export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export function invitationStatus(invitation: Invitation): string {
  if (invitation.completedAt) return 'COMPLETED';
  if (invitation.revokedAt) return 'REVOKED';
@@ -21,7 +23,7 @@ export function invitationStatus(invitation: Invitation): string {
 }
 @Injectable()
 export class OnboardingService {
- constructor(private readonly db: DataSource, private readonly config: ConfigService) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly delivery: DemoEmailService) {}
  private limit(key: string, max = 10, seconds = 900) { return onboardingLimit(this.db,key,max,seconds); }
  private async activity(em: EntityManager, invitationId: string, event: string, actorId: string | null = null) {
   await em.getRepository(ApplicationActivity).save({ invitationId, event, actorId });
@@ -56,7 +58,7 @@ export class OnboardingService {
   return { message: 'Invitation revoked' };
  }
  async begin(input: BeginVerificationDto) {
-  if (this.config.get('NODE_ENV') === 'production') throw new ServiceUnavailableException('Email verification delivery is not configured.');
+  await this.delivery.assertAvailable();
   if (!input.email.endsWith('@example.test')) throw new BadRequestException('For this local demo, use a fictional email ending in @example.test, such as applicant@example.test. No email is sent.');
   await this.limit('global-verification',60,60);
   await this.limit('email:'+input.email,5);
@@ -73,14 +75,18 @@ export class OnboardingService {
    : !!inv.consumedAt && !!returningApp && returningApp.applicantAccessUntil.getTime() > Date.now());
   // Identical response shape for unknown/mismatched/expired records. No email or employment details disclosed.
   await this.db.query('DELETE FROM applicant_challenges WHERE "expiresAt" < now()');
-  const challenge = await this.db.getRepository(ApplicantChallenge).save({ invitationId: valid && inv ? inv.id : null, resume: !input.token, email: valid ? input.email : null, expiresAt: new Date(Date.now()+600000) });
+  const challenge = await this.db.transaction(async em => {
+   const created = await em.getRepository(ApplicantChallenge).save({ invitationId: valid && inv ? inv.id : null, resume: !input.token, email: valid ? input.email : null, expiresAt: new Date(Date.now()+600000) });
+   await this.delivery.deliver(em, created);
+   return created;
+  });
   if (valid && inv) {
    await this.db.getRepository(Invitation).createQueryBuilder().update().set({ openedAt: new Date() }).where('id = :id AND "openedAt" IS NULL', { id: inv.id }).execute();
   }
   return { challengeId: challenge.id, message: 'If the details match an available invitation, verification can be completed. Contact your demo operator with this verification reference.' };
  }
  async verify(input: VerifyApplicantDto, req: Request) {
-  if (this.config.get('NODE_ENV') === 'production') throw new ServiceUnavailableException('Email verification delivery is not configured.');
+  await this.delivery.assertAvailable();
   await this.limit('verify-global',60,60);
   await this.limit('code:'+input.challengeId,5);
   const applicationId = await this.db.transaction(async em => {
@@ -90,6 +96,7 @@ export class OnboardingService {
    const accessApp = inv ? await em.getRepository(DispatcherApplication).findOneBy({invitationId:inv.id}) : null;
    if (!inv || !accessApp || inv.revokedAt || (inv.expectedEmail && inv.expectedEmail !== challenge.email) || (challenge.resume && inv.email !== challenge.email) || (challenge.resume ? (!inv.consumedAt || accessApp.applicantAccessUntil.getTime() <= Date.now()) : (inv.consumedAt || inv.expiresAt.getTime() <= Date.now()))) throw new UnauthorizedException('Verification is invalid or expired.');
    challenge.consumedAt = new Date(); challenge.codeHash = null; await em.save(challenge);
+   await this.delivery.consumed(em, challenge.id);
    if (!inv.consumedAt) { inv.email = challenge.email; inv.consumedAt = new Date(); await em.save(inv); await this.activity(em,inv.id,'INVITATION_CLAIMED'); }
    const app = await em.getRepository(DispatcherApplication).findOneByOrFail({ invitationId: inv.id });
    await this.activity(em,inv.id,'APPLICANT_VERIFIED');

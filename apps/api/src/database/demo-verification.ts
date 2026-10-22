@@ -5,10 +5,11 @@ import { DataSource } from 'typeorm';
 import { validateEnvironment } from '../config/environment';
 import { databaseOptions } from './options';
 import { ApplicantChallenge, DispatcherApplication, Invitation } from '../modules/onboarding/entities';
-import { digest } from '../modules/onboarding/onboarding.service';
+import { digest } from '../modules/onboarding/verification-code';
 export class DemoVerificationError extends Error {}
 export async function issueDemoCode(db: DataSource, challengeId: string, mode: string | undefined): Promise<string> {
  if (mode !== 'development' && mode !== 'test') throw new DemoVerificationError('Local verification is disabled outside development/test.');
+ if ((await db.query("SELECT purpose FROM deployment_identity WHERE id=true"))[0]?.purpose === 'demo') throw new DemoVerificationError('Use the authenticated demo mailbox for this deployment; local CLI delivery is disabled.');
  if (!/^[0-9a-f-]{36}$/.test(challengeId)) throw new DemoVerificationError('Supply the full verification reference displayed on the applicant page.');
  return db.transaction(async em => {
   const challenge = await em.getRepository(ApplicantChallenge).findOne({ where: { id: challengeId }, lock: { mode: 'pessimistic_write' } });
@@ -27,7 +28,7 @@ export async function issueDemoCode(db: DataSource, challengeId: string, mode: s
 if (require.main === module) {
  void (async () => {
   const env = validateEnvironment(process.env);
-  if (env.NODE_ENV === 'production') throw new DemoVerificationError('Local verification is disabled in production.');
+  if (env.NODE_ENV === 'production' || env.DEPLOYMENT_PURPOSE !== 'local' || !['localhost','127.0.0.1','[::1]'].includes(new URL(env.DATABASE_URL).hostname)) throw new DemoVerificationError('Local verification requires a local development/test database and local deployment purpose.');
   const db = await new DataSource(databaseOptions(env)).initialize();
   try {
    const code = await issueDemoCode(db,process.argv[2] ?? '',env.NODE_ENV);

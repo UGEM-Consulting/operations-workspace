@@ -6,9 +6,17 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
  assert.equal(process.env.ALLOW_DISPOSABLE_DB_RESET,'true');const url=new URL(process.env.TEST_DATABASE_URL);
  assert.ok(url.pathname.endsWith('_test'));assert.ok(['localhost','127.0.0.1'].includes(url.hostname));
  const db=await new DataSource(databaseOptions({DATABASE_URL:url.toString(),DATABASE_SSL:false})).initialize();
+
+ const undoApplicationMigration=async()=>{
+  let [latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
+  while(['StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
+   await db.undoLastMigration();[latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
+  }
+  return db.undoLastMigration();
+ };
  try {
-  await db.runMigrations();assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'ItOnboarding1792650000000');
-  await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await db.undoLastMigration();await db.undoLastMigration();
+  await db.runMigrations();assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'StarterDemo1792670000000');
+  await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await undoApplicationMigration();await undoApplicationMigration();
   const [staff]=await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Fictional','Migration','details.staff@example.test','DISPATCHER_MANAGER','INACTIVE') RETURNING id`);
   const applications=[];
   for(const [index,status] of ['APPROVED','CHANGES_REQUESTED'].entries()){
@@ -27,8 +35,8 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
   const revisions=await db.query('SELECT fields FROM application_submissions');for(const revision of revisions)assert.equal(revision.fields.personalPhoneNumber,'+996 (555) 123-456');
   const [review]=await db.query(`SELECT "requestedFields" FROM application_reviews WHERE "decisionType"='REQUEST_CHANGES'`);assert.deepEqual(review.requestedFields,['personalPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName']);
   await db.query(`UPDATE dispatcher_applications SET fields=jsonb_set(fields,'{workPhoneNumber}','"+44 20 7946 0958"') WHERE id=$1`,[applications[1]]);
-  await db.undoLastMigration();
-  await db.undoLastMigration();
+  await undoApplicationMigration();
+  await undoApplicationMigration();
   const [rolled]=await db.query('SELECT fields,status FROM dispatcher_applications WHERE id=$1',[applications[1]]);assert.equal(rolled.fields.workPhoneNumber,'+44 20 7946 0958');assert.equal(rolled.fields.phone,'+996 (555) 123-456');
   assert.deepEqual((await db.query(`SELECT "requestedFields" FROM application_reviews WHERE "decisionType"='REQUEST_CHANGES'`))[0].requestedFields,['phone','preferredFirstName','preferredLastName']);
   await db.runMigrations();

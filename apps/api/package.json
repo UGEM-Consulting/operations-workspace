@@ -17,7 +17,9 @@
     "verification:demo": "ts-node src/database/demo-verification.ts",
     "admin:bootstrap": "node dist/database/admin-bootstrap.js",
     "predev": "node ../../scripts/check-node.cjs",
-    "start:render": "node dist/start-render.js"
+    "start:render": "node dist/start-render.js",
+    "demo:convert-starter": "node dist/database/convert-starter.js",
+    "demo:setup-starter": "npm run migration:run:prod && npm run demo:convert-starter"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",
