@@ -35,7 +35,7 @@ async function expected(response,status) { assert.equal(response.status,status,`
    const code=await issueDemoCode(db,challenge.challengeId,'development');
    return expected(await applicant('/api/backend/applicant/verify','POST',{challengeId:challenge.challengeId,code}),201);
   }
-  stage='initial verification';const identity=await verify({email:'review.smoke@example.test',token:invitation.url.split('/').pop()});
+  stage='initial verification';const identity=await verify({email:'review.smoke@example.test',token:invitation.url.split(/[/#]/).pop()});
   const id=identity.applicationId;
   const fields={firstName:'Fictional',lastName:'Review Demo',personalPhoneNumber:'+1 202 555 0141',workPhoneNumber:'+996 (555) 123-456',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',telegram:'fictional_review',mcName:'Fictional applicant MC',teamLead:'Independent',jobTitle:'Dispatcher'};
   stage='draft and submission';await expected(await applicant('/api/backend/applicant/draft','PATCH',{version:0,...fields}),200);
@@ -66,6 +66,6 @@ async function expected(response,status) { assert.equal(response.status,status,`
   const final=await expected(await applicant('/api/backend/applicant/application'),200);assert.equal(final.application.status,'APPROVED');assert.equal(final.canEdit,false);assert.ok(!JSON.stringify(final).includes('Internal smoke approval note'));
   for (const path of ['/onboarding','/onboarding/applications?status=APPROVED',`/onboarding/applications/${id}`,'/dashboard']) assert.equal((await manager(path)).status,200);
   assert.equal((await fetch('http://localhost:4000/api/health')).status,200);
-  console.log('PASS: Next.js → NestJS invitation, verification, submission, correction request, fresh verification, private draft, resubmission, comparison, approval, IT phone verification/checklist completion, portal notification, filtered queues, and health.');
+  console.log('PASS: Next.js â†’ NestJS invitation, verification, submission, correction request, fresh verification, private draft, resubmission, comparison, approval, IT phone verification/checklist completion, portal notification, filtered queues, and health.');
  } finally { await db.destroy(); }
 })().catch(()=>{console.error(`Review smoke failed at ${stage}; no credentials or applicant details printed.`);process.exitCode=1;});

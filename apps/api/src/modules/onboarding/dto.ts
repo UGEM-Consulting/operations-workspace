@@ -1,4 +1,5 @@
 import { INTERNATIONAL_PHONE_PATTERN } from './application-requirements';
+import { VERIFICATION_CODE_PATTERN } from './verification-code';
 import { APPLICATION_STATUSES, CORRECTION_FIELDS, ApplicationStatus, CorrectionField, DecisionType } from './entities';
 import { Type, Transform } from 'class-transformer';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, Equals, IsBoolean, IsEmail, IsInt, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
@@ -19,7 +20,7 @@ export class BeginVerificationDto {
 }
 export class VerifyApplicantDto {
  @IsUUID() challengeId!: string;
- @IsString() @Matches(/^[0-9]{8}$/) code!: string;
+ @IsString() @Matches(VERIFICATION_CODE_PATTERN) code!: string;
 }
 export class DraftDto {
  @IsInt() @Min(0) version!: number;

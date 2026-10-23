@@ -1,11 +1,11 @@
-import { digest } from './verification-code';
+import { digest, generateVerificationCode } from './verification-code';
 export { digest } from './verification-code';
-import { DemoEmailService } from '../demo-email/demo-email.service';
+import { EmailService } from '../email/email.service';
 import { requiredApplicantFields } from './application-requirements';
 import { onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
 import { randomBytes } from 'node:crypto';
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 // Standalone ts-node commands must load our express-session type augmentation too.
@@ -23,13 +23,18 @@ export function invitationStatus(invitation: Invitation): string {
 }
 @Injectable()
 export class OnboardingService {
- constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly delivery: DemoEmailService) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService) {}
  private limit(key: string, max = 10, seconds = 900) { return onboardingLimit(this.db,key,max,seconds); }
+ private get production() { return this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'; }
+ // Development and tests use fictional example.test identities only; production accepts real addresses.
+ private get fictionalOnly() { return !this.production; }
+ // Production verification fails closed until real email delivery is configured.
+ private assertDelivery() { if (this.production && !this.email.enabled) throw new ServiceUnavailableException('Email verification delivery is not configured.'); }
  private async activity(em: EntityManager, invitationId: string, event: string, actorId: string | null = null) {
   await em.getRepository(ApplicationActivity).save({ invitationId, event, actorId });
  }
  async create(user: User, input: CreateInvitationDto) {
-  if (input.email && !input.email.endsWith('@example.test')) throw new BadRequestException('This demo only accepts fictional example.test addresses.');
+  if (input.email && this.fictionalOnly && !input.email.endsWith('@example.test')) throw new BadRequestException('Outside production, invitations accept only fictional example.test addresses.');
   await this.limit('create:'+user.id,30);
   const token = randomBytes(32).toString('hex');
   const invitation = await this.db.transaction(async em => {
@@ -39,8 +44,9 @@ export class OnboardingService {
    await this.activity(em,inv.id,'INVITATION_CREATED',user.id);
    return inv;
   });
-  // Raw token is returned once only; list/detail never include it or its hash.
-  return { id: invitation.id, url: `${this.config.getOrThrow<string>('WEB_ORIGIN')}/apply/${token}` };
+  // Raw token is returned once only; list/detail never include it or its hash. It travels in the URL fragment,
+  // which browsers never send to servers, so it cannot reach hosting, CDN or APM request logs.
+  return { id: invitation.id, url: `${this.config.getOrThrow<string>('WEB_ORIGIN')}/apply#${token}` };
  }
  async invitations(user: User) {
   const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? {} : { managerId: user.id }, order: { createdAt: 'DESC' }, take: 200 });
@@ -58,35 +64,39 @@ export class OnboardingService {
   return { message: 'Invitation revoked' };
  }
  async begin(input: BeginVerificationDto) {
-  await this.delivery.assertAvailable();
-  if (!input.email.endsWith('@example.test')) throw new BadRequestException('For this local demo, use a fictional email ending in @example.test, such as applicant@example.test. No email is sent.');
+  this.assertDelivery();
+  if (this.fictionalOnly && !input.email.endsWith('@example.test')) throw new BadRequestException('Outside production, use a fictional email ending in @example.test, such as applicant@example.test.');
   await this.limit('global-verification',60,60);
   await this.limit('email:'+input.email,5);
   if (Boolean(input.token) === Boolean(input.applicationId)) throw new BadRequestException('Provide an invitation or a returning application reference.');
-  let inv: Invitation | null = null;
-  if (input.token) inv = await this.db.getRepository(Invitation).findOneBy({ tokenHash: digest(input.token) });
-  else {
-   const app = await this.db.getRepository(DispatcherApplication).findOneBy({ id: input.applicationId });
-   if (app) inv = await this.db.getRepository(Invitation).findOneBy({ id: app.invitationId, email: input.email });
-  }
-  const returningApp = inv && !input.token ? await this.db.getRepository(DispatcherApplication).findOneBy({invitationId:inv.id}) : null;
-  const valid = inv && !inv.revokedAt && input.email.endsWith('@example.test') && (!inv.expectedEmail || inv.expectedEmail === input.email) && (input.token
+  // The same queries run whether or not anything matches.
+  const app = input.token ? null : await this.db.getRepository(DispatcherApplication).findOneBy({ id: input.applicationId });
+  const inv = input.token
+   ? await this.db.getRepository(Invitation).findOneBy({ tokenHash: digest(input.token) })
+   : await this.db.getRepository(Invitation).findOneBy({ id: app?.invitationId ?? '00000000-0000-0000-0000-000000000000', email: input.email });
+  const valid = !!inv && !inv.revokedAt && (!inv.expectedEmail || inv.expectedEmail === input.email) && (input.token
    ? !inv.consumedAt && inv.expiresAt.getTime() > Date.now()
-   : !!inv.consumedAt && !!returningApp && returningApp.applicantAccessUntil.getTime() > Date.now());
-  // Identical response shape for unknown/mismatched/expired records. No email or employment details disclosed.
+   : !!inv.consumedAt && !!app && app.applicantAccessUntil.getTime() > Date.now());
   await this.db.query('DELETE FROM applicant_challenges WHERE "expiresAt" < now()');
-  const challenge = await this.db.transaction(async em => {
-   const created = await em.getRepository(ApplicantChallenge).save({ invitationId: valid && inv ? inv.id : null, resume: !input.token, email: valid ? input.email : null, expiresAt: new Date(Date.now()+600000) });
-   await this.delivery.deliver(em, created);
-   return created;
-  });
-  if (valid && inv) {
-   await this.db.getRepository(Invitation).createQueryBuilder().update().set({ openedAt: new Date() }).where('id = :id AND "openedAt" IS NULL', { id: inv.id }).execute();
+  // Only matched challenges get a code. Unmatched challenges stay unusable and receive no email.
+  const code = valid && this.email.enabled ? generateVerificationCode() : null;
+  // Matched and unmatched requests perform the same single write before responding.
+  const challenge = await this.db.getRepository(ApplicantChallenge).save({ invitationId: valid ? inv.id : null, resume: !input.token, email: valid ? input.email : null, expiresAt: new Date(Date.now()+600000), codeHash: code ? digest(code) : null });
+  if (valid) {
+   const invitationId = inv.id, to = input.email;
+   // After the response: mark the invitation opened, send, and record the delivery outcome (metadata only).
+   this.email.runInBackground(async () => {
+    await this.db.getRepository(Invitation).createQueryBuilder().update().set({ openedAt: new Date() }).where('id = :id AND "openedAt" IS NULL', { id: invitationId }).execute();
+    if (code) await this.activity(this.db.manager, invitationId, await this.email.sendVerificationCode(to, code) ? 'VERIFICATION_EMAIL_SENT' : 'VERIFICATION_EMAIL_FAILED');
+   });
   }
-  return { challengeId: challenge.id, message: 'If the details match an available invitation, verification can be completed. Contact your demo operator with this verification reference.' };
+  // Identical response for unknown, mismatched, expired and matched requests.
+  return this.email.enabled
+   ? { challengeId: challenge.id, delivery: 'email', message: 'If the details match an available invitation, we are emailing an 8-digit verification code to that address. It expires in 10 minutes.' }
+   : { challengeId: challenge.id, delivery: 'manual', message: 'Local development: if the details match an available invitation, issue a code for this reference with npm run verification:demo.' };
  }
  async verify(input: VerifyApplicantDto, req: Request) {
-  await this.delivery.assertAvailable();
+  this.assertDelivery();
   await this.limit('verify-global',60,60);
   await this.limit('code:'+input.challengeId,5);
   const applicationId = await this.db.transaction(async em => {
@@ -96,7 +106,6 @@ export class OnboardingService {
    const accessApp = inv ? await em.getRepository(DispatcherApplication).findOneBy({invitationId:inv.id}) : null;
    if (!inv || !accessApp || inv.revokedAt || (inv.expectedEmail && inv.expectedEmail !== challenge.email) || (challenge.resume && inv.email !== challenge.email) || (challenge.resume ? (!inv.consumedAt || accessApp.applicantAccessUntil.getTime() <= Date.now()) : (inv.consumedAt || inv.expiresAt.getTime() <= Date.now()))) throw new UnauthorizedException('Verification is invalid or expired.');
    challenge.consumedAt = new Date(); challenge.codeHash = null; await em.save(challenge);
-   await this.delivery.consumed(em, challenge.id);
    if (!inv.consumedAt) { inv.email = challenge.email; inv.consumedAt = new Date(); await em.save(inv); await this.activity(em,inv.id,'INVITATION_CLAIMED'); }
    const app = await em.getRepository(DispatcherApplication).findOneByOrFail({ invitationId: inv.id });
    await this.activity(em,inv.id,'APPLICANT_VERIFIED');

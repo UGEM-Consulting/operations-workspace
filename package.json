@@ -27,9 +27,7 @@
     "predev": "node scripts/check-node.cjs",
     "postinstall": "node scripts/repair-native.cjs",
     "repair:native": "node scripts/repair-native.cjs",
-    "setup:dependencies": "node scripts/repair-native.cjs --install",
-    "demo:convert-starter": "npm run demo:convert-starter --workspace=@operations/api",
-    "demo:setup-starter": "npm run demo:setup-starter --workspace=@operations/api"
+    "setup:dependencies": "node scripts/repair-native.cjs --install"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

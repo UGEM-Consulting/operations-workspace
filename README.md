@@ -107,6 +107,11 @@ The root `.env.example` is a reference only. NestJS loads `apps/api/.env`; Next.
 | DEMO_MANAGER_EMAIL/PASSWORD | Seed only | Fictional manager credentials |
 | DEMO_IT_EMAIL/PASSWORD | Seed only | Fictional IT credentials |
 | TEST_DATABASE_URL | Integration tests only | Dedicated disposable database whose name ends in `_test` |
+| EMAIL_DELIVERY | API | `none` (default; local CLI codes, production verification fails closed) or `smtp` (real applicant emails). See [email delivery](docs/email-delivery.md) |
+| SMTP_HOST / SMTP_PORT | API | `smtp.gmail.com` / `465` for Google Workspace; `localhost` / `1025` for local Mailpit |
+| SMTP_USER / SMTP_PASSWORD | API | Sending mailbox and its app password; secret, set only in the host's environment settings |
+| EMAIL_FROM | API | Sender, e.g. `UGEM Operations <onboarding@ugemconsulting.com>` |
+| DEPLOYMENT_PURPOSE | API | `local` (development) or `production` (required for hosted deployments); `demo` was retired and is refused |
 
 Use separate secrets/environments for previews and production. Avoid `?sslmode=` options in DATABASE_URL that conflict with the explicit `DATABASE_SSL` certificate-verification policy. Secrets and sensitive request/database error details are not logged.
 
@@ -379,17 +384,11 @@ A 503 from `/api/backend/auth/login` can mean missing/invalid frontend environme
 
 Check the public Render `/api/health` endpoint first. In Vercel Production environment, API_BASE_URL is the backend HTTPS origin without `/api`; WEB_ORIGIN is the frontend HTTPS origin; BFF_SHARED_SECRET must match Render. The proxy validates these variables (including header-safe secret formatting) and logs only allowlisted diagnostic codes in **Vercel Runtime Logs**: API_BASE_URL_MISSING/INVALID, WEB_ORIGIN_MISSING/INVALID, BFF_SHARED_SECRET_MISSING/INVALID, BACKEND_TIMEOUT, ENOTFOUND, ECONNREFUSED, selected TLS/network codes or BACKEND_REQUEST_FAILED. Never log raw exceptions, URLs with credentials, request bodies, cookies, hashes or secret values. Timeout responses ask users to wait and retry; inspect Render logs if health still fails. A warm backend with auth/me returning 401 is the expected unauthenticated result, while 403 may indicate boundary-secret mismatch. Existing CSRF/origin checks and endpoint allowlisting remain enforced. Server-rendered authenticated page requests retain their separate shorter deadline; after a cold-refresh error, retry once the backend is awake.
 
-## Temporary starter demonstration
+## Production readiness: email delivery and the retired demo
 
-Use the existing Vercel frontend, Render API and starter database for the authorized fictional demonstration. Follow the [single starter setup guide](docs/starter-demo.md); no additional services or administrator bootstrap are needed. After building, the manual command applies migrations and performs the guarded conversion:
+Applicant verification codes are emailed through Google Workspace SMTP; see [email delivery](docs/email-delivery.md). Invitation links have the form `https://<frontend>/apply#<token>`: the token sits in the URL fragment, which browsers never send to servers, so it cannot appear in Vercel, Render or APM request logs. Links issued earlier in the `/apply/<token>` form keep working.
 
-```sh
-DOTENV_CONFIG_PATH=../../.env.starter-demo npm run demo:setup-starter
-```
-
-Conversion requires exactly one active SYSTEM_ADMIN and no started applicant/review/IT data. It preserves that administrator and safe empty invitations, revokes staff sessions and records the deployment binding. Configure the existing services as described in the guide, keeping NODE_ENV=production. No conversion, deployment, reset or cloud change happens automatically.
-
-The simulator accepts fictional @example.test identities; only the preserved administrator may retain their existing email. Codes are encrypted at rest. Administrators access all demo messages through Settings → Demo mailbox; Dispatcher Managers use Invitations → Open demo verification codes to reveal codes only for invitations they own. NestJS enforces ownership for both mailbox listing and reveal. Applicants and public responses never receive codes. See [verification security and test instructions](docs/demo-email.md). Production-purpose mode continues to refuse simulated delivery. After the demo, use a fresh production database and configure real email delivery before collecting real employee data.
+The fictional hosted demo (demo mailbox, starter conversion, `DEMO_*` settings and banner) has been removed. The API refuses `DEPLOYMENT_PURPOSE=demo` and any leftover demo setting, and migration `RetireDemoDeployment1792690000000` refuses to run on the database that was bound to the demo, so production code cannot start against it. Go live on a **fresh production database**: run migrations, create the first administrator with `admin:bootstrap`, then set the email settings. `seed:demo` and `verification:demo` remain local development tools for fictional data only.
 
 Applicant form validation returns to the affected step and displays a message for both draft-save and submit failures, including invalid phone numbers entered on earlier steps. Review submission still requires all required fields and accuracy confirmation; invalid input is never silently submitted.
 

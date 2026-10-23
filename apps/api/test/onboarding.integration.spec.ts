@@ -29,7 +29,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
  const payload={email:'fictional.applicant@example.test',mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher',expirationDays:7,telegramRequired:true};
  const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',workPhoneNumber:'+44 (20) 7946 0958',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',telegram:'fictional_demo',accurate:true};
- async function create(){const result=await manager.post('/api/onboarding/invitations').set(headers).send(payload).expect(201);return {id:result.body.id as string,token:result.body.url.split('/').pop() as string};}
+ async function create(){const result=await manager.post('/api/onboarding/invitations').set(headers).send(payload).expect(201);return {id:result.body.id as string,token:result.body.url.split('#').pop() as string};}
  async function verify(agent:Agent,token:string){const begin=await agent.post('/api/applicant/begin').set(headers).send({email:payload.email,token}).expect(201);const code=await issueDemoCode(db,begin.body.challengeId,'test');const response=await agent.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);return {id:response.body.applicationId as string,challengeId:begin.body.challengeId as string,code};}
  beforeAll(async()=>{
   if(!new URL(env.DATABASE_URL).pathname.endsWith('_test'))throw new Error('Dedicated _test database required');
@@ -122,7 +122,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   return {invitation,applicant,id:verified.id,version:2};
  }
  const decision=(agent:Agent,id:string,body:Record<string,unknown>)=>agent.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...body,...(body.decisionType==='APPROVE'&&!('employment' in body)?{employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}}:{})});
- it('completes request changes → private correction draft → resubmit → approve with traceable histories',async()=>{
+ it('completes request changes â†’ private correction draft â†’ resubmit â†’ approve with traceable histories',async()=>{
   const flow=await submittedApplication();
   await decision(manager,flow.id,{version:2,decisionType:'REQUEST_CHANGES',reason:'Please correct your Telegram tag.',requestedFields:['telegram']}).expect(201);
   let own=await flow.applicant.get('/api/applicant/application').set(headers).expect(200);
@@ -260,13 +260,13 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const invitation=await db.getRepository(Invitation).findOneByOrFail({id:result.body.id});
   expect(invitation.email).toBeNull();expect(invitation.expectedEmail).toBeNull();expect(invitation.mcName).toBeNull();
   expect(invitation.expiresAt.getTime()-invitation.createdAt.getTime()).toBeGreaterThan(7*86400000-5000);
-  expect(result.body.url).toMatch(/\/apply\/[a-f0-9]{64}$/);
+  expect(result.body.url).toMatch(/\/apply#[a-f0-9]{64}$/);
   expect(await db.getRepository(DispatcherApplication).countBy({invitationId:invitation.id})).toBe(1);
   await request(app.getHttpServer()).get('/api/applicant/application').set(headers).expect(401);
  });
  it('binds an unrestricted invitation only on successful verification and rejects concurrent claimants',async()=>{
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({expirationDays:3}).expect(201);
-  const token=created.body.url.split('/').pop(),agents=[request.agent(app.getHttpServer()),request.agent(app.getHttpServer())];
+  const token=created.body.url.split('#').pop(),agents=[request.agent(app.getHttpServer()),request.agent(app.getHttpServer())];
   const emails=['claim.one@example.test','claim.two@example.test'];
   const challenges=await Promise.all(agents.map((agent,index)=>agent.post('/api/applicant/begin').set(headers).send({token,email:emails[index]}).expect(201)));
   const codes=await Promise.all(challenges.map(challenge=>issueDemoCode(db,challenge.body.challengeId,'test')));
@@ -284,7 +284,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  it('requires exact normalized expected email and refuses tampered challenge identity',async()=>{
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({email:' Expected.Person@EXAMPLE.TEST '}).expect(201);
-  const token=created.body.url.split('/').pop(),agent=request.agent(app.getHttpServer());
+  const token=created.body.url.split('#').pop(),agent=request.agent(app.getHttpServer());
   const wrong=await agent.post('/api/applicant/begin').set(headers).send({token,email:'other@example.test'}).expect(201);
   await expect(issueDemoCode(db,wrong.body.challengeId,'test')).rejects.toThrow();
   const begin=await agent.post('/api/applicant/begin').set(headers).send({token,email:'expected.person@example.test'}).expect(201);
@@ -295,7 +295,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  it('completes open-link claiming, applicant employment, resume, corrections and confirmed manager approval',async()=>{
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
-  const token=created.body.url.split('/').pop(),applicant=request.agent(app.getHttpServer());
+  const token=created.body.url.split('#').pop(),applicant=request.agent(app.getHttpServer());
   const begin=await applicant.post('/api/applicant/begin').set(headers).send({token,email:payload.email}).expect(201);
   const code=await issueDemoCode(db,begin.body.challengeId,'test');
   const verified=await applicant.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);const id=verified.body.applicationId;
@@ -319,7 +319,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  it('validates employment before submission and keeps verified email immutable',async()=>{
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
-  const applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,created.body.url.split('/').pop());
+  const applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,created.body.url.split('#').pop());
   await applicant.patch('/api/applicant/draft').set(headers).send({version:0,firstName:answers.firstName,lastName:answers.lastName,personalPhoneNumber:answers.personalPhoneNumber,workPhoneNumber:answers.workPhoneNumber,preferredAmericanFirstName:answers.preferredAmericanFirstName,preferredAmericanLastName:answers.preferredAmericanLastName}).expect(200);
   await applicant.post('/api/applicant/submit').set(headers).send({version:1,accurate:true}).expect(400);
   await applicant.patch('/api/applicant/draft').set(headers).send({version:1,email:'other@example.test'}).expect(400);
@@ -441,10 +441,22 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(results.map(result=>result.status).sort()).toEqual([200,409]);
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
  });
- it('rolls back and reapplies the optional-work-phone completion constraint on an empty workflow',async()=>{
+ const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
+ it('rolls back and reapplies the demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
+  await db.undoLastMigration();
+  expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000');
+  expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('OptionalApplicantWorkPhone1792680000000');
+  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
+  expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
+ });
+ it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
+  await db.undoLastMigration();
+  await db.query("UPDATE deployment_identity SET purpose='demo'");
+  try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
+  finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
+  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
@@ -463,7 +475,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(data.body.request.profile.personalPhoneNumber).toBe(answers.personalPhoneNumber);
   expect(data.body.request.assignedRingCentralPhoneNumber).toBe('+1 202 555 0190');
   expect((await manager.get('/api/notifications').set(headers)).body.items).toHaveLength(1);
-  await expect(db.undoLastMigration()).rejects.toThrow('Cannot restore mandatory');
+  await db.undoLastMigration(); // RetireDemoDeployment rolls back freely; the work-phone allowance must not.
+  try { await expect(db.undoLastMigration()).rejects.toThrow('Cannot restore mandatory'); }
+  finally { await db.runMigrations(); }
+  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
  });
  it('requires phone verification and assigned number for completion, sends one manager notification, and preserves approval',async()=>{
   const flow=await approvedItFlow();

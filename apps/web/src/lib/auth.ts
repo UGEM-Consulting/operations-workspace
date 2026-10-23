@@ -4,7 +4,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { readBackendConfig } from './backend-connection';
 export interface StaffUser { id: string; firstName: string; lastName: string; email: string; role: string; status: string; }
-export interface Identity { demoEmailEnabled?: boolean; user: StaffUser; navigation: { key: string; href: string; label: string }[]; landingPage: string; }
+export interface Identity { user: StaffUser; navigation: { key: string; href: string; label: string }[]; landingPage: string; }
 export function backendConfig() {
   return readBackendConfig(process.env);
 }

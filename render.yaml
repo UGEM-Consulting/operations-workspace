@@ -29,6 +29,23 @@ services:
         sync: false
       - key: SESSION_TTL_SECONDS
         value: "28800"
+      - key: DEPLOYMENT_PURPOSE
+        value: production
+      # Applicant verification email (Google Workspace SMTP). Enter EMAIL_DELIVERY=smtp in the dashboard only
+      # after SMTP_USER, SMTP_PASSWORD and EMAIL_FROM are set; until then verification fails closed (503)
+      # while the API still starts. Secrets are never stored in this file.
+      - key: EMAIL_DELIVERY
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
 databases:
   - name: operations-postgres
     plan: basic-256mb

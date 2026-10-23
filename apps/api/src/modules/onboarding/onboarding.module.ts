@@ -1,4 +1,4 @@
-import { DemoEmailModule } from '../demo-email/demo-email.module';
+import { EmailModule } from '../email/email.module';
 import { ReviewService } from './review.service';
 import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
@@ -36,5 +36,5 @@ class ApplicantController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [DemoEmailModule], controllers: [OnboardingController,ApplicantController], providers: [OnboardingService, ReviewService] })
+@Module({ imports: [EmailModule],controllers: [OnboardingController,ApplicantController], providers: [OnboardingService, ReviewService] })
 export class OnboardingModule {}
