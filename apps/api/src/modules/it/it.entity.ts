@@ -7,7 +7,7 @@ export const IT_CHECKLIST = [
  {key:'RINGCENTRAL',label:'RingCentral',description:'Confirm setup and record the actual assigned RingCentral phone number separately.'},
  {key:'SMS',label:'SMS',description:'Confirm approved RingCentral SMS capability and settings.'},
  {key:'CALL_RECORDING',label:'Call recording',description:'Confirm the company-approved RingCentral recording configuration.'},
- {key:'BUSINESS_SOFTWARE',label:'Approved business software',description:'Confirm only the business software authorized for this dispatcher. Use notes for fictional software names; never store credentials.'},
+ {key:'BUSINESS_SOFTWARE',label:'Approved business software',description:'Confirm only the business software authorized for this dispatcher. List the software in notes; never store credentials.'},
 ] as const;
 export interface ItProfile {
  legalFirstName:string|null;legalLastName:string|null;
