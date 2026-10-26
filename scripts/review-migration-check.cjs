@@ -10,14 +10,14 @@ const { databaseOptions } = require('../apps/api/dist/database/options.js');
 
  const undoApplicationMigration=async()=>{
   let [latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
-  while(['CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
+  while(['OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
    await db.undoLastMigration();[latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
   }
   return db.undoLastMigration();
  };
  try {
   await db.runMigrations();
-  const latest=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');assert.equal(latest[0].name,'CompanyEmail1792700000000');
+  const latest=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');assert.equal(latest[0].name,'OnboardingDocuments1792710000000');
   await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');
   await undoApplicationMigration(); // Remove the empty IT schema before checking prior migrations.
   await undoApplicationMigration(); // Remove required-detail naming before checking older schemas.

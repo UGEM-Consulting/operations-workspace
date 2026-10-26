@@ -6,14 +6,20 @@ import { DataSource } from 'typeorm';
 import { canAccessAssignedApplication } from '../auth/policy';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ApplicationQueryDto, ReviewDto } from './dto';
-import { ApplicationActivity, ApplicationReview, ApplicationStatus, ApplicationSubmission, DispatcherApplication, Invitation } from './entities';
+import { ApplicationActivity, ApplicationReview, ApplicationStatus, ApplicationSubmission, DispatcherApplication, Invitation, type RequestableItem } from './entities';
+import { StorageService } from '../storage/storage.service';
+import { documentStatus } from '../documents/requirements';
+import { companyStatement } from '../documents/statements';
+import { decodeSignature } from '../documents/images';
+import type { ClientContext } from '../documents/client-context';
+import { CompanyDocument, DocumentSignature } from '../documents/documents.entity';
 import { onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
 
 const submittedFields = `(SELECT s.fields FROM application_submissions s WHERE s."applicationId" = a.id ORDER BY s.version DESC LIMIT 1)`;
 @Injectable()
 export class ReviewService {
- constructor(private readonly db: DataSource) {}
+ constructor(private readonly db: DataSource, private readonly storage: StorageService) {}
  private scoped(user: User) {
   if (user.status !== UserStatus.ACTIVE || ![Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER].includes(user.role)) throw new ForbiddenException();
   const query = this.db.getRepository(DispatcherApplication).createQueryBuilder('a');
@@ -60,16 +66,27 @@ export class ReviewService {
   const activity = await this.db.getRepository(ApplicationActivity).find({where:{invitationId:invitation.id},order:{createdAt:'ASC'}});
   const itRequest=await this.db.getRepository(ItOnboardingRequest).findOneBy({applicationId:id});
   const itTasks=itRequest?await this.db.getRepository(ItOnboardingTask).findBy({requestId:itRequest.id}):[];
+  // Photos as of the last submission; signatures are final acts and visible once made.
+  const documents=await documentStatus(this.db.manager,id,this.storage.enabled,application.submittedAt);
+  const canReview=['SUBMITTED','RESUBMITTED'].includes(application.status);
+  const pendingCountersign=documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
    // The responsible manager sees the company accounts IT created; never IT notes or verification metadata.
    itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
-   requiredFields:requiredApplicantFields(submissions.at(-1)?.fields ?? {}), itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
-   canReview:['SUBMITTED','RESUBMITTED'].includes(application.status), readyForIt:application.status === 'APPROVED' };
+   // Historical decisions are never second-guessed: missing photos/signatures only matter while the application is open.
+   requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {}),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
+   documents:{required:documents.required,photos:{selfie:!!documents.photos.SELFIE,idSelfie:!!documents.photos.ID_SELFIE},
+    items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
+    countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
+     statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
+   canReview, readyForIt:application.status === 'APPROVED' };
  }
- async decide(user: User, id: string, input: ReviewDto) {
+ async decide(user: User, id: string, input: ReviewDto, client: ClientContext) {
   await onboardingLimit(this.db,'review:'+user.id,30,60);
+  if (input.countersignature && input.decisionType !== 'APPROVE') throw new BadRequestException('The NDA is countersigned only during approval.');
+  const countersignImage = input.countersignature?.signature ? decodeSignature(input.countersignature.signature) : null;
   if (input.decisionType !== 'APPROVE' && !input.reason?.trim()) throw new BadRequestException('A reason is required.');
   if (input.decisionType === 'REQUEST_CHANGES' && !input.requestedFields.length) throw new BadRequestException('Select at least one field to correct.');
   if (input.decisionType !== 'REQUEST_CHANGES' && !input.confirmed) throw new BadRequestException('Confirm the decision before continuing.');
@@ -87,8 +104,13 @@ export class ReviewService {
    if (input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
-   const missing = requiredApplicantFields(submitted?.fields ?? {});
+   // Under the invitation lock, so the applicant cannot upload or sign concurrently.
+   const documents = await documentStatus(em,id,this.storage.enabled);
+   const missing: RequestableItem[] = [...requiredApplicantFields(submitted?.fields ?? {}),...documents.missing];
    if (input.decisionType === 'APPROVE' && missing.length) throw new BadRequestException(`Required applicant fields must be completed before approval. Request corrections for: ${missing.join(', ')}.`);
+   const countersign = input.decisionType === 'APPROVE' ? documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant : undefined;
+   if (input.countersignature && !countersign) throw new BadRequestException('No NDA countersignature is needed for this application.');
+   if (countersign && !countersignImage) throw new BadRequestException('Countersign the NDA before approval.');
    const requestedFields = input.decisionType === 'REQUEST_CHANGES' ? [...new Set([...input.requestedFields,...missing])] : input.requestedFields;
    const previousEmployment = input.employment ? {mcName:invitation.mcName ?? '',teamLead:invitation.teamLead ?? '',jobTitle:invitation.jobTitle ?? ''} : null;
    if (input.employment) {
@@ -105,6 +127,12 @@ export class ReviewService {
    await em.save(application);
    const review = await em.getRepository(ApplicationReview).save({applicationId:id,reviewerId:user.id,decisionType:input.decisionType,
     reason:input.reason?.trim() || null,requestedFields,previousStatus,newStatus:nextStatus,applicationVersion:application.version,employment:input.employment ?? null,previousEmployment});
+   if (countersign && input.countersignature && countersignImage) {
+    const doc = await em.getRepository(CompanyDocument).findOneByOrFail({id:countersign.documentId});
+    await em.getRepository(DocumentSignature).save({applicationId:id,documentId:doc.id,signerRole:'COMPANY',signerUserId:user.id,typedName:input.countersignature.typedName,
+     signatureImage:countersignImage,consent:null,statement:companyStatement(doc,countersign.typedName),translatedStatement:null,documentSha256:doc.sha256,...client});
+    await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
+   }
    if(nextStatus==='APPROVED')await createItRequest(em,application,review,submitted?.fields??{},invitation);
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});

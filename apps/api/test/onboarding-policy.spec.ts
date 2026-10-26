@@ -1,4 +1,5 @@
 import { EmailService } from '../src/modules/email/email.service';
+import { StorageService } from '../src/modules/storage/storage.service';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { Request } from 'express';
@@ -20,7 +21,7 @@ it('accepts only milestone 4 state transitions',()=>{
 });
 it('fails closed for production verification before accessing the database',async()=>{
  const config=new ConfigService({NODE_ENV:'production'});
- const service=new OnboardingService({} as DataSource,config,new EmailService(config));
+ const service=new OnboardingService({} as DataSource,config,new EmailService(config),{enabled:true} as StorageService);
  await expect(service.begin({email:'fictional@example.test',token:'a'.repeat(64)})).rejects.toThrow('not configured');
  await expect(service.verify({challengeId:'unused',code:'12345678'},{} as Request)).rejects.toThrow('not configured');
 });

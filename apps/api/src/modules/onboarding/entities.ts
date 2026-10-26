@@ -4,6 +4,11 @@ export const APPLICATION_STATUSES = ['INVITED', 'DRAFT', 'SUBMITTED', 'CHANGES_R
 export type ApplicationStatus = typeof APPLICATION_STATUSES[number];
 export const CORRECTION_FIELDS = ['firstName', 'lastName', 'personalPhoneNumber', 'workPhoneNumber', 'preferredAmericanFirstName', 'preferredAmericanLastName', 'telegram', 'mcName', 'teamLead', 'jobTitle'] as const;
 export type CorrectionField = typeof CORRECTION_FIELDS[number];
+// Photos and document signatures are not answer fields, but managers can request them in a correction.
+export const DOCUMENT_ITEMS = ['selfiePhoto', 'idPhoto', 'documents'] as const;
+export type DocumentItem = typeof DOCUMENT_ITEMS[number];
+export const REQUESTABLE_ITEMS = [...CORRECTION_FIELDS, ...DOCUMENT_ITEMS] as const;
+export type RequestableItem = CorrectionField | DocumentItem;
 export type DecisionType = 'APPROVE' | 'REQUEST_CHANGES' | 'REJECT';
 export interface ApplicationFields { firstName?: string; lastName?: string; personalPhoneNumber?: string; workPhoneNumber?: string; preferredAmericanFirstName?: string; preferredAmericanLastName?: string; telegram?: string; mcName?: string; teamLead?: string; jobTitle?: string; }
 @Entity('invitations')
@@ -63,7 +68,7 @@ export class ApplicationReview {
  @Column('uuid') reviewerId!: string;
  @Column('varchar') decisionType!: DecisionType;
  @Column('text', { nullable: true }) reason!: string | null;
- @Column('jsonb') requestedFields!: CorrectionField[];
+ @Column('jsonb') requestedFields!: RequestableItem[];
  @Column('varchar') previousStatus!: ApplicationStatus;
  @Column('varchar') newStatus!: ApplicationStatus;
  @Column('integer') applicationVersion!: number;

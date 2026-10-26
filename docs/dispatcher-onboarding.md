@@ -34,7 +34,7 @@ PostgreSQL counters enforce 60 verification requests/minute globally, five begin
 
 Invitation links carry the token in the URL fragment (`/apply#<token>`), which browsers never send to servers, so hosting/CDN/proxy/APM request logs cannot capture it. Links issued earlier as `/apply/<token>` still work; development incoming-request logs stay disabled for them. Apply pages set no-referrer and noindex; no analytics or third-party scripts are added. Do not enable body/cookie/query logging or publish private terminal code output. Outside production, intake addresses must end in `@example.test`.
 
-Production emails verification codes through Google Workspace SMTP ([email delivery](email-delivery.md)); without SMTP configured, production verification returns 503. Edge rate limiting, contact recovery and retention policies are still needed. No external resources, real identity documents or provisioning are implemented. Reviews/corrections are described in manager-review.md.
+Production emails verification codes through Google Workspace SMTP ([email delivery](email-delivery.md)); without SMTP configured, production verification returns 503. Edge rate limiting, contact recovery and retention policies are still needed. Selfie/ID-selfie photos and NDA/SOP e-signatures are described in [onboarding documents](onboarding-documents.md); no external provisioning is implemented. Reviews/corrections are described in manager-review.md.
 
 ## Verification
 

@@ -1,6 +1,7 @@
 import { INTERNATIONAL_PHONE_PATTERN } from './application-requirements';
 import { VERIFICATION_CODE_PATTERN } from './verification-code';
-import { APPLICATION_STATUSES, CORRECTION_FIELDS, ApplicationStatus, CorrectionField, DecisionType } from './entities';
+import { APPLICATION_STATUSES, REQUESTABLE_ITEMS, ApplicationStatus, RequestableItem, DecisionType } from './entities';
+import { SignatureDto } from '../documents/documents.dto';
 import { Type, Transform } from 'class-transformer';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, Equals, IsBoolean, IsEmail, IsInt, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 const optional = () => ValidateIf((_object: unknown, value: unknown) => value !== undefined);
@@ -53,10 +54,12 @@ export class ReviewDto {
  @IsInt() @Min(0) version!: number;
  @IsIn(['APPROVE','REQUEST_CHANGES','REJECT']) decisionType!: DecisionType;
  @optional() @trim() @IsString() @MaxLength(2000) reason?: string;
- @IsArray() @ArrayMaxSize(10) @ArrayUnique() @IsIn(CORRECTION_FIELDS, { each: true }) requestedFields: CorrectionField[] = [];
+ @IsArray() @ArrayMaxSize(REQUESTABLE_ITEMS.length) @ArrayUnique() @IsIn(REQUESTABLE_ITEMS, { each: true }) requestedFields: RequestableItem[] = [];
  @IsBoolean() confirmed = false;
  @IsBoolean() employmentConfirmed = false;
  @optional() @ValidateNested() @Type(() => EmploymentAssignmentsDto) employment?: EmploymentAssignmentsDto;
+ // The approving manager's NDA countersignature; required when the applicant signed an NDA.
+ @optional() @ValidateNested() @Type(() => SignatureDto) countersignature?: SignatureDto;
 }
 export class ApplicationQueryDto {
  @Type(() => Number) @IsInt() @Min(1) @Max(100000) page = 1;

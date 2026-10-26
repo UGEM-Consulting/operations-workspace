@@ -46,6 +46,14 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
+      # Applicant photos and signed documents: a private Google Cloud Storage bucket. The production API refuses
+      # to start without these; set them before deploying. GCS_CREDENTIALS_BASE64 is a secret.
+      - key: STORAGE_DRIVER
+        value: gcs
+      - key: GCS_BUCKET
+        sync: false
+      - key: GCS_CREDENTIALS_BASE64
+        sync: false
 databases:
   - name: operations-postgres
     plan: basic-256mb

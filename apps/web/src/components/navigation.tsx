@@ -1,9 +1,9 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, UserPlus, Mail, Files, Monitor, Settings } from "lucide-react";
+import { LayoutDashboard, UserPlus, Mail, Files, FileSignature, Monitor, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
-const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, it: Monitor, settings: Settings };
+const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, it: Monitor, settings: Settings };
 export function Navigation({ items, collapsed = false, onNavigate }: { items: { key: string; href: string; label: string }[]; collapsed?: boolean; onNavigate?: () => void }) {
   const pathname = usePathname();
   // Highlight the most specific authorized destination, including its detail pages.

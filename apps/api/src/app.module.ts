@@ -1,4 +1,5 @@
 import { ItModule } from './modules/it/it.module';
+import { DocumentsModule } from './modules/documents/documents.module';
 import { OnboardingModule } from './modules/onboarding/onboarding.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { Module } from '@nestjs/common';
@@ -14,6 +15,6 @@ import { HealthModule } from './modules/health/health.module';
       DATABASE_URL: config.get('DATABASE_URL'), DATABASE_SSL: config.get('DATABASE_SSL'),
       CORS_ORIGINS: config.get('CORS_ORIGINS'), SESSION_SECRET: config.get('SESSION_SECRET'), BFF_SHARED_SECRET: config.get('BFF_SHARED_SECRET'), WEB_ORIGIN: config.get('WEB_ORIGIN'), SESSION_TTL_SECONDS: config.get('SESSION_TTL_SECONDS'),
       DEPLOYMENT_PURPOSE: config.get('DEPLOYMENT_PURPOSE') })), retryAttempts: 3,
-  }) }), HealthModule, AuthModule, OnboardingModule, ItModule,
+  }) }), HealthModule, AuthModule, OnboardingModule, ItModule, DocumentsModule,
 ] })
 export class AppModule {}

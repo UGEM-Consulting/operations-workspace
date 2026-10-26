@@ -4,6 +4,17 @@ export interface Environment {
   DATABASE_URL: string; DATABASE_SSL: boolean; CORS_ORIGINS: string; SESSION_SECRET: string; BFF_SHARED_SECRET: string; WEB_ORIGIN: string; SESSION_TTL_SECONDS: number;
   DEPLOYMENT_PURPOSE: 'local' | 'production';
   EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string;
+  STORAGE_DRIVER: 'none' | 'local' | 'gcs'; STORAGE_LOCAL_DIR?: string; GCS_BUCKET?: string; GCS_CREDENTIALS_BASE64?: string;
+}
+/** Decodes the base64 service-account key; null when it is not a usable service-account JSON. Never logs it. */
+export function serviceAccountCredentials(encoded: string): { client_email: string; private_key: string; project_id?: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const key = parsed as Record<string, unknown>;
+    return key.type === 'service_account' && typeof key.client_email === 'string' && typeof key.private_key === 'string'
+      ? { client_email: key.client_email, private_key: key.private_key, ...(typeof key.project_id === 'string' ? { project_id: key.project_id } : {}) } : null;
+  } catch { return null; }
 }
 // Messages name settings and rules only, never values, so operators can safely see them in deploy logs.
 export class EnvironmentError extends Error {}
@@ -19,6 +30,11 @@ const schema = Joi.object({
   SMTP_USER: Joi.string().max(254).empty(''),
   SMTP_PASSWORD: Joi.string().max(256).empty(''),
   EMAIL_FROM: Joi.string().trim().max(320).pattern(SENDER).empty(''),
+  STORAGE_DRIVER: Joi.string().valid('none', 'local', 'gcs').default('none'),
+  STORAGE_LOCAL_DIR: Joi.string().max(500).empty(''),
+  // Bucket naming rules: 3–63 lowercase letters, digits, dashes, underscores or dots.
+  GCS_BUCKET: Joi.string().pattern(/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/).empty(''),
+  GCS_CREDENTIALS_BASE64: Joi.string().base64().max(20000).empty(''),
   DEPLOYMENT_PURPOSE: Joi.string().valid('local', 'production'),
   SESSION_SECRET: Joi.string().min(32).required(),
   BFF_SHARED_SECRET: Joi.string().min(32).required(),
@@ -63,5 +79,15 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
       throw new EnvironmentError('Production SMTP requires authentication on TLS port 465 or 587');
     }
   }
+  // Applicant photos and signed documents: a private Google Cloud Storage bucket in production, a local
+  // folder for fictional development data. The API server (StorageService) refuses production without gcs;
+  // operator CLIs that never touch files share this validation and do not need storage settings.
+  if (env.NODE_ENV === 'production' ? env.STORAGE_DRIVER === 'local' : env.STORAGE_DRIVER === 'gcs') {
+    throw new EnvironmentError(env.NODE_ENV === 'production' ? 'Production storage must use STORAGE_DRIVER=gcs' : 'Outside production, STORAGE_DRIVER may only be local or none');
+  }
+  if (env.STORAGE_DRIVER === 'gcs' && (!env.GCS_BUCKET || !env.GCS_CREDENTIALS_BASE64 || !serviceAccountCredentials(env.GCS_CREDENTIALS_BASE64))) {
+    throw new EnvironmentError('STORAGE_DRIVER=gcs requires GCS_BUCKET and GCS_CREDENTIALS_BASE64 (a base64-encoded service-account JSON key)');
+  }
+  if (env.STORAGE_DRIVER === 'local' && !env.STORAGE_LOCAL_DIR) throw new EnvironmentError('STORAGE_DRIVER=local requires STORAGE_LOCAL_DIR');
   return env;
 }

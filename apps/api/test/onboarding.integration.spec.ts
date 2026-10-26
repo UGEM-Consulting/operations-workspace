@@ -442,7 +442,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
  });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
- it('rolls back and reapplies the company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
+ it('rolls back and reapplies the documents, company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
+  await db.undoLastMigration();
+  expect(await latestMigration()).toBe('CompanyEmail1792700000000');
+  expect((await db.query("SELECT to_regclass('document_signatures') AS name"))[0].name).toBeNull();
   await db.undoLastMigration();
   expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
   await db.undoLastMigration();
@@ -450,15 +453,15 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect(await latestMigration()).toBe('CompanyEmail1792700000000');
+  expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');
   expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
  });
  it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
-  await db.undoLastMigration();await db.undoLastMigration();
+  await db.undoLastMigration();await db.undoLastMigration();await db.undoLastMigration();
   await db.query("UPDATE deployment_identity SET purpose='demo'");
   try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
   finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
-  expect(await latestMigration()).toBe('CompanyEmail1792700000000');
+  expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
@@ -484,8 +487,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // The responsible manager sees the created company accounts as employee details.
   const employee=await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers).expect(200);
   expect(employee.body.itOnboarding).toMatchObject({status:'COMPLETED',companyEmail:'alex.demo@example.test',workPhoneNumber:'+1 202 555 0190'});
+  await db.undoLastMigration();
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded company emails');
   expect(await latestMigration()).toBe('CompanyEmail1792700000000');
+  await db.runMigrations();
  });
  it('requires phone verification and assigned number for completion, sends one manager notification, and preserves approval',async()=>{
   const flow=await approvedItFlow();

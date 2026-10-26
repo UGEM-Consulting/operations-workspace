@@ -3,6 +3,7 @@ import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { ApplicationActivity, ApplicationReview, DispatcherApplication } from '../onboarding/entities';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { onboardingLimit } from '../onboarding/rate-limit';
+import { photoFor } from '../documents/requirements';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, TaskUpdateDto } from './it.dto';
 import { IT_CHECKLIST, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, itStatus, PortalNotification } from './it.entity';
@@ -35,7 +36,10 @@ export class ItService {
   if(tasks.length!==IT_CHECKLIST.length)throw new ConflictException('The checklist is incomplete. Contact an administrator.');
   const activity=await em.getRepository(ItOnboardingActivity).find({where:{requestId:request.id},order:{createdAt:'ASC'}});
   // This projection deliberately excludes application revisions, applicant sessions and reviewer comments.
-  return {request:{...request,status:itStatus(request,tasks)},tasks:IT_CHECKLIST.map(template=>({...tasks.find(task=>task.key===template.key)!,label:template.label,description:template.description})),activity};
+  // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
+  const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId});
+  const profilePhoto=!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
+  return {request:{...request,status:itStatus(request,tasks),profilePhoto},tasks:IT_CHECKLIST.map(template=>({...tasks.find(task=>task.key===template.key)!,label:template.label,description:template.description})),activity};
  }
  async get(user:User,id:string){this.allowIt(user);const request=await this.db.getRepository(ItOnboardingRequest).findOneBy({id});if(!request)throw new NotFoundException();await this.approved(this.db.manager,request);return this.detail(this.db.manager,request);}
  private async locked(em:EntityManager,id:string,version:number){

@@ -10,6 +10,7 @@ const navigation = [
   { key: 'onboarding', href: '/onboarding', label: 'Dispatcher onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'invitations', href: '/onboarding/invitations', label: 'Invitations', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'applications', href: '/onboarding/applications', label: 'Applications', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
+  { key: 'documents', href: '/onboarding/documents', label: 'Documents', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
   { key: 'settings', href: '/settings', label: 'Settings', roles: [Role.SYSTEM_ADMIN] },
 ];

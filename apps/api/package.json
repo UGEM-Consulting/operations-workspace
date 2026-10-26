@@ -21,6 +21,7 @@
     "demo:retire-database": "node dist/database/retire-demo-database.js"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.22.0",
     "@nestjs/common": "^11.1.0",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.1.0",
@@ -35,6 +36,7 @@
     "express-session": "^1.19.0",
     "joi": "^18.0.1",
     "nodemailer": "^10.2.1",
+    "pdf-lib": "^1.17.1",
     "pg": "^8.16.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",

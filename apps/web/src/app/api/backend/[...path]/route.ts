@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { backendConfig } from '@/lib/auth';
-import { allowedEndpoint, validMutation } from '@/lib/bff-policy';
+import { allowedEndpoint, bodyLimit, isFileEndpoint, validMutation } from '@/lib/bff-policy';
 import { backendFailureCode } from '@/lib/backend-connection';
 export const runtime = 'nodejs';
 // Allow a sleeping Render Free API time to start; keep the request deadline
@@ -14,7 +14,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const mutating = !['GET', 'HEAD'].includes(req.method);
     if (mutating && !validMutation(req.headers, origin)) return NextResponse.json({ message: 'Invalid request origin or CSRF protection' }, { status: 403 });
     const body = mutating ? await req.text() : undefined;
-    if (body && Buffer.byteLength(body) > 16384) return NextResponse.json({ message: 'Request too large' }, { status: 413 });
+    if (body && Buffer.byteLength(body) > bodyLimit(path)) return NextResponse.json({ message: 'Request too large' }, { status: 413 });
     const suffix = path.startsWith('applicant/') ? 'applicant.sid' : 'operations.sid';
     const name = process.env.NODE_ENV === 'production' ? `__Host-${suffix}` : suffix;
     const cookie = req.cookies.get(name);
@@ -28,7 +28,17 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const upstream = await fetch(`${base}/api/${path}${query.size ? `?${query}` : ''}`, { method: req.method, body,
       headers: { 'content-type': 'application/json', 'x-workspace-key': key, origin,
         'x-csrf-protection': '1', 'x-forwarded-proto': process.env.NODE_ENV === 'production' ? 'https' : 'http',
-        cookie: cookie ? `${name}=${cookie.value}` : '' }, cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(90000) });
+        cookie: cookie ? `${name}=${cookie.value}` : '',
+        // Signature evidence. Vercel sets x-forwarded-for to the real client address; the API trusts these only with the BFF secret.
+        'x-client-ip': req.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? '', 'x-client-user-agent': req.headers.get('user-agent')?.slice(0, 500) ?? '' },
+      cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(90000) });
+    const type = upstream.headers.get('content-type')?.split(';')[0].trim();
+    // Private photos and PDFs pass through as files of an allowlisted type; everything else is JSON.
+    if (upstream.ok && isFileEndpoint(path) && (type === 'image/jpeg' || type === 'application/pdf')) {
+      const disposition = upstream.headers.get('content-disposition');
+      return new NextResponse(await upstream.arrayBuffer(), { status: 200, headers: { 'content-type': type, 'cache-control': 'no-store, private', 'x-content-type-options': 'nosniff',
+        ...(disposition && /^inline; filename="[a-z0-9._-]+"$/.test(disposition) ? { 'content-disposition': disposition } : {}) } });
+    }
     const response = new NextResponse(upstream.status === 204 ? null : await upstream.text(), {
       status: upstream.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
     });

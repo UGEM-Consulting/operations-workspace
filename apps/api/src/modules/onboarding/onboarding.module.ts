@@ -1,4 +1,6 @@
 import { EmailModule } from '../email/email.module';
+import { StorageModule } from '../storage/storage.module';
+import { clientContext } from '../documents/client-context';
 import { ReviewService } from './review.service';
 import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
@@ -17,7 +19,7 @@ class OnboardingController {
  @Get('applications') applications(@Req() req: AuthRequest) { return this.reviews.legacyList(req.currentUser); }
  @Get('summary') summary(@Req() req: AuthRequest) { return this.reviews.summary(req.currentUser); }
  @Get('review-queue') queue(@Req() req: AuthRequest, @Query() query: ApplicationQueryDto) { return this.reviews.queue(req.currentUser,query); }
- @Post('applications/:id/reviews') review(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ReviewDto) { return this.reviews.decide(req.currentUser,id,dto); }
+ @Post('applications/:id/reviews') review(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ReviewDto) { return this.reviews.decide(req.currentUser,id,dto,clientContext(req)); }
  @Get('applications/:id') detail(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string) { return this.reviews.detail(req.currentUser,id); }
 }
 // Public to the STAFF guard only. Each record operation verifies a restricted applicant session in the service.
@@ -36,5 +38,5 @@ class ApplicantController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule],controllers: [OnboardingController,ApplicantController], providers: [OnboardingService, ReviewService] })
+@Module({ imports: [EmailModule,StorageModule],controllers: [OnboardingController,ApplicantController], providers: [OnboardingService, ReviewService], exports: [OnboardingService] })
 export class OnboardingModule {}

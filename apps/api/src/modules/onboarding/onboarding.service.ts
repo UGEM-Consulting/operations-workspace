@@ -13,7 +13,9 @@ import type {} from '../auth/session';
 import { DataSource, EntityManager } from 'typeorm';
 import { User, Role } from '../users/user.entity';
 import { canAccessAssignedApplication } from '../auth/policy';
-import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation } from './entities';
+import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
+import { StorageService } from '../storage/storage.service';
+import { applicantDocuments, documentStatus } from '../documents/requirements';
 import { BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, VerifyApplicantDto } from './dto';
 export function invitationStatus(invitation: Invitation): string {
  if (invitation.completedAt) return 'COMPLETED';
@@ -23,7 +25,7 @@ export function invitationStatus(invitation: Invitation): string {
 }
 @Injectable()
 export class OnboardingService {
- constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly storage: StorageService) {}
  private limit(key: string, max = 10, seconds = 900) { return onboardingLimit(this.db,key,max,seconds); }
  private get production() { return this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'; }
  // Development and tests use fictional example.test identities only; production accepts real addresses.
@@ -118,7 +120,8 @@ export class OnboardingService {
   await new Promise<void>((resolve,reject) => req.session.save(error => error ? reject(error) : resolve()));
   return { applicationId };
  }
- private async applicant(em: EntityManager, req: Request, lock = false) {
+ /** Resolves the applicant session to its application; with lock, takes the invitation lock first. */
+ async applicant(em: EntityManager, req: Request, lock = false) {
   if (!req.session?.applicantApplicationId || !req.session.expiresAt || req.session.expiresAt <= Date.now()) throw new UnauthorizedException('Please verify your access again.');
   const app = await em.getRepository(DispatcherApplication).findOne({ where: { id: req.session.applicantApplicationId } });
   if (!app) throw new UnauthorizedException();
@@ -129,23 +132,34 @@ export class OnboardingService {
   if (current.applicantAccessUntil.getTime() <= Date.now()) throw new UnauthorizedException('Application access has expired. Contact your manager.');
   return { application: current, invitation: inv };
  }
- private async applicantView(em: EntityManager, app: DispatcherApplication, inv: Invitation) {
+ /** What the applicant may change now: answer fields plus photo/signature items. */
+ async editable(em: EntityManager, app: DispatcherApplication) {
   const correction = app.status === 'CHANGES_REQUESTED'
    ? await em.getRepository(ApplicationReview).findOne({where:{applicationId:app.id,decisionType:'REQUEST_CHANGES'},order:{applicationVersion:'DESC'}}) : null;
   const lastSubmission = correction ? await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:app.id},order:{version:'DESC'}}) : null;
+  const documents = await documentStatus(em,app.id,this.storage.enabled);
   // Existing correction rounds must allow completion of newly required fields too. Base this
   // on the submitted revision so saved values remain editable until the applicant resubmits.
-  const effectiveCorrections = correction ? [...new Set([...correction.requestedFields,...requiredApplicantFields(lastSubmission?.fields ?? {})])] : [];
-  const editableFields = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS] : [];
+  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...requiredApplicantFields(lastSubmission?.fields ?? {}),...documents.missing])] : [];
+  const editableFields: RequestableItem[] = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS,...(documents.required ? DOCUMENT_ITEMS : [])] : [];
+  return { correction, effectiveCorrections, editableFields, documents };
+ }
+ private async applicantView(em: EntityManager, app: DispatcherApplication, inv: Invitation) {
+  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app);
   // Explicit projection: no internal review comments, reviewer identity or histories to applicants.
   return { application:{id:app.id,invitationId:app.invitationId,status:app.status,fields:app.fields,version:app.version,updatedAt:app.updatedAt,submittedAt:app.submittedAt},
    invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired},
    correction:correction ? {id:correction.id,reason:correction.reason,requestedFields:effectiveCorrections,createdAt:correction.createdAt} : null,
-   editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil };
+   editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents:await applicantDocuments(em,app.id,this.storage.enabled) };
  }
  async current(req: Request) {
   const {application,invitation} = await this.applicant(this.db.manager,req);
   return this.applicantView(this.db.manager,application,invitation);
+ }
+ /** Records an applicant activity event (event name only) and returns the refreshed applicant view. */
+ async view(em: EntityManager, application: DispatcherApplication, invitation: Invitation, event?: string) {
+  if (event) await this.activity(em,invitation.id,event);
+  return this.applicantView(em,application,invitation);
  }
  async save(req: Request, input: DraftDto | SubmitDto, submit: boolean) {
   if (!req.session?.applicantApplicationId) throw new UnauthorizedException();
@@ -167,6 +181,7 @@ export class OnboardingService {
     const missing = requiredApplicantFields(fields);
     if (missing.length) throw new BadRequestException(`Complete required applicant fields: ${missing.join(', ')}.`);
     if (!('accurate' in input) || input.accurate !== true) throw new BadRequestException('Confirm the information is accurate before submission.');
+    if (view.documents.missing.length) throw new BadRequestException('Upload both photos and sign every required document before submitting.');
    }
    if (submit && inv.telegramRequired && !fields.telegram?.trim()) throw new BadRequestException('Telegram is required.');
    const correcting = app.status === 'CHANGES_REQUESTED';
