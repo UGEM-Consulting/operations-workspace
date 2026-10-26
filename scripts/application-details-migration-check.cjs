@@ -9,13 +9,13 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
 
  const undoApplicationMigration=async()=>{
   let [latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
-  while(['RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
+  while(['CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
    await db.undoLastMigration();[latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
   }
   return db.undoLastMigration();
  };
  try {
-  await db.runMigrations();assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'RetireDemoDeployment1792690000000');
+  await db.runMigrations();assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'CompanyEmail1792700000000');
   await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await undoApplicationMigration();await undoApplicationMigration();
   const [staff]=await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Fictional','Migration','details.staff@example.test','DISPATCHER_MANAGER','INACTIVE') RETURNING id`);
   const applications=[];

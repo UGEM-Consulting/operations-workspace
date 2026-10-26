@@ -11,6 +11,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
  const count=async(table:string)=>Number((await db.query(`SELECT count(*)::integer AS n FROM ${table}`))[0].n);
  // Recreates the state of a starter database converted to the demo: real operator email, fictional staff and data.
  async function convertedStarter(extraUsers:string[]=[]){
+  if(await latest()==='CompanyEmail1792700000000'){await db.query('TRUNCATE it_onboarding_requests CASCADE');await db.undoLastMigration();}
   if(await latest()==='RetireDemoDeployment1792690000000')await db.undoLastMigration();
   await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts,demo_mailbox,deployment_activity CASCADE');
   await db.query(`UPDATE deployment_identity SET purpose='production',mode='isolated',"operatorAdminId"=NULL`);
@@ -53,7 +54,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
   // Real addresses are accepted again once unmarked, and the deploy migration drops the demo schema.
   await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Real','Manager','manager@company.example','DISPATCHER_MANAGER','ACTIVE')`);
   await db.runMigrations();
-  expect(await latest()).toBe('RetireDemoDeployment1792690000000');
+  expect(await latest()).toBe('CompanyEmail1792700000000');
   await expect(retireDemoDatabase(db,false)).rejects.toThrow('no demo marking');
  });
  it('refuses to delete a non-fictional staff account and changes nothing',async()=>{

@@ -2,7 +2,7 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 export const TASK_STATUSES = ['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'] as const;
 export type TaskStatus = typeof TASK_STATUSES[number];
 export const IT_CHECKLIST = [
- {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Manually record completion of the approved Workspace account setup using the American display name.'},
+ {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Create the Workspace account using the American display name and record the company email.'},
  {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Confirm membership in the approved Dispatch group.'},
  {key:'RINGCENTRAL',label:'RingCentral',description:'Confirm setup and record the actual assigned RingCentral phone number separately.'},
  {key:'SMS',label:'SMS',description:'Confirm approved RingCentral SMS capability and settings.'},
@@ -24,6 +24,7 @@ export class ItOnboardingRequest {
  @Column('jsonb') profile!:ItProfile;
  @Column('integer',{default:0}) version!:number;
  @Column('varchar',{nullable:true}) assignedRingCentralPhoneNumber!:string|null;
+ @Column('varchar',{length:254,nullable:true}) companyEmail!:string|null;
  @Column('timestamptz',{nullable:true}) workPhoneVerifiedAt!:Date|null;
  @Column('uuid',{nullable:true}) workPhoneVerifiedBy!:string|null;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;

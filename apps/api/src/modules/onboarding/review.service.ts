@@ -63,7 +63,8 @@ export class ReviewService {
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
-   itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt}:null,
+   // The responsible manager sees the company accounts IT created; never IT notes or verification metadata.
+   itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
    requiredFields:requiredApplicantFields(submissions.at(-1)?.fields ?? {}), itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
    canReview:['SUBMITTED','RESUBMITTED'].includes(application.status), readyForIt:application.status === 'APPROVED' };
  }

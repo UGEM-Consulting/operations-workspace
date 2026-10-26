@@ -50,13 +50,16 @@ export class ItService {
    const request=await this.locked(em,id,input.version);
    if(input.workPhoneVerified&&(!request.profile.workPhoneNumber||!INTERNATIONAL_PHONE_PATTERN.test(request.profile.workPhoneNumber.trim())))throw new BadRequestException('The applicant work phone must be valid before IT can verify it.');
    const assigned=input.assignedRingCentralPhoneNumber===undefined?request.assignedRingCentralPhoneNumber:input.assignedRingCentralPhoneNumber||null;
+   const companyEmail=input.companyEmail===undefined?request.companyEmail:input.companyEmail||null;
    const ringCentral=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key:'RINGCENTRAL'});
    if(ringCentral.status==='COMPLETED'&&!assigned)throw new BadRequestException('A completed RingCentral task requires an assigned number.');
+   const workspace=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key:'GOOGLE_WORKSPACE'});
+   if(workspace.status==='COMPLETED'&&!companyEmail)throw new BadRequestException('A completed Google Workspace task requires the company email.');
    const wasVerified=!!request.workPhoneVerifiedAt;
    if(input.workPhoneVerified&&!wasVerified){request.workPhoneVerifiedAt=new Date();request.workPhoneVerifiedBy=user.id;}
    if(!input.workPhoneVerified){request.workPhoneVerifiedAt=null;request.workPhoneVerifiedBy=null;}
-   request.assignedRingCentralPhoneNumber=assigned;request.version+=1;await em.save(request);
-   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned}});
+   request.assignedRingCentralPhoneNumber=assigned;request.companyEmail=companyEmail;request.version+=1;await em.save(request);
+   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail}});
    return this.detail(em,request);
   });
  }
@@ -68,12 +71,13 @@ export class ItService {
    const request=await this.locked(em,id,input.version);
    const task=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key});
    if(key==='RINGCENTRAL'&&input.status==='COMPLETED'&&!request.assignedRingCentralPhoneNumber)throw new BadRequestException('Record the actual assigned RingCentral phone number first.');
+   if(key==='GOOGLE_WORKSPACE'&&input.status==='COMPLETED'&&!request.companyEmail)throw new BadRequestException('Record the company email first.');
    const previous=task.status;task.status=input.status;task.notes=input.notes;task.updatedBy=user.id;await em.save(task);
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status}});
    const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:id});
    if(tasks.length!==IT_CHECKLIST.length)throw new ConflictException('The checklist is incomplete. Contact an administrator.');
    if(tasks.every(item=>item.status==='COMPLETED')){
-    if((request.profile.workPhoneNumber?.trim()&&!request.workPhoneVerifiedAt)||!request.assignedRingCentralPhoneNumber)throw new BadRequestException('Record the assigned RingCentral number and verify any existing applicant-provided work phone before completing onboarding.');
+    if((request.profile.workPhoneNumber?.trim()&&!request.workPhoneVerifiedAt)||!request.assignedRingCentralPhoneNumber||!request.companyEmail)throw new BadRequestException('Record the company email and assigned RingCentral number, and verify any existing applicant-provided work phone, before completing onboarding.');
     request.completedAt=new Date();
     await em.getRepository(PortalNotification).save({recipientId:request.managerId,requestId:id,kind:'IT_ONBOARDING_COMPLETED'});
     await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'IT_ONBOARDING_COMPLETED',metadata:{}});

@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsInt, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { TASK_STATUSES, TaskStatus } from './it.entity';
 const trim=()=>Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim():value);
@@ -13,6 +13,9 @@ export class ItContactDto {
  @IsBoolean() workPhoneVerified!:boolean;
  @ValidateIf((_object:unknown,value:unknown)=>value!==undefined) @trim() @IsString() @MaxLength(40)
  @Matches(new RegExp(`^(?:$|${INTERNATIONAL_PHONE_PATTERN.source.slice(1,-1)})$`)) assignedRingCentralPhoneNumber?:string;
+ // Omitted keeps the recorded value; an empty string clears it.
+ @Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim().toLowerCase():value)
+ @ValidateIf((_object:unknown,value:unknown)=>value!==undefined&&value!=='') @IsEmail() @MaxLength(254) companyEmail?:string;
 }
 export class ItQueueDto {
  @Type(()=>Number) @IsInt() @Min(1) @Max(100000) page=1;

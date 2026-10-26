@@ -442,21 +442,23 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
  });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
- it('rolls back and reapplies the demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
+ it('rolls back and reapplies the company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
+  await db.undoLastMigration();
+  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
   await db.undoLastMigration();
   expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000');
   expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
+  expect(await latestMigration()).toBe('CompanyEmail1792700000000');
   expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
  });
  it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
-  await db.undoLastMigration();
+  await db.undoLastMigration();await db.undoLastMigration();
   await db.query("UPDATE deployment_identity SET purpose='demo'");
   try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
   finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
-  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
+  expect(await latestMigration()).toBe('CompanyEmail1792700000000');
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
@@ -468,22 +470,27 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(initial.body.request.profile.workPhoneNumber).toBeNull();
   await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(400);
   await itAgent.patch(`/api/it/onboarding/${id}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
-  let data=await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190'}).expect(200);
+  await itAgent.patch(`/api/it/onboarding/${id}/tasks/GOOGLE_WORKSPACE`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
+  await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:false,companyEmail:'not an email'}).expect(400);
+  let data=await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190',companyEmail:' Alex.Demo@Example.test '}).expect(200);
+  expect(data.body.request.companyEmail).toBe('alex.demo@example.test');
+  expect(data.body.activity.at(-1).metadata).toEqual({workPhoneVerified:false,assignedNumberRecorded:true,companyEmailRecorded:true});
   for(const task of data.body.tasks)data=await itAgent.patch(`/api/it/onboarding/${id}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED'}).expect(200);
   expect(data.body.request.status).toBe('COMPLETED');expect(data.body.request.workPhoneVerifiedAt).toBeNull();
   expect(data.body.request.profile.workPhoneNumber).toBeNull();
   expect(data.body.request.profile.personalPhoneNumber).toBe(answers.personalPhoneNumber);
   expect(data.body.request.assignedRingCentralPhoneNumber).toBe('+1 202 555 0190');
   expect((await manager.get('/api/notifications').set(headers)).body.items).toHaveLength(1);
-  await db.undoLastMigration(); // RetireDemoDeployment rolls back freely; the work-phone allowance must not.
-  try { await expect(db.undoLastMigration()).rejects.toThrow('Cannot restore mandatory'); }
-  finally { await db.runMigrations(); }
-  expect(await latestMigration()).toBe('RetireDemoDeployment1792690000000');
+  // The responsible manager sees the created company accounts as employee details.
+  const employee=await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers).expect(200);
+  expect(employee.body.itOnboarding).toMatchObject({status:'COMPLETED',companyEmail:'alex.demo@example.test',workPhoneNumber:'+1 202 555 0190'});
+  await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded company emails');
+  expect(await latestMigration()).toBe('CompanyEmail1792700000000');
  });
  it('requires phone verification and assigned number for completion, sends one manager notification, and preserves approval',async()=>{
   const flow=await approvedItFlow();
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
-  let data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190'}).expect(200);
+  let data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190',companyEmail:'alex.demo@example.test'}).expect(200);
   for(const task of data.body.tasks.slice(0,5))data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED',notes:'Fictional manual check completed'}).expect(200);
   const last=data.body.tasks[5];const version=data.body.request.version;
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${last.key}`).set(headers).send({version,status:'COMPLETED'}).expect(400);
