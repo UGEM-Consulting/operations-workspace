@@ -3,7 +3,7 @@ import { DataSource, MigrationInterface, QueryRunner } from 'typeorm';
 import { applyPendingMigrations, deploymentMigrationLogger } from '../src/database/deploy-migrations';
 import { databaseOptions } from '../src/database/options';
 import { validateEnvironment } from '../src/config/environment';
-import { startAfterMigrations } from '../src/start-render';
+import { startAfterMigrations, startupFailureReason } from '../src/start-render';
 
 describe('Render startup ordering', () => {
   it('starts the API only after migrations succeed', async () => {
@@ -15,6 +15,25 @@ describe('Render startup ordering', () => {
     const start = jest.fn();
     await expect(startAfterMigrations(async () => { throw new Error('test failure'); }, start)).rejects.toThrow('test failure');
     expect(start).not.toHaveBeenCalled();
+  });
+});
+describe('Render startup failure reasons', () => {
+  const secret = randomBytes(16).toString('hex');
+  const base = { NODE_ENV: 'production', DATABASE_URL: `postgresql://user:${secret}@db.example.test/operations`, WEB_ORIGIN: 'https://workspace.example.test', CORS_ORIGINS: 'https://workspace.example.test', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex') };
+  const reasonFor = (input: Record<string, unknown>) => { try { validateEnvironment(input); return 'accepted'; } catch (error) { return startupFailureReason(error); } };
+  it('names the rejected configuration rule without values', () => {
+    const reasons = [reasonFor({ ...base, DEMO_EMAIL_MODE: 'true' }), reasonFor({ ...base, EMAIL_DELIVERY: 'smtp' }), reasonFor({ ...base, SESSION_SECRET: 'short' })];
+    expect(reasons[0]).toMatch(/^configuration: The fictional demo deployment was retired/);
+    expect(reasons[1]).toBe('configuration: SMTP delivery requires SMTP_HOST and a valid EMAIL_FROM');
+    expect(reasons[2]).toBe('configuration: Invalid environment: SESSION_SECRET (string.min)');
+    for (const reason of reasons) expect(reason).not.toContain(secret);
+  });
+  it('shows fixed migration guard texts but only codes for other database failures', () => {
+    expect(startupFailureReason(Object.assign(new Error('This database belongs to the retired fictional demo deployment; use a fresh production database'), { code: 'P0001' })))
+      .toBe('migration refused: This database belongs to the retired fictional demo deployment; use a fresh production database');
+    expect(startupFailureReason(Object.assign(new Error(`password authentication failed for user ${secret}`), { code: '28P01' }))).toBe('database error SQLSTATE 28P01');
+    expect(startupFailureReason(Object.assign(new Error(`connect ECONNREFUSED ${secret}`), { code: 'ECONNREFUSED' }))).toBe('database connection failed: ECONNREFUSED');
+    expect(startupFailureReason(new Error(secret))).toBe('unexpected error (details suppressed)');
   });
 });
 

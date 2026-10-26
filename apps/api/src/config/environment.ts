@@ -5,6 +5,8 @@ export interface Environment {
   DEPLOYMENT_PURPOSE: 'local' | 'production';
   EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string;
 }
+// Messages name settings and rules only, never values, so operators can safely see them in deploy logs.
+export class EnvironmentError extends Error {}
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1'];
 // Settings of the retired fictional demo deployment. Their presence means a service still configured for it.
 const RETIRED_DEMO_SETTINGS = ['DEMO_EMAIL_MODE', 'DEMO_STARTER_MODE', 'DEMO_FICTIONAL_DATA_ONLY', 'DEMO_DEPLOYMENT_ID', 'DEMO_MAILBOX_KEY'];
@@ -42,23 +44,23 @@ const schema = Joi.object({
 }).unknown(true);
 export function validateEnvironment(input: Record<string, unknown>): Environment {
   if (input.DEPLOYMENT_PURPOSE === 'demo' || RETIRED_DEMO_SETTINGS.some(key => ![undefined, null, '', false, 'false'].includes(input[key] as string))) {
-    throw new Error(`The fictional demo deployment was retired. Remove DEPLOYMENT_PURPOSE=demo and ${RETIRED_DEMO_SETTINGS.join('/')} and use a fresh production database.`);
+    throw new EnvironmentError(`The fictional demo deployment was retired. Remove DEPLOYMENT_PURPOSE=demo and ${RETIRED_DEMO_SETTINGS.join('/')} and use a fresh production database.`);
   }
   const { value, error } = schema.validate(input, { abortEarly: false });
-  if (error) throw new Error(`Invalid environment: ${error.details.map((detail) => `${detail.path.join('.')} (${detail.type})`).join('; ')}`);
+  if (error) throw new EnvironmentError(`Invalid environment: ${error.details.map((detail) => `${detail.path.join('.')} (${detail.type})`).join('; ')}`);
   const env = value as Environment;
   env.DEPLOYMENT_PURPOSE ??= env.NODE_ENV === 'production' ? 'production' : 'local';
-  if (env.SESSION_SECRET === env.BFF_SHARED_SECRET) throw new Error('Session and BFF secrets must differ');
-  if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN.startsWith('https://')) throw new Error('Production WEB_ORIGIN must use HTTPS');
-  if (env.NODE_ENV === 'production' && env.DEPLOYMENT_PURPOSE === 'local') throw new Error('Hosted runtime must have an explicit production purpose');
+  if (env.SESSION_SECRET === env.BFF_SHARED_SECRET) throw new EnvironmentError('Session and BFF secrets must differ');
+  if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN.startsWith('https://')) throw new EnvironmentError('Production WEB_ORIGIN must use HTTPS');
+  if (env.NODE_ENV === 'production' && env.DEPLOYMENT_PURPOSE === 'local') throw new EnvironmentError('Hosted runtime must have an explicit production purpose');
   if (env.EMAIL_DELIVERY === 'smtp') {
-    if (!env.SMTP_HOST || !env.EMAIL_FROM) throw new Error('SMTP delivery requires SMTP_HOST and a valid EMAIL_FROM');
-    if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) throw new Error('SMTP_USER and SMTP_PASSWORD must be set together');
+    if (!env.SMTP_HOST || !env.EMAIL_FROM) throw new EnvironmentError('SMTP delivery requires SMTP_HOST and a valid EMAIL_FROM');
+    if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) throw new EnvironmentError('SMTP_USER and SMTP_PASSWORD must be set together');
     if (env.NODE_ENV !== 'production') {
       // Development and tests use fictional data only: never a real mail server, only a local inbox such as Mailpit.
-      if (!LOCAL_HOSTS.includes(env.SMTP_HOST)) throw new Error('Outside production, SMTP may only target a local test inbox on localhost');
+      if (!LOCAL_HOSTS.includes(env.SMTP_HOST)) throw new EnvironmentError('Outside production, SMTP may only target a local test inbox on localhost');
     } else if (!env.SMTP_USER || ![465, 587].includes(env.SMTP_PORT)) {
-      throw new Error('Production SMTP requires authentication on TLS port 465 or 587');
+      throw new EnvironmentError('Production SMTP requires authentication on TLS port 465 or 587');
     }
   }
   return env;
