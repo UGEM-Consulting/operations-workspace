@@ -27,7 +27,8 @@
     "predev": "node scripts/check-node.cjs",
     "postinstall": "node scripts/repair-native.cjs",
     "repair:native": "node scripts/repair-native.cjs",
-    "setup:dependencies": "node scripts/repair-native.cjs --install"
+    "setup:dependencies": "node scripts/repair-native.cjs --install",
+    "demo:retire-database": "npm run demo:retire-database --workspace=@operations/api --"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

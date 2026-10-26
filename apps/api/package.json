@@ -17,7 +17,8 @@
     "verification:demo": "ts-node src/database/demo-verification.ts",
     "admin:bootstrap": "node dist/database/admin-bootstrap.js",
     "predev": "node ../../scripts/check-node.cjs",
-    "start:render": "node dist/start-render.js"
+    "start:render": "node dist/start-render.js",
+    "demo:retire-database": "node dist/database/retire-demo-database.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",

@@ -390,6 +390,18 @@ Applicant verification codes are emailed through Google Workspace SMTP; see [ema
 
 The fictional hosted demo (demo mailbox, starter conversion, `DEMO_*` settings and banner) has been removed. The API refuses `DEPLOYMENT_PURPOSE=demo` and any leftover demo setting, and migration `RetireDemoDeployment1792690000000` refuses to run on the database that was bound to the demo, so production code cannot start against it. Go live on a **fresh production database**: run migrations, create the first administrator with `admin:bootstrap`, then set the email settings. `seed:demo` and `verification:demo` remain local development tools for fictional data only.
 
+### Cleaning up a database that was converted to the demo
+
+If a deploy logs `migration refused: This database belongs to the retired fictional demo deployment`, that database was converted with the former `demo:convert-starter`. Instead of replacing it, run the one-time `demo:retire-database` command. In one transaction it deletes every fictional demo record and fictional staff account, keeps the preserved administrator (who signs in again), and removes the demo marking. It refuses unless the database is marked as the demo, the operator is still an active administrator, and every other account is `@example.test`. It prints counts only.
+
+1. Take a manual backup of the database in Render.
+2. On a trusted computer with this release built (`npm ci` and `npm run build --workspace=@operations/api`), allow your IP in the database's external access settings. Create a private, Git-ignored file such as `.env.retire-demo` containing only `DATABASE_URL=<external URL>` and `DATABASE_SSL=true`.
+3. Dry run (changes nothing): `DOTENV_CONFIG_PATH=../../.env.retire-demo npm run demo:retire-database`
+4. Apply, then type the database name when asked: `DOTENV_CONFIG_PATH=../../.env.retire-demo npm run demo:retire-database -- --apply`
+5. Redeploy the API. `start:render` applies `RetireDemoDeployment`, which drops the remaining demo tables. Remove your IP from the allowlist and delete the private file.
+
+In PowerShell, set the path first: `$env:DOTENV_CONFIG_PATH='../../.env.retire-demo'`, then run the npm command.
+
 Applicant form validation returns to the affected step and displays a message for both draft-save and submit failures, including invalid phone numbers entered on earlier steps. Review submission still requires all required fields and accuracy confirmation; invalid input is never silently submitted.
 
 Applicant work phone is optional for submission, resubmission and manager approval. New forms collect the required personal phone and leave work-number assignment to IT during RingCentral setup. Saved work phones and explicitly requested corrections remain accessible and validated. RingCentral, SMS and call recording share one IT section while retaining independent checklist states and history. Apply the additive OptionalApplicantWorkPhone migration: it relaxes the IT completion constraint for absent applicant work phones without changing records or task history. Rollback refuses if completed requests now depend on this allowance.
