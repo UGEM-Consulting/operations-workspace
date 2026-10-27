@@ -18,12 +18,13 @@ import { User, Role, UserStatus } from '../src/modules/users/user.entity';
 import { OnboardingModule } from '../src/modules/onboarding/onboarding.module';
 import { Invitation, DispatcherApplication, ApplicationActivity } from '../src/modules/onboarding/entities';
 import { issueDemoCode } from '../src/database/demo-verification';
+import {completeMfa,enrolForTest} from './mfa-helpers';
 import { digest } from '../src/modules/onboarding/onboarding.service';
 const integration=process.env.TEST_DATABASE_URL?describe:describe.skip;
 integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  let app:INestApplication,db:DataSource,closeSessions:()=>Promise<void>;
  const password=randomBytes(24).toString('base64url');
- const env=validateEnvironment({NODE_ENV:'test',DATABASE_URL:process.env.TEST_DATABASE_URL??'postgresql://localhost/operations_m2_test',CORS_ORIGINS:'http://localhost:3000',WEB_ORIGIN:'http://localhost:3000',SESSION_SECRET:randomBytes(32).toString('hex'),BFF_SHARED_SECRET:randomBytes(32).toString('hex')});
+ const env=validateEnvironment({NODE_ENV:'test',DATABASE_URL:process.env.TEST_DATABASE_URL??'postgresql://localhost/operations_m2_test',CORS_ORIGINS:'http://localhost:3000',WEB_ORIGIN:'http://localhost:3000',SESSION_SECRET:randomBytes(32).toString('hex'),BFF_SHARED_SECRET:randomBytes(32).toString('hex'),MFA_ENCRYPTION_KEY:randomBytes(32).toString('base64')});
  const headers={'x-workspace-key':env.BFF_SHARED_SECRET,origin:env.WEB_ORIGIN,'x-csrf-protection':'1'};
  type Agent=ReturnType<typeof request.agent>;
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
@@ -38,7 +39,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   for(const [index,role] of [Role.DISPATCHER_MANAGER,Role.DISPATCHER_MANAGER,Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].entries())await db.getRepository(User).save({firstName:'Fictional',lastName:'Staff',email:`staff${index}@example.test`,role,status:UserStatus.ACTIVE,passwordHash:hash});
   const module=await Test.createTestingModule({imports:[ConfigModule.forRoot({isGlobal:true,ignoreEnvFile:true,load:[()=>env]}),TypeOrmModule.forRoot(databaseOptions(env)),AuthModule,OnboardingModule,ItModule]}).compile();
   app=module.createNestApplication();closeSessions=installSessions(app,env);configureApp(app,env.CORS_ORIGINS);await app.init();
-  const agents=[];for(let i=0;i<4;i++){const agent=request.agent(app.getHttpServer());await agent.post('/api/auth/login').set(headers).send({email:`staff${i}@example.test`,password}).expect(200);agents.push(agent);}[manager,other,admin,itAgent]=agents;
+  const adminUser=await db.getRepository(User).findOneByOrFail({email:'staff2@example.test'});const adminSecret=await enrolForTest(db,env.MFA_ENCRYPTION_KEY!,adminUser.id);
+  const agents=[];for(let i=0;i<4;i++){const agent=request.agent(app.getHttpServer());const signedIn=await agent.post('/api/auth/login').set(headers).send({email:`staff${i}@example.test`,password}).expect(200);if(signedIn.body.mfa)expect((await completeMfa(agent,headers,db,adminUser.id,adminSecret)).status).toBe(200);agents.push(agent);}[manager,other,admin,itAgent]=agents;
  },30000);
  beforeEach(async()=>{await db.query('TRUNCATE invitations,applicant_sessions,login_attempts CASCADE');});
  afterAll(async()=>{if(closeSessions)await closeSessions();if(app)await app.close();if(db?.isInitialized)await db.destroy();});
@@ -442,7 +444,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
  });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
+ // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
+ const undoStaffMfa=async()=>{await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
  it('rolls back and reapplies the documents, company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
+  await undoStaffMfa();
   await db.undoLastMigration();
   expect(await latestMigration()).toBe('CompanyEmail1792700000000');
   expect((await db.query("SELECT to_regclass('document_signatures') AS name"))[0].name).toBeNull();
@@ -453,15 +458,16 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');
+  expect(await latestMigration()).toBe('StaffMfa1792720000000');
   expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
  });
  it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
+  await undoStaffMfa();
   await db.undoLastMigration();await db.undoLastMigration();await db.undoLastMigration();
   await db.query("UPDATE deployment_identity SET purpose='demo'");
   try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
   finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
-  expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');
+  expect(await latestMigration()).toBe('StaffMfa1792720000000');
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
@@ -487,6 +493,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // The responsible manager sees the created company accounts as employee details.
   const employee=await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers).expect(200);
   expect(employee.body.itOnboarding).toMatchObject({status:'COMPLETED',companyEmail:'alex.demo@example.test',workPhoneNumber:'+1 202 555 0190'});
+  await undoStaffMfa();
   await db.undoLastMigration();
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded company emails');
   expect(await latestMigration()).toBe('CompanyEmail1792700000000');

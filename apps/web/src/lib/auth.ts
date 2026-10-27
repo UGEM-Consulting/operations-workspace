@@ -3,7 +3,7 @@ import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { readBackendConfig } from './backend-connection';
-export interface StaffUser { id: string; firstName: string; lastName: string; email: string; role: string; status: string; }
+export interface StaffUser { id: string; firstName: string; lastName: string; email: string; role: string; status: string; mfaEnabled?: boolean; }
 export interface Identity { user: StaffUser; navigation: { key: string; href: string; label: string }[]; landingPage: string; }
 export function backendConfig() {
   return readBackendConfig(process.env);

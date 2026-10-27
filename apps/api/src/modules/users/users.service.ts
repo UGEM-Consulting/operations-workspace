@@ -6,7 +6,12 @@ import { hashPassword } from '../auth/password';
 @Injectable()
 export class UsersService {
   constructor(private readonly db: DataSource) {}
-  async list() { return (await this.db.getRepository(User).find({ order: { createdAt: 'ASC' }, take: 200 })).map(publicUser); }
+  async list() {
+    const users = await this.db.getRepository(User).find({ order: { createdAt: 'ASC' }, take: 200 });
+    const enrolled: { userId: string }[] = await this.db.query(`SELECT "userId" FROM staff_mfa WHERE "confirmedAt" IS NOT NULL`);
+    const ids = new Set(enrolled.map(row => row.userId));
+    return users.map(user => ({ ...publicUser(user), mfaEnabled: ids.has(user.id) }));
+  }
   async create(dto: CreateUserDto) {
     try {
       const { password, ...fields } = dto;

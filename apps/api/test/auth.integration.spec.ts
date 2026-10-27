@@ -14,6 +14,7 @@ import { hashPassword } from '../src/modules/auth/password';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 import { HealthModule } from '../src/modules/health/health.module';
 import { seedDemo } from '../src/database/seed';
+import { completeMfa, enrolForTest } from './mfa-helpers';
 
 @Controller('unclassified')
 class UnclassifiedController { @Get() get() { return {}; } }
@@ -25,10 +26,20 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
   const password = randomBytes(24).toString('base64url');
   const env = validateEnvironment({ NODE_ENV: 'test', DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://localhost/operations_m2_test',
     CORS_ORIGINS: 'http://localhost:3000', WEB_ORIGIN: 'http://localhost:3000', SESSION_SECRET: randomBytes(32).toString('hex'),
-    BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600 });
+    BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64') });
   const headers = { 'x-workspace-key': env.BFF_SHARED_SECRET, origin: env.WEB_ORIGIN, 'x-csrf-protection': '1' };
   const accounts = new Map<Role, User>();
+  let adminSecret = '';
   const login = (agent: ReturnType<typeof request.agent>, role = Role.SYSTEM_ADMIN) => agent.post('/api/auth/login').set(headers).send({ email: accounts.get(role)!.email, password });
+  // Full sign-in: administrators must complete the authenticator step.
+  const signIn = async (agent: ReturnType<typeof request.agent>, role = Role.SYSTEM_ADMIN) => {
+    const response = await login(agent, role).expect(200);
+    if (role !== Role.SYSTEM_ADMIN) return response;
+    expect(response.body).toEqual({ mfa: 'verify', landingPage: '/login/mfa' });
+    const verified = await completeMfa(agent, headers, db, accounts.get(role)!.id, adminSecret);
+    expect(verified.status).toBe(200);
+    return verified;
+  };
   beforeAll(async () => {
     // Explicit opt-in and dedicated database name prevent accidental use of application data.
     if (!new URL(env.DATABASE_URL).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must name a dedicated database ending in _test');
@@ -40,6 +51,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
       const user = await db.getRepository(User).save(db.getRepository(User).create({ firstName: 'Fictional', lastName: 'Tester', email: `${role.toLowerCase()}@example.test`, role, status: UserStatus.ACTIVE, passwordHash: encoded }));
       accounts.set(role, user);
     }
+    adminSecret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, accounts.get(Role.SYSTEM_ADMIN)!.id);
     const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, HealthModule], controllers: [UnclassifiedController] }).compile();
     app = module.createNestApplication();
     closeSessions = installSessions(app, env);
@@ -51,7 +63,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
 
   it.each(Object.values(Role))('authenticates %s and persists identity across requests', async role => {
     const agent = request.agent(app.getHttpServer());
-    const response = await login(agent, role).expect(200);
+    const response = await signIn(agent, role);
     expect(response.body.user.role).toBe(role);
     expect(response.body.user.passwordHash).toBeUndefined();
     expect(response.body.user.authVersion).toBeUndefined();
@@ -70,7 +82,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
   });
   it('denies unauthenticated API requests and unclassified endpoints by default', async () => {
     await request(app.getHttpServer()).get('/api/users').set(headers).expect(401);
-    const agent = request.agent(app.getHttpServer()); await login(agent);
+    const agent = request.agent(app.getHttpServer()); await signIn(agent);
     await agent.get('/api/unclassified').set(headers).expect(403);
     await request(app.getHttpServer()).get('/api/health').expect(200);
   });
@@ -85,7 +97,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await request(app.getHttpServer()).post('/api/auth/login').set({ ...headers, ...override }).send({ email: accounts.get(Role.SYSTEM_ADMIN)!.email, password }).expect(403);
   });
   it('rejects authenticated mutation CSRF and privilege escalation', async () => {
-    const agent = request.agent(app.getHttpServer()); await login(agent);
+    const agent = request.agent(app.getHttpServer()); await signIn(agent);
     await agent.patch(`/api/users/${accounts.get(Role.DISPATCHER_MANAGER)!.id}`).set({ ...headers, origin: 'https://attacker.example' }).send({ role: Role.SYSTEM_ADMIN }).expect(403);
     await agent.post('/api/auth/logout').set({ ...headers, 'x-csrf-protection': '' }).send({}).expect(403);
     await agent.get('/api/auth/me').set(headers).expect(200);
@@ -106,7 +118,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await it.get('/api/access/it').set(headers).expect(200);
     await it.get('/api/access/applications').set(headers).expect(403);
     const me = await it.get('/api/auth/me').set(headers).expect(200);
-    expect(me.body.navigation.map((item: { key: string }) => item.key)).toEqual(['dashboard', 'it']);
+    expect(me.body.navigation.map((item: { key: string }) => item.key)).toEqual(['dashboard', 'it', 'security']);
   });
   it('rejects disabled users both on login and with an existing session', async () => {
     const agent = request.agent(app.getHttpServer()); await login(agent, Role.IT_SPECIALIST);
@@ -124,26 +136,26 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
   });
   it('invalidates sessions on logout and rejects replay', async () => {
     const agent = request.agent(app.getHttpServer());
-    const signedIn = await login(agent).expect(200);
+    const signedIn = await signIn(agent);
     const cookie = signedIn.headers['set-cookie'][0].split(';')[0];
     await agent.post('/api/auth/logout').set(headers).send({}).expect(204);
     await request(app.getHttpServer()).get('/api/auth/me').set(headers).set('Cookie', cookie).expect(401);
   });
   it('rejects expired sessions and server-side revocation', async () => {
-    const agent = request.agent(app.getHttpServer()); await login(agent);
+    const agent = request.agent(app.getHttpServer()); await signIn(agent);
     await db.query(`UPDATE staff_sessions SET expire = now() - interval '1 minute'`);
     await agent.get('/api/auth/me').set(headers).expect(401);
-    const agent2 = request.agent(app.getHttpServer()); await login(agent2);
+    const agent2 = request.agent(app.getHttpServer()); await signIn(agent2);
     await db.query('DELETE FROM staff_sessions');
     await agent2.get('/api/auth/me').set(headers).expect(401);
   });
   it('enforces absolute expiration independently of store expiry', async () => {
-    const agent = request.agent(app.getHttpServer()); await login(agent);
+    const agent = request.agent(app.getHttpServer()); await signIn(agent);
     await db.query(`UPDATE staff_sessions SET sess = jsonb_set(sess::jsonb, '{expiresAt}', '1'::jsonb)::json`);
     await agent.get('/api/auth/me').set(headers).expect(401);
   });
   it('creates users, rejects duplicate emails, and revokes sessions on role changes', async () => {
-    const admin = request.agent(app.getHttpServer()); await login(admin);
+    const admin = request.agent(app.getHttpServer()); await signIn(admin);
     const manager = request.agent(app.getHttpServer()); await login(manager, Role.DISPATCHER_MANAGER);
     const created = await admin.post('/api/users').set(headers).send({ firstName: 'Demo', lastName: 'New', email: 'new@example.test', password: randomBytes(24).toString('hex'), role: Role.IT_SPECIALIST }).expect(201);
     expect(created.body.passwordHash).toBeUndefined();
@@ -154,7 +166,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await admin.patch(`/api/users/${accounts.get(Role.SYSTEM_ADMIN)!.id}`).set(headers).send({ status: UserStatus.INACTIVE }).expect(400);
   });
   it('revokes sessions on password reset and disabled-user administration', async () => {
-    const admin = request.agent(app.getHttpServer()); await login(admin);
+    const admin = request.agent(app.getHttpServer()); await signIn(admin);
     const it = request.agent(app.getHttpServer()); await login(it, Role.IT_SPECIALIST);
     const id = accounts.get(Role.IT_SPECIALIST)!.id;
     const changedPassword = randomBytes(24).toString('base64url');
@@ -170,14 +182,14 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
   });
   it('regenerates the session identifier when logging in again', async () => {
     const agent = request.agent(app.getHttpServer());
-    const first = await login(agent).expect(200);
-    const second = await login(agent).expect(200);
+    const first = await signIn(agent);
+    const second = await signIn(agent);
     const cookie = first.headers['set-cookie'][0].split(';')[0];
     expect(second.headers['set-cookie'][0].split(';')[0]).not.toBe(cookie);
     await request(app.getHttpServer()).get('/api/auth/me').set(headers).set('Cookie', cookie).expect(401);
   });
   it('does not expose or accept internal user/session fields', async () => {
-    const admin = request.agent(app.getHttpServer()); await login(admin);
+    const admin = request.agent(app.getHttpServer()); await signIn(admin);
     const list = await admin.get('/api/users').set(headers).expect(200);
     expect(JSON.stringify(list.body)).not.toMatch(/passwordHash|authVersion/);
     await admin.patch(`/api/users/${accounts.get(Role.IT_SPECIALIST)!.id}`).set(headers).send({ authVersion: 0, passwordHash: 'fake' }).expect(400);

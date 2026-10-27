@@ -65,6 +65,8 @@ These database credentials are fictional development defaults. Adjust `DATABASE_
 
 Authentication uses [express-session](https://github.com/expressjs/session), [connect-pg-simple](https://github.com/voxpelli/node-connect-pg-simple), and [Argon2id](https://github.com/ranisalt/node-argon2) (64 MiB, three iterations, one lane). Session IDs and signing are handled by the established library. PostgreSQL stores sessions; MemoryStore is used only in a cookie-options unit test. Login regenerates the session ID, records the user ID/version and absolute expiry, and updates `lastLoginAt`. Logout destroys the stored session. Expired, revoked, missing, disabled, and stale-version sessions are rejected.
 
+Staff with two-step verification (always administrators) complete a second step after the password; see [staff two-step verification](#staff-two-step-verification).
+
 Every protected request reloads the user from PostgreSQL. User edits increment an authentication version and delete all their sessions, including password and role changes. Version checking also prevents an in-flight login from restoring access after an administrative change. Users cannot remove their own administrator access; serialized administrator updates preserve the last active administrator. Administrator settings support account creation, names/email/role/status changes, and password resets. No registration or public password-reset endpoint exists. User lists are capped at 200 for the demo.
 
 | API/page scope | SYSTEM_ADMIN | DISPATCHER_MANAGER | IT_SPECIALIST |
@@ -73,8 +75,25 @@ Every protected request reloads the user from PostgreSQL. User edits increment a
 | Onboarding invitations/applications | Yes | Yes | No |
 | Approved IT onboarding requests/checklists | Yes | No | Yes |
 | Settings and user administration | Yes | No | No |
+| Account security (own two-step verification) | Yes | Yes | Yes |
 
 A global NestJS guard requires authentication and explicit role metadata; endpoints without a role policy are denied. Health, login, logout and applicant routes are explicitly public to the staff guard. Applicant record routes independently enforce restricted applicant sessions. Login/logout still require the BFF boundary and CSRF checks. The API returns permitted navigation and role landing destinations. Next.js uses those results and calls API page authorization endpoints rather than copying the permission matrix. `canAccessAssignedApplication` provides a tested foundation requiring a database-loaded assignment for managers; future controllers must invoke it after loading records. Onboarding record endpoints enforce this policy against database assignments.
+
+## Staff two-step verification
+
+Staff can protect sign-in with an authenticator app (TOTP, RFC 6238: Google Authenticator, Microsoft Authenticator, 1Password and similar) using the maintained [otpauth](https://github.com/hectorm/otpauth) library; the enrolment QR code is rendered server-side with [qrcode](https://github.com/soldair/node-qrcode). Applicants are out of scope.
+
+- **Who must use it.** `SYSTEM_ADMIN` always. Administrators can raise the requirement to all staff under **Settings → Two-step verification**; it cannot be lowered below administrators. Other roles may turn it on (or off, with a current code) under **Account security**.
+- **Sign-in.** A correct password for an enrolled user creates only a pending session (`mfaPending`, 5 minutes) with no `userId`, so the global guard grants no staff route. Routes marked `@AllowPendingMfa('verify')` accept it; a correct code regenerates the session ID and grants normal access. A required user who has not enrolled gets a pending enrolment session (15 minutes) that reaches only the enrolment routes: the QR code and manual key, then one code to confirm. There is no grace period.
+- **Recovery codes.** Confirming enrolment issues ten single-use `XXXXX-XXXXX` codes, shown once and stored only as Argon2id hashes. Each signs in once; regenerating needs a current authenticator code and cancels the old set.
+- **Protection.** Secrets are AES-256-GCM encrypted with `MFA_ENCRYPTION_KEY`, bound to the user ID, and never logged or returned after enrolment. Codes allow ±1 time step of drift. Each accepted step is recorded, so a code cannot be replayed. Five wrong codes for a user, across all sessions and API instances, lock the second step for 15 minutes (`429`, also for correct codes) and record `MFA_LOCKED_OUT`.
+- **Sessions.** Turning MFA on or off, or an administrator reset, increments `authVersion` and deletes all of the user's sessions (pending ones too); the acting session is re-established. A session without a completed second step stops working once the user enrols or their role or policy requires MFA. That includes sessions created before this feature, so administrators sign in again once after the release.
+- **Administrator reset.** For someone who lost both their phone and recovery codes: **Settings → Two-step verification → Reset**. Confirm the person's identity outside the workspace first. Administrators never see secrets or codes, cannot reset themselves, and the reset ends the user's sessions; a required user enrols again at the next sign-in. Role/status rules and the last-active-administrator protection are unchanged.
+- **Audit.** `staff_security_events` records enrolment, disable, admin reset (with actor), recovery-code use (remaining count), regeneration, lockout and policy changes. Rows hold metadata only, never codes, secrets or session IDs.
+
+**Deploying.** Generate the key privately (`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`) and store it in Render's API environment as `MFA_ENCRYPTION_KEY` plus a private backup (for example the company password manager); never commit it. Deploy the web app (Vercel) first: it understands both the old and the new login responses. Then deploy the API, whose `start:render` applies the additive `StaffMfa1792720000000` migration. Every administrator is then asked to set up an authenticator at the next sign-in. Losing or changing the key makes every enrolled authenticator unusable: an administrator would need to reset everyone. Key rotation is not implemented yet. The migration rollback refuses while any enrolment, recovery code or security event exists.
+
+**Locked-out last administrator.** Recovery codes are the self-service path. If the only active administrator loses both, there is currently no in-app recovery. Keep at least two enrolled administrators, or store one administrator's recovery codes in the company's sealed break-glass storage.
 
 ## Same-origin cookies and CSRF
 
@@ -111,6 +130,7 @@ The root `.env.example` is a reference only. NestJS loads `apps/api/.env`; Next.
 | SMTP_HOST / SMTP_PORT | API | `smtp.gmail.com` / `465` for Google Workspace; `localhost` / `1025` for local Mailpit |
 | SMTP_USER / SMTP_PASSWORD | API | Sending mailbox and its app password; secret, set only in the host's environment settings |
 | EMAIL_FROM | API | Sender, e.g. `UGEM Operations <onboarding@ugemconsulting.com>` |
+| MFA_ENCRYPTION_KEY | API | 32 random bytes as base64; encrypts staff authenticator secrets. Required by the production API; `npm run setup:local` generates a local one. See [staff two-step verification](#staff-two-step-verification) |
 | DEPLOYMENT_PURPOSE | API | `local` (development) or `production` (required for hosted deployments); `demo` was retired and is refused |
 
 Use separate secrets/environments for previews and production. Avoid `?sslmode=` options in DATABASE_URL that conflict with the explicit `DATABASE_SSL` certificate-verification policy. Secrets and sensitive request/database error details are not logged.
@@ -137,7 +157,7 @@ createdb -O operations operations_m2_test
 TEST_DATABASE_URL="postgresql://operations:operations@localhost:5432/operations_m2_test" npm test
 ```
 
-The database suites apply migrations and truncate identity and dependent onboarding tables in the explicitly selected test database. It covers all roles, invalid credentials, disabled/SSO-only users, session expiration and revocation, logout replay, login throttling, deny-by-default policies, privilege escalation, CSRF, user creation, case-insensitive duplicate email rejection, and idempotent demo seeding. Passwords and secrets for tests are generated at runtime. BFF CSRF and allowlist helpers are also unit-tested. Test databases must be managed independently from the app database.
+The database suites apply migrations and truncate identity and dependent onboarding tables in the explicitly selected test database. It covers all roles (administrators through the authenticator step), invalid credentials, disabled/SSO-only users, session expiration and revocation, logout replay, login throttling, deny-by-default policies, privilege escalation, CSRF, user creation, case-insensitive duplicate email rejection, and idempotent demo seeding. Passwords and secrets for tests are generated at runtime. BFF CSRF and allowlist helpers are also unit-tested. `mfa.integration.spec.ts` covers forced administrator enrolment, sign-in with authenticator and recovery codes, wrong/replayed/expired codes, lockout, session revocation on enrol/disable/reset, the all-staff policy and the refused migration rollback; `mfa.spec.ts` unit-tests encryption, TOTP windows, recovery codes and key validation. Test databases must be managed independently from the app database.
 
 ## Migrations
 

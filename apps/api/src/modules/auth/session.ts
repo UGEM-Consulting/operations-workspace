@@ -7,9 +7,18 @@ import { Pool } from 'pg';
 import type { Environment } from '../../config/environment';
 import type { User } from '../users/user.entity';
 declare module 'express-session' {
-  interface SessionData { applicantApplicationId: string; userId: string; authVersion: number; expiresAt: number; }
+  interface SessionData {
+    applicantApplicationId: string; userId: string; authVersion: number; expiresAt: number;
+    // Whether this staff session completed two-step verification. Earlier sessions lack it.
+    mfa: 'verified' | 'not-required';
+    // Password accepted, second step outstanding. Grants no staff access: userId stays unset.
+    mfaPending: { userId: string; authVersion: number; stage: MfaStage; expiresAt: number };
+  }
 }
+export type MfaStage = 'verify' | 'enrol';
 export type AuthRequest = Request & { currentUser: User };
+export const regenerateSession = (req: Request) => new Promise<void>((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
+export const saveSession = (req: Request) => new Promise<void>((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
 export const cookieName = (production: boolean) => production ? '__Host-operations.sid' : 'operations.sid';
 export function equalSecret(actual: string | undefined, expected: string): boolean {
   if (!actual) return false;

@@ -17,6 +17,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && /^onboarding\/invitations\/[0-9a-f-]{36}\/revoke$/.test(path)) ||
     (method === 'POST'  && ['auth/login', 'auth/logout', 'users'].includes(path)) ||
     (method === 'GET' && ['auth/me', 'users'].includes(path)) ||
+    // Staff two-step verification: sign-in step, enrolment, own settings, administrator reset and policy.
+    (method === 'POST' && ['auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable'].includes(path)) ||
+    (method === 'GET' && ['auth/mfa', 'settings/security'].includes(path)) || (method === 'PATCH' && path === 'settings/security') ||
+    (method === 'POST' && match(`users/${ID}/mfa/reset`, path)) ||
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/sign`, path))) ||

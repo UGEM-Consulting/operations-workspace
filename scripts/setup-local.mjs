@@ -14,6 +14,7 @@ api = ensure(api, 'SESSION_SECRET', randomBytes(32).toString('hex'));
 api = ensure(api, 'BFF_SHARED_SECRET', bff);
 api = ensure(api, 'WEB_ORIGIN', 'http://localhost:3000');
 api = ensure(api, 'SESSION_TTL_SECONDS', '28800');
+api = ensure(api, 'MFA_ENCRYPTION_KEY', randomBytes(32).toString('base64'));
 web = ensure(web, 'BFF_SHARED_SECRET', bff);
 web = ensure(web, 'WEB_ORIGIN', value(api, 'WEB_ORIGIN'));
 api = ensure(api, 'ALLOW_DEMO_SEED', 'true');

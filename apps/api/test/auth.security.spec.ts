@@ -46,6 +46,13 @@ describe('Next.js same-origin transport boundary', () => {
   it('cannot proxy arbitrary API paths or methods', () => {
     expect(allowedEndpoint('POST', 'auth/login')).toBe(true);
     expect(allowedEndpoint('POST', 'auth/register')).toBe(false);
+    for (const path of ['auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable']) expect(allowedEndpoint('POST', path)).toBe(true);
+    expect(allowedEndpoint('GET', 'auth/mfa')).toBe(true);
+    expect(allowedEndpoint('PATCH', 'settings/security')).toBe(true);
+    expect(allowedEndpoint('POST', 'users/00000000-0000-4000-8000-000000000000/mfa/reset')).toBe(true);
+    expect(allowedEndpoint('POST', 'users/../mfa/reset')).toBe(false);
+    expect(allowedEndpoint('GET', 'auth/mfa/enrolment')).toBe(false);
+    expect(allowedEndpoint('DELETE', 'auth/mfa')).toBe(false);
     expect(allowedEndpoint('GET', '../health')).toBe(false);
     expect(allowedEndpoint('DELETE', 'users')).toBe(false);
   });

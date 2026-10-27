@@ -20,6 +20,7 @@ import { installSessions } from '../src/modules/auth/session';
 import { DocumentsModule } from '../src/modules/documents/documents.module';
 import { ItModule } from '../src/modules/it/it.module';
 import { OnboardingModule } from '../src/modules/onboarding/onboarding.module';
+import {completeMfa,enrolForTest} from './mfa-helpers';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 const integration=process.env.TEST_DATABASE_URL?describe:describe.skip;
 // Fictional test files: a real PDF, a JPEG-signature blob (the API checks type and size only) and a real PNG signature.
@@ -38,7 +39,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
  let app:INestApplication,db:DataSource,closeSessions:()=>Promise<void>;
  const storage=mkdtempSync(join(tmpdir(),'operations-documents-'));
  const password=randomBytes(24).toString('base64url');
- const env=validateEnvironment({NODE_ENV:'test',DATABASE_URL:process.env.TEST_DATABASE_URL??'postgresql://localhost/operations_m2_test',CORS_ORIGINS:'http://localhost:3000',WEB_ORIGIN:'http://localhost:3000',SESSION_SECRET:randomBytes(32).toString('hex'),BFF_SHARED_SECRET:randomBytes(32).toString('hex'),STORAGE_DRIVER:'local',STORAGE_LOCAL_DIR:storage});
+ const env=validateEnvironment({NODE_ENV:'test',DATABASE_URL:process.env.TEST_DATABASE_URL??'postgresql://localhost/operations_m2_test',CORS_ORIGINS:'http://localhost:3000',WEB_ORIGIN:'http://localhost:3000',SESSION_SECRET:randomBytes(32).toString('hex'),BFF_SHARED_SECRET:randomBytes(32).toString('hex'),STORAGE_DRIVER:'local',STORAGE_LOCAL_DIR:storage,MFA_ENCRYPTION_KEY:randomBytes(32).toString('base64')});
  const headers={'x-workspace-key':env.BFF_SHARED_SECRET,origin:env.WEB_ORIGIN,'x-csrf-protection':'1'};
  type Agent=ReturnType<typeof request.agent>;
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
@@ -74,7 +75,8 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   for(const [index,role] of [Role.DISPATCHER_MANAGER,Role.DISPATCHER_MANAGER,Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].entries())await db.getRepository(User).save({firstName:'Fictional',lastName:'Staff',email:`staff${index}@example.test`,role,status:UserStatus.ACTIVE,passwordHash:hash});
   const module=await Test.createTestingModule({imports:[ConfigModule.forRoot({isGlobal:true,ignoreEnvFile:true,load:[()=>env]}),TypeOrmModule.forRoot(databaseOptions(env)),AuthModule,OnboardingModule,ItModule,DocumentsModule]}).compile();
   app=module.createNestApplication();closeSessions=installSessions(app,env);configureApp(app,env.CORS_ORIGINS);await app.init();
-  const agents=[];for(let i=0;i<4;i++){const agent=request.agent(app.getHttpServer());await agent.post('/api/auth/login').set(headers).send({email:`staff${i}@example.test`,password}).expect(200);agents.push(agent);}[manager,other,admin,itAgent]=agents;
+  const adminUser=await db.getRepository(User).findOneByOrFail({email:'staff2@example.test'});const adminSecret=await enrolForTest(db,env.MFA_ENCRYPTION_KEY!,adminUser.id);
+  const agents=[];for(let i=0;i<4;i++){const agent=request.agent(app.getHttpServer());const signedIn=await agent.post('/api/auth/login').set(headers).send({email:`staff${i}@example.test`,password}).expect(200);if(signedIn.body.mfa)expect((await completeMfa(agent,headers,db,adminUser.id,adminSecret)).status).toBe(200);agents.push(agent);}[manager,other,admin,itAgent]=agents;
  },30000);
  beforeEach(async()=>{await db.query('TRUNCATE company_documents,invitations,applicant_sessions,login_attempts CASCADE');});
  afterAll(async()=>{
@@ -183,6 +185,9 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
  });
  it('refuses to roll back the documents migration while documents or photos exist',async()=>{
   await publishAll();
+  // The newer staff MFA migration goes first; it refuses rollback while enrolments exist.
+  await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard company documents');
+  await db.runMigrations();
  });
 });

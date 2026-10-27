@@ -5,6 +5,7 @@ export interface Environment {
   DEPLOYMENT_PURPOSE: 'local' | 'production';
   EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string;
   STORAGE_DRIVER: 'none' | 'local' | 'gcs'; STORAGE_LOCAL_DIR?: string; GCS_BUCKET?: string; GCS_CREDENTIALS_BASE64?: string;
+  MFA_ENCRYPTION_KEY?: string;
 }
 /** Decodes the base64 service-account key; null when it is not a usable service-account JSON. Never logs it. */
 export function serviceAccountCredentials(encoded: string): { client_email: string; private_key: string; project_id?: string } | null {
@@ -35,6 +36,8 @@ const schema = Joi.object({
   // Bucket naming rules: 3–63 lowercase letters, digits, dashes, underscores or dots.
   GCS_BUCKET: Joi.string().pattern(/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/).empty(''),
   GCS_CREDENTIALS_BASE64: Joi.string().base64().max(20000).empty(''),
+  // 32 random bytes, base64. Encrypts staff TOTP secrets at rest; MfaService requires it in production.
+  MFA_ENCRYPTION_KEY: Joi.string().base64().empty(''),
   DEPLOYMENT_PURPOSE: Joi.string().valid('local', 'production'),
   SESSION_SECRET: Joi.string().min(32).required(),
   BFF_SHARED_SECRET: Joi.string().min(32).required(),
@@ -88,6 +91,8 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   if (env.STORAGE_DRIVER === 'gcs' && (!env.GCS_BUCKET || !env.GCS_CREDENTIALS_BASE64 || !serviceAccountCredentials(env.GCS_CREDENTIALS_BASE64))) {
     throw new EnvironmentError('STORAGE_DRIVER=gcs requires GCS_BUCKET and GCS_CREDENTIALS_BASE64 (a base64-encoded service-account JSON key)');
   }
+  if (env.MFA_ENCRYPTION_KEY && Buffer.from(env.MFA_ENCRYPTION_KEY, 'base64').length !== 32) throw new EnvironmentError('MFA_ENCRYPTION_KEY must be 32 random bytes encoded as base64');
+  if (env.MFA_ENCRYPTION_KEY && [env.SESSION_SECRET, env.BFF_SHARED_SECRET].includes(env.MFA_ENCRYPTION_KEY)) throw new EnvironmentError('MFA_ENCRYPTION_KEY must differ from the session and BFF secrets');
   if (env.STORAGE_DRIVER === 'local' && !env.STORAGE_LOCAL_DIR) throw new EnvironmentError('STORAGE_DRIVER=local requires STORAGE_LOCAL_DIR');
   return env;
 }

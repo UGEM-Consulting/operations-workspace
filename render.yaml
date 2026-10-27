@@ -54,6 +54,10 @@ services:
         sync: false
       - key: GCS_CREDENTIALS_BASE64
         sync: false
+      # Staff two-step verification: 32 random bytes as base64. The production API refuses to start without it.
+      # Keep a private backup: changing or losing it makes every enrolled authenticator unreadable.
+      - key: MFA_ENCRYPTION_KEY
+        sync: false
 databases:
   - name: operations-postgres
     plan: basic-256mb

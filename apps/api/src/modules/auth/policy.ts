@@ -1,9 +1,13 @@
 import { ForbiddenException, SetMetadata } from '@nestjs/common';
 import { Role, User, UserStatus } from '../users/user.entity';
+import type { MfaStage } from './session';
 export const PUBLIC = 'auth:public';
 export const ROLES = 'auth:roles';
 export const Public = () => SetMetadata(PUBLIC, true);
 export const Roles = (...roles: Role[]) => SetMetadata(ROLES, roles);
+export const MFA_STAGES = 'auth:mfa-stages';
+/** Also admits a half-signed-in session at these stages. Routes still need @Roles; services re-read the pending state. */
+export const AllowPendingMfa = (...stages: MfaStage[]) => SetMetadata(MFA_STAGES, stages);
 export const STAFF = Object.values(Role);
 const navigation = [
   { key: 'dashboard', href: '/dashboard', label: 'Overview', roles: STAFF },
@@ -13,6 +17,7 @@ const navigation = [
   { key: 'documents', href: '/onboarding/documents', label: 'Documents', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
   { key: 'settings', href: '/settings', label: 'Settings', roles: [Role.SYSTEM_ADMIN] },
+  { key: 'security', href: '/account/security', label: 'Account security', roles: STAFF },
 ];
 export function accessFor(user: User) {
   return { navigation: navigation.filter(item => item.roles.includes(user.role)).map(({ key, href, label }) => ({ key, href, label })),
