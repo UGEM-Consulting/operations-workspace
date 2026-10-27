@@ -4,7 +4,7 @@ import type { Request, Response, NextFunction } from 'express';
 import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import { Pool } from 'pg';
-import type { Environment } from '../../config/environment';
+import { webOrigins, type Environment } from '../../config/environment';
 import type { User } from '../users/user.entity';
 declare module 'express-session' {
   interface SessionData {
@@ -26,12 +26,13 @@ export function equalSecret(actual: string | undefined, expected: string): boole
   return a.length === b.length && timingSafeEqual(a, b);
 }
 export function boundary(env: Environment) {
+  const origins = webOrigins(env);
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.path === '/api/health' || (env.NODE_ENV !== 'production' && req.path.startsWith('/api/docs'))) return next();
     res.setHeader('Cache-Control', 'no-store');
     if (!equalSecret(req.get('x-workspace-key'), env.BFF_SHARED_SECRET)) return res.status(403).json({ message: 'Forbidden' });
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
-      (req.get('origin') !== env.WEB_ORIGIN || req.get('x-csrf-protection') !== '1' || !req.is('application/json'))) {
+      (!origins.includes(req.get('origin') ?? '') || req.get('x-csrf-protection') !== '1' || !req.is('application/json'))) {
       return res.status(403).json({ message: 'Invalid request origin or CSRF protection' });
     }
     next();

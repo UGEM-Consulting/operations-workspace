@@ -34,8 +34,8 @@ export function bodyLimit(path: string): number {
   if (match(`applicant/documents/${ID}/sign`, path) || match(`onboarding/applications/${ID}/reviews`, path)) return 400_000;
   return 16384;
 }
-export function validMutation(headers: Headers, origin: string): boolean {
-  return headers.get('origin') === origin && headers.get('x-csrf-protection') === '1' &&
+export function validMutation(headers: Headers, origins: string[]): boolean {
+  return origins.includes(headers.get('origin') ?? '') && headers.get('x-csrf-protection') === '1' &&
     headers.get('content-type')?.split(';')[0].trim() === 'application/json' &&
     (!headers.get('sec-fetch-site') || headers.get('sec-fetch-site') === 'same-origin');
 }

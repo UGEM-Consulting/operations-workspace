@@ -7,6 +7,7 @@ import { requireTransition } from './transitions';
 import { randomBytes } from 'node:crypto';
 import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { webOrigins } from '../../config/environment';
 import { Request } from 'express';
 // Standalone ts-node commands must load our express-session type augmentation too.
 import type {} from '../auth/session';
@@ -48,7 +49,7 @@ export class OnboardingService {
   });
   // Raw token is returned once only; list/detail never include it or its hash. It travels in the URL fragment,
   // which browsers never send to servers, so it cannot reach hosting, CDN or APM request logs.
-  return { id: invitation.id, url: `${this.config.getOrThrow<string>('WEB_ORIGIN')}/apply#${token}` };
+  return { id: invitation.id, url: `${webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]}/apply#${token}` };
  }
  async invitations(user: User) {
   const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? {} : { managerId: user.id }, order: { createdAt: 'DESC' }, take: 200 });

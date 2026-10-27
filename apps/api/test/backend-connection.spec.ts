@@ -8,6 +8,15 @@ describe('Frontend backend connection configuration and safe diagnostics', () =>
     expect(config.base).toBe(environment.API_BASE_URL);
     expect(config.origin).toBe(environment.WEB_ORIGIN);
   });
+  it('accepts a comma-separated WEB_ORIGIN list with the first as primary', () => {
+    const config = readBackendConfig({ ...environment, WEB_ORIGIN: ' https://workspace.ugemconsulting.com/ , https://workspace.example.test ' });
+    expect(config.origin).toBe('https://workspace.ugemconsulting.com');
+    expect(config.origins).toEqual(['https://workspace.ugemconsulting.com', 'https://workspace.example.test']);
+    for (const value of ['https://a.example.test,http://b.example.test', 'https://a.example.test,https://a.example.test', 'https://a.example.test,', 'https://a.example.test,https://b.example.test/app', 'https://*.example.test']) {
+      try { readBackendConfig({ ...environment, WEB_ORIGIN: value }); throw new Error('expected rejection'); }
+      catch (error) { expect(backendFailureCode(error)).toBe('WEB_ORIGIN_INVALID'); }
+    }
+  });
   it.each(['API_BASE_URL', 'BFF_SHARED_SECRET', 'WEB_ORIGIN'])('identifies missing %s without logging environment values', key => {
     try { readBackendConfig({ ...environment, [key]: '' }); throw new Error('expected rejection'); }
     catch (error) { expect(backendFailureCode(error)).toBe(`${key}_MISSING`); }

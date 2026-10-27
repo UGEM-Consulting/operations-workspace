@@ -18,6 +18,7 @@ describe('Environment and database safety', () => {
   it('rejects invalid ports and wildcard CORS', () => {
     expect(() => validateEnvironment({ ...environment, PORT: 99999 })).toThrow();
     expect(() => validateEnvironment({ ...environment, CORS_ORIGINS: '*' })).toThrow();
+    expect(() => validateEnvironment({ ...environment, CORS_ORIGINS: 'https://*.example.test' })).toThrow();
   });
   it('parses booleans and disables automatic schema changes in production', () => {
     const config = validateEnvironment({ ...environment, NODE_ENV: 'production', DATABASE_SSL: 'false' });

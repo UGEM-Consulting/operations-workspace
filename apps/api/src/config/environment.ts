@@ -24,6 +24,21 @@ const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1'];
 const RETIRED_DEMO_SETTINGS = ['DEMO_EMAIL_MODE', 'DEMO_STARTER_MODE', 'DEMO_FICTIONAL_DATA_ONLY', 'DEMO_DEPLOYMENT_ID', 'DEMO_MAILBOX_KEY'];
 // One address, optionally with a display name: "Name <a@b>" or "a@b". No line breaks, lists or nested addresses.
 const SENDER = /^(?:[^<>@\r\n,;"]*<[^<>@\s,;"]+@[^<>@\s,;"]+>|[^<>@\s,;"]+@[^<>@\s,;"]+)$/;
+// URL accepts wildcard hosts such as https://*.example.test; origins must name a literal host or IP address.
+const LITERAL_HOST = /^([a-z0-9-]+\.)*[a-z0-9-]+$|^\[[0-9a-f:.]+\]$/;
+// Comma-separated exact HTTP(S) origins (no path, wildcard or trailing slash), normalized without spaces.
+const originList = (value: string, helpers: Joi.CustomHelpers) => {
+  try {
+    const origins = value.split(',').map((origin) => origin.trim());
+    if (origins.length > 10 || new Set(origins).size !== origins.length || origins.some((origin) => {
+      const url = new URL(origin);
+      return !['http:', 'https:'].includes(url.protocol) || url.origin !== origin || !LITERAL_HOST.test(url.hostname);
+    })) return helpers.error('any.invalid');
+    return origins.join(',');
+  } catch { return helpers.error('any.invalid'); }
+};
+/** Browser origins allowed to send credentialed mutations. The first is the primary origin used in emailed links. */
+export const webOrigins = (env: Pick<Environment, 'WEB_ORIGIN'>) => env.WEB_ORIGIN.split(',');
 const schema = Joi.object({
   EMAIL_DELIVERY: Joi.string().valid('none', 'smtp').default('none'),
   SMTP_HOST: Joi.string().hostname().empty(''),
@@ -42,24 +57,12 @@ const schema = Joi.object({
   SESSION_SECRET: Joi.string().min(32).required(),
   BFF_SHARED_SECRET: Joi.string().min(32).required(),
   SESSION_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(28800),
-  WEB_ORIGIN: Joi.string().uri({ scheme: ['http', 'https'] }).required().custom((value: string, helpers) => {
-    const url = new URL(value);
-    return url.origin === value ? value : helpers.error('any.invalid');
-  }),
+  WEB_ORIGIN: Joi.string().required().custom(originList),
   NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
   PORT: Joi.number().port().default(4000),
   DATABASE_URL: Joi.string().uri({ scheme: ['postgres', 'postgresql'] }).required(),
   DATABASE_SSL: Joi.boolean().default(false),
-  CORS_ORIGINS: Joi.string().required().custom((value: string, helpers) => {
-    try {
-      const origins = value.split(',').map((origin) => origin.trim());
-      if (origins.some((origin) => {
-        const url = new URL(origin);
-        return !['http:', 'https:'].includes(url.protocol) || url.origin !== origin;
-      })) return helpers.error('any.invalid');
-      return origins.join(',');
-    } catch { return helpers.error('any.invalid'); }
-  }),
+  CORS_ORIGINS: Joi.string().required().custom(originList),
 }).unknown(true);
 export function validateEnvironment(input: Record<string, unknown>): Environment {
   if (input.DEPLOYMENT_PURPOSE === 'demo' || RETIRED_DEMO_SETTINGS.some(key => ![undefined, null, '', false, 'false'].includes(input[key] as string))) {
@@ -70,7 +73,7 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   const env = value as Environment;
   env.DEPLOYMENT_PURPOSE ??= env.NODE_ENV === 'production' ? 'production' : 'local';
   if (env.SESSION_SECRET === env.BFF_SHARED_SECRET) throw new EnvironmentError('Session and BFF secrets must differ');
-  if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN.startsWith('https://')) throw new EnvironmentError('Production WEB_ORIGIN must use HTTPS');
+  if (env.NODE_ENV === 'production' && webOrigins(env).some(origin => !origin.startsWith('https://'))) throw new EnvironmentError('Production WEB_ORIGIN values must all use HTTPS');
   if (env.NODE_ENV === 'production' && env.DEPLOYMENT_PURPOSE === 'local') throw new EnvironmentError('Hosted runtime must have an explicit production purpose');
   if (env.EMAIL_DELIVERY === 'smtp') {
     if (!env.SMTP_HOST || !env.EMAIL_FROM) throw new EnvironmentError('SMTP delivery requires SMTP_HOST and a valid EMAIL_FROM');

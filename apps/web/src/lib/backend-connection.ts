@@ -7,11 +7,12 @@ export function readBackendConfig(env: Record<string, string | undefined>) {
   for (const name of ['API_BASE_URL', 'BFF_SHARED_SECRET', 'WEB_ORIGIN']) {
     if (!env[name]?.trim()) throw new BackendConfigurationError(`${name}_MISSING`);
   }
-  function origin(name: 'API_BASE_URL' | 'WEB_ORIGIN') {
+  function origin(name: 'API_BASE_URL' | 'WEB_ORIGIN', value: string) {
     try {
-      const url = new URL(env[name]!.trim());
+      const url = new URL(value.trim());
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
-        || url.pathname !== '/' || (env.NODE_ENV === 'production' && url.protocol !== 'https:')) throw new Error();
+        // URL accepts wildcard hosts such as https://*.example.test; require a literal host or IP address.
+        || url.pathname !== '/' || !/^([a-z0-9-]+\.)*[a-z0-9-]+$|^\[[0-9a-f:.]+\]$/.test(url.hostname) || (env.NODE_ENV === 'production' && url.protocol !== 'https:')) throw new Error();
       return url.origin;
     } catch { throw new BackendConfigurationError(`${name}_INVALID`); }
   }
@@ -19,7 +20,10 @@ export function readBackendConfig(env: Record<string, string | undefined>) {
   if (key.length < 32 || key !== key.trim() || [...key].some(character => character.charCodeAt(0) < 33 || character.charCodeAt(0) > 126)) {
     throw new BackendConfigurationError('BFF_SHARED_SECRET_INVALID');
   }
-  return { base: origin('API_BASE_URL'), key, origin: origin('WEB_ORIGIN') };
+  // WEB_ORIGIN may list several comma-separated origins (for example the Vercel and company domains); the first is primary.
+  const origins = env.WEB_ORIGIN!.split(',').map(value => origin('WEB_ORIGIN', value));
+  if (origins.length > 10 || new Set(origins).size !== origins.length) throw new BackendConfigurationError('WEB_ORIGIN_INVALID');
+  return { base: origin('API_BASE_URL', env.API_BASE_URL!), key, origin: origins[0], origins };
 }
 
 export function backendFailureCode(error: unknown): string {

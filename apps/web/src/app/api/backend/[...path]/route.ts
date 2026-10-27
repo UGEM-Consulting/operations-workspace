@@ -10,9 +10,11 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
   const path = (await context.params).path.join('/');
   if (!allowedEndpoint(req.method, path)) return NextResponse.json({ message: 'Not found' }, { status: 404 });
   try {
-    const { base, key, origin } = backendConfig();
+    const { base, key, origin: primary, origins } = backendConfig();
     const mutating = !['GET', 'HEAD'].includes(req.method);
-    if (mutating && !validMutation(req.headers, origin)) return NextResponse.json({ message: 'Invalid request origin or CSRF protection' }, { status: 403 });
+    if (mutating && !validMutation(req.headers, origins)) return NextResponse.json({ message: 'Invalid request origin or CSRF protection' }, { status: 403 });
+    // Forward the browser's own allowlisted origin so NestJS checks the same value independently.
+    const origin = mutating ? req.headers.get('origin')! : primary;
     const body = mutating ? await req.text() : undefined;
     if (body && Buffer.byteLength(body) > bodyLimit(path)) return NextResponse.json({ message: 'Request too large' }, { status: 413 });
     const suffix = path.startsWith('applicant/') ? 'applicant.sid' : 'operations.sid';
