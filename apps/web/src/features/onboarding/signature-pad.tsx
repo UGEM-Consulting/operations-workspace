@@ -38,7 +38,7 @@ export function SignaturePad({ label, onChange, disabled = false }: { label: str
   <p className="text-sm">{label}</p>
   <canvas ref={canvas} width={WIDTH} height={HEIGHT} role="img" aria-label={`${label} drawing area`}
    onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
-   className={`aspect-[10/3] w-full touch-none rounded-lg border border-dashed border-border bg-white ${disabled ? 'opacity-60' : 'cursor-crosshair'}`}/>
+   className={`aspect-[10/3] w-full touch-none rounded-lg border border-dashed border-input bg-white ${disabled ? 'opacity-60' : 'cursor-crosshair'}`}/>
   <div className="flex items-center justify-between gap-3"><p className="text-xs text-muted-foreground">Sign with your mouse, pen or finger.</p><Button type="button" variant="outline" disabled={disabled} onClick={clear}>Clear signature</Button></div>
  </div>;
 }

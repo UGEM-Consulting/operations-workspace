@@ -11,5 +11,5 @@ export function LogoutButton() {
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     try { await mutate('auth/logout', 'POST'); window.location.assign('/login'); }
     catch { setError('Sign out failed. Try again.'); setPending(false); }
-  }}>{pending ? 'Signing out…' : 'Sign out'}</Button>{error && <p role="alert" className="text-xs text-destructive">{error}</p>}</div>;
+  }}>{pending ? 'Signing out…' : 'Sign out'}</Button>{error && <p role="alert" className="text-xs text-danger">{error}</p>}</div>;
 }

@@ -1,6 +1,6 @@
-# Operations Workspace
+# UGEM Workspace
 
-The workspace supports simple invitation links, verified applicant claiming, manager review, approval/rejection, field-specific correction requests and secure resubmission to the existing Operations Workspace foundation. Next.js handles presentation and a same-origin server boundary; NestJS owns authentication, permissions, user management, and PostgreSQL. Manual IT onboarding checklists and manager completion notices are implemented. New hires upload a selfie and an ID selfie and e-sign the company NDA/SOP during the application ([onboarding documents](docs/onboarding-documents.md)). External provisioning/messaging and reopening closed applications remain out of scope. Applicants are not internal staff users.
+The workspace supports simple invitation links, verified applicant claiming, manager review, approval/rejection, field-specific correction requests and secure resubmission to the existing UGEM Workspace foundation. Next.js handles presentation and a same-origin server boundary; NestJS owns authentication, permissions, user management, and PostgreSQL. Manual IT onboarding checklists and manager completion notices are implemented. New hires upload a selfie and an ID selfie and e-sign the company NDA/SOP during the application ([onboarding documents](docs/onboarding-documents.md)). External provisioning/messaging and reopening closed applications remain out of scope. Applicants are not internal staff users.
 
 ## Stack and architecture
 

@@ -1,4 +1,4 @@
-# UGEM Operations Workspace branding
+# UGEM Workspace branding
 
 ## Verified source (October 21, 2026)
 
@@ -26,7 +26,7 @@ The browser connection failed before navigation, so exact rendered spacing, resp
 
 ## Contrast verification
 
-WCAG relative-luminance calculations against the declared tokens (not a full rendered accessibility audit): normal text/background 13.76:1 light / 16.60:1 dark; muted text/card 6.10:1 / 7.82:1; primary button text 6.44:1 / 7.59:1; primary text/accent 5.79:1 / 5.72:1. Success/warning/error text on their semantic surfaces exceeds 5.7:1 in both modes. Input boundaries/background exceed 3.3:1 and focus rings/card exceed 6.4:1. Original orange is used with black text on the dashboard CTA, not white small text.
+Design system v2 (October 27, 2026) replaced the palette with warm-neutral, orange, blue, green, amber and red ramps plus semantic roles in `apps/web/src/app/globals.css`; the published design system documents each role. WCAG relative-luminance checks on the declared tokens (not a full rendered audit): text/card 16.4:1 light, 15.2:1 dark; muted text/card 6.3:1 light, 6.1:1 dark; primary button text 6.0:1 light, 7.1:1 dark; control edges (`input`) 4.4:1 on card light, 3.8:1 dark; focus ring 3.8:1 or better on every surface; status text on its own background 6.9:1 or better in both themes; sidebar labels 6.1:1 or better. Hard-coded sidebar and dashboard colors were replaced with `sidebar-*` roles, outline buttons now use the `input` edge, and error text uses the `danger` role. The signature pad stays white with dark ink in both themes because the drawn image is stored as a document record.
 
 ## Outstanding manual visual checks
 

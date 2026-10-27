@@ -40,7 +40,7 @@ export function Dialog({ open, onClose, title, description, busy = false, protec
   if (!open) return null;
   return <dialog ref={ref} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
     onCancel={event => { event.preventDefault(); close(); }}
-    className="fixed inset-0 m-auto max-h-[90dvh] w-[calc(100%_-_2rem)] max-w-xl overflow-y-auto rounded-2xl border bg-card p-0 text-card-foreground shadow-xl backdrop:bg-black/60">
+    className="fixed inset-0 m-auto max-h-[90dvh] w-[calc(100%_-_2rem)] max-w-xl overflow-y-auto rounded-2xl border bg-card p-0 text-card-foreground shadow-xl backdrop:bg-overlay">
     <div className="flex items-start justify-between gap-4 border-b p-5 sm:p-6">
       <div><h2 ref={heading} tabIndex={-1} id={`${id}-title`} className="text-xl font-semibold outline-none">{title}</h2>{description && <p id={`${id}-description`} className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>}</div>
       <Button type="button" variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label={`Close ${title.toLowerCase()}`} onClick={close}><X aria-hidden="true" className="size-5" /></Button>

@@ -66,7 +66,7 @@ function DocumentCard({ doc, consent, canSign, disabled, onRecord, setWorking }:
  }
  return <article className="space-y-4 rounded-lg border border-border p-4">
   <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-medium">{doc.title}</h4><p className="text-xs text-muted-foreground">{doc.label} · version {doc.version} · {doc.pageCount} {doc.pageCount === 1 ? 'page' : 'pages'}</p></div>
-   <a href={`/api/backend/applicant/documents/${doc.id}/file`} target="_blank" rel="noopener" onClick={() => setOpened(true)} className="inline-flex min-h-11 items-center rounded-md border border-border px-4 text-sm hover:bg-accent">Open document</a></div>
+   <a href={`/api/backend/applicant/documents/${doc.id}/file`} target="_blank" rel="noopener" onClick={() => setOpened(true)} className="inline-flex min-h-11 items-center rounded-md border border-input px-4 text-sm hover:bg-accent">Open document</a></div>
   {doc.signed && <p className="text-sm text-success">{doc.requiresSignature ? 'Signed' : 'Acknowledged'} {new Date(doc.signed.signedAt).toLocaleString()}{current ? '' : ` (version ${doc.signed.version})`} · <a className="underline" href={`/api/backend/applicant/documents/${doc.signed.documentId}/signed`} target="_blank" rel="noopener">Download signed copy</a></p>}
   {!current && canSign && <div className="space-y-4 border-t border-border pt-4">
    {doc.signed && <p className="text-sm text-warning">A newer version was published. Review and sign version {doc.version}.</p>}

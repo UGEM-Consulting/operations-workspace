@@ -13,8 +13,8 @@ export function Navigation({ items, collapsed = false, onNavigate }: { items: { 
     {items.map(({ key, href, label }) => {
       const Icon = icons[key] ?? LayoutDashboard;
       return <Link key={href} href={href} onClick={onNavigate} title={collapsed ? label : undefined} aria-label={collapsed ? label : undefined} aria-current={activeHref === href ? "page" : undefined}
-        className={cn("flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3 py-3 text-sm text-[#c6c2bf] transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-[#ffad87]", activeHref === href && "bg-white/10 font-semibold text-white", collapsed && 'justify-center px-1')}>
-        <Icon aria-hidden="true" className={cn("size-[18px] shrink-0", activeHref === href && 'text-[#ffad87]')} />{!collapsed && label}
+        className={cn("flex min-h-12 shrink-0 items-center gap-3 rounded-xl px-3 py-3 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-hover hover:text-sidebar-active-foreground focus-visible:outline-sidebar-accent", activeHref === href && "bg-sidebar-active font-semibold text-sidebar-active-foreground", collapsed && 'justify-center px-1')}>
+        <Icon aria-hidden="true" className={cn("size-[18px] shrink-0", activeHref === href && 'text-sidebar-accent')} />{!collapsed && label}
       </Link>;
     })}
   </nav>;

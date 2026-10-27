@@ -13,7 +13,7 @@ async function bootstrap(): Promise<void> {
   const originalClose = app.close.bind(app);
   app.close = async () => { await closeSessions(); await originalClose(); };
   configureApp(app, config.getOrThrow<string>('CORS_ORIGINS'));
-  const document = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle('Operations Workspace API')
+  const document = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle('UGEM Workspace API')
     .setDescription('Internal identity and infrastructure endpoints').setVersion('1.0').build());
   SwaggerModule.setup('api/docs', app, document);
   await app.listen(config.getOrThrow<number>('PORT'), '0.0.0.0');
