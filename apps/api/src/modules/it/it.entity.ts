@@ -1,14 +1,21 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-export const TASK_STATUSES = ['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'] as const;
+// Request progress is derived from its tasks. NOT_NEEDED is a task outcome for optional tasks only.
+export const REQUEST_STATUSES = ['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'] as const;
+export type RequestStatus = typeof REQUEST_STATUSES[number];
+export const TASK_STATUSES = [...REQUEST_STATUSES,'NOT_NEEDED'] as const;
 export type TaskStatus = typeof TASK_STATUSES[number];
-export const IT_CHECKLIST = [
+export const IT_CHECKLIST: readonly {key:string;label:string;description:string;optional?:boolean}[] = [
  {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Create the Workspace account using the American display name and record the company email.'},
  {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Confirm membership in the approved Dispatch group.'},
  {key:'RINGCENTRAL',label:'RingCentral',description:'Confirm setup and record the actual assigned RingCentral phone number separately.'},
  {key:'SMS',label:'SMS',description:'Confirm approved RingCentral SMS capability and settings.'},
  {key:'CALL_RECORDING',label:'Call recording',description:'Confirm the company-approved RingCentral recording configuration.'},
  {key:'BUSINESS_SOFTWARE',label:'Approved business software',description:'Confirm only the business software authorized for this dispatcher. List the software in notes; never store credentials.'},
-] as const;
+ {key:'EQUIPMENT',label:'Equipment',description:'Confirm the headset and laptop are ready, or mark Not needed when the dispatcher uses their own.',optional:true},
+];
+export function isOptionalTask(key:string){return IT_CHECKLIST.some(task=>task.key===key&&task.optional);}
+/** Completed, or Not needed for an optional task. Setup completes when every task is done. */
+export function taskDone(task:Pick<ItOnboardingTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&isOptionalTask(task.key));}
 export interface ItProfile {
  legalFirstName:string|null;legalLastName:string|null;
  preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;
@@ -59,7 +66,7 @@ export class PortalNotification {
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) readAt!:Date|null;
 }
-export function itStatus(request: Pick<ItOnboardingRequest,'completedAt'>, tasks:Pick<ItOnboardingTask,'status'>[]):TaskStatus {
+export function itStatus(request: Pick<ItOnboardingRequest,'completedAt'>, tasks:Pick<ItOnboardingTask,'status'>[]):RequestStatus {
  if(request.completedAt)return 'COMPLETED';
  if(tasks.some(task=>task.status==='BLOCKED'))return 'BLOCKED';
  return tasks.some(task=>task.status!=='PENDING')?'IN_PROGRESS':'PENDING';

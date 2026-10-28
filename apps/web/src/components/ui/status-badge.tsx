@@ -8,7 +8,7 @@ const tones: Record<StatusTone, string> = {
 const statuses: Record<string, [label: string, tone: StatusTone]> = {
   INVITED: ['Invited', 'neutral'], DRAFT: ['Draft', 'neutral'], SUBMITTED: ['Submitted', 'info'], RESUBMITTED: ['Resubmitted', 'info'],
   CHANGES_REQUESTED: ['Changes requested', 'warning'], APPROVED: ['Approved', 'success'], REJECTED: ['Rejected', 'danger'],
-  PENDING: ['Pending', 'neutral'], OPENED: ['Opened', 'info'], IN_PROGRESS: ['In progress', 'info'], BLOCKED: ['Blocked', 'warning'], COMPLETED: ['Completed', 'success'],
+  PENDING: ['Pending', 'neutral'], OPENED: ['Opened', 'info'], IN_PROGRESS: ['In progress', 'info'], BLOCKED: ['Blocked', 'warning'], COMPLETED: ['Completed', 'success'], NOT_NEEDED: ['Not needed', 'neutral'],
   ACTIVE: ['Active', 'success'], INACTIVE: ['Inactive', 'neutral'], REVOKED: ['Revoked', 'danger'], EXPIRED: ['Expired', 'neutral'],
 };
 

@@ -408,7 +408,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  }
  it('creates one IT request/checklist in the approval transaction using approved employment and American names',async()=>{
   const flow=await approvedItFlow();const detail=await itAgent.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
-  expect(detail.body.tasks).toHaveLength(6);expect(detail.body.tasks.every((task:{status:string})=>task.status==='PENDING')).toBe(true);
+  expect(detail.body.tasks).toHaveLength(7);expect(detail.body.tasks.at(-1)).toMatchObject({key:'EQUIPMENT',optional:true});expect(detail.body.tasks.every((task:{status:string})=>task.status==='PENDING')).toBe(true);
   expect(detail.body.request.profile).toMatchObject({mcName:'Fictional Approved MC',teamLead:'Fictional Approved Lead',preferredAmericanFirstName:answers.preferredAmericanFirstName,preferredAmericanLastName:answers.preferredAmericanLastName,proposedDisplayName:'Alex Demo',personalPhoneNumber:answers.personalPhoneNumber,workPhoneNumber:answers.workPhoneNumber});
   expect(detail.body.request.workPhoneVerifiedAt).toBeNull();expect(detail.body.request.assignedRingCentralPhoneNumber).toBeNull();expect(JSON.stringify(detail.body)).not.toContain('Internal approval note');
   await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true}).expect(409);
@@ -445,7 +445,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
- const undoStaffMfa=async()=>{await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
+ // Steps back past the later optional-equipment and staff MFA migrations.
+ const undoStaffMfa=async()=>{await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
  it('rolls back and reapplies the documents, company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
   await undoStaffMfa();
   await db.undoLastMigration();
@@ -458,7 +459,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect(await latestMigration()).toBe('StaffMfa1792720000000');
+  expect(await latestMigration()).toBe('OptionalEquipmentTask1792740000000');
   expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
  });
  it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
@@ -467,7 +468,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await db.query("UPDATE deployment_identity SET purpose='demo'");
   try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
   finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
-  expect(await latestMigration()).toBe('StaffMfa1792720000000');
+  expect(await latestMigration()).toBe('OptionalEquipmentTask1792740000000');
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
@@ -493,6 +494,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // The responsible manager sees the created company accounts as employee details.
   const employee=await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers).expect(200);
   expect(employee.body.itOnboarding).toMatchObject({status:'COMPLETED',companyEmail:'alex.demo@example.test',workPhoneNumber:'+1 202 555 0190'});
+  await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded equipment tasks');
   await undoStaffMfa();
   await db.undoLastMigration();
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded company emails');
@@ -504,6 +506,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
   let data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190',companyEmail:'alex.demo@example.test'}).expect(200);
   for(const task of data.body.tasks.slice(0,5))data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED',notes:'Fictional manual check completed'}).expect(200);
+  // Only the optional Equipment task can be marked not needed, and that counts as done.
+  await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/GOOGLE_WORKSPACE`).set(headers).send({version:data.body.request.version,status:'NOT_NEEDED'}).expect(400);
+  data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/EQUIPMENT`).set(headers).send({version:data.body.request.version,status:'NOT_NEEDED'}).expect(200);
+  expect(data.body.tasks.find((task:{key:string})=>task.key==='EQUIPMENT')).toMatchObject({optional:true,status:'NOT_NEEDED'});expect(data.body.request.completedAt).toBeNull();
   const last=data.body.tasks[5];const version=data.body.request.version;
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${last.key}`).set(headers).send({version,status:'COMPLETED'}).expect(400);
   expect((await manager.get('/api/notifications').set(headers)).body.items).toHaveLength(0);

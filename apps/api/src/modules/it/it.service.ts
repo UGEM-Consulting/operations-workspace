@@ -6,7 +6,7 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { photoFor } from '../documents/requirements';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, TaskUpdateDto } from './it.dto';
-import { IT_CHECKLIST, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, itStatus, PortalNotification } from './it.entity';
+import { IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, itStatus, PortalNotification, taskDone } from './it.entity';
 
 const statusSql=`CASE WHEN r."completedAt" IS NOT NULL THEN 'COMPLETED'
  WHEN EXISTS (SELECT 1 FROM it_onboarding_tasks t WHERE t."requestId"=r.id AND t.status='BLOCKED') THEN 'BLOCKED'
@@ -33,13 +33,17 @@ export class ItService {
  }
  private async detail(em:EntityManager,request:ItOnboardingRequest){
   const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:request.id});
-  if(tasks.length!==IT_CHECKLIST.length)throw new ConflictException('The checklist is incomplete. Contact an administrator.');
+  this.checklistComplete(tasks);
   const activity=await em.getRepository(ItOnboardingActivity).find({where:{requestId:request.id},order:{createdAt:'ASC'}});
   // This projection deliberately excludes application revisions, applicant sessions and reviewer comments.
   // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
   const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId});
   const profilePhoto=!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
-  return {request:{...request,status:itStatus(request,tasks),profilePhoto},tasks:IT_CHECKLIST.map(template=>({...tasks.find(task=>task.key===template.key)!,label:template.label,description:template.description})),activity};
+  return {request:{...request,status:itStatus(request,tasks),profilePhoto},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
+ }
+ // Every required task must exist. An optional task added later is missing only on requests created before it existed.
+ private checklistComplete(tasks:Pick<ItOnboardingTask,'key'>[]){
+  if(IT_CHECKLIST.some(template=>!template.optional&&!tasks.some(task=>task.key===template.key)))throw new ConflictException('The checklist is incomplete. Contact an administrator.');
  }
  async get(user:User,id:string){this.allowIt(user);const request=await this.db.getRepository(ItOnboardingRequest).findOneBy({id});if(!request)throw new NotFoundException();await this.approved(this.db.manager,request);return this.detail(this.db.manager,request);}
  private async locked(em:EntityManager,id:string,version:number){
@@ -71,6 +75,7 @@ export class ItService {
   this.allowIt(user);await onboardingLimit(this.db,'it-task:'+user.id,120,60);
   if(!IT_CHECKLIST.some(template=>template.key===key))throw new NotFoundException();
   if(input.status==='BLOCKED'&&!input.notes.trim())throw new BadRequestException('Provide a reason for a blocked task.');
+  if(input.status==='NOT_NEEDED'&&!isOptionalTask(key))throw new BadRequestException('Only optional tasks can be marked not needed.');
   return this.db.transaction(async em=>{
    const request=await this.locked(em,id,input.version);
    const task=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key});
@@ -79,8 +84,8 @@ export class ItService {
    const previous=task.status;task.status=input.status;task.notes=input.notes;task.updatedBy=user.id;await em.save(task);
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status}});
    const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:id});
-   if(tasks.length!==IT_CHECKLIST.length)throw new ConflictException('The checklist is incomplete. Contact an administrator.');
-   if(tasks.every(item=>item.status==='COMPLETED')){
+   this.checklistComplete(tasks);
+   if(tasks.every(taskDone)){
     if((request.profile.workPhoneNumber?.trim()&&!request.workPhoneVerifiedAt)||!request.assignedRingCentralPhoneNumber||!request.companyEmail)throw new BadRequestException('Record the company email and assigned RingCentral number, and verify any existing applicant-provided work phone, before completing onboarding.');
     request.completedAt=new Date();
     await em.getRepository(PortalNotification).save({recipientId:request.managerId,requestId:id,kind:'IT_ONBOARDING_COMPLETED'});
