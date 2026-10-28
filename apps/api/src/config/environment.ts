@@ -6,6 +6,7 @@ export interface Environment {
   EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string;
   STORAGE_DRIVER: 'none' | 'local' | 'gcs'; STORAGE_LOCAL_DIR?: string; GCS_BUCKET?: string; GCS_CREDENTIALS_BASE64?: string;
   MFA_ENCRYPTION_KEY?: string;
+  TELEGRAM_DELIVERY: 'none' | 'bot'; TELEGRAM_BOT_TOKEN?: string; TELEGRAM_BOT_USERNAME?: string; TELEGRAM_API_BASE: string;
 }
 /** Decodes the base64 service-account key; null when it is not a usable service-account JSON. Never logs it. */
 export function serviceAccountCredentials(encoded: string): { client_email: string; private_key: string; project_id?: string } | null {
@@ -20,6 +21,7 @@ export function serviceAccountCredentials(encoded: string): { client_email: stri
 // Messages name settings and rules only, never values, so operators can safely see them in deploy logs.
 export class EnvironmentError extends Error {}
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1'];
+const TELEGRAM_API = 'https://api.telegram.org';
 // Settings of the retired fictional demo deployment. Their presence means a service still configured for it.
 const RETIRED_DEMO_SETTINGS = ['DEMO_EMAIL_MODE', 'DEMO_STARTER_MODE', 'DEMO_FICTIONAL_DATA_ONLY', 'DEMO_DEPLOYMENT_ID', 'DEMO_MAILBOX_KEY'];
 // One address, optionally with a display name: "Name <a@b>" or "a@b". No line breaks, lists or nested addresses.
@@ -53,6 +55,11 @@ const schema = Joi.object({
   GCS_CREDENTIALS_BASE64: Joi.string().base64().max(20000).empty(''),
   // 32 random bytes, base64. Encrypts staff TOTP secrets at rest; MfaService requires it in production.
   MFA_ENCRYPTION_KEY: Joi.string().base64().empty(''),
+  // Applicant status updates by Telegram through the company bot (polled on demand; no webhook).
+  TELEGRAM_DELIVERY: Joi.string().valid('none', 'bot').default('none'),
+  TELEGRAM_BOT_TOKEN: Joi.string().pattern(/^\d{5,15}:[A-Za-z0-9_-]{30,64}$/).empty(''),
+  TELEGRAM_BOT_USERNAME: Joi.string().pattern(/^[A-Za-z0-9_]{3,29}[Bb][Oo][Tt]$/).empty(''),
+  TELEGRAM_API_BASE: Joi.string().uri({ scheme: ['http', 'https'] }).default(TELEGRAM_API),
   DEPLOYMENT_PURPOSE: Joi.string().valid('local', 'staging', 'production'),
   SESSION_SECRET: Joi.string().min(32).required(),
   BFF_SHARED_SECRET: Joi.string().min(32).required(),
@@ -99,5 +106,13 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   if (env.MFA_ENCRYPTION_KEY && Buffer.from(env.MFA_ENCRYPTION_KEY, 'base64').length !== 32) throw new EnvironmentError('MFA_ENCRYPTION_KEY must be 32 random bytes encoded as base64');
   if (env.MFA_ENCRYPTION_KEY && [env.SESSION_SECRET, env.BFF_SHARED_SECRET].includes(env.MFA_ENCRYPTION_KEY)) throw new EnvironmentError('MFA_ENCRYPTION_KEY must differ from the session and BFF secrets');
   if (env.STORAGE_DRIVER === 'local' && !env.STORAGE_LOCAL_DIR) throw new EnvironmentError('STORAGE_DRIVER=local requires STORAGE_LOCAL_DIR');
+  if (env.TELEGRAM_DELIVERY === 'bot') {
+    if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_BOT_USERNAME) throw new EnvironmentError('TELEGRAM_DELIVERY=bot requires TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME');
+    // Like SMTP: production talks only to Telegram; development and tests only to a local fake API.
+    const host = new URL(env.TELEGRAM_API_BASE).hostname.replace(/^\[|\]$/g, '');
+    if (env.NODE_ENV === 'production' ? env.TELEGRAM_API_BASE !== TELEGRAM_API : !LOCAL_HOSTS.includes(host)) {
+      throw new EnvironmentError(env.NODE_ENV === 'production' ? 'Production TELEGRAM_API_BASE must be the Telegram Bot API' : 'Outside production, TELEGRAM_API_BASE may only target a local test server on localhost');
+    }
+  }
   return env;
 }

@@ -130,6 +130,8 @@ The root `.env.example` is a reference only. NestJS loads `apps/api/.env`; Next.
 | SMTP_HOST / SMTP_PORT | API | `smtp.gmail.com` / `465` for Google Workspace; `localhost` / `1025` for local Mailpit |
 | SMTP_USER / SMTP_PASSWORD | API | Sending mailbox and its app password; secret, set only in the host's environment settings |
 | EMAIL_FROM | API | Sender, e.g. `UGEM Operations <onboarding@ugemconsulting.com>` |
+| TELEGRAM_DELIVERY | API | `none` (default) or `bot`: applicant status updates through the company Telegram bot. See [applicant updates](docs/applicant-updates.md) |
+| TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_USERNAME | API | Bot token from BotFather (secret, host settings only) and the bot username used in connect links |
 | MFA_ENCRYPTION_KEY | API | 32 random bytes as base64; encrypts staff authenticator secrets. Required by the production API; `npm run setup:local` generates a local one. See [staff two-step verification](#staff-two-step-verification) |
 | DEPLOYMENT_PURPOSE | API, web | API: `local` (development), `production` or `staging` (hosted; staging requires `NODE_ENV=production`); `demo` was retired and is refused. Web: set `staging` only on the staging deployment for its banner. See [staging](docs/staging.md) |
 

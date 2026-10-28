@@ -8,7 +8,7 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
 
  const undoApplicationMigration=async()=>{
   let [latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
-  while(['OptionalEquipmentTask1792740000000','StaffMfa1792720000000','OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
+  while(['OptionalEquipmentTask1792740000000','ApplicantUpdates1792730000000','StaffMfa1792720000000','OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
    await db.undoLastMigration();[latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
   }
   return db.undoLastMigration();

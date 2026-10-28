@@ -69,3 +69,8 @@ export class ApplicationQueryDto {
  @IsIn(['updatedAt','submittedAt','name','status']) sort = 'updatedAt';
  @IsIn(['ASC','DESC']) direction: 'ASC' | 'DESC' = 'DESC';
 }
+/** How the applicant wants to hear about decisions; at least one channel. */
+export class UpdatePreferencesDto {
+ @IsBoolean() email!: boolean;
+ @IsBoolean() telegram!: boolean;
+}

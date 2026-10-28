@@ -10,7 +10,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'PATCH' && /^it\/onboarding\/[0-9a-f-]{36}\/(contact|tasks\/[A-Z_]+)$/.test(path)) ||
     (method === 'POST' && /^notifications\/[0-9a-f-]{36}\/read$/.test(path)) ||
     (method === 'POST' && ['applicant/begin','applicant/verify','applicant/submit','applicant/logout','onboarding/invitations'].includes(path)) ||
-    (method === 'PATCH' && path === 'applicant/draft') ||
+    (method === 'PATCH' && ['applicant/draft','applicant/updates'].includes(path)) ||
+    // Applicant status updates: chosen channels and the Telegram connect link.
+    (method === 'GET' && path === 'applicant/updates') ||
+    (method === 'POST' && ['applicant/updates/telegram','applicant/updates/telegram/check','applicant/updates/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && ['applicant/application','onboarding/invitations','onboarding/applications','onboarding/review-queue','onboarding/summary'].includes(path)) ||
     (method === 'GET' && /^onboarding\/applications\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'POST' && /^onboarding\/applications\/[0-9a-f-]{36}\/reviews$/.test(path)) ||

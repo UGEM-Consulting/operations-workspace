@@ -12,6 +12,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
  // Recreates the state of a starter database converted to the demo: real operator email, fictional staff and data.
  async function convertedStarter(extraUsers:string[]=[]){
   if(await latest()==='OptionalEquipmentTask1792740000000'){await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();}
+  if(await latest()==='ApplicantUpdates1792730000000'){await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();}
   if(await latest()==='StaffMfa1792720000000'){await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();}
   if(await latest()==='OnboardingDocuments1792710000000'){await db.query('TRUNCATE company_documents,applicant_photos CASCADE');await db.undoLastMigration();}
   if(await latest()==='CompanyEmail1792700000000'){await db.query('TRUNCATE it_onboarding_requests CASCADE');await db.undoLastMigration();}

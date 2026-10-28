@@ -445,8 +445,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
- // Steps back past the later optional-equipment and staff MFA migrations.
- const undoStaffMfa=async()=>{await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
+ // Steps back past the later optional-equipment, applicant-updates and staff MFA migrations.
+ const undoStaffMfa=async()=>{await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
  it('rolls back and reapplies the documents, company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
   await undoStaffMfa();
   await db.undoLastMigration();

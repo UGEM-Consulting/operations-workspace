@@ -45,16 +45,23 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
     if (this.pending.size) await Promise.race([Promise.allSettled([...this.pending]), new Promise(resolve => setTimeout(resolve, SHUTDOWN_DRAIN_MS).unref())]);
   }
   /** Sends one verification code, retrying transient failures. Never throws; returns whether it was accepted. */
-  async sendVerificationCode(to: string, code: string): Promise<boolean> {
-    if (!this.transport) return false;
-    const message = { from: this.from, to, ...verificationEmail(code) };
+  sendVerificationCode(to: string, code: string): Promise<boolean> {
+    return this.send(to, verificationEmail(code), 'Verification').then(result => result === true);
+  }
+  /** Sends one application status update. Never throws; returns true or a safe failure code. */
+  sendStatusUpdate(to: string, content: { subject: string; text: string; html: string }): Promise<true | string> {
+    return this.send(to, content, 'Status update');
+  }
+  private async send(to: string, content: { subject: string; text: string; html: string }, kind: string): Promise<true | string> {
+    if (!this.transport) return 'DISABLED';
+    const message = { from: this.from, to, ...content };
     for (let attempt = 0; ; attempt++) {
       try { await this.transport.sendMail(message); return true; }
       catch (error) {
         const failure = deliveryFailureCode(error);
         if (PERMANENT_FAILURE_CODES.has(failure) || attempt >= RETRY_DELAYS_MS.length) {
-          this.logger.error(`Verification email delivery failed: ${failure}`);
-          return false;
+          this.logger.error(`${kind} email delivery failed: ${failure}`);
+          return failure;
         }
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
       }
@@ -64,7 +71,7 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
   runInBackground(task: () => Promise<void>): void {
     // setImmediate defers even the first query/connection until the current request has been answered.
     const run: Promise<void> = new Promise<void>(resolve => setImmediate(resolve)).then(task)
-      .catch(() => this.logger.error('Background applicant verification task failed'))
+      .catch(() => this.logger.error('Background applicant email task failed'))
       .finally(() => this.pending.delete(run));
     this.pending.add(run);
   }

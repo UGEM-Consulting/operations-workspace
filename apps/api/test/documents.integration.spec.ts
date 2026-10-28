@@ -187,6 +187,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   await publishAll();
   // The newer staff MFA migration goes first; it refuses rollback while enrolments exist.
   await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();
+  await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();
   await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard company documents');
   await db.runMigrations();

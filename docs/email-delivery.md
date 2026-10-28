@@ -64,3 +64,7 @@ Start Mailpit (`mailpit --listen 127.0.0.1:8025 --smtp 127.0.0.1:1025`), restart
 ## Tests
 
 `test/email-delivery.spec.ts` covers configuration validation, retired demo settings, code format, message content, retries, shutdown draining and log sanitising. `test/email-delivery.integration.spec.ts` (requires `TEST_DATABASE_URL`) covers fragment invitation links, sent and failed outcomes, identical responses for unmatched emails, no delivery for unknown, revoked or claimed invitations, and fictional-only enforcement outside production. It uses a captured transport rather than a real SMTP server.
+
+## Status update emails
+
+The same mailbox and rules also send applicant decision updates (changes requested, approved, rejected) when the applicant chose email. See [applicant updates](applicant-updates.md).
