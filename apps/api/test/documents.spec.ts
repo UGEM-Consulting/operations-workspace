@@ -36,6 +36,15 @@ describe('document storage configuration', () => {
     expect(new StorageService(new ConfigService(validateEnvironment(gcs))).enabled).toBe(true);
     expect(new StorageService(new ConfigService(validateEnvironment({ ...base, NODE_ENV: 'test' }))).enabled).toBe(false);
   });
+  it('lets staging run without a bucket, but never with local files or outside a hosted runtime', () => {
+    const staging = { ...base, NODE_ENV: 'production', DEPLOYMENT_PURPOSE: 'staging' };
+    expect(new StorageService(new ConfigService(validateEnvironment(staging))).enabled).toBe(false);
+    expect(new StorageService(new ConfigService(validateEnvironment({ ...gcs, DEPLOYMENT_PURPOSE: 'staging' }))).enabled).toBe(true);
+    expect(() => validateEnvironment({ ...staging, STORAGE_DRIVER: 'local', STORAGE_LOCAL_DIR: '.storage' })).toThrow('Production storage');
+    expect(() => validateEnvironment({ ...staging, NODE_ENV: 'development' })).toThrow('requires NODE_ENV=production');
+    expect(() => validateEnvironment({ ...staging, WEB_ORIGIN: 'http://staging.example.test' })).toThrow('HTTPS');
+    expect(() => validateEnvironment({ ...base, NODE_ENV: 'production', DEPLOYMENT_PURPOSE: 'local' })).toThrow('production or staging');
+  });
 });
 describe('signed copies', () => {
   it('appends a certificate after the unchanged original pages', async () => {

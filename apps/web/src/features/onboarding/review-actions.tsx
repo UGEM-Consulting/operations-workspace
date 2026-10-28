@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Notice } from '@/components/ui/notice';
+import { Notice } from '@/components/ui/alert';
 import { mutate } from '@/lib/client-api';
 import { SignaturePad } from './signature-pad';
 import { documentItemLabels, fieldLabels, FieldName, inputClass, itemLabels, RequestableItem, StaffDocuments } from './types';

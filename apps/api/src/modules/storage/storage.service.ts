@@ -22,8 +22,9 @@ export class StorageService {
   private bucket: Promise<Bucket> | null = null;
   constructor(private readonly config: ConfigService) {
     this.driver = config.get('STORAGE_DRIVER') ?? 'none';
-    // Production must never run without private storage: photos and signatures are required there.
-    if (config.get('NODE_ENV') === 'production' && this.driver !== 'gcs') throw new EnvironmentError('The production API requires STORAGE_DRIVER=gcs with GCS_BUCKET and GCS_CREDENTIALS_BASE64');
+    // Production must never run without private storage: photos and signatures are required there. Staging may run
+    // without a bucket (photos and signatures are then not collected), and must never use the production bucket.
+    if (config.get('NODE_ENV') === 'production' && config.get('DEPLOYMENT_PURPOSE') !== 'staging' && this.driver !== 'gcs') throw new EnvironmentError('The production API requires STORAGE_DRIVER=gcs with GCS_BUCKET and GCS_CREDENTIALS_BASE64');
     this.directory = this.driver === 'local' ? resolve(config.getOrThrow<string>('STORAGE_LOCAL_DIR')) : null;
   }
   /** Photos and document signatures are only collected when storage is configured (always in production). */

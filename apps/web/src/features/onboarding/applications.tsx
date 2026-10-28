@@ -3,8 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ApplicationList, applicationStatuses, inputClass } from './types';
 import { PageHeader, EmptyState } from '@/components/workspace-ui';
-import { statusLabel } from '@/components/ui/status-badge';
-import { StatusBadge } from './status-badge';
+import { StatusBadge, statusLabel } from '@/components/ui/status-badge';
 export function Applications({data,filters}:{data:ApplicationList;filters:Record<string,string>}) {
  const pageLink=(page:number)=>`/onboarding/applications?${new URLSearchParams({...filters,page:String(page)})}`;
  return <div className="space-y-6">

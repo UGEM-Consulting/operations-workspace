@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
-import { Notice } from '@/components/ui/notice';
+import { Notice } from '@/components/ui/alert';
 import { PrivateImage } from '@/components/ui/private-image';
 import { mutate } from '@/lib/client-api';
 import { photoForUpload } from './photo';
@@ -35,7 +35,7 @@ export function ApplicantDocuments({ record, onRecord, busy }: { record: Applica
    <div><h3 id="photos-heading" className="font-semibold">Photos *</h3><p className="text-sm text-muted-foreground">Both photos are required. Use your phone camera or choose an existing photo.</p></div>
    <div className="grid gap-4 sm:grid-cols-2">{PHOTOS.map(photo => {
     const uploaded = docs.photos[photo.key], editable = record.editableFields.includes(photo.item);
-    return <div key={photo.item} className={`space-y-3 rounded-lg border p-4 ${record.correction?.requestedFields.includes(photo.item) ? 'border-warning/50' : 'border-border'}`}>
+    return <div key={photo.item} className={`space-y-3 rounded-md border p-4 ${record.correction?.requestedFields.includes(photo.item) ? 'border-warning/50' : 'border-border'}`}>
      <p className="font-medium">{photo.title}</p><p className="text-sm text-muted-foreground">{photo.help}</p>
      {uploaded ? <PrivateImage src={`/api/backend/applicant/photos/${photo.path}?v=${photoVersion}-${uploaded}`} alt={`Your ${photo.title.toLowerCase()}`} className="max-h-60 rounded-md border object-contain"/>
       : <p className="text-sm text-warning">Not uploaded yet.</p>}
@@ -47,7 +47,7 @@ export function ApplicantDocuments({ record, onRecord, busy }: { record: Applica
   </section>
   {docs.items.length > 0 && <section className="space-y-4" aria-labelledby="documents-heading">
    <div><h3 id="documents-heading" className="font-semibold">Documents *</h3><p className="text-sm text-muted-foreground">Open and read each document in full, then sign or acknowledge it. You can download a signed copy afterwards.</p></div>
-   {docs.items.some(doc => !doc.signed) && canSign && <label className="flex items-start gap-3 rounded-lg border border-border p-4 text-sm"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} className="mt-1"/><span><span className="block font-medium">Consent to sign electronically</span>{docs.consent.text}<span lang="ru" className="mt-2 block text-muted-foreground">{docs.consent.translation}</span></span></label>}
+   {docs.items.some(doc => !doc.signed) && canSign && <label className="flex items-start gap-3 rounded-md border border-border p-4 text-sm"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} className="mt-1"/><span><span className="block font-medium">Consent to sign electronically</span>{docs.consent.text}<span lang="ru" className="mt-2 block text-muted-foreground">{docs.consent.translation}</span></span></label>}
    {docs.items.map(doc => <DocumentCard key={doc.id} doc={doc} consent={consent} canSign={canSign} disabled={disabled} onRecord={onRecord} setWorking={setWorking}/>)}
   </section>}
   <Notice message={message} error={failed}/>
@@ -64,7 +64,7 @@ function DocumentCard({ doc, consent, canSign, disabled, onRecord, setWorking }:
   catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to sign. Please try again.'); setConfirming(false); }
   finally { setBusy(false); setWorking(''); }
  }
- return <article className="space-y-4 rounded-lg border border-border p-4">
+ return <article className="space-y-4 rounded-md border border-border p-4">
   <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-medium">{doc.title}</h4><p className="text-xs text-muted-foreground">{doc.label} · version {doc.version} · {doc.pageCount} {doc.pageCount === 1 ? 'page' : 'pages'}</p></div>
    <a href={`/api/backend/applicant/documents/${doc.id}/file`} target="_blank" rel="noopener" onClick={() => setOpened(true)} className="inline-flex min-h-11 items-center rounded-md border border-input px-4 text-sm hover:bg-accent">Open document</a></div>
   {doc.signed && <p className="text-sm text-success">{doc.requiresSignature ? 'Signed' : 'Acknowledged'} {new Date(doc.signed.signedAt).toLocaleString()}{current ? '' : ` (version ${doc.signed.version})`} · <a className="underline" href={`/api/backend/applicant/documents/${doc.signed.documentId}/signed`} target="_blank" rel="noopener">Download signed copy</a></p>}
