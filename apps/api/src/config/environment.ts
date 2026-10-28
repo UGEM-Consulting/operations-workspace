@@ -2,7 +2,7 @@ import Joi from 'joi';
 export interface Environment {
   NODE_ENV: 'development' | 'test' | 'production'; PORT: number;
   DATABASE_URL: string; DATABASE_SSL: boolean; CORS_ORIGINS: string; SESSION_SECRET: string; BFF_SHARED_SECRET: string; WEB_ORIGIN: string; SESSION_TTL_SECONDS: number;
-  DEPLOYMENT_PURPOSE: 'local' | 'production';
+  DEPLOYMENT_PURPOSE: 'local' | 'staging' | 'production';
   EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string;
   STORAGE_DRIVER: 'none' | 'local' | 'gcs'; STORAGE_LOCAL_DIR?: string; GCS_BUCKET?: string; GCS_CREDENTIALS_BASE64?: string;
 }
@@ -35,7 +35,7 @@ const schema = Joi.object({
   // Bucket naming rules: 3–63 lowercase letters, digits, dashes, underscores or dots.
   GCS_BUCKET: Joi.string().pattern(/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/).empty(''),
   GCS_CREDENTIALS_BASE64: Joi.string().base64().max(20000).empty(''),
-  DEPLOYMENT_PURPOSE: Joi.string().valid('local', 'production'),
+  DEPLOYMENT_PURPOSE: Joi.string().valid('local', 'staging', 'production'),
   SESSION_SECRET: Joi.string().min(32).required(),
   BFF_SHARED_SECRET: Joi.string().min(32).required(),
   SESSION_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(28800),
@@ -68,7 +68,9 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   env.DEPLOYMENT_PURPOSE ??= env.NODE_ENV === 'production' ? 'production' : 'local';
   if (env.SESSION_SECRET === env.BFF_SHARED_SECRET) throw new EnvironmentError('Session and BFF secrets must differ');
   if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN.startsWith('https://')) throw new EnvironmentError('Production WEB_ORIGIN must use HTTPS');
-  if (env.NODE_ENV === 'production' && env.DEPLOYMENT_PURPOSE === 'local') throw new EnvironmentError('Hosted runtime must have an explicit production purpose');
+  if (env.NODE_ENV === 'production' && env.DEPLOYMENT_PURPOSE === 'local') throw new EnvironmentError('Hosted runtime must have an explicit production or staging purpose');
+  // Staging is a hosted copy for staff testing: production rules (HTTPS, real TLS email) with its own database and secrets.
+  if (env.DEPLOYMENT_PURPOSE === 'staging' && env.NODE_ENV !== 'production') throw new EnvironmentError('DEPLOYMENT_PURPOSE=staging is hosted and requires NODE_ENV=production');
   if (env.EMAIL_DELIVERY === 'smtp') {
     if (!env.SMTP_HOST || !env.EMAIL_FROM) throw new EnvironmentError('SMTP delivery requires SMTP_HOST and a valid EMAIL_FROM');
     if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) throw new EnvironmentError('SMTP_USER and SMTP_PASSWORD must be set together');

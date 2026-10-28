@@ -111,7 +111,7 @@ The root `.env.example` is a reference only. NestJS loads `apps/api/.env`; Next.
 | SMTP_HOST / SMTP_PORT | API | `smtp.gmail.com` / `465` for Google Workspace; `localhost` / `1025` for local Mailpit |
 | SMTP_USER / SMTP_PASSWORD | API | Sending mailbox and its app password; secret, set only in the host's environment settings |
 | EMAIL_FROM | API | Sender, e.g. `UGEM Operations <onboarding@ugemconsulting.com>` |
-| DEPLOYMENT_PURPOSE | API | `local` (development) or `production` (required for hosted deployments); `demo` was retired and is refused |
+| DEPLOYMENT_PURPOSE | API, web | API: `local` (development), `production` or `staging` (hosted; staging requires `NODE_ENV=production`); `demo` was retired and is refused. Web: set `staging` only on the staging deployment for its banner. See [staging](docs/staging.md) |
 
 Use separate secrets/environments for previews and production. Avoid `?sslmode=` options in DATABASE_URL that conflict with the explicit `DATABASE_SSL` certificate-verification policy. Secrets and sensitive request/database error details are not logged.
 
@@ -163,6 +163,8 @@ No cloud resources or production accounts have been created. Deployment requires
 3. Vercel: root `apps/web`, Next.js preset, Node 24, enable inclusion of files outside the root for the workspace lockfile. `vercel.json` installs from the repository root and builds only web. Set server-only `API_BASE_URL=https://your-api.onrender.com`, matching `BFF_SHARED_SECRET`, and exact `WEB_ORIGIN=https://your-workspace.vercel.app`.
 4. Browser cookies remain on the Vercel domain; the BFF adds the trusted forwarding protocol after verifying browser origin. Do not enable direct cross-site session cookies or credentialed CORS. Use a dedicated preview API/environment with matching origin for preview deployments rather than wildcard origins.
 5. Auto-deploy is off in the blueprint; disable Blueprint Auto Sync separately if manual configuration sync is required. Production account provisioning is deliberately outside this demo seed and requires an approved administrative process. Do not relax the seed's production guard.
+
+Staging (deployed from `dev`) uses its own Render API service, database and Vercel deployment with `DEPLOYMENT_PURPOSE=staging`; see [staging](docs/staging.md).
 
 See [Vercel monorepos](https://vercel.com/docs/monorepos) and [Render blueprint configuration](https://render.com/docs/blueprint-spec). Review [identity architecture](docs/identity-architecture.md) for invitation and Google Workspace SSO preparation.
 
