@@ -2,12 +2,15 @@ import { EmailModule } from '../email/email.module';
 import { StorageModule } from '../storage/storage.module';
 import { clientContext } from '../documents/client-context';
 import { ReviewService } from './review.service';
+import { UpdatesModule } from '../updates/updates.module';
+import { UpdatesService } from '../updates/updates.service';
+import { DataSource } from 'typeorm';
 import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
 import { Roles, Public } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { ApplicationQueryDto, ReviewDto, BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, VerifyApplicantDto } from './dto';
+import { ApplicationQueryDto, ReviewDto, BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, UpdatePreferencesDto, VerifyApplicantDto } from './dto';
 import { OnboardingService } from './onboarding.service';
 @Controller('onboarding')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
@@ -38,5 +41,20 @@ class ApplicantController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule,StorageModule],controllers: [OnboardingController,ApplicantController], providers: [OnboardingService, ReviewService], exports: [OnboardingService] })
+// How the applicant hears about decisions. Same applicant-session and BFF/CSRF boundary as the other applicant routes.
+@Controller('applicant/updates')
+@Public()
+class ApplicantUpdatesController {
+ constructor(private readonly db: DataSource, private readonly applicants: OnboardingService, private readonly updates: UpdatesService) {}
+ @Get() async view(@Req() req: Request) { const {application} = await this.applicants.applicant(this.db.manager,req); return this.updates.view(this.db.manager,application.id); }
+ @Patch() save(@Req() req: Request,@Body() dto: UpdatePreferencesDto) {
+  return this.db.transaction(async em => { const {application,invitation} = await this.applicants.applicant(em,req,true); return this.updates.save(em,application,invitation,dto); });
+ }
+ @Post('telegram') async link(@Req() req: Request) { const {application} = await this.applicants.applicant(this.db.manager,req); return this.updates.connectLink(this.db.manager,application); }
+ @Post('telegram/check') async check(@Req() req: Request) { const {application} = await this.applicants.applicant(this.db.manager,req); return this.updates.checkConnection(application); }
+ @Post('telegram/disconnect') disconnect(@Req() req: Request) {
+  return this.db.transaction(async em => { const {application,invitation} = await this.applicants.applicant(em,req,true); return this.updates.disconnect(em,application,invitation); });
+ }
+}
+@Module({ imports: [EmailModule,StorageModule,UpdatesModule],controllers: [OnboardingController,ApplicantController,ApplicantUpdatesController], providers: [OnboardingService, ReviewService], exports: [OnboardingService] })
 export class OnboardingModule {}

@@ -10,14 +10,14 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
 
  const undoApplicationMigration=async()=>{
   let [latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
-  while(['OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
+  while(['ApplicantUpdates1792730000000','StaffMfa1792720000000','OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
    await db.undoLastMigration();[latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
   }
   return db.undoLastMigration();
  };
  try {
   await db.runMigrations();
-  assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'OnboardingDocuments1792710000000');
+  assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'ApplicantUpdates1792730000000');
   await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await undoApplicationMigration();await undoApplicationMigration();await undoApplicationMigration();
   const [user]=await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Fictional','Legacy','legacy.staff@example.test','DISPATCHER_MANAGER','INACTIVE') RETURNING id`);
   const [inv]=await db.query(`INSERT INTO invitations ("managerId",email,"tokenHash","mcName","teamLead","jobTitle","expiresAt","consumedAt") VALUES ($1,'legacy.applicant@example.test',repeat('b',64),'Legacy fictional MC','Independent','Dispatcher',now()+interval '7 days',now()) RETURNING id`,[user.id]);

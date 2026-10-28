@@ -445,7 +445,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
- const undoStaffMfa=async()=>{await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
+ // Steps back past the later applicant-updates and staff MFA migrations.
+ const undoStaffMfa=async()=>{await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
  it('rolls back and reapplies the documents, company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
   await undoStaffMfa();
   await db.undoLastMigration();
@@ -458,7 +459,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect(await latestMigration()).toBe('StaffMfa1792720000000');
+  expect(await latestMigration()).toBe('ApplicantUpdates1792730000000');
   expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
  });
  it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
@@ -467,7 +468,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await db.query("UPDATE deployment_identity SET purpose='demo'");
   try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
   finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
-  expect(await latestMigration()).toBe('StaffMfa1792720000000');
+  expect(await latestMigration()).toBe('ApplicantUpdates1792730000000');
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
