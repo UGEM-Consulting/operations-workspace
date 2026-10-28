@@ -1,12 +1,13 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsEmail, IsIn, IsInt, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { REQUEST_STATUSES, RequestStatus, TASK_STATUSES, TaskStatus } from './it.entity';
 const trim=()=>Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim():value);
 export class TaskUpdateDto {
  @IsInt() @Min(0) version!:number;
  @IsIn(TASK_STATUSES) status!:TaskStatus;
- @trim() @IsString() @MaxLength(1000) notes='';
+ // Omitted keeps the recorded notes; an empty string clears them.
+ @IsOptional() @trim() @IsString() @MaxLength(1000) notes?:string;
 }
 export class ItContactDto {
  @IsInt() @Min(0) version!:number;

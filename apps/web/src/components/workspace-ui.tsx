@@ -3,7 +3,7 @@ import { ArrowUpRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Loading, Skeleton } from '@/components/ui/feedback';
 
-export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
+export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: ReactNode; action?: ReactNode }) {
   return <div className="flex flex-wrap items-end justify-between gap-5"><div><p className="text-xs font-medium text-muted-foreground">{eyebrow}</p><h1 className="mt-1 font-sans text-[22px] font-semibold leading-[30px] tracking-[-0.01em]">{title}</h1><p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p></div>{action}</div>;
 }
 export function StatCard({ label, value, detail, href }: { label: string; value: number; detail: string; href: string }) {

@@ -8,7 +8,7 @@
  */
 :root {
   --neutral-0: #ffffff; --neutral-25: #fcfbfa; --neutral-50: #f7f6f4; --neutral-100: #efedea; --neutral-150: #e7e4e0;
-  --neutral-200: #dedad6; --neutral-300: #c9c4bf; --neutral-400: #a39d97; --neutral-500: #7f7872; --neutral-600: #655f5a;
+  --neutral-200: #dedad6; --neutral-300: #c9c4bf; --neutral-400: #a39d97; --neutral-450: #958e88; --neutral-500: #7f7872; --neutral-550: #716a65; --neutral-600: #655f5a;
   --neutral-700: #4d4844; --neutral-800: #353130; --neutral-850: #2a2725; --neutral-900: #211f1d; --neutral-950: #161413;
   --orange-50: #fff4ed; --orange-100: #ffe4d4; --orange-200: #ffc6a6; --orange-300: #ff9e6e; --orange-400: #ff7a3d;
   --orange-500: #ff5e1a; --orange-600: #e04808; --orange-700: #b23905; --orange-800: #8c2f0a; --orange-950: #3b1105;
@@ -27,8 +27,8 @@
   --muted: var(--neutral-100);
   /* 5.4:1 or better on card, background and muted. */
   --muted-foreground: var(--neutral-600);
-  /* Placeholders and disabled text only. */
-  --subtle-foreground: var(--neutral-500);
+  /* Placeholders and secondary text: 5.3:1 on card, 4.9:1 on background, 4.6:1 on muted. */
+  --subtle-foreground: var(--neutral-550);
   --accent: var(--neutral-100);
   --accent-foreground: var(--neutral-900);
   --secondary: var(--neutral-100);
@@ -102,7 +102,8 @@
   --popover-foreground: var(--neutral-50);
   --muted: var(--neutral-850);
   --muted-foreground: var(--neutral-400);
-  --subtle-foreground: var(--neutral-500);
+  /* 5.1:1 on card, 5.7:1 on background, 4.6:1 on muted and popover. */
+  --subtle-foreground: var(--neutral-450);
   --accent: var(--neutral-800);
   --accent-foreground: var(--neutral-50);
   --secondary: var(--neutral-800);

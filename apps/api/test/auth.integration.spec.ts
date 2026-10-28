@@ -14,6 +14,8 @@ import { hashPassword } from '../src/modules/auth/password';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 import { HealthModule } from '../src/modules/health/health.module';
 import { seedDemo } from '../src/database/seed';
+import { attemptKey } from '../src/modules/auth/attempts';
+import { StaffPasswordChange1792760000000 } from '../src/database/migrations/1792760000000-StaffPasswordChange';
 import { completeMfa, enrolForTest } from './mfa-helpers';
 
 @Controller('unclassified')
@@ -103,9 +105,43 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await agent.get('/api/auth/me').set(headers).expect(200);
     await agent.post('/api/auth/login').set(headers).send({ email: accounts.get(Role.DISPATCHER_MANAGER)!.email, password, role: Role.SYSTEM_ADMIN }).expect(400);
   });
-  it('throttles login attempts across separate clients', async () => {
-    for (let i = 0; i < 5; i++) await request(app.getHttpServer()).post('/api/auth/login').set(headers).send({ email: 'limited@example.test', password }).expect(401);
-    await request(app.getHttpServer()).post('/api/auth/login').set(headers).send({ email: 'limited@example.test', password }).expect(429);
+  const from = (ip: string, body: { email: string; password: string }) => request(app.getHttpServer()).post('/api/auth/login').set({ ...headers, 'x-client-ip': ip }).send(body);
+  const counter = async (key: string) => ((await db.query(`SELECT attempts FROM login_attempts WHERE key = $1 AND "expiresAt" > now()`, [key]))[0]?.attempts ?? 0) as number;
+  it('limits guessing per address and per account, identically for unknown accounts', async () => {
+    for (const email of ['limited@example.test', accounts.get(Role.IT_SPECIALIST)!.email]) {
+      const wrong = { email, password: randomBytes(16).toString('hex') };
+      for (let i = 0; i < 10; i++) await from('198.51.100.1', wrong).expect(401);
+      expect((await from('198.51.100.1', wrong).expect(429)).body.message).toBe('Too many login attempts. Try again later.');
+      // Another address may keep trying the same account only until the account-wide failure limit.
+      for (let i = 0; i < 10; i++) await from('198.51.100.2', wrong).expect(401);
+      await from('198.51.100.3', { email, password }).expect(429);
+      // Other accounts from those addresses are unaffected.
+      await from('198.51.100.1', { email: accounts.get(Role.DISPATCHER_MANAGER)!.email, password }).expect(200);
+      await db.query('TRUNCATE login_attempts');
+    }
+    // Stored keys are digests: no email or address appears.
+    await from('198.51.100.4', { email: 'stored@example.test', password }).expect(401);
+    expect(JSON.stringify(await db.query('SELECT key FROM login_attempts'))).not.toMatch(/stored|198\.51/);
+  }, 60000);
+  it('clears the account counters on a correct password but never the address counter', async () => {
+    const email = accounts.get(Role.IT_SPECIALIST)!.email, ip = '203.0.113.7';
+    for (let i = 0; i < 9; i++) await from(ip, { email, password: 'incorrect-password' }).expect(401);
+    expect(await counter(attemptKey('login-email', email))).toBe(9);
+    await from(ip, { email, password }).expect(200);
+    expect(await counter(attemptKey('login-email', email))).toBe(0);
+    expect(await counter(attemptKey('login-email-ip', `${email}\n${ip}`))).toBe(0);
+    expect(await counter(attemptKey('login-ip', ip))).toBe(10);
+    // Cleared, so the owner gets a fresh allowance instead of staying locked out.
+    for (let i = 0; i < 9; i++) await from(ip, { email, password: 'incorrect-password' }).expect(401);
+    await from(ip, { email, password }).expect(200);
+  }, 30000);
+  it('limits each address and keeps a service-wide circuit breaker', async () => {
+    const email = accounts.get(Role.IT_SPECIALIST)!.email;
+    await db.query(`INSERT INTO login_attempts VALUES ($1, 100, now() + interval '15 minutes')`, [attemptKey('login-ip', '192.0.2.10')]);
+    await from('192.0.2.10', { email, password }).expect(429);
+    await from('192.0.2.11', { email, password }).expect(200);
+    await db.query(`INSERT INTO login_attempts VALUES ($1, 1000, now() + interval '1 minute') ON CONFLICT (key) DO UPDATE SET attempts = 1000`, [attemptKey('login-service', 'all')]);
+    await from('192.0.2.12', { email, password }).expect(429);
   });
   it('enforces manager and IT roles at the API boundary', async () => {
     const manager = request.agent(app.getHttpServer()); await login(manager, Role.DISPATCHER_MANAGER);
@@ -174,11 +210,107 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await it.get('/api/auth/me').set(headers).expect(401);
     await login(request.agent(app.getHttpServer()), Role.IT_SPECIALIST).expect(401);
     const updated = request.agent(app.getHttpServer());
-    await updated.post('/api/auth/login').set(headers).send({ email: accounts.get(Role.IT_SPECIALIST)!.email, password: changedPassword }).expect(200);
-    await admin.patch(`/api/users/${id}`).set(headers).send({ status: UserStatus.INACTIVE }).expect(200);
+    // An administrator-set password works once, for choosing a new one.
+    expect((await updated.post('/api/auth/login').set(headers).send({ email: accounts.get(Role.IT_SPECIALIST)!.email, password: changedPassword }).expect(200)).body).toEqual({ stage: 'password', landingPage: '/login/password' });
     await updated.get('/api/auth/me').set(headers).expect(401);
+    await admin.patch(`/api/users/${id}`).set(headers).send({ status: UserStatus.INACTIVE }).expect(200);
+    await updated.post('/api/auth/password').set(headers).send({ currentPassword: changedPassword, newPassword: randomBytes(24).toString('base64url') }).expect(401);
     await updated.post('/api/auth/login').set(headers).send({ email: accounts.get(Role.IT_SPECIALIST)!.email, password: changedPassword }).expect(401);
-    await db.getRepository(User).update(id, { status: UserStatus.ACTIVE, passwordHash: await hashPassword(password) });
+    await db.getRepository(User).update(id, { status: UserStatus.ACTIVE, passwordHash: await hashPassword(password), mustChangePassword: false });
+  });
+  const events = async (userId: string) => (await db.query(`SELECT type, "actorId", metadata FROM staff_security_events WHERE "userId" = $1 ORDER BY "createdAt", type`, [userId])) as { type: string; actorId: string | null; metadata: Record<string, unknown> }[];
+  it('makes administrator-created users choose their own password before any access', async () => {
+    const admin = request.agent(app.getHttpServer()); await signIn(admin);
+    const initial = randomBytes(24).toString('base64url'), chosen = randomBytes(24).toString('base64url');
+    const created = await admin.post('/api/users').set(headers).send({ firstName: 'Fictional', lastName: 'Forced', email: 'forced@example.test', password: initial, role: Role.IT_SPECIALIST }).expect(201);
+    const user = request.agent(app.getHttpServer());
+    expect((await user.post('/api/auth/login').set(headers).send({ email: 'forced@example.test', password: initial }).expect(200)).body).toEqual({ stage: 'password', landingPage: '/login/password' });
+    for (const path of ['/api/auth/me', '/api/access/dashboard', '/api/auth/mfa']) await user.get(path).set(headers).expect(401);
+    await user.post('/api/auth/mfa/enrolment').set(headers).send({}).expect(401);
+    const change = (currentPassword: string, newPassword: string) => user.post('/api/auth/password').set(headers).send({ currentPassword, newPassword });
+    expect((await change('incorrect-password', chosen).expect(400)).body.message).toBe('Your current password is incorrect');
+    expect((await change(initial, initial).expect(400)).body.message).toMatch(/differs/);
+    await change(initial, 'short').expect(400);
+    await user.post('/api/auth/password').set({ ...headers, origin: 'https://attacker.example' }).send({ currentPassword: initial, newPassword: chosen }).expect(403);
+    const changed = await change(initial, chosen).expect(200);
+    expect(changed.body).toMatchObject({ user: { id: created.body.id }, landingPage: '/it/tasks' });
+    await user.get('/api/auth/me').set(headers).expect(200);
+    expect((await db.getRepository(User).findOneByOrFail({ id: created.body.id })).mustChangePassword).toBe(false);
+    await request(app.getHttpServer()).post('/api/auth/login').set(headers).send({ email: 'forced@example.test', password: initial }).expect(401);
+    expect((await request(app.getHttpServer()).post('/api/auth/login').set(headers).send({ email: 'forced@example.test', password: chosen }).expect(200)).body.user.id).toBe(created.body.id);
+    const audit = await events(created.body.id);
+    expect(audit.map(({ type, actorId }) => [type, actorId])).toEqual([['USER_CREATED', accounts.get(Role.SYSTEM_ADMIN)!.id], ['PASSWORD_CHANGED', created.body.id]]);
+    expect(audit[0].metadata).toEqual({ fields: ['firstName', 'lastName', 'email', 'role', 'password'] });
+    expect(audit[1].metadata).toEqual({ forced: true });
+    expect(JSON.stringify(audit)).not.toMatch(new RegExp(`${initial}|${chosen}|forced@|Fictional|IT_SPECIALIST`));
+  }, 30000);
+  it('continues a forced password change with the authenticator step', async () => {
+    const id = accounts.get(Role.SYSTEM_ADMIN)!.id;
+    await db.getRepository(User).update(id, { mustChangePassword: true });
+    const agent = request.agent(app.getHttpServer());
+    expect((await login(agent).expect(200)).body.stage).toBe('password');
+    const chosen = randomBytes(24).toString('base64url');
+    expect((await agent.post('/api/auth/password').set(headers).send({ currentPassword: password, newPassword: chosen }).expect(200)).body).toEqual({ mfa: 'verify', landingPage: '/login/mfa' });
+    await agent.get('/api/auth/me').set(headers).expect(401);
+    expect((await completeMfa(agent, headers, db, id, adminSecret)).status).toBe(200);
+    await agent.get('/api/auth/me').set(headers).expect(200);
+    await db.getRepository(User).update(id, { passwordHash: await hashPassword(password) });
+  }, 30000);
+  it('rejects full sessions and expired pending changes while a password change is required', async () => {
+    const id = accounts.get(Role.IT_SPECIALIST)!.id;
+    const before = request.agent(app.getHttpServer()); await login(before, Role.IT_SPECIALIST).expect(200);
+    // Set directly, as an older API instance could leave it during an overlapping deploy.
+    await db.getRepository(User).update(id, { mustChangePassword: true });
+    await before.get('/api/auth/me').set(headers).expect(401);
+    const pending = request.agent(app.getHttpServer()); await login(pending, Role.IT_SPECIALIST).expect(200);
+    await db.query(`UPDATE staff_sessions SET sess = jsonb_set(sess::jsonb, '{mfaPending,expiresAt}', '1'::jsonb)::json WHERE sess->'mfaPending'->>'userId' = $1`, [id]);
+    await pending.post('/api/auth/password').set(headers).send({ currentPassword: password, newPassword: randomBytes(24).toString('base64url') }).expect(401);
+    await db.getRepository(User).update(id, { mustChangePassword: false });
+  });
+  it('changes a password from Account security, ending only the other sessions', async () => {
+    const id = accounts.get(Role.IT_SPECIALIST)!.id;
+    const acting = request.agent(app.getHttpServer());
+    const first = await login(acting, Role.IT_SPECIALIST).expect(200);
+    const other = request.agent(app.getHttpServer()); await login(other, Role.IT_SPECIALIST).expect(200);
+    const chosen = randomBytes(24).toString('base64url');
+    const changed = await acting.post('/api/auth/password').set(headers).send({ currentPassword: password, newPassword: chosen }).expect(200);
+    expect(changed.headers['set-cookie'][0].split(';')[0]).not.toBe(first.headers['set-cookie'][0].split(';')[0]);
+    await acting.get('/api/auth/me').set(headers).expect(200);
+    await other.get('/api/auth/me').set(headers).expect(401);
+    await request(app.getHttpServer()).get('/api/auth/me').set(headers).set('Cookie', first.headers['set-cookie'][0].split(';')[0]).expect(401);
+    expect((await events(id)).at(-1)).toEqual({ type: 'PASSWORD_CHANGED', actorId: id, metadata: { forced: false } });
+    // Wrong current passwords are rate limited per user.
+    for (let i = 0; i < 5; i++) await acting.post('/api/auth/password').set(headers).send({ currentPassword: 'incorrect-password', newPassword: password }).expect(400);
+    await acting.post('/api/auth/password').set(headers).send({ currentPassword: chosen, newPassword: password }).expect(429);
+    await db.getRepository(User).update(id, { passwordHash: await hashPassword(password) });
+  }, 30000);
+  it('ends sessions only for access-relevant edits and audits field names only', async () => {
+    const admin = request.agent(app.getHttpServer()); await signIn(admin);
+    const target = accounts.get(Role.DISPATCHER_MANAGER)!;
+    const manager = request.agent(app.getHttpServer()); await login(manager, Role.DISPATCHER_MANAGER).expect(200);
+    const all = { firstName: target.firstName, lastName: target.lastName, email: target.email, role: target.role, status: UserStatus.ACTIVE };
+    const before = (await events(target.id)).length;
+    expect((await admin.patch(`/api/users/${target.id}`).set(headers).send(all).expect(200)).body.sessionsRevoked).toBe(false);
+    expect((await admin.patch(`/api/users/${target.id}`).set(headers).send({ ...all, firstName: 'Renamed' }).expect(200)).body.sessionsRevoked).toBe(false);
+    await manager.get('/api/auth/me').set(headers).expect(200);
+    expect((await admin.patch(`/api/users/${target.id}`).set(headers).send({ ...all, firstName: 'Renamed', email: 'renamed.manager@example.test' }).expect(200)).body.sessionsRevoked).toBe(true);
+    await manager.get('/api/auth/me').set(headers).expect(401);
+    await admin.patch(`/api/users/${target.id}`).set(headers).send(all).expect(200);
+    const audit = (await events(target.id)).slice(before);
+    expect(audit.map(event => [event.type, event.actorId, event.metadata])).toEqual([
+      ['USER_NAME_CHANGED', accounts.get(Role.SYSTEM_ADMIN)!.id, { fields: ['firstName'], sessionsRevoked: false }],
+      ['USER_EMAIL_CHANGED', accounts.get(Role.SYSTEM_ADMIN)!.id, { fields: ['email'], sessionsRevoked: true }],
+      ['USER_EMAIL_CHANGED', accounts.get(Role.SYSTEM_ADMIN)!.id, { fields: ['email'], sessionsRevoked: true }],
+      ['USER_NAME_CHANGED', accounts.get(Role.SYSTEM_ADMIN)!.id, { fields: ['firstName'], sessionsRevoked: true }],
+    ]);
+    expect(JSON.stringify(audit)).not.toMatch(/Renamed|renamed.manager|example.test/);
+  });
+  it('refuses to roll back the forced-change migration while a change is pending', async () => {
+    const id = accounts.get(Role.IT_SPECIALIST)!.id;
+    await db.getRepository(User).update(id, { mustChangePassword: true });
+    const runner = db.createQueryRunner();
+    try { await expect(new StaffPasswordChange1792760000000().down(runner)).rejects.toThrow('Cannot discard pending forced password changes'); } finally { await runner.release(); }
+    await db.getRepository(User).update(id, { mustChangePassword: false });
   });
   it('regenerates the session identifier when logging in again', async () => {
     const agent = request.agent(app.getHttpServer());

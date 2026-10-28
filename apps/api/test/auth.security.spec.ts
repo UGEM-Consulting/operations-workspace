@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import session from 'express-session';
-import { validateEnvironment, webOrigins } from '../src/config/environment';
+import { EnvironmentError, isPrivateDatabaseHost, validateEnvironment, webOrigins } from '../src/config/environment';
 import { canAccessAssignedApplication } from '../src/modules/auth/policy';
-import { boundary, cookieName, equalSecret, sessionOptions } from '../src/modules/auth/session';
+import { boundary, cookieName, equalSecret, sessionOptions, usesApplicantSession } from '../src/modules/auth/session';
 import { Role, UserStatus } from '../src/modules/users/user.entity';
 import { allowedEndpoint, validMutation } from '../../web/src/lib/bff-policy';
 
@@ -48,6 +48,30 @@ describe('Security configuration and future assignment policy', () => {
     expect(run('https://attacker.example')).toBe(403);
     expect(run('https://workspace.ugemconsulting.com,https://workspace.example.test')).toBe(403);
   });
+  it('chooses the applicant cookie and store case-insensitively, like Express routing', () => {
+    for (const path of ['/api/applicant/draft', '/api/APPLICANT/draft', '/API/Applicant/verify']) expect(usesApplicantSession(path)).toBe(true);
+    for (const path of ['/api/auth/me', '/api/applicants', '/api/onboarding/applications', '/applicant/draft']) expect(usesApplicantSession(path)).toBe(false);
+  });
+  it('rejects DATABASE_URL TLS overrides in every environment', () => {
+    for (const parameter of ['ssl=false', 'sslmode=disable', 'sslmode=no-verify', 'sslcert=x', 'sslkey=x', 'sslrootcert=x', 'sslpassword=x', 'sslaccept=strict']) {
+      for (const NODE_ENV of ['production', 'development', 'test']) {
+        expect(() => validateEnvironment({ ...env, NODE_ENV, DATABASE_SSL: 'true', DATABASE_URL: `postgresql://user:secret@db.example.test/operations?${parameter}` })).toThrow(EnvironmentError);
+      }
+    }
+    try { validateEnvironment({ ...env, DATABASE_URL: 'postgresql://user:hidden-value@db.example.test/operations?sslmode=disable' }); } catch (error) { expect((error as Error).message).not.toMatch(/hidden-value|db.example/); }
+  });
+  it('requires verified TLS for external production database hosts only', () => {
+    const at = (host: string, ssl: string) => () => validateEnvironment({ ...env, DATABASE_SSL: ssl, DATABASE_URL: `postgresql://user:secret@${host}/operations` });
+    // Render internal URLs use dotless private hostnames without TLS.
+    for (const host of ['dpg-abc123def456-a', 'localhost', '127.0.0.1', '[::1]', 'localhost:5432']) expect(at(host, 'false')).not.toThrow();
+    for (const host of ['dpg-abc123def456-a.oregon-postgres.render.com', 'db.example.test', '10.0.0.5', '[2001:db8::1]']) {
+      expect(at(host, 'false')).toThrow('DATABASE_SSL=true');
+      expect(at(host, 'true')).not.toThrow();
+    }
+    expect(() => validateEnvironment({ ...env, NODE_ENV: 'development', DATABASE_SSL: 'false', DATABASE_URL: 'postgresql://user:secret@db.example.test/operations' })).not.toThrow();
+    expect(isPrivateDatabaseHost('dpg-x-a')).toBe(true);
+    expect(isPrivateDatabaseHost('dpg-x-a.render.com')).toBe(false);
+  });
   it('requires a database-loaded manager assignment and an active role', () => {
     const manager = { id: 'manager-one', role: Role.DISPATCHER_MANAGER, status: UserStatus.ACTIVE };
     expect(canAccessAssignedApplication(manager, { assignedManagerId: manager.id })).toBe(true);
@@ -79,6 +103,8 @@ describe('Next.js same-origin transport boundary', () => {
   it('cannot proxy arbitrary API paths or methods', () => {
     expect(allowedEndpoint('POST', 'auth/login')).toBe(true);
     expect(allowedEndpoint('POST', 'auth/register')).toBe(false);
+    expect(allowedEndpoint('POST', 'auth/password')).toBe(true);
+    expect(allowedEndpoint('GET', 'auth/password')).toBe(false);
     for (const path of ['auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable']) expect(allowedEndpoint('POST', path)).toBe(true);
     expect(allowedEndpoint('GET', 'auth/mfa')).toBe(true);
     expect(allowedEndpoint('PATCH', 'settings/security')).toBe(true);

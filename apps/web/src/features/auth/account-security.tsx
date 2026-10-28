@@ -4,9 +4,11 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/field';
+import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
 import { mutate } from '@/lib/client-api';
 import { MfaSetup, RecoveryCodes } from './mfa-setup';
+import { PasswordChangeForm } from './password-change-form';
 export interface MfaStatus { enabled: boolean; required: boolean; policy: string; enabledAt: string | null; recoveryCodesRemaining: number }
 
 // Recovery codes look like XXXXX-XXXXX, so forms that accept them use a text keyboard.
@@ -25,6 +27,17 @@ function CodeForm({ label, action, pendingLabel, variant, recovery = false, onSu
   </form>;
 }
 
+/** Own password: other sessions end, this one continues. */
+export function PasswordSettings({ account }: { account: string }) {
+  return <Card className="mt-8 max-w-2xl space-y-5 p-6">
+    <div>
+      <h2 className="text-lg font-semibold">Password</h2>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">Changing your password signs you out everywhere else.</p>
+    </div>
+    <PasswordChangeForm account={account} />
+  </Card>;
+}
+
 export function AccountSecurity({ status }: { status: MfaStatus }) {
   const router = useRouter();
   const [settingUp, setSettingUp] = useState(false);
@@ -39,7 +52,7 @@ export function AccountSecurity({ status }: { status: MfaStatus }) {
       <p className="mt-2 text-sm leading-6 text-muted-foreground">After your password, sign-in asks for a code from an authenticator app on your phone.{status.required && ' Your role requires it.'}</p>
     </div>
     {status.enabled ? <>
-      <p className="flex flex-wrap items-center gap-3 text-sm"><Badge label="On" tone="success" />{status.enabledAt && <span className="text-muted-foreground">since {new Date(status.enabledAt).toLocaleDateString()}</span>}</p>
+      <p className="flex flex-wrap items-center gap-3 text-sm"><Badge label="On" tone="success" />{status.enabledAt && <span className="text-muted-foreground">since <LocalTime iso={status.enabledAt} format="date"/></span>}</p>
       <div className="space-y-3 border-t pt-5">
         <h3 className="font-medium">Recovery codes</h3>
         <p className={`text-sm ${status.recoveryCodesRemaining <= 3 ? 'text-warning' : 'text-muted-foreground'}`}>{status.recoveryCodesRemaining} of 10 unused.{status.recoveryCodesRemaining <= 3 && ' Make new codes soon.'} Making new codes cancels the old ones.</p>

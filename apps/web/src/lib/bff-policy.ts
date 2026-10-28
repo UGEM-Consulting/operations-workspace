@@ -19,22 +19,26 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && /^onboarding\/applications\/[0-9a-f-]{36}\/reviews$/.test(path)) ||
     (method === 'POST' && /^onboarding\/invitations\/[0-9a-f-]{36}\/revoke$/.test(path)) ||
     (method === 'POST'  && ['auth/login', 'auth/logout', 'users'].includes(path)) ||
+    // Own password: the forced change after an administrator-set password, or a change from Account security.
+    (method === 'POST' && path === 'auth/password') ||
     (method === 'GET' && ['auth/me', 'users'].includes(path)) ||
     // Staff two-step verification: sign-in step, enrolment, own settings, administrator reset and policy.
     (method === 'POST' && ['auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable'].includes(path)) ||
     (method === 'GET' && ['auth/mfa', 'settings/security'].includes(path)) || (method === 'PATCH' && path === 'settings/security') ||
     (method === 'POST' && match(`users/${ID}/mfa/reset`, path)) ||
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
+    // The approver's own saved countersigning signature.
+    (method === 'GET' && path === 'staff/signature') || (method === 'POST' && ['staff/signature', 'staff/signature/delete'].includes(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
-    (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/sign`, path))) ||
+    (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));
 }
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
   if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path)) return 4_400_000;
-  // Drawn signatures (applicant signing, NDA countersignature during approval).
-  if (match(`applicant/documents/${ID}/sign`, path) || match(`onboarding/applications/${ID}/reviews`, path)) return 400_000;
+  // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).
+  if (match(`applicant/documents/${ID}/sign`, path) || match(`onboarding/applications/${ID}/reviews`, path) || path === 'staff/signature') return 400_000;
   return 16384;
 }
 export function validMutation(headers: Headers, origins: string[]): boolean {

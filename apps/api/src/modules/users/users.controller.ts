@@ -9,6 +9,6 @@ import { CreateUserDto, UpdateUserDto } from './users.dto';
 export class UsersController {
   constructor(private readonly users: UsersService) {}
   @Get() list() { return this.users.list(); }
-  @Post() create(@Body() dto: CreateUserDto) { return this.users.create(dto); }
+  @Post() create(@Body() dto: CreateUserDto, @Req() req: AuthRequest) { return this.users.create(dto, req.currentUser); }
   @Patch(':id') update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateUserDto, @Req() req: AuthRequest) { return this.users.update(id, dto, req.currentUser); }
 }

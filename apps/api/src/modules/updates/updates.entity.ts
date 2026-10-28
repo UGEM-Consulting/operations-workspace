@@ -1,7 +1,8 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 export const UPDATE_CHANNELS = ['EMAIL', 'TELEGRAM'] as const;
 export type UpdateChannel = typeof UPDATE_CHANNELS[number];
-export type DeliveryStatus = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED';
+// SENDING: claimed by one sender at claimedAt; the sweeper reclaims stale claims.
+export type DeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'SKIPPED';
 
 /** How an applicant wants to hear about decisions. No row means the default: email only. */
 @Entity('applicant_update_settings')
@@ -25,7 +26,7 @@ export class TelegramLinkToken {
  @Column('timestamptz', { nullable: true }) consumedAt!: Date | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
-/** Outbox of status messages: written in the decision transaction, sent after it commits. Holds no message text. */
+/** Outbox of status messages: written in the decision transaction, sent after it commits, redelivered by a sweeper. Holds no message text. */
 @Entity('applicant_update_deliveries')
 export class ApplicantUpdateDelivery {
  @PrimaryGeneratedColumn('uuid') id!: string;
@@ -36,6 +37,8 @@ export class ApplicantUpdateDelivery {
  @Column('varchar', { length: 32, nullable: true }) failureCode!: string | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @Column('timestamptz', { nullable: true }) sentAt!: Date | null;
+ @Column('integer', { default: 0 }) attempts!: number;
+ @Column('timestamptz', { nullable: true }) claimedAt!: Date | null;
 }
 /** The last Telegram update already read, so each Start message is handled once. */
 @Entity('telegram_poll_state')

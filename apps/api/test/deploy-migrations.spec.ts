@@ -19,7 +19,7 @@ describe('Render startup ordering', () => {
 });
 describe('Render startup failure reasons', () => {
   const secret = randomBytes(16).toString('hex');
-  const base = { NODE_ENV: 'production', DATABASE_URL: `postgresql://user:${secret}@db.example.test/operations`, WEB_ORIGIN: 'https://workspace.example.test', CORS_ORIGINS: 'https://workspace.example.test', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex') };
+  const base = { NODE_ENV: 'production', DATABASE_URL: `postgresql://user:${secret}@db.example.test/operations`, DATABASE_SSL: 'true', WEB_ORIGIN: 'https://workspace.example.test', CORS_ORIGINS: 'https://workspace.example.test', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex') };
   const reasonFor = (input: Record<string, unknown>) => { try { validateEnvironment(input); return 'accepted'; } catch (error) { return startupFailureReason(error); } };
   it('names the rejected configuration rule without values', () => {
     const reasons = [reasonFor({ ...base, DEMO_EMAIL_MODE: 'true' }), reasonFor({ ...base, EMAIL_DELIVERY: 'smtp' }), reasonFor({ ...base, SESSION_SECRET: 'short' })];

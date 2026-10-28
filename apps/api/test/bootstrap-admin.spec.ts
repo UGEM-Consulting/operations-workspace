@@ -28,13 +28,13 @@ describe('Bootstrap input validation', () => {
 });
 
 describe('Bootstrap CLI boundary', () => {
-  function cli(args: string[] = []) {
+  function cli(args: string[] = [], overrides: Record<string, string> = {}) {
     return spawnSync(process.execPath, ['-r', 'ts-node/register', 'src/database/admin-bootstrap.ts', ...args], {
       cwd: resolve(__dirname, '..'), encoding: 'utf8', timeout: 15000,
       env: { ...process.env, DOTENV_CONFIG_PATH: '/dev/null', NODE_ENV: 'test',
         ...input, DATABASE_URL: 'postgresql://localhost:9/unreachable_test', DATABASE_SSL: 'false',
         SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex'),
-        WEB_ORIGIN: 'http://localhost:3000', CORS_ORIGINS: 'http://localhost:3000' },
+        WEB_ORIGIN: 'http://localhost:3000', CORS_ORIGINS: 'http://localhost:3000', ...overrides },
     });
   }
   it('rejects arguments without echoing their contents', () => {
@@ -42,6 +42,13 @@ describe('Bootstrap CLI boundary', () => {
     const result = cli([marker]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('accepts no arguments');
+    expect(result.stdout + result.stderr).not.toContain(marker);
+  });
+  it('refuses DATABASE_URL TLS overrides with the shared rule, without printing the URL', () => {
+    const marker = randomBytes(12).toString('hex');
+    const result = cli([], { DATABASE_URL: `postgresql://user:${marker}@localhost:9/unreachable_test?sslmode=disable` });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('configure TLS with DATABASE_SSL');
     expect(result.stdout + result.stderr).not.toContain(marker);
   });
   it('fails closed without an interactive terminal before connecting to PostgreSQL', () => {
@@ -73,7 +80,8 @@ integration('Administrator bootstrap PostgreSQL integration (disposable test dat
   it('creates the first active administrator using Argon2id and the existing verifier', async () => {
     await bootstrapAdmin(db, input, password);
     const user = await users().createQueryBuilder('user').addSelect('user.passwordHash').getOneOrFail();
-    expect({ email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role, status: user.status, lastLoginAt: user.lastLoginAt }).toEqual({ email: 'first.admin@example.test', firstName: 'Avery', lastName: 'Fictional', role: Role.SYSTEM_ADMIN, status: UserStatus.ACTIVE, lastLoginAt: null });
+    // The administrator chose the password at the hidden prompt, so no forced change follows.
+    expect({ email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role, status: user.status, lastLoginAt: user.lastLoginAt, mustChangePassword: user.mustChangePassword }).toEqual({ email: 'first.admin@example.test', firstName: 'Avery', lastName: 'Fictional', role: Role.SYSTEM_ADMIN, status: UserStatus.ACTIVE, lastLoginAt: null, mustChangePassword: false });
     expect(user.passwordHash?.startsWith('$argon2id$')).toBe(true);
     expect(await verifyPassword(user.passwordHash!, password)).toBe(true);
     expect(await verifyPassword(user.passwordHash!, randomBytes(16).toString('hex'))).toBe(false);

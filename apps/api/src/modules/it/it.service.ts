@@ -6,20 +6,19 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { photoFor } from '../documents/requirements';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, TaskUpdateDto } from './it.dto';
-import { IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, itStatus, PortalNotification, taskDone } from './it.entity';
+import { IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, itStatus, itStatusSql, PortalNotification, taskDone } from './it.entity';
 
-const statusSql=`CASE WHEN r."completedAt" IS NOT NULL THEN 'COMPLETED'
- WHEN EXISTS (SELECT 1 FROM it_onboarding_tasks t WHERE t."requestId"=r.id AND t.status='BLOCKED') THEN 'BLOCKED'
- WHEN EXISTS (SELECT 1 FROM it_onboarding_tasks t WHERE t."requestId"=r.id AND t.status<>'PENDING') THEN 'IN_PROGRESS' ELSE 'PENDING' END`;
+const statusSql=itStatusSql('r');
+/** IT access requires the approved application and the APPROVE review the request was created from. */
+export async function approvedApplication(em:EntityManager,request:ItOnboardingRequest){
+ const app=await em.getRepository(DispatcherApplication).findOneBy({id:request.applicationId,status:'APPROVED'});
+ const approval=await em.getRepository(ApplicationReview).findOneBy({id:request.approvalId,applicationId:request.applicationId,decisionType:'APPROVE'});
+ if(!app||!approval)throw new NotFoundException();return app;
+}
 @Injectable()
 export class ItService {
  constructor(private readonly db:DataSource){}
  private allowIt(user:User){if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].includes(user.role))throw new ForbiddenException();}
- private async approved(em:EntityManager,request:ItOnboardingRequest){
-  const app=await em.getRepository(DispatcherApplication).findOneBy({id:request.applicationId,status:'APPROVED'});
-  const approval=await em.getRepository(ApplicationReview).findOneBy({id:request.approvalId,applicationId:request.applicationId,decisionType:'APPROVE'});
-  if(!app||!approval)throw new NotFoundException();return app;
- }
  async queue(user:User,input:ItQueueDto){
   this.allowIt(user);
   const query=this.db.getRepository(ItOnboardingRequest).createQueryBuilder('r')
@@ -45,10 +44,10 @@ export class ItService {
  private checklistComplete(tasks:Pick<ItOnboardingTask,'key'>[]){
   if(IT_CHECKLIST.some(template=>!template.optional&&!tasks.some(task=>task.key===template.key)))throw new ConflictException('The checklist is incomplete. Contact an administrator.');
  }
- async get(user:User,id:string){this.allowIt(user);const request=await this.db.getRepository(ItOnboardingRequest).findOneBy({id});if(!request)throw new NotFoundException();await this.approved(this.db.manager,request);return this.detail(this.db.manager,request);}
+ async get(user:User,id:string){this.allowIt(user);const request=await this.db.getRepository(ItOnboardingRequest).findOneBy({id});if(!request)throw new NotFoundException();await approvedApplication(this.db.manager,request);return this.detail(this.db.manager,request);}
  private async locked(em:EntityManager,id:string,version:number){
   const request=await em.getRepository(ItOnboardingRequest).findOne({where:{id},lock:{mode:'pessimistic_write'}});
-  if(!request)throw new NotFoundException();await this.approved(em,request);
+  if(!request)throw new NotFoundException();await approvedApplication(em,request);
   if(request.completedAt)throw new ConflictException('This onboarding request is completed and cannot be changed.');
   if(request.version!==version)throw new ConflictException('This request changed. Reload before saving.');return request;
  }
@@ -74,14 +73,17 @@ export class ItService {
  async task(user:User,id:string,key:string,input:TaskUpdateDto){
   this.allowIt(user);await onboardingLimit(this.db,'it-task:'+user.id,120,60);
   if(!IT_CHECKLIST.some(template=>template.key===key))throw new NotFoundException();
-  if(input.status==='BLOCKED'&&!input.notes.trim())throw new BadRequestException('Provide a reason for a blocked task.');
   if(input.status==='NOT_NEEDED'&&!isOptionalTask(key))throw new BadRequestException('Only optional tasks can be marked not needed.');
   return this.db.transaction(async em=>{
    const request=await this.locked(em,id,input.version);
-   const task=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key});
+   // A request created before an optional task existed has no row for it.
+   const task=await em.getRepository(ItOnboardingTask).findOneBy({requestId:id,key});if(!task)throw new NotFoundException();
+   // Omitted notes keep the recorded ones; a blocked task always needs a reason, new or existing.
+   const notes=input.notes??task.notes;
+   if(input.status==='BLOCKED'&&!notes.trim())throw new BadRequestException('Provide a reason for a blocked task.');
    if(key==='RINGCENTRAL'&&input.status==='COMPLETED'&&!request.assignedRingCentralPhoneNumber)throw new BadRequestException('Record the actual assigned RingCentral phone number first.');
    if(key==='GOOGLE_WORKSPACE'&&input.status==='COMPLETED'&&!request.companyEmail)throw new BadRequestException('Record the company email first.');
-   const previous=task.status;task.status=input.status;task.notes=input.notes;task.updatedBy=user.id;await em.save(task);
+   const previous=task.status;task.status=input.status;task.notes=notes;task.updatedBy=user.id;await em.save(task);
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status}});
    const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:id});
    this.checklistComplete(tasks);

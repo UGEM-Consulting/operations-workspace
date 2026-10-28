@@ -15,8 +15,21 @@ Outside production, only fictional `@example.test` addresses are accepted, and S
 - After the response, a tracked background task marks the invitation opened, sends the email, and records the outcome as a metadata-only `VERIFICATION_EMAIL_SENT` or `VERIFICATION_EMAIL_FAILED` activity event. Unmatched requests send nothing.
 - Temporary SMTP failures are retried twice (after 1 s and 4 s). Credential, address and message errors (`EAUTH`, `EENVELOPE`, `EMESSAGE`) are not retried. On shutdown or redeploy the API waits up to 15 seconds for in-flight sends. A failed send leaves the applicant without a code: the page tells them to check spam or select **Start again**, and staff can see the failed outcome in the application's activity.
 - The email contains only the code and expiry guidance: never invitation links, tokens, application references or applicant details.
+- Request rate limits are per client address (the IP the BFF forwards), not per email, so nobody can lock a specific applicant out; see [dispatcher onboarding](dispatcher-onboarding.md#boundary-abuse-protection-and-operations).
 - Verification itself is unchanged: hashed codes, five attempts per challenge, row-locked atomic claiming, one-hour applicant sessions.
 - Logs contain only an allowlisted Nodemailer code (`EAUTH`, `ECONNECTION`, `ETIMEDOUT`, …, otherwise `SEND_FAILED`), never addresses, codes or server replies. At startup the API checks the SMTP connection and logs `SMTP connection verified` or the failure code; startup is not blocked.
+
+## Sending limits
+
+An open invitation link (no expected email) could otherwise be used to mail any number of addresses and exhaust the Workspace sending quota. After the response, and only for matched requests, the background task checks these PostgreSQL counters before sending (constants `SEND_LIMITS` in `modules/onboarding/onboarding.service.ts`):
+
+| Limit | Value | Code |
+| --- | --- | --- |
+| Codes mailed to one address (any invitation or resume) | 10 per day | `ADDRESS_DAILY_LIMIT` |
+| Distinct addresses per open invitation link (an address once admitted keeps working) | 3 per day | `INVITATION_ADDRESS_LIMIT` |
+| All verification emails | 400 per day | `DAILY_BUDGET` |
+
+A refused send leaves the response unchanged (matched and unmatched requests stay indistinguishable), records `VERIFICATION_EMAIL_FAILED` and logs only the code above. The applicant sees the usual "check spam or start again" guidance. Status update emails are not counted against these limits. The budget is a constant; changing it needs a code change (no environment setting yet).
 
 Invitation links are `/apply#<token>`. The URL fragment never leaves the browser, so tokens cannot appear in hosting, CDN or APM request logs or in Referer headers. The page keeps the token in memory and removes it from the address bar.
 
@@ -63,7 +76,7 @@ Start Mailpit (`mailpit --listen 127.0.0.1:8025 --smtp 127.0.0.1:1025`), restart
 
 ## Tests
 
-`test/email-delivery.spec.ts` covers configuration validation, retired demo settings, code format, message content, retries, shutdown draining and log sanitising. `test/email-delivery.integration.spec.ts` (requires `TEST_DATABASE_URL`) covers fragment invitation links, sent and failed outcomes, identical responses for unmatched emails, no delivery for unknown, revoked or claimed invitations, and fictional-only enforcement outside production. It uses a captured transport rather than a real SMTP server.
+`test/email-delivery.spec.ts` covers configuration validation, retired demo settings, code format, message content, retries, shutdown draining and log sanitising. `test/email-delivery.integration.spec.ts` (requires `TEST_DATABASE_URL`) covers fragment invitation links, sent and failed outcomes, identical responses for unmatched emails, no delivery for unknown, revoked or claimed invitations, the sending limits above, and fictional-only enforcement outside production. It uses a captured transport rather than a real SMTP server.
 
 ## Status update emails
 

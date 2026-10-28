@@ -10,14 +10,19 @@ import { ApplicationActivity, ApplicationReview, ApplicationStatus, ApplicationS
 import { StorageService } from '../storage/storage.service';
 import { documentStatus } from '../documents/requirements';
 import { companyStatement } from '../documents/statements';
-import { decodeSignature } from '../documents/images';
+import { assertSignatureEmbeds, decodeSignature } from '../documents/images';
 import type { ClientContext } from '../documents/client-context';
-import { CompanyDocument, DocumentSignature } from '../documents/documents.entity';
+import { CompanyDocument, DocumentSignature, StaffSavedSignature } from '../documents/documents.entity';
 import { onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
 import { UpdatesService } from '../updates/updates.service';
 
-const submittedFields = `(SELECT s.fields FROM application_submissions s WHERE s."applicationId" = a.id ORDER BY s.version DESC LIMIT 1)`;
+// Joins each application's latest submitted revision once (at most one row: versions are unique per application),
+// so search, sorting and projection read s.fields instead of repeating a correlated subquery per expression.
+const LATEST_SUBMISSION = 's.applicationId = a.id AND s.version = (SELECT MAX(x.version) FROM application_submissions x WHERE x."applicationId" = a.id)';
+const submittedFields = 's.fields';
+// After rejecting outstanding corrections, how long the applicant can still sign in to read the outcome.
+const REJECTED_CORRECTION_ACCESS_MS = 7*86400000;
 @Injectable()
 export class ReviewService {
  constructor(private readonly db: DataSource, private readonly storage: StorageService, private readonly updates: UpdatesService) {}
@@ -33,7 +38,7 @@ export class ReviewService {
   return { awaitingReview: count('SUBMITTED')+count('RESUBMITTED'), changesRequested: count('CHANGES_REQUESTED'), resubmitted: count('RESUBMITTED'), approved: count('APPROVED'), rejected: count('REJECTED') };
  }
  async queue(user: User, input: ApplicationQueryDto) {
-  const query = this.scoped(user).innerJoin(Invitation,'i','i.id = a.invitationId');
+  const query = this.scoped(user).innerJoin(Invitation,'i','i.id = a.invitationId').leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION);
   if (input.status === 'AWAITING_REVIEW') query.andWhere('a.status IN (:...statuses)',{statuses:['SUBMITTED','RESUBMITTED']});
   else if (input.status !== 'ALL') query.andWhere('a.status = :status',{status:input.status});
   if (input.search) {
@@ -51,7 +56,7 @@ export class ReviewService {
  }
  async legacyList(user: User) {
   // Preserve the original array API; the review UI uses the paginated queue.
-  const query = this.scoped(user).addSelect(`COALESCE(${submittedFields}, '{}'::jsonb)`,'submittedFields').orderBy('a.updatedAt','DESC').limit(200);
+  const query = this.scoped(user).leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION).addSelect(`COALESCE(${submittedFields}, '{}'::jsonb)`,'submittedFields').orderBy('a.updatedAt','DESC').limit(200);
   const result = await query.getRawAndEntities();
   return result.entities.map((application,index) => ({ ...application,fields:result.raw[index].submittedFields }));
  }
@@ -70,6 +75,8 @@ export class ReviewService {
   // Photos as of the last submission; signatures are final acts and visible once made.
   const documents=await documentStatus(this.db.manager,id,this.storage.enabled,application.submittedAt);
   const canReview=['SUBMITTED','RESUBMITTED'].includes(application.status);
+  // Outstanding corrections can still be rejected (CHANGES_REQUESTED -> REJECTED); approval waits for a resubmission.
+  const canReject=canReview||application.status==='CHANGES_REQUESTED';
   const pendingCountersign=documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
@@ -82,12 +89,14 @@ export class ReviewService {
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
     countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
-   canReview, readyForIt:application.status === 'APPROVED' };
+   canReview, canReject, readyForIt:application.status === 'APPROVED' };
  }
  async decide(user: User, id: string, input: ReviewDto, client: ClientContext) {
   await onboardingLimit(this.db,'review:'+user.id,30,60);
   if (input.countersignature && input.decisionType !== 'APPROVE') throw new BadRequestException('The NDA is countersigned only during approval.');
-  const countersignImage = input.countersignature?.signature ? decodeSignature(input.countersignature.signature) : null;
+  const useSaved = !!input.countersignature?.useSavedSignature;
+  const drawnImage = !useSaved && input.countersignature?.signature ? decodeSignature(input.countersignature.signature) : null;
+  if (drawnImage) await assertSignatureEmbeds(drawnImage);
   if (input.decisionType !== 'APPROVE' && !input.reason?.trim()) throw new BadRequestException('A reason is required.');
   if (input.decisionType === 'REQUEST_CHANGES' && !input.requestedFields.length) throw new BadRequestException('Select at least one field to correct.');
   if (input.decisionType !== 'REQUEST_CHANGES' && !input.confirmed) throw new BadRequestException('Confirm the decision before continuing.');
@@ -111,6 +120,10 @@ export class ReviewService {
    if (input.decisionType === 'APPROVE' && missing.length) throw new BadRequestException(`Required applicant fields must be completed before approval. Request corrections for: ${missing.join(', ')}.`);
    const countersign = input.decisionType === 'APPROVE' ? documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant : undefined;
    if (input.countersignature && !countersign) throw new BadRequestException('No NDA countersignature is needed for this application.');
+   // The saved signature is read at signing time, inside the decision transaction, and copied into this record.
+   const saved = countersign && useSaved ? await em.getRepository(StaffSavedSignature).createQueryBuilder('s').addSelect('s.signatureImage').where('s.userId = :id',{id:user.id}).getOne() : null;
+   if (countersign && useSaved && !saved) throw new BadRequestException('Your saved signature is no longer available. Sign here instead.');
+   const countersignImage = saved?.signatureImage ?? drawnImage;
    if (countersign && !countersignImage) throw new BadRequestException('Countersign the NDA before approval.');
    const requestedFields = input.decisionType === 'REQUEST_CHANGES' ? [...new Set([...input.requestedFields,...missing])] : input.requestedFields;
    const previousEmployment = input.employment ? {mcName:invitation.mcName ?? '',teamLead:invitation.teamLead ?? '',jobTitle:invitation.jobTitle ?? ''} : null;
@@ -125,13 +138,16 @@ export class ReviewService {
    application.status = nextStatus;
    application.version += 1;
    if (nextStatus === 'CHANGES_REQUESTED') application.applicantAccessUntil = new Date(Date.now()+30*86400000);
+   // Rejecting outstanding corrections ends the 30-day correction window: REJECTED is terminal, so nothing stays
+   // editable, and sign-in remains possible for at most a week so the applicant can read the emailed outcome.
+   if (previousStatus === 'CHANGES_REQUESTED' && nextStatus === 'REJECTED') application.applicantAccessUntil = new Date(Math.min(application.applicantAccessUntil.getTime(),Date.now()+REJECTED_CORRECTION_ACCESS_MS));
    await em.save(application);
    const review = await em.getRepository(ApplicationReview).save({applicationId:id,reviewerId:user.id,decisionType:input.decisionType,
     reason:input.reason?.trim() || null,requestedFields,previousStatus,newStatus:nextStatus,applicationVersion:application.version,employment:input.employment ?? null,previousEmployment});
    if (countersign && input.countersignature && countersignImage) {
     const doc = await em.getRepository(CompanyDocument).findOneByOrFail({id:countersign.documentId});
-    await em.getRepository(DocumentSignature).save({applicationId:id,documentId:doc.id,signerRole:'COMPANY',signerUserId:user.id,typedName:input.countersignature.typedName,
-     signatureImage:countersignImage,consent:null,statement:companyStatement(doc,countersign.typedName),translatedStatement:null,documentSha256:doc.sha256,...client});
+    await em.getRepository(DocumentSignature).save({applicationId:id,documentId:doc.id,signerRole:'COMPANY',signerUserId:user.id,typedName:saved?.typedName ?? input.countersignature.typedName ?? '',
+     signatureImage:countersignImage,signatureMethod:saved?.signatureMethod ?? input.countersignature.signatureMethod ?? 'DRAWN',fromSavedSignature:!!saved,consent:null,statement:companyStatement(doc,countersign.typedName),translatedStatement:null,documentSha256:doc.sha256,...client});
     await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
    }
    if(nextStatus==='APPROVED')await createItRequest(em,application,review,submitted?.fields??{},invitation);

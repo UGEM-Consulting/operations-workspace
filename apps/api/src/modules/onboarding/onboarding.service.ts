@@ -2,10 +2,10 @@ import { digest, generateVerificationCode } from './verification-code';
 export { digest } from './verification-code';
 import { EmailService } from '../email/email.service';
 import { requiredApplicantFields } from './application-requirements';
-import { onboardingLimit } from './rate-limit';
+import { activeAttempts, clientBucket, countAttempt, onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
 import { randomBytes } from 'node:crypto';
-import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { webOrigins } from '../../config/environment';
 import { Request } from 'express';
@@ -17,6 +17,7 @@ import { canAccessAssignedApplication } from '../auth/policy';
 import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
 import { StorageService } from '../storage/storage.service';
 import { applicantDocuments, documentStatus } from '../documents/requirements';
+type ApplicantDocuments = Awaited<ReturnType<typeof applicantDocuments>>;
 import { BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, VerifyApplicantDto } from './dto';
 export function invitationStatus(invitation: Invitation): string {
  if (invitation.completedAt) return 'COMPLETED';
@@ -24,8 +25,18 @@ export function invitationStatus(invitation: Invitation): string {
  if (invitation.expiresAt.getTime() <= Date.now()) return 'EXPIRED';
  return invitation.openedAt ? 'OPENED' : 'PENDING';
 }
+/**
+ * Verification requests per window: global per minute (circuit breaker only), per address/target per 15 minutes. There is
+ * deliberately no per-link cap shared by everyone: whoever holds a forwarded link could then block the real applicant.
+ * Sends from the company mailbox are bounded separately (SEND_LIMITS).
+ */
+export const BEGIN_LIMITS = { global: 1000, ip: 20, emailIp: 5, targetIp: 10 } as const;
+export const VERIFY_LIMITS = { global: 1000, ip: 30 } as const;
+/** Actual code emails: per recipient per day, distinct recipients per open invitation per day, and the daily total. */
+export const SEND_LIMITS = { perAddressDaily: 10, addressesPerOpenInvitation: 3, dailyBudget: 400 } as const;
 @Injectable()
 export class OnboardingService {
+ private readonly logger = new Logger('ApplicantVerification');
  constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly storage: StorageService) {}
  private limit(key: string, max = 10, seconds = 900) { return onboardingLimit(this.db,key,max,seconds); }
  private get production() { return this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'; }
@@ -66,12 +77,17 @@ export class OnboardingService {
   });
   return { message: 'Invitation revoked' };
  }
- async begin(input: BeginVerificationDto) {
+ async begin(input: BeginVerificationDto, req: Request) {
   this.assertDelivery();
   if (this.fictionalOnly && !input.email.endsWith('@example.test')) throw new BadRequestException('Outside production, use a fictional email ending in @example.test, such as applicant@example.test.');
-  await this.limit('global-verification',60,60);
-  await this.limit('email:'+input.email,5);
   if (Boolean(input.token) === Boolean(input.applicationId)) throw new BadRequestException('Provide an invitation or a returning application reference.');
+  // Counters key only on the request itself, so matched and unmatched requests make identical writes. Per-address
+  // buckets keep one sender from blocking others; the global counter is only a circuit breaker against floods.
+  const ip = clientBucket(req), target = input.token ? 'invitation:'+digest(input.token) : 'application:'+input.applicationId;
+  await this.limit('begin-global',BEGIN_LIMITS.global,60);
+  await this.limit('begin-ip:'+ip,BEGIN_LIMITS.ip,900);
+  await this.limit('begin-email-ip:'+input.email+':'+ip,BEGIN_LIMITS.emailIp,900);
+  await this.limit('begin-target-ip:'+target+':'+ip,BEGIN_LIMITS.targetIp,900);
   // The same queries run whether or not anything matches.
   const app = input.token ? null : await this.db.getRepository(DispatcherApplication).findOneBy({ id: input.applicationId });
   const inv = input.token
@@ -86,11 +102,14 @@ export class OnboardingService {
   // Matched and unmatched requests perform the same single write before responding.
   const challenge = await this.db.getRepository(ApplicantChallenge).save({ invitationId: valid ? inv.id : null, resume: !input.token, email: valid ? input.email : null, expiresAt: new Date(Date.now()+600000), codeHash: code ? digest(code) : null });
   if (valid) {
-   const invitationId = inv.id, to = input.email;
+   const invitationId = inv.id, to = input.email, open = !!input.token && !inv.expectedEmail;
    // After the response: mark the invitation opened, send, and record the delivery outcome (metadata only).
    this.email.runInBackground(async () => {
     await this.db.getRepository(Invitation).createQueryBuilder().update().set({ openedAt: new Date() }).where('id = :id AND "openedAt" IS NULL', { id: invitationId }).execute();
-    if (code) await this.activity(this.db.manager, invitationId, await this.email.sendVerificationCode(to, code) ? 'VERIFICATION_EMAIL_SENT' : 'VERIFICATION_EMAIL_FAILED');
+    if (!code) return;
+    const refused = await this.sendRefusal(invitationId, to, open);
+    if (refused) this.logger.warn(`Verification email not sent: ${refused}`);
+    await this.activity(this.db.manager, invitationId, !refused && await this.email.sendVerificationCode(to, code) ? 'VERIFICATION_EMAIL_SENT' : 'VERIFICATION_EMAIL_FAILED');
    });
   }
   // Identical response for unknown, mismatched, expired and matched requests.
@@ -98,9 +117,24 @@ export class OnboardingService {
    ? { challengeId: challenge.id, delivery: 'email', message: 'If the details match an available invitation, we are emailing an 8-digit verification code to that address. It expires in 10 minutes.' }
    : { challengeId: challenge.id, delivery: 'manual', message: 'Local development: if the details match an available invitation, issue a code for this reference with npm run verification:demo.' };
  }
+ /** Mail-quota guards, run after the response for matched requests only. Returns a safe code when the send is skipped. */
+ private async sendRefusal(invitationId: string, to: string, open: boolean): Promise<string | null> {
+  // Nobody can make the API mail one address (for example a resume victim) more than a few times a day.
+  if (await countAttempt(this.db,'sends-to:'+to,86400) > SEND_LIMITS.perAddressDaily) return 'ADDRESS_DAILY_LIMIT';
+  // An open link may be tried with a few addresses (typos), never used to mail many people.
+  const admitted = 'invitation-address:'+invitationId+':'+to;
+  if (open && !await activeAttempts(this.db,admitted)) {
+   if (await countAttempt(this.db,'invitation-addresses:'+invitationId,86400) > SEND_LIMITS.addressesPerOpenInvitation) return 'INVITATION_ADDRESS_LIMIT';
+   await countAttempt(this.db,admitted,86400);
+  }
+  // Protects the Google Workspace sending quota, which status updates share.
+  if (await countAttempt(this.db,'verification-sends',86400) > SEND_LIMITS.dailyBudget) return 'DAILY_BUDGET';
+  return null;
+ }
  async verify(input: VerifyApplicantDto, req: Request) {
   this.assertDelivery();
-  await this.limit('verify-global',60,60);
+  await this.limit('verify-global',VERIFY_LIMITS.global,60);
+  await this.limit('verify-ip:'+clientBucket(req),VERIFY_LIMITS.ip,900);
   await this.limit('code:'+input.challengeId,5);
   const applicationId = await this.db.transaction(async em => {
    const challenge = await em.getRepository(ApplicantChallenge).createQueryBuilder('c').addSelect('c.codeHash').setLock('pessimistic_write').where('c.id = :id',{ id: input.challengeId }).getOne();
@@ -134,24 +168,26 @@ export class OnboardingService {
   return { application: current, invitation: inv };
  }
  /** What the applicant may change now: answer fields plus photo/signature items. */
- async editable(em: EntityManager, app: DispatcherApplication) {
+ async editable(em: EntityManager, app: DispatcherApplication, known?: ApplicantDocuments) {
   const correction = app.status === 'CHANGES_REQUESTED'
    ? await em.getRepository(ApplicationReview).findOne({where:{applicationId:app.id,decisionType:'REQUEST_CHANGES'},order:{applicationVersion:'DESC'}}) : null;
   const lastSubmission = correction ? await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:app.id},order:{version:'DESC'}}) : null;
-  const documents = await documentStatus(em,app.id,this.storage.enabled);
+  // Callers that already loaded the applicant's documents in this request pass them in instead of reloading.
+  const documents: Pick<ApplicantDocuments,'required'|'missing'> = known ?? await documentStatus(em,app.id,this.storage.enabled);
   // Existing correction rounds must allow completion of newly required fields too. Base this
   // on the submitted revision so saved values remain editable until the applicant resubmits.
   const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...requiredApplicantFields(lastSubmission?.fields ?? {}),...documents.missing])] : [];
   const editableFields: RequestableItem[] = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS,...(documents.required ? DOCUMENT_ITEMS : [])] : [];
   return { correction, effectiveCorrections, editableFields, documents };
  }
- private async applicantView(em: EntityManager, app: DispatcherApplication, inv: Invitation) {
-  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app);
+ private async applicantView(em: EntityManager, app: DispatcherApplication, inv: Invitation, known?: ApplicantDocuments) {
+  const documents = known ?? await applicantDocuments(em,app.id,this.storage.enabled);
+  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app,documents);
   // Explicit projection: no internal review comments, reviewer identity or histories to applicants.
   return { application:{id:app.id,invitationId:app.invitationId,status:app.status,fields:app.fields,version:app.version,updatedAt:app.updatedAt,submittedAt:app.submittedAt},
    invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired},
    correction:correction ? {id:correction.id,reason:correction.reason,requestedFields:effectiveCorrections,createdAt:correction.createdAt} : null,
-   editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents:await applicantDocuments(em,app.id,this.storage.enabled) };
+   editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents };
  }
  async current(req: Request) {
   const {application,invitation} = await this.applicant(this.db.manager,req);
@@ -171,7 +207,9 @@ export class OnboardingService {
    if (['SUBMITTED','RESUBMITTED'].includes(app.status) && submit && input.version === app.version-1) return this.applicantView(em,app,inv);
    if (!['INVITED','DRAFT','CHANGES_REQUESTED'].includes(app.status)) throw new ConflictException('This application is not open for changes.');
    if (input.version !== app.version) throw new ConflictException('Your application changed. Reload before saving.');
-   const view = await this.applicantView(em,app,inv);
+   // A field save cannot change photos or signatures, so one documents read serves the checks and the response.
+   const documents = await applicantDocuments(em,app.id,this.storage.enabled);
+   const view = { ...await this.editable(em,app,documents), documents };
    const fields: ApplicationFields = {...app.fields};
    for (const key of CORRECTION_FIELDS) {
     if (input[key] === undefined) continue;
@@ -198,7 +236,7 @@ export class OnboardingService {
    }
    await em.save(app);
    await this.activity(em,inv.id,submit ? (correcting ? 'APPLICATION_RESUBMITTED' : 'APPLICATION_SUBMITTED') : (correcting ? 'CORRECTIONS_SAVED' : 'DRAFT_SAVED'));
-   return this.applicantView(em,app,inv);
+   return this.applicantView(em,app,inv,documents);
   });
  }
 }

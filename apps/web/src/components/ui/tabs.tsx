@@ -12,7 +12,7 @@ const segmentList = 'inline-flex max-w-full gap-0.5 overflow-x-auto rounded-md b
 const segmentTab = 'inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground data-[active=true]:bg-card data-[active=true]:text-foreground data-[active=true]:shadow-xs';
 function Count({ value, active, segmented }: { value?: number; active: boolean; segmented: boolean }) {
   if (value === undefined) return null;
-  return <span className={cn('min-w-5 rounded-full px-1.5 text-center text-[11px] font-semibold leading-5 tabular-nums', segmented ? 'bg-transparent' : active ? 'bg-brand-subtle text-brand-subtle-foreground' : 'bg-muted text-muted-foreground')}>{value}</span>;
+  return <span className={cn('min-w-5 rounded-full px-1.5 text-center text-xs font-semibold leading-5 tabular-nums', segmented ? 'bg-transparent' : active ? 'bg-brand-subtle text-brand-subtle-foreground' : 'bg-muted text-muted-foreground')}>{value}</span>;
 }
 
 /** Sections of one record, switched in place with arrow keys. Panels are given by key. */

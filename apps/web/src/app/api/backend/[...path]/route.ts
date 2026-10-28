@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { backendConfig } from '@/lib/auth';
 import { allowedEndpoint, bodyLimit, isFileEndpoint, validMutation } from '@/lib/bff-policy';
 import { backendFailureCode } from '@/lib/backend-connection';
+import { sessionCookieName, sessionKindForPath } from '@/lib/session-cookie';
 export const runtime = 'nodejs';
 // Allow a sleeping Render Free API time to start; keep the request deadline
 // below Vercel's function budget. Requires Vercel Fluid Compute.
@@ -17,8 +18,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const origin = mutating ? req.headers.get('origin')! : primary;
     const body = mutating ? await req.text() : undefined;
     if (body && Buffer.byteLength(body) > bodyLimit(path)) return NextResponse.json({ message: 'Request too large' }, { status: 413 });
-    const suffix = path.startsWith('applicant/') ? 'applicant.sid' : 'operations.sid';
-    const name = process.env.NODE_ENV === 'production' ? `__Host-${suffix}` : suffix;
+    const name = sessionCookieName(sessionKindForPath(path));
     const cookie = req.cookies.get(name);
     const query = new URLSearchParams();
     if (path === 'onboarding/review-queue' || path === 'it/onboarding') {

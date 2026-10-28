@@ -4,18 +4,29 @@ import { toString as qrSvg } from 'qrcode';
 import { DataSource, EntityManager } from 'typeorm';
 import { EnvironmentError } from '../../config/environment';
 import { Role, User, UserStatus, publicUser } from '../users/user.entity';
-import { attemptKey, clearAttempts, countAttempt } from './attempts';
+import { attemptKey, clearAttempts, countAttempt, countSliding, lockKey, readAttempts } from './attempts';
 import { RECOVERY_CODE_COUNT, SecretBox, formatManualKey, matchTotp, newRecoveryCode, newTotpSecret, normalizeRecoveryCode, totpUri } from './mfa-crypto';
 import { MfaPolicy, SecurityEventType, StaffMfa, StaffRecoveryCode, StaffSecurityEvent, StaffSecuritySettings } from './mfa.entity';
+import { clearSavedSignature } from '../documents/saved-signature';
 import { hashPassword, verifyPassword } from './password';
 import { accessFor } from './policy';
+import { revokeUserSessions } from './revoke';
 import { AuthRequest, MfaStage, regenerateSession, saveSession } from './session';
 
 const ISSUER = 'UGEM Workspace';
-// Consecutive wrong codes per user before a 15-minute lockout, across all sessions and API instances.
+// Wrong codes per user (across all sessions and API instances) within 15 minutes before a lockout.
 const MAX_CODE_ATTEMPTS = 5;
 const LOCKOUT_SECONDS = 900;
-const PENDING_SECONDS: Record<MfaStage, number> = { verify: 300, enrol: 900 };
+// A repeat lockout lasts an hour: code guessing slows to about 5 per hour, while someone who knows a password can hold
+// an account for at most an hour per burst (longer locks would make denying the last administrator cheap). Never
+// permanent. Escalation resets after a day without a lockout.
+export const LOCKOUT_STEPS = [900, 3600];
+const LOCKOUT_MEMORY_SECONDS = 86_400;
+const lockoutLabel = (seconds: number) => seconds >= 3600 ? `${seconds / 3600} hour${seconds === 3600 ? '' : 's'}` : `${seconds / 60} minutes`;
+const PENDING_SECONDS: Record<MfaStage, number> = { password: 600, verify: 300, enrol: 900 };
+const PENDING_PAGES: Record<MfaStage, string> = { password: '/login/password', verify: '/login/mfa', enrol: '/login/mfa-setup' };
+/** Every per-user code counter (hashed keys); an administrator reset clears them all. */
+const codeKeys = (userId: string) => ({ failures: attemptKey('mfa', userId), lock: attemptKey('mfa-lock', userId), lockouts: attemptKey('mfa-lockouts', userId) });
 export const mfaRequired = (role: Role, policy: MfaPolicy) => role === Role.SYSTEM_ADMIN || policy === MfaPolicy.ALL_STAFF;
 type CodeKind = 'totp' | 'recovery';
 
@@ -37,15 +48,44 @@ export class MfaService {
     return { enrolled: row.enrolled, required: mfaRequired(user.role, policy), policy };
   }
 
-  /** After a correct password: either a full session, or a pending second step that grants no staff access. */
+  /**
+   * After a correct password: a full session, or a pending step that grants no staff access. A password chosen by an
+   * administrator must be replaced first; the change then calls this again to continue with the second step.
+   */
   async startSession(user: User, req: AuthRequest) {
+    if (user.mustChangePassword) {
+      await this.pend(req, user, 'password');
+      return { stage: 'password' as const, landingPage: PENDING_PAGES.password };
+    }
     const { enrolled, required } = await this.state(user);
     if (!enrolled && !required) return this.establish(req, user, 'not-required');
     const stage: MfaStage = enrolled ? 'verify' : 'enrol';
+    await this.pend(req, user, stage);
+    return { mfa: stage, landingPage: PENDING_PAGES[stage] };
+  }
+
+  /** The guard admitted this pending stage; services re-read it rather than trusting the route decorator alone. */
+  pendingUser(req: AuthRequest, stage: MfaStage): User {
+    const pending = req.session.mfaPending;
+    if (req.session.userId || !pending || pending.stage !== stage || pending.expiresAt <= Date.now() || pending.userId !== req.currentUser?.id
+      || pending.authVersion !== req.currentUser.authVersion) throw new UnauthorizedException('Your sign-in expired. Sign in again.');
+    return req.currentUser;
+  }
+
+  /** A full session of the current user and authentication version, never a pending one. */
+  fullSessionUser(req: AuthRequest): User {
+    if (req.session.mfaPending || !req.session.userId || req.session.userId !== req.currentUser?.id
+      || req.session.authVersion !== req.currentUser.authVersion) throw new UnauthorizedException();
+    return req.currentUser;
+  }
+
+  /** After the user changed their own password (which revoked every session): this session continues under a new ID. */
+  async continueSession(req: AuthRequest, user: User) {
+    const { mfa, expiresAt } = req.session;
     await regenerateSession(req);
-    req.session.mfaPending = { userId: user.id, authVersion: user.authVersion, stage, expiresAt: Date.now() + PENDING_SECONDS[stage] * 1000 };
+    Object.assign(req.session, { userId: user.id, authVersion: user.authVersion, mfa, expiresAt });
     await saveSession(req);
-    return { mfa: stage, landingPage: stage === 'verify' ? '/login/mfa' : '/login/mfa-setup' };
+    return { user: publicUser(user), ...accessFor(user) };
   }
 
   async verifyLogin(req: AuthRequest, code: string) {
@@ -63,7 +103,8 @@ export class MfaService {
   }
 
   /** Stores a new unconfirmed secret and returns it once for the authenticator app. */
-  async beginEnrolment(user: User) {
+  async beginEnrolment(req: AuthRequest) {
+    const user = this.enrolmentUser(req);
     const box = this.requireBox();
     if (await countAttempt(this.db, attemptKey('mfa-enrol', user.id), LOCKOUT_SECONDS) > 10) throw new HttpException('Too many setup attempts. Try again later.', 429);
     const secret = newTotpSecret();
@@ -77,7 +118,8 @@ export class MfaService {
   }
 
   /** The first correct code confirms enrolment, issues recovery codes and revokes every other session. */
-  async confirmEnrolment(user: User, code: string, req: AuthRequest) {
+  async confirmEnrolment(req: AuthRequest, code: string) {
+    const user = this.enrolmentUser(req);
     const box = this.requireBox();
     await this.countCodeAttempt(user);
     const row = await this.db.getRepository(StaffMfa).createQueryBuilder('mfa').addSelect(['mfa.secretCiphertext', 'mfa.lastUsedStep'])
@@ -93,11 +135,11 @@ export class MfaService {
         .where('"userId" = :id AND "confirmedAt" IS NULL', { id: user.id }).execute();
       if (!confirmed.affected) throw new ConflictException('Two-step verification is already turned on');
       await this.replaceRecoveryCodes(manager, user.id, hashes);
-      await this.revoke(manager, current);
+      await revokeUserSessions(manager, current);
       await this.audit(manager, user.id, null, SecurityEventType.MFA_ENROLLED, { recoveryCodes: RECOVERY_CODE_COUNT });
       return current;
     });
-    await clearAttempts(this.db, attemptKey('mfa', user.id));
+    await clearAttempts(this.db, codeKeys(user.id).failures);
     return { ...await this.establish(req, updated, 'verified'), recoveryCodes: codes };
   }
 
@@ -140,8 +182,10 @@ export class MfaService {
       if (!await manager.getRepository(StaffMfa).existsBy({ userId: id })) throw new NotFoundException('Two-step verification is not set up for this user');
       await this.removeEnrolment(manager, user);
       await this.audit(manager, id, actor.id, SecurityEventType.MFA_RESET_BY_ADMIN, {});
+      await clearSavedSignature(manager, id, actor.id, 'mfa-reset');
     });
-    await clearAttempts(this.db, attemptKey('mfa', id));
+    // The user enrols again from scratch, so earlier lockouts no longer apply.
+    await clearAttempts(this.db, Object.values(codeKeys(id)));
     return { mfaEnabled: false };
   }
 
@@ -162,18 +206,31 @@ export class MfaService {
     return { mfaRequiredFor };
   }
 
-  private pendingUser(req: AuthRequest, stage: MfaStage): User {
-    const pending = req.session.mfaPending;
-    if (!pending || pending.stage !== stage || pending.userId !== req.currentUser?.id) throw new UnauthorizedException('Your sign-in expired. Sign in again.');
-    return req.currentUser;
+  /** Forced enrolment from a pending 'enrol' sign-in, or voluntary enrolment from a full session. */
+  private enrolmentUser(req: AuthRequest): User {
+    return req.session.mfaPending ? this.pendingUser(req, 'enrol') : this.fullSessionUser(req);
   }
 
+  private async pend(req: AuthRequest, user: User, stage: MfaStage) {
+    await regenerateSession(req);
+    req.session.mfaPending = { userId: user.id, authVersion: user.authVersion, stage, expiresAt: Date.now() + PENDING_SECONDS[stage] * 1000 };
+    await saveSession(req);
+  }
+
+  /** Counts a code attempt; the sixth within 15 minutes starts an escalating lock that also rejects correct codes. */
   private async countCodeAttempt(user: User) {
-    const attempts = await countAttempt(this.db, attemptKey('mfa', user.id), LOCKOUT_SECONDS);
-    if (attempts > MAX_CODE_ATTEMPTS) {
-      if (attempts === MAX_CODE_ATTEMPTS + 1) await this.audit(this.db.manager, user.id, null, SecurityEventType.MFA_LOCKED_OUT, { lockoutSeconds: LOCKOUT_SECONDS });
-      throw new HttpException('Too many incorrect codes. Try again in 15 minutes.', 429);
-    }
+    const keys = codeKeys(user.id);
+    if (await readAttempts(this.db, keys.lock)) throw new HttpException('Too many incorrect codes. Try again later.', 429);
+    const attempts = await countAttempt(this.db, keys.failures, LOCKOUT_SECONDS);
+    if (attempts <= MAX_CODE_ATTEMPTS) return;
+    // The atomic counter lets exactly one request reach the threshold, so each lockout is recorded once.
+    if (attempts !== MAX_CODE_ATTEMPTS + 1) throw new HttpException('Too many incorrect codes. Try again later.', 429);
+    const lockouts = await countSliding(this.db, keys.lockouts, LOCKOUT_MEMORY_SECONDS);
+    const seconds = LOCKOUT_STEPS[Math.min(lockouts, LOCKOUT_STEPS.length) - 1];
+    await lockKey(this.db, keys.lock, seconds);
+    await clearAttempts(this.db, keys.failures);
+    await this.audit(this.db.manager, user.id, null, SecurityEventType.MFA_LOCKED_OUT, { lockoutSeconds: seconds, lockoutsInSeries: lockouts });
+    throw new HttpException(`Too many incorrect codes. Try again in ${lockoutLabel(seconds)}.`, 429);
   }
 
   /** Rate-limited TOTP check with replay protection, falling back to single-use recovery codes. */
@@ -207,7 +264,7 @@ export class MfaService {
   }
 
   private async accepted(user: User, kind: CodeKind): Promise<CodeKind> {
-    await clearAttempts(this.db, attemptKey('mfa', user.id));
+    await clearAttempts(this.db, codeKeys(user.id).failures);
     return kind;
   }
 
@@ -232,14 +289,7 @@ export class MfaService {
   private async removeEnrolment(manager: EntityManager, user: User) {
     await manager.delete(StaffRecoveryCode, { userId: user.id });
     await manager.delete(StaffMfa, { userId: user.id });
-    await this.revoke(manager, user);
-  }
-
-  /** Invalidates every existing session of the user, including the caller's; callers re-establish their own. */
-  private async revoke(manager: EntityManager, user: User) {
-    user.authVersion += 1;
-    await manager.getRepository(User).update(user.id, { authVersion: user.authVersion });
-    await manager.query(`DELETE FROM staff_sessions WHERE sess->>'userId' = $1 OR sess->'mfaPending'->>'userId' = $1`, [user.id]);
+    await revokeUserSessions(manager, user);
   }
 
   private async replaceRecoveryCodes(manager: EntityManager, userId: string, hashes: string[]) {

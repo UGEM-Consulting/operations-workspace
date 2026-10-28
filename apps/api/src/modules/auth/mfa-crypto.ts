@@ -32,12 +32,15 @@ export function newTotpSecret(): string { return new Secret({ size: 20 }).base32
 export function totpUri(secret: string, account: string, issuer: string): string {
   return new TOTP({ ...TOTP_SETTINGS, issuer, label: account, secret: Secret.fromBase32(secret) }).toString();
 }
-/** Returns the matched time step (±1 step for clock drift), or null. Callers must reject steps already used. */
+/**
+ * Returns the matched time step (the current one, or the previous one for typing/clock delay), or null. otpauth's window is
+ * symmetric, so a match on the next step is discarded: future codes are not accepted. Callers must reject steps already used.
+ */
 export function matchTotp(secret: string, token: string, now = Date.now()): number | null {
   if (!/^\d{6}$/.test(token)) return null;
   const totp = new TOTP({ ...TOTP_SETTINGS, secret: Secret.fromBase32(secret) });
   const delta = totp.validate({ token, timestamp: now, window: 1 });
-  return delta === null ? null : totp.counter({ timestamp: now }) + delta;
+  return delta === null || delta > 0 ? null : totp.counter({ timestamp: now }) + delta;
 }
 /** Groups the base32 key in fours for manual entry. */
 export const formatManualKey = (secret: string) => secret.replace(/(.{4})(?=.)/g, '$1 ');

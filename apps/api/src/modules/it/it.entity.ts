@@ -66,8 +66,20 @@ export class PortalNotification {
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) readAt!:Date|null;
 }
+/**
+ * The single definition of request progress, evaluated in TypeScript (itStatus) and SQL (itStatusSql):
+ * COMPLETED once completedAt is set, else the first rule with any task in its statuses, else PENDING.
+ */
+const PROGRESS_RULES:readonly {status:RequestStatus;anyTask:readonly TaskStatus[]}[]=[
+ {status:'BLOCKED',anyTask:['BLOCKED']},
+ {status:'IN_PROGRESS',anyTask:TASK_STATUSES.filter(status=>status!=='PENDING')},
+];
 export function itStatus(request: Pick<ItOnboardingRequest,'completedAt'>, tasks:Pick<ItOnboardingTask,'status'>[]):RequestStatus {
  if(request.completedAt)return 'COMPLETED';
- if(tasks.some(task=>task.status==='BLOCKED'))return 'BLOCKED';
- return tasks.some(task=>task.status!=='PENDING')?'IN_PROGRESS':'PENDING';
+ return PROGRESS_RULES.find(rule=>tasks.some(task=>rule.anyTask.includes(task.status)))?.status??'PENDING';
+}
+/** SQL for itStatus on the request alias. The statuses are the constants above, never input. */
+export function itStatusSql(alias:string){
+ return `CASE WHEN ${alias}."completedAt" IS NOT NULL THEN 'COMPLETED' ${PROGRESS_RULES.map(rule=>
+  `WHEN EXISTS (SELECT 1 FROM it_onboarding_tasks t WHERE t."requestId"=${alias}.id AND t.status IN (${rule.anyTask.map(status=>`'${status}'`).join(',')})) THEN '${rule.status}'`).join(' ')} ELSE 'PENDING' END`;
 }

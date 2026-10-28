@@ -4,6 +4,7 @@ import { Request } from 'express';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { canAccessAssignedApplication } from '../auth/policy';
 import { ItOnboardingRequest } from '../it/it.entity';
+import { approvedApplication } from '../it/it.service';
 import { DispatcherApplication, type DocumentItem } from '../onboarding/entities';
 import { OnboardingService } from '../onboarding/onboarding.service';
 import { onboardingLimit } from '../onboarding/rate-limit';
@@ -13,7 +14,7 @@ import { executedDocument, inspectPdf } from './certificate';
 import type { ClientContext } from './client-context';
 import { ApplicantSignatureDto, PhotoDto, PublishDocumentDto } from './documents.dto';
 import { ApplicantPhoto, CompanyDocument, DOCUMENT_KINDS, DOCUMENT_RULES, DocumentSignature, DocumentView, PHOTO_KINDS, type PhotoKind } from './documents.entity';
-import { decodeJpeg, decodePdf, decodeSignature, sha256 } from './images';
+import { assertSignatureEmbeds, decodeJpeg, decodePdf, decodeSignature, sha256 } from './images';
 import { currentDocuments, photoFor } from './requirements';
 import { applicantStatement, ESIGN_CONSENT } from './statements';
 export interface FileResult {body:Buffer;type:'image/jpeg'|'application/pdf';filename:string;}
@@ -67,7 +68,11 @@ export class DocumentsService {
  async uploadPhoto(req: Request, kind: PhotoKind, input: PhotoDto) {
   const applicationId = this.applicantId(req); this.requireStorage();
   await onboardingLimit(this.db,'photo:'+applicationId,20,900);
+  // Re-encoded without metadata on the server. Nothing reaches storage before the session, record and open status are
+  // checked; the full per-item editability check runs once, under the lock below, and a refusal removes the object.
   const body = decodeJpeg(input.image), id = randomUUID();
+  const { application } = await this.onboarding.applicant(this.db.manager,req);
+  if (!['INVITED','DRAFT','CHANGES_REQUESTED'].includes(application.status)) throw new ConflictException('Photos cannot be changed now.');
   await this.storage.put(photoKey(applicationId,id),body,'image/jpeg');
   const discard: string[] = [];
   try {
@@ -78,7 +83,8 @@ export class DocumentsService {
      // Keep photos staff may have reviewed (created before the last submission); discard unsent replacements.
      if (!application.submittedAt || previous.createdAt > application.submittedAt) discard.push(previous.id);
     }
-    await em.getRepository(ApplicantPhoto).insert({id,applicationId,kind,sha256:sha256(body),byteSize:body.length});
+    // createdAt comes from the API clock, like submittedAt, so "created at or before submission" compares one clock.
+    await em.getRepository(ApplicantPhoto).insert({id,applicationId,kind,sha256:sha256(body),byteSize:body.length,createdAt:new Date()});
     return 'PHOTO_UPLOADED';
    });
    for (const old of discard) await this.storage.remove(photoKey(applicationId,old));
@@ -90,35 +96,48 @@ export class DocumentsService {
   const photo = await photoFor(this.db.manager,application.id,kind); if (!photo) throw new NotFoundException();
   return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
  }
- /** The applicant may open current documents and anything they signed. Opening is recorded as signing evidence. */
+ /** The applicant may open current documents and anything they signed. Fetching the file records nothing. */
  async applicantDocument(req: Request, documentId: string): Promise<FileResult> {
   const { application } = await this.onboarding.applicant(this.db.manager,req);
   const doc = await this.db.getRepository(CompanyDocument).findOneBy({id:documentId});
   const allowed = doc && ((await currentDocuments(this.db.manager)).some(current => current.id === doc.id)
    || await this.db.getRepository(DocumentSignature).existsBy({applicationId:application.id,documentId,signerRole:'APPLICANT'}));
   if (!doc || !allowed) throw new NotFoundException();
-  const body = await this.storage.get(documentKey(doc.id));
+  return { body: await this.storage.get(documentKey(doc.id)), type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}.pdf` };
+ }
+ /**
+  * Signing evidence: an explicit mutation sent when the applicant opens the full current document from the signing
+  * page (not any file fetch). Only the first time is kept.
+  */
+ async recordView(req: Request, documentId: string) {
+  const { application } = await this.onboarding.applicant(this.db.manager,req);
+  await onboardingLimit(this.db,'document-view:'+application.id,60,900);
+  if (!(await currentDocuments(this.db.manager)).some(current => current.id === documentId)) throw new NotFoundException();
   await this.db.getRepository(DocumentView).createQueryBuilder().insert().values({applicationId:application.id,documentId}).orIgnore().execute();
-  return { body, type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}.pdf` };
+  const view = await this.db.getRepository(DocumentView).findOneByOrFail({applicationId:application.id,documentId});
+  return { documentId, firstViewedAt: view.firstViewedAt };
  }
  async sign(req: Request, documentId: string, input: ApplicantSignatureDto, client: ClientContext) {
   const applicationId = this.applicantId(req); this.requireStorage();
   await onboardingLimit(this.db,'sign:'+applicationId,20,900);
   const image = input.signature ? decodeSignature(input.signature) : null;
+  if (image) await assertSignatureEmbeds(image);
   return this.editableTransaction(req,'documents','Documents cannot be signed now.',async em => {
    const doc = (await currentDocuments(em)).find(current => current.id === documentId);
    if (!doc) throw new ConflictException('A newer version of this document was published. Reload and review it before signing.');
    if (DOCUMENT_RULES[doc.kind].signature && !image) throw new BadRequestException('Draw your signature.');
-   if (!(await em.getRepository(DocumentView).existsBy({applicationId,documentId}))) throw new BadRequestException('Open and read the full document before signing.');
+   if (!(await em.getRepository(DocumentView).existsBy({applicationId,documentId}))) throw new BadRequestException('Open and read the full document before signing. If you already opened it, reload this page and open it again.');
    if (await em.getRepository(DocumentSignature).existsBy({applicationId,documentId,signerRole:'APPLICANT'})) throw new ConflictException('You have already signed this document.');
    await em.getRepository(DocumentSignature).insert({applicationId,documentId,signerRole:'APPLICANT',signerUserId:null,typedName:input.typedName,
-    signatureImage:DOCUMENT_RULES[doc.kind].signature ? image : null,consent:ESIGN_CONSENT,...applicantStatement(doc),documentSha256:doc.sha256,...client});
+    signatureImage:DOCUMENT_RULES[doc.kind].signature ? image : null,signatureMethod:DOCUMENT_RULES[doc.kind].signature ? input.signatureMethod ?? 'DRAWN' : null,consent:ESIGN_CONSENT,...applicantStatement(doc),documentSha256:doc.sha256,...client});
    return DOCUMENT_RULES[doc.kind].signature ? 'DOCUMENT_SIGNED' : 'DOCUMENT_ACKNOWLEDGED';
   });
  }
  async applicantSignedCopy(req: Request, documentId: string) {
   const { application } = await this.onboarding.applicant(this.db.manager,req);
-  return this.signedCopy(this.db.manager,application.id,documentId);
+  // Generating a copy decodes PDFs and images; bound it like other applicant actions.
+  await onboardingLimit(this.db,'signed-copy:'+application.id,30,900);
+  return this.signedCopy(this.db.manager,application.id,documentId,'applicant');
  }
 
  // Staff access: the responsible manager or an administrator, only for submitted applications.
@@ -135,26 +154,28 @@ export class DocumentsService {
  }
  async staffSignedCopy(user: User, id: string, documentId: string) {
   const application = await this.staffApplication(user,id);
-  return this.signedCopy(this.db.manager,application.id,documentId);
+  await onboardingLimit(this.db,'signed-copy:'+user.id,60,900);
+  return this.signedCopy(this.db.manager,application.id,documentId,'staff');
  }
  /** IT sees only the profile photo (plain selfie) of an approved request, never the ID selfie. */
  async itPhoto(user: User, requestId: string): Promise<FileResult> {
   if (user.status !== UserStatus.ACTIVE || ![Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].includes(user.role)) throw new ForbiddenException();
-  const request = await this.db.getRepository(ItOnboardingRequest).findOneBy({id:requestId});
-  const application = request && await this.db.getRepository(DispatcherApplication).findOneBy({id:request.applicationId,status:'APPROVED'});
-  const photo = application && await photoFor(this.db.manager,application.id,'SELFIE',application.submittedAt);
-  if (!application || !photo) throw new NotFoundException();
+  const request = await this.db.getRepository(ItOnboardingRequest).findOneBy({id:requestId}); if (!request) throw new NotFoundException();
+  // The same approval relationship as every other IT access: the request's APPROVE review for this application.
+  const application = await approvedApplication(this.db.manager,request);
+  const photo = await photoFor(this.db.manager,application.id,'SELFIE',application.submittedAt);
+  if (!photo) throw new NotFoundException();
   return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: 'profile-photo.jpg' };
  }
  /** The executed copy: the exact signed version plus a certificate page, generated from immutable records. */
- private async signedCopy(em: EntityManager, applicationId: string, documentId: string): Promise<FileResult> {
+ private async signedCopy(em: EntityManager, applicationId: string, documentId: string, audience: 'applicant'|'staff'): Promise<FileResult> {
   const doc = await em.getRepository(CompanyDocument).findOneBy({id:documentId});
   const signatures = await em.getRepository(DocumentSignature).createQueryBuilder('s').addSelect('s.signatureImage')
    .where('s.applicationId = :applicationId AND s.documentId = :documentId',{applicationId,documentId}).orderBy('s.signedAt','ASC').getMany();
   if (!doc || !signatures.some(signature => signature.signerRole === 'APPLICANT')) throw new NotFoundException();
   const view = await em.getRepository(DocumentView).findOneBy({applicationId,documentId});
   const body = await executedDocument(await this.storage.get(documentKey(doc.id)),doc,applicationId,signatures.map(signature => ({...signature,
-   firstViewedAt:signature.signerRole === 'APPLICANT' ? view?.firstViewedAt ?? null : null})));
+   firstViewedAt:signature.signerRole === 'APPLICANT' ? view?.firstViewedAt ?? null : null})),audience);
   return { body, type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}-signed.pdf` };
  }
 }

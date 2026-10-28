@@ -2,15 +2,19 @@ import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { LoginDto } from './auth.dto';
+import { ChangePasswordDto, LoginDto } from './auth.dto';
 import { AuthRequest, cookieName } from './session';
-import { Public, Roles, STAFF, accessFor, requirePage } from './policy';
+import { AllowPendingPasswordChange, Public, Roles, STAFF, accessFor, requirePage } from './policy';
 import { publicUser } from '../users/user.entity';
 @Controller()
 export class AuthController {
   constructor(private readonly auth: AuthService, private readonly config: ConfigService) {}
   @Public() @Post('auth/login') @HttpCode(200)
   login(@Body() input: LoginDto, @Req() req: AuthRequest) { return this.auth.login(input, req); }
+  // Own password: from a full session (Account security) or the forced change after an administrator-set password.
+  // The service re-reads which of the two this session is.
+  @Roles(...STAFF) @AllowPendingPasswordChange() @Post('auth/password') @HttpCode(200)
+  changePassword(@Body() input: ChangePasswordDto, @Req() req: AuthRequest) { return this.auth.changePassword(input, req); }
   @Roles(...STAFF) @Get('auth/me')
   me(@Req() req: AuthRequest) { return { user: publicUser(req.currentUser), ...accessFor(req.currentUser) }; }
   // Public to the session guard so an expired or disabled session can still be cleared. BFF and CSRF remain required.
