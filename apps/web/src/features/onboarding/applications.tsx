@@ -5,6 +5,7 @@ import { Input, Select } from '@/components/ui/field';
 import { Table } from '@/components/ui/table';
 import { Pagination } from '@/components/ui/pagination';
 import { EmptyState } from '@/components/ui/feedback';
+import { LocalTime } from '@/components/ui/local-time';
 import { Person } from '@/components/ui/avatar';
 import { ApplicationList, applicationStatuses } from './types';
 import { PageHeader } from '@/components/workspace-ui';
@@ -28,9 +29,9 @@ export function Applications({data,filters}:{data:ApplicationList;filters:Record
    <Table caption="Dispatcher applications in your authorized scope" rows={data.items} rowKey={row=>row.id} columns={[
     {key:'applicant',label:'Applicant',primary:true,cell:row=>row.submittedAt?<Person name={name(row)} secondary={row.email}/>:<Person name={row.email||'Unclaimed invitation'} secondary="Awaiting submission" avatar={false}/>},
     {key:'employment',label:'Employment',hideBelow:'lg',cell:row=><><p>{row.mcName||'Not provided'}</p><p className="text-[13px] text-muted-foreground">Team lead: {row.teamLead||'Not provided'}</p></>},
-    {key:'submitted',label:'Submitted',nowrap:true,muted:true,hideBelow:'md',cell:row=>row.submittedAt?new Date(row.submittedAt).toLocaleDateString():'—'},
+    {key:'submitted',label:'Submitted',nowrap:true,muted:true,hideBelow:'md',cell:row=><LocalTime iso={row.submittedAt} format="date"/>},
     {key:'status',label:'Status',cell:row=><StatusBadge status={row.status}/>},
-    {key:'updated',label:'Last updated',nowrap:true,muted:true,hideBelow:'xl',cell:row=>new Date(row.updatedAt).toLocaleDateString()},
+    {key:'updated',label:'Last updated',nowrap:true,muted:true,hideBelow:'xl',cell:row=><LocalTime iso={row.updatedAt} format="date"/>},
     {key:'action',label:'Action',srOnly:true,action:true,align:'right',cell:row=>row.submittedAt?<Button asChild variant="outline" size="sm"><Link href={`/onboarding/applications/${row.id}`}>Review<span className="sr-only"> {name(row)}</span></Link></Button>:<span className="text-[13px] text-muted-foreground">Not submitted</span>},
    ]} empty={<EmptyState compact title={filtered?'No matching applications':'No applications yet'} description={filtered?'Try another search or reset filters to see all applications in your scope.':'Applications appear here once applicants start their invitations.'} action={filtered&&<Button asChild variant="outline"><Link href="/onboarding/applications">Reset filters</Link></Button>}/>}
    footer={<Pagination label="Application pages" page={data.page} pageCount={data.pageCount} pageSize={data.pageSize} total={data.total} href={pageLink}/>}/>

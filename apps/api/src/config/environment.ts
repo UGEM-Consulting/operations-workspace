@@ -39,6 +39,15 @@ const originList = (value: string, helpers: Joi.CustomHelpers) => {
     return origins.join(',');
   } catch { return helpers.error('any.invalid'); }
 };
+// pg merges these connection-string parameters over the explicit ssl object, which could silently weaken certificate
+// verification. TLS is configured only through DATABASE_SSL.
+export const DATABASE_URL_TLS_PARAMETERS = ['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'sslpassword', 'sslaccept'];
+export const hasDatabaseUrlTlsOverride = (url: URL) => DATABASE_URL_TLS_PARAMETERS.some(key => url.searchParams.has(key));
+/** Local hosts and dotless private-network names (such as Render's internal dpg-xxxx-a); DNS names and IP addresses are external. */
+export function isPrivateDatabaseHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '');
+  return LOCAL_HOSTS.includes(host) || /^[a-z0-9-]+$/i.test(host);
+}
 /** Browser origins allowed to send credentialed mutations. The first is the primary origin used in emailed links. */
 export const webOrigins = (env: Pick<Environment, 'WEB_ORIGIN'>) => env.WEB_ORIGIN.split(',');
 const schema = Joi.object({
@@ -79,6 +88,10 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   if (error) throw new EnvironmentError(`Invalid environment: ${error.details.map((detail) => `${detail.path.join('.')} (${detail.type})`).join('; ')}`);
   const env = value as Environment;
   env.DEPLOYMENT_PURPOSE ??= env.NODE_ENV === 'production' ? 'production' : 'local';
+  const database = new URL(env.DATABASE_URL);
+  if (hasDatabaseUrlTlsOverride(database)) throw new EnvironmentError(`Remove ${DATABASE_URL_TLS_PARAMETERS.join('/')} parameters from DATABASE_URL and configure TLS with DATABASE_SSL`);
+  // External DNS names and IP addresses need verified TLS; only localhost and dotless private-network hosts may skip it.
+  if (env.NODE_ENV === 'production' && !env.DATABASE_SSL && !isPrivateDatabaseHost(database.hostname)) throw new EnvironmentError('Production DATABASE_URL hosts outside the private network require DATABASE_SSL=true');
   if (env.SESSION_SECRET === env.BFF_SHARED_SECRET) throw new EnvironmentError('Session and BFF secrets must differ');
   if (env.NODE_ENV === 'production' && webOrigins(env).some(origin => !origin.startsWith('https://'))) throw new EnvironmentError('Production WEB_ORIGIN values must all use HTTPS');
   if (env.NODE_ENV === 'production' && env.DEPLOYMENT_PURPOSE === 'local') throw new EnvironmentError('Hosted runtime must have an explicit production or staging purpose');

@@ -8,6 +8,8 @@ export const Roles = (...roles: Role[]) => SetMetadata(ROLES, roles);
 export const MFA_STAGES = 'auth:mfa-stages';
 /** Also admits a half-signed-in session at these stages. Routes still need @Roles; services re-read the pending state. */
 export const AllowPendingMfa = (...stages: MfaStage[]) => SetMetadata(MFA_STAGES, stages);
+/** The forced password-change step; same deny-by-default rules as AllowPendingMfa. */
+export const AllowPendingPasswordChange = () => AllowPendingMfa('password');
 export const STAFF = Object.values(Role);
 const navigation = [
   { key: 'dashboard', href: '/dashboard', label: 'Overview', roles: STAFF },

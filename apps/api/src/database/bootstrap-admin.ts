@@ -38,6 +38,7 @@ export async function bootstrapAdmin(db: DataSource, input: NodeJS.ProcessEnv, p
     if (await repo.existsBy({ email: identity.email })) {
       throw new BootstrapError('Bootstrap refused: the email belongs to an existing user. No account was changed.');
     }
-    await repo.insert({ ...identity, passwordHash, role: Role.SYSTEM_ADMIN, status: UserStatus.ACTIVE });
+    // The administrator chose this password at the hidden prompt, so no forced change follows.
+    await repo.insert({ ...identity, passwordHash, role: Role.SYSTEM_ADMIN, status: UserStatus.ACTIVE, mustChangePassword: false });
   });
 }

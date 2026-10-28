@@ -1,8 +1,8 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { crc32, deflateSync } from 'node:zlib';
+import { deflateSync } from 'node:zlib';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -21,18 +21,15 @@ import { DocumentsModule } from '../src/modules/documents/documents.module';
 import { ItModule } from '../src/modules/it/it.module';
 import { OnboardingModule } from '../src/modules/onboarding/onboarding.module';
 import {completeMfa,enrolForTest} from './mfa-helpers';
+import { jpeg, pdfText, png, pngChunk, pngHeader, PNG_SIGNATURE } from './documents.fixtures';
+import { SignatureMethod1792750000000 } from '../src/database/migrations/1792750000000-SignatureMethod';
+import { SavedStaffSignatures1792780000000 } from '../src/database/migrations/1792780000000-SavedStaffSignatures';
+import { cleanJpeg } from '../src/modules/documents/images';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 const integration=process.env.TEST_DATABASE_URL?describe:describe.skip;
-// Fictional test files: a real PDF, a JPEG-signature blob (the API checks type and size only) and a real PNG signature.
+// Fictional test files: a real PDF, structurally valid JPEG photos (with fictional EXIF to strip) and PNG signatures.
 async function pdf(pages=2){const doc=await PDFDocument.create();for(let i=0;i<pages;i++)doc.addPage([612,792]).drawText(`Fictional test document page ${i+1}`,{x:72,y:700});return Buffer.from(await doc.save());}
-const jpeg=()=>Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),randomBytes(4000)]);
-function png(width=60,height=20){
- const chunk=(type:string,data:Buffer)=>{const body=Buffer.concat([Buffer.from(type,'latin1'),data]);const length=Buffer.alloc(4),crc=Buffer.alloc(4);length.writeUInt32BE(data.length);crc.writeUInt32BE(crc32(body));return Buffer.concat([length,body,crc]);};
- const header=Buffer.alloc(13);header.writeUInt32BE(width,0);header.writeUInt32BE(height,4);header.set([8,6,0,0,0],8);
- const rows=Buffer.concat(Array.from({length:height},()=>Buffer.concat([Buffer.from([0]),randomBytes(width*4)])));
- return Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),chunk('IHDR',header),chunk('IDAT',deflateSync(rows)),chunk('IEND',Buffer.alloc(0))]);
-}
-const signature=()=>`data:image/png;base64,${png().toString('base64')}`;
+const signature=()=>`data:image/png;base64,${png(600,180).toString('base64')}`;
 const binary=(res:request.Response,callback:(error:Error|null,body:Buffer)=>void)=>{const chunks:Buffer[]=[];res.on('data',(chunk:Buffer)=>chunks.push(chunk));res.on('end',()=>callback(null,Buffer.concat(chunks)));};
 const sha=(body:Buffer)=>createHash('sha256').update(body).digest('hex');
 integration('Onboarding photos, documents and e-signatures (disposable PostgreSQL)',()=>{
@@ -41,6 +38,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
  const password=randomBytes(24).toString('base64url');
  const env=validateEnvironment({NODE_ENV:'test',DATABASE_URL:process.env.TEST_DATABASE_URL??'postgresql://localhost/operations_m2_test',CORS_ORIGINS:'http://localhost:3000',WEB_ORIGIN:'http://localhost:3000',SESSION_SECRET:randomBytes(32).toString('hex'),BFF_SHARED_SECRET:randomBytes(32).toString('hex'),STORAGE_DRIVER:'local',STORAGE_LOCAL_DIR:storage,MFA_ENCRYPTION_KEY:randomBytes(32).toString('base64')});
  const headers={'x-workspace-key':env.BFF_SHARED_SECRET,origin:env.WEB_ORIGIN,'x-csrf-protection':'1'};
+ const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
  type Agent=ReturnType<typeof request.agent>;
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
  const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'};
@@ -61,7 +59,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   await agent.post('/api/applicant/photos/selfie').set(headers).send({image:jpeg().toString('base64')}).expect(201);
   let view=(await agent.post('/api/applicant/photos/id-selfie').set(headers).send({image:jpeg().toString('base64')}).expect(201)).body;
   for(const doc of view.documents.items){
-   await agent.get(`/api/applicant/documents/${doc.id}/file`).set(headers).expect(200);
+   await agent.post(`/api/applicant/documents/${doc.id}/view`).set(headers).send({}).expect(201);
    view=(await agent.post(`/api/applicant/documents/${doc.id}/sign`).set({...headers,'x-client-ip':'203.0.113.7','x-client-user-agent':'Fictional Browser 1.0'})
     .send({typedName:'Fictional Applicant',consent:true,agreed:true,...(doc.requiresSignature?{signature:signature()}:{})}).expect(201)).body;
   }
@@ -113,20 +111,32 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   await agent.post('/api/applicant/photos/selfie').set(headers).send({image:jpeg().toString('base64')}).expect(201);
   const replacement=jpeg();await agent.post('/api/applicant/photos/selfie').set(headers).send({image:replacement.toString('base64')}).expect(201);
   expect(readdirSync(join(storage,'photos',id))).toHaveLength(1);
-  expect(sha((await agent.get('/api/applicant/photos/selfie').set(headers).expect(200)).body)).toBe(sha(replacement));
+  expect(sha((await agent.get('/api/applicant/photos/selfie').set(headers).expect(200)).body)).toBe(sha(cleanJpeg(replacement)));
   const nda=view.documents.items[0];
   await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature()}).expect(400);
+  // Fetching the file is not signing evidence; only the explicit view request from the signing page is.
   await agent.get(`/api/applicant/documents/${nda.id}/file`).set(headers).buffer(true).parse(binary).expect(200);
+  await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature()}).expect(400);
+  expect((await db.query('SELECT count(*)::integer AS n FROM document_views'))[0].n).toBe(0);
+  await request(app.getHttpServer()).post(`/api/applicant/documents/${nda.id}/view`).set(headers).send({}).expect(401);
+  await agent.post(`/api/applicant/documents/${randomUUID()}/view`).set(headers).send({}).expect(404);
+  await agent.post(`/api/applicant/documents/${nda.id}/view`).set({...headers,'x-csrf-protection':'0'}).send({}).expect(403);
+  const firstView=(await agent.post(`/api/applicant/documents/${nda.id}/view`).set(headers).send({}).expect(201)).body.firstViewedAt;
+  expect((await agent.post(`/api/applicant/documents/${nda.id}/view`).set(headers).send({}).expect(201)).body.firstViewedAt).toBe(firstView);
   await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true}).expect(400);
+  // A tiny PNG declaring a huge bitmap is refused before anything is stored.
+  const bomb=Buffer.concat([PNG_SIGNATURE,pngHeader(16000,16000),pngChunk('IDAT',deflateSync(Buffer.alloc(100000))),pngChunk('IEND',Buffer.alloc(0))]);
+  await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:`data:image/png;base64,${bomb.toString('base64')}`}).expect(400);
+  await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature(),signatureMethod:'STAMPED'}).expect(400);
   await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Фиктивный',consent:true,agreed:true,signature:signature()}).expect(400);
   await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:false,agreed:true,signature:signature()}).expect(400);
   view=await completeDocuments(agent);
   expect(view.documents.missing).toEqual([]);
   await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature()}).expect(409);
-  const [evidence]=await db.query(`SELECT "ipAddress","userAgent",consent,statement,"documentSha256","signatureImage" IS NOT NULL AS drawn FROM document_signatures WHERE "documentId"=$1`,[nda.id]);
-  expect(evidence).toMatchObject({ipAddress:'203.0.113.7',userAgent:'Fictional Browser 1.0',drawn:true});
+  const [evidence]=await db.query(`SELECT "ipAddress","userAgent",consent,statement,"documentSha256","signatureMethod","signatureImage" IS NOT NULL AS drawn FROM document_signatures WHERE "documentId"=$1`,[nda.id]);
+  expect(evidence).toMatchObject({ipAddress:'203.0.113.7',userAgent:'Fictional Browser 1.0',drawn:true,signatureMethod:'DRAWN'});
   expect(evidence.statement).toContain('version 1');expect(evidence.consent).toContain('electronically');
-  const [contact]=await db.query(`SELECT "signatureImage" FROM document_signatures WHERE "documentId"=$1`,[view.documents.items[2].id]);expect(contact.signatureImage).toBeNull();
+  const [contact]=await db.query(`SELECT "signatureImage","signatureMethod" FROM document_signatures WHERE "documentId"=$1`,[view.documents.items[2].id]);expect(contact).toEqual({signatureImage:null,signatureMethod:null});
   await expect(db.query(`UPDATE document_signatures SET "typedName"='Someone Else'`)).rejects.toThrow('append-only');
   await expect(db.query(`DELETE FROM document_signatures`)).rejects.toThrow('append-only');
   const submitted=await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
@@ -179,17 +189,167 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   const retaken=jpeg();await agent.post('/api/applicant/photos/selfie').set(headers).send({image:retaken.toString('base64')}).expect(201);
   expect(sha((await manager.get(`/api/onboarding/applications/${id}/photos/selfie`).set(headers).expect(200)).body)).toBe(reviewed);
   await agent.post('/api/applicant/submit').set(headers).send({version:3,accurate:true,...answers}).expect(201);
-  expect(sha((await manager.get(`/api/onboarding/applications/${id}/photos/selfie`).set(headers).expect(200)).body)).toBe(sha(retaken));
+  expect(sha((await manager.get(`/api/onboarding/applications/${id}/photos/selfie`).set(headers).expect(200)).body)).toBe(sha(cleanJpeg(retaken)));
   // The reviewed photo is kept as evidence of what was reviewed; only unsent replacements are discarded.
   expect(readdirSync(join(storage,'photos',id))).toHaveLength(3);
  });
  it('refuses to roll back the documents migration while documents or photos exist',async()=>{
   await publishAll();
-  // The newer staff MFA migration goes first; it refuses rollback while enrolments exist.
-  await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();
-  await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();
-  await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();
+  // Newer migrations go first, each after removing the records its rollback refuses to discard.
+  const cleanup:Record<string,string>={OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
+   ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
+  for(let name=await latestMigration();name!=='OnboardingDocuments1792710000000';name=await latestMigration()){if(cleanup[name])await db.query(cleanup[name]);await db.undoLastMigration();}
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard company documents');
   await db.runMigrations();
+ });
+ it('strips photo metadata on the server before storing it',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();
+  const original=jpeg();
+  await agent.post('/api/applicant/photos/selfie').set(headers).send({image:original.toString('base64')}).expect(201);
+  const stored=(await agent.get('/api/applicant/photos/selfie').set(headers).buffer(true).parse(binary).expect(200)).body as Buffer;
+  expect(stored.toString('latin1')).not.toContain('Exif');expect(stored.toString('latin1')).not.toContain('GPS');expect(stored.toString('latin1')).not.toContain('TRAILING');
+  const [row]=await db.query('SELECT sha256,"byteSize" FROM applicant_photos WHERE "applicationId"=$1',[id]);
+  expect(row).toEqual({sha256:sha(stored),byteSize:stored.length});expect(stored.length).toBeLessThan(original.length);
+  await agent.post('/api/applicant/photos/id-selfie').set(headers).send({image:jpeg({width:9000}).toString('base64')}).expect(400);
+  expect(readdirSync(join(storage,'photos',id))).toHaveLength(1);
+ });
+ it('checks the applicant session and editability before storing a photo',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();await completeDocuments(agent);
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  const before=readdirSync(join(storage,'photos',id)).length;
+  await agent.post('/api/applicant/photos/selfie').set(headers).send({image:jpeg().toString('base64')}).expect(409);
+  await db.query(`UPDATE dispatcher_applications SET "applicantAccessUntil"=now()-interval '1 minute' WHERE id=$1`,[id]);
+  await agent.post('/api/applicant/photos/selfie').set(headers).send({image:jpeg().toString('base64')}).expect(401);
+  expect(readdirSync(join(storage,'photos',id))).toHaveLength(before);
+ });
+ it('requires a signature on the current version once a new version is published, and records typed signatures',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();await completeDocuments(agent);
+  const nda=await manager.post('/api/documents').set(headers).send({kind:'NDA',title:'Fictional NDA',file:(await pdf(2)).toString('base64')}).expect(201);
+  let view=(await agent.get('/api/applicant/application').set(headers).expect(200)).body;
+  expect(view.documents.missing).toEqual(['documents']);
+  expect(view.documents.items[0]).toMatchObject({id:nda.body.id,version:2,signed:{version:1}});
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(400);
+  await agent.post(`/api/applicant/documents/${nda.body.id}/view`).set(headers).send({}).expect(201);
+  view=(await agent.post(`/api/applicant/documents/${nda.body.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature(),signatureMethod:'TYPED'}).expect(201)).body;
+  expect(view.documents.missing).toEqual([]);expect(view.documents.items[0].signed).toMatchObject({documentId:nda.body.id,version:2});
+  const [typed]=await db.query(`SELECT "signatureMethod" FROM document_signatures WHERE "documentId"=$1`,[nda.body.id]);expect(typed.signatureMethod).toBe('TYPED');
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  // A version published after submission blocks approval until the applicant signs it in a correction round.
+  const sop=await admin.post('/api/documents').set(headers).send({kind:'SOP',title:'Fictional SOP',file:(await pdf(1)).toString('base64')}).expect(201);
+  const detail=(await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body;
+  expect(detail.requiredFields).toContain('documents');
+  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}};
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send(approve).expect(400);
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'REQUEST_CHANGES',reason:'Please sign the new SOP.',requestedFields:['documents']}).expect(201);
+  view=(await agent.get('/api/applicant/application').set(headers).expect(200)).body;
+  expect(view.editableFields).toContain('documents');expect(view.documents.items[1]).toMatchObject({id:sop.body.id,signed:{version:1}});
+ });
+ it('gives the applicant a signed copy without the countersigner IP address and browser, and rate-limits copies',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();const view=await completeDocuments(agent);
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set({...headers,'x-client-ip':'198.51.100.4','x-client-user-agent':'Fictional Manager Browser'})
+   .send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
+  const nda=view.documents.items[0].id;
+  const own=pdfText((await agent.get(`/api/applicant/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
+  const staff=pdfText((await manager.get(`/api/onboarding/applications/${id}/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
+  expect(own).toContain('203.0.113.7');expect(own).toContain('Recorded by UGEM');expect(own).not.toContain('198.51.100.4');expect(own).not.toContain('Fictional Manager Browser');
+  expect(staff).toContain('198.51.100.4');expect(staff).toContain('Fictional Manager Browser');
+  for(let i=0;i<29;i++)await agent.get(`/api/applicant/documents/${nda}/signed`).set(headers).expect(200);
+  await agent.get(`/api/applicant/documents/${nda}/signed`).set(headers).expect(429);
+ },60000);
+ it('gives IT the profile photo only through the APPROVE review the request was created from',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();await completeDocuments(agent);
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'REQUEST_CHANGES',reason:'Please confirm your phone number.',requestedFields:['personalPhoneNumber']}).expect(201);
+  await agent.post('/api/applicant/submit').set(headers).send({version:3,...answers,accurate:true}).expect(201);
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:4,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
+  const [itRequest]=await db.query('SELECT id,"approvalId" FROM it_onboarding_requests WHERE "applicationId"=$1',[id]);
+  await itAgent.get(`/api/it/onboarding/${itRequest.id}/photo`).set(headers).expect(200);
+  // Linked to the change-request review instead of the approval: refused, like every other IT access.
+  const [changeRequest]=await db.query(`SELECT id FROM application_reviews WHERE "applicationId"=$1 AND "decisionType"='REQUEST_CHANGES'`,[id]);
+  await db.query('UPDATE it_onboarding_requests SET "approvalId"=$1 WHERE id=$2',[changeRequest.id,itRequest.id]);
+  await itAgent.get(`/api/it/onboarding/${itRequest.id}/photo`).set(headers).expect(404);
+  await db.query('UPDATE it_onboarding_requests SET "approvalId"=$1 WHERE id=$2',[itRequest.approvalId,itRequest.id]);
+ });
+ it('refuses to roll back the signature method while typed signatures exist',async()=>{
+  await publishAll();
+  const {agent}=await applicant();
+  const nda=(await agent.get('/api/applicant/application').set(headers).expect(200)).body.documents.items[0];
+  await agent.post(`/api/applicant/documents/${nda.id}/view`).set(headers).send({}).expect(201);
+  await agent.post(`/api/applicant/documents/${nda.id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature(),signatureMethod:'TYPED'}).expect(201);
+  const runner=db.createQueryRunner();
+  try { await expect(new SignatureMethod1792750000000().down(runner)).rejects.toThrow('Cannot discard typed signature records'); } finally { await runner.release(); }
+ });
+ it('saves an approver signature privately, applies it at approval and keeps signed copies unchanged when it is replaced or removed',async()=>{
+  await db.query('TRUNCATE staff_saved_signatures');const started=new Date();
+  await itAgent.get('/api/staff/signature').set(headers).expect(403);
+  expect((await manager.get('/api/staff/signature').set(headers).expect(200)).body.saved).toBeNull();
+  const typed=`data:image/png;base64,${png(600,180).toString('base64')}`;
+  await manager.post('/api/staff/signature').set(headers).send({typedName:'Fictional Saved Manager',signature:typed,signatureMethod:'TYPED'}).expect(400);
+  await manager.post('/api/staff/signature').set(headers).send({typedName:'Fictional Saved Manager',signature:`data:image/png;base64,${png(16000,16000).toString('base64')}`,signatureMethod:'DRAWN',agreed:true}).expect(400);
+  const saved=(await manager.post('/api/staff/signature').set(headers).send({typedName:'Fictional Saved Manager',signature:typed,signatureMethod:'TYPED',agreed:true}).expect(201)).body.saved;
+  expect(saved).toMatchObject({typedName:'Fictional Saved Manager',signatureMethod:'TYPED'});expect(saved.image).toBe(typed);
+  // Private to its owner: another manager sees only their own (none).
+  expect((await other.get('/api/staff/signature').set(headers).expect(200)).body.saved).toBeNull();
+  await publishAll();
+  const {agent,id}=await applicant();const view=await completeDocuments(agent);
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}};
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...approve,countersignature:{useSavedSignature:true}}).expect(400);
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...approve,countersignature:{useSavedSignature:true,agreed:true}}).expect(201);
+  const [row]=await db.query(`SELECT "typedName","signatureMethod","fromSavedSignature","signatureImage" FROM document_signatures WHERE "applicationId"=$1 AND "signerRole"='COMPANY'`,[id]);
+  expect(row).toMatchObject({typedName:'Fictional Saved Manager',signatureMethod:'TYPED',fromSavedSignature:true});
+  const nda=view.documents.items[0].id;
+  const copy=async()=>(await manager.get(`/api/onboarding/applications/${id}/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body as Buffer;
+  expect(pdfText(await copy())).toContain('applied from their saved signature');
+  // Replacing or removing the saved signature never touches the signed record.
+  await manager.post('/api/staff/signature').set(headers).send({typedName:'Fictional Saved Manager',signature:`data:image/png;base64,${png(400,120).toString('base64')}`,signatureMethod:'DRAWN',agreed:true}).expect(201);
+  await manager.post('/api/staff/signature/delete').set(headers).send({}).expect(201);
+  await manager.post('/api/staff/signature/delete').set(headers).send({}).expect(404);
+  const [after]=await db.query(`SELECT "signatureImage" FROM document_signatures WHERE "applicationId"=$1 AND "signerRole"='COMPANY'`,[id]);
+  expect(sha(after.signatureImage)).toBe(sha(row.signatureImage));
+  // With nothing saved, a second approval must sign in the dialog instead.
+  const second=await applicant();await completeDocuments(second.agent);
+  await second.agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  const refused=await manager.post(`/api/onboarding/applications/${second.id}/reviews`).set(headers).send({...approve,countersignature:{useSavedSignature:true,agreed:true}}).expect(400);
+  expect(refused.body.message).toContain('saved signature is no longer available');
+  const events=await db.query(`SELECT type,metadata FROM staff_security_events WHERE type LIKE 'STAFF_SIGNATURE_%' AND "createdAt">=$1 ORDER BY "createdAt"`,[started]);
+  expect(events.map((event:{type:string})=>event.type)).toEqual(['STAFF_SIGNATURE_SAVED','STAFF_SIGNATURE_SAVED','STAFF_SIGNATURE_DELETED']);
+  expect(JSON.stringify(events)).not.toContain('Fictional Saved Manager');
+ },60000);
+ it('refuses to roll back saved signatures while any exist or were applied',async()=>{
+  await db.query('TRUNCATE staff_saved_signatures');
+  await manager.post('/api/staff/signature').set(headers).send({typedName:'Fictional Saved Manager',signature:signature(),signatureMethod:'DRAWN',agreed:true}).expect(201);
+  const runner=db.createQueryRunner();
+  try { await expect(new SavedStaffSignatures1792780000000().down(runner)).rejects.toThrow('Cannot discard saved staff signatures'); } finally { await runner.release(); }
+  await db.query('TRUNCATE staff_saved_signatures');
+ });
+ // Last: an administrator account change ends the target's sessions.
+ it('clears a saved signature when an administrator changes the account or resets two-step verification, but not for a name-only edit',async()=>{
+  await db.query('TRUNCATE staff_saved_signatures');
+  const target=await db.getRepository(User).findOneByOrFail({email:'staff1@example.test'});
+  await other.post('/api/staff/signature').set(headers).send({typedName:'Fictional Other Manager',signature:signature(),signatureMethod:'DRAWN',agreed:true}).expect(201);
+  await admin.patch(`/api/users/${target.id}`).set(headers).send({firstName:'Renamed'}).expect(200);
+  expect((await db.query('SELECT 1 FROM staff_saved_signatures WHERE "userId"=$1',[target.id])).length).toBe(1);
+  await admin.patch(`/api/users/${target.id}`).set(headers).send({password:randomBytes(18).toString('base64url')}).expect(200);
+  expect((await db.query('SELECT 1 FROM staff_saved_signatures WHERE "userId"=$1',[target.id])).length).toBe(0);
+  const [cleared]=await db.query(`SELECT metadata FROM staff_security_events WHERE "userId"=$1 AND type='STAFF_SIGNATURE_CLEARED'`,[target.id]);
+  expect(cleared.metadata).toEqual({reason:'account-change'});
+  // An administrator resetting two-step verification clears it too (the target is signed out by the password change above, so the row is set up directly).
+  await db.query(`INSERT INTO staff_saved_signatures ("userId","typedName","signatureImage","signatureMethod") VALUES ($1,'Fictional Other Manager',$2,'DRAWN')`,[target.id,png(600,180)]);
+  await enrolForTest(db,env.MFA_ENCRYPTION_KEY!,target.id);
+  await admin.post(`/api/users/${target.id}/mfa/reset`).set(headers).send({}).expect(200);
+  expect((await db.query('SELECT 1 FROM staff_saved_signatures WHERE "userId"=$1',[target.id])).length).toBe(0);
+  expect((await db.query(`SELECT metadata FROM staff_security_events WHERE "userId"=$1 AND type='STAFF_SIGNATURE_CLEARED' ORDER BY "createdAt"`,[target.id])).map((row:{metadata:unknown})=>row.metadata)).toEqual([{reason:'account-change'},{reason:'mfa-reset'}]);
+  // An administrator changing their own password keeps their own saved signature (they chose the password); it signs them out.
+  const self=await db.getRepository(User).findOneByOrFail({email:'staff2@example.test'});
+  await db.query(`INSERT INTO staff_saved_signatures ("userId","typedName","signatureImage","signatureMethod") VALUES ($1,'Fictional Admin',$2,'DRAWN')`,[self.id,png(600,180)]);
+  await admin.patch(`/api/users/${self.id}`).set(headers).send({password:randomBytes(18).toString('base64url')}).expect(200);
+  expect((await db.query('SELECT 1 FROM staff_saved_signatures WHERE "userId"=$1',[self.id])).length).toBe(1);
  });
 });

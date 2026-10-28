@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
 import { apiRequest } from '@/lib/auth';
+import { readResponse } from '@/lib/api-schemas';
+import { Alert } from '@/components/ui/alert';
 import { StatCard } from '@/components/workspace-ui';
 import { EmptyState } from '@/components/ui/feedback';
 import { StatusBadge } from '@/components/ui/status-badge';
@@ -11,10 +13,10 @@ import { ManagerNotifications } from '@/features/it/notifications';
 async function read<T>(path: string): Promise<T> {
   const response = await apiRequest(path);
   if (!response.ok) throw new Error('Workspace data unavailable');
-  return response.json() as Promise<T>;
+  return readResponse<T>(response, 'workspace data');
 }
 function Unavailable({ title, href }: { title: string; href: string }) {
-  return <div className="rounded-lg border bg-card p-6"><h2 className="font-semibold">{title}</h2><p className="mt-2 text-sm text-muted-foreground">This information could not be loaded. Please try again.</p><Link href={href} className="mt-4 inline-block text-sm font-medium text-primary underline">Open workspace</Link></div>;
+  return <Alert tone="warning" title={title}><p>This information could not be loaded. The service may be starting up; reload the page in a moment.</p><Link href={href} className="inline-block font-medium text-primary underline">Open workspace</Link></Alert>;
 }
 export async function ReviewWork() {
   const [summary, queue, notifications] = await Promise.allSettled([
@@ -42,6 +44,6 @@ export async function ItWork() {
   const labels = ['Pending setup','In progress','Blocked','Completed'];
   const statuses = ['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'];
   return <section aria-labelledby="it-overview-title" className="space-y-5"><div><h2 id="it-overview-title" className="text-lg font-semibold">IT onboarding</h2><p className="mt-1 text-sm text-muted-foreground">Approved dispatchers and the next steps in their setup.</p></div><div className="grid grid-cols-2 gap-3 xl:grid-cols-4 sm:gap-4">{result.map((entry,index) => entry.status === 'fulfilled' ? <StatCard key={statuses[index]} label={labels[index]} value={entry.value.total} detail="Onboarding requests" href={`/it/tasks?status=${statuses[index]}`} /> : <Unavailable key={statuses[index]} title={`${labels[index]} unavailable`} href="/it/tasks" />)}</div>
-    <div className="grid items-start gap-4 xl:grid-cols-3">{result.slice(0,3).map((entry,index) => <section key={statuses[index]} className="overflow-hidden rounded-lg border bg-card"><div className="flex items-center justify-between gap-3 p-5"><h3 className="text-sm font-semibold">{labels[index]}</h3><Link href={`/it/tasks?status=${statuses[index]}`} className="text-xs text-primary hover:underline">View all</Link></div>{entry.status === 'rejected' ? <p className="px-5 pb-5 text-sm text-muted-foreground">Unable to load requests.</p> : entry.value.items.length ? <ul>{entry.value.items.map(request => <li key={request.id} className="border-t"><Link href={`/it/tasks/${request.id}`} className="block space-y-2 p-5 transition-colors hover:bg-muted/40"><p className="text-sm font-semibold">{request.profile.proposedDisplayName ?? 'Approved dispatcher'}</p><p className="text-xs text-muted-foreground">{request.profile.mcName}</p><StatusBadge status={request.status} /></Link></li>)}</ul> : <EmptyState title="No requests here" description="Requests will appear as onboarding progresses." />}</section>)}</div>
+    <div className="grid items-start gap-4 xl:grid-cols-3">{result.slice(0,3).map((entry,index) => <section key={statuses[index]} className="overflow-hidden rounded-lg border bg-card"><div className="flex items-center justify-between gap-3 p-5"><h3 className="text-sm font-semibold">{labels[index]}</h3><Link href={`/it/tasks?status=${statuses[index]}`} className="text-xs text-primary hover:underline">View all</Link></div>{entry.status === 'rejected' ? <p className="px-5 pb-5 text-sm text-muted-foreground">Unable to load requests.</p> : entry.value.items.length ? <ul>{entry.value.items.map(request => <li key={request.id} className="border-t"><Link href={`/it/tasks/${request.id}`} className="block space-y-2 p-5 transition-colors hover:bg-muted/40"><p className="text-sm font-semibold">{request.profile.proposedDisplayName ?? 'Approved dispatcher'}</p><p className="text-xs text-muted-foreground">{request.profile.mcName}</p><StatusBadge status={request.status} /></Link></li>)}</ul> : <EmptyState headingLevel={4} title="No requests here" description="Requests will appear as onboarding progresses." />}</section>)}</div>
   </section>;
 }

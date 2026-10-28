@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { Secret, TOTP } from 'otpauth';
 import { EnvironmentError, validateEnvironment } from '../src/config/environment';
 import { SecretBox, formatManualKey, matchTotp, newRecoveryCode, newTotpSecret, normalizeRecoveryCode, totpUri } from '../src/modules/auth/mfa-crypto';
 import { MfaPolicy } from '../src/modules/auth/mfa.entity';
-import { MfaService, mfaRequired } from '../src/modules/auth/mfa.service';
+import { LOCKOUT_STEPS, MfaService, mfaRequired } from '../src/modules/auth/mfa.service';
 import { Role } from '../src/modules/users/user.entity';
 
 const code = (secret: string, timestamp: number) => new TOTP({ algorithm: 'SHA1', digits: 6, period: 30, secret: Secret.fromBase32(secret) }).generate({ timestamp });
@@ -35,11 +36,12 @@ describe('TOTP secret encryption', () => {
 describe('TOTP codes', () => {
   const secret = newTotpSecret();
   const now = 1_800_000_015_000;
-  it('accepts the current step and one step of clock drift either way, returning the matched step', () => {
+  it('accepts the current and the previous step only, returning the matched step', () => {
     const step = Math.floor(now / 30_000);
     expect(matchTotp(secret, code(secret, now), now)).toBe(step);
     expect(matchTotp(secret, code(secret, now - 30_000), now)).toBe(step - 1);
-    expect(matchTotp(secret, code(secret, now + 30_000), now)).toBe(step + 1);
+    // otpauth's window is symmetric; a code for the next step is discarded.
+    expect(matchTotp(secret, code(secret, now + 30_000), now)).toBeNull();
   });
   it('rejects codes outside the window and malformed input', () => {
     expect(matchTotp(secret, code(secret, now - 90_000), now)).toBeNull();
@@ -85,5 +87,29 @@ describe('MFA policy and configuration', () => {
     expect(() => new MfaService({} as never, config({ NODE_ENV: 'production' }))).toThrow('MFA_ENCRYPTION_KEY');
     expect(() => new MfaService({} as never, config({ NODE_ENV: 'production', MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64') }))).not.toThrow();
     expect(() => new MfaService({} as never, config({ NODE_ENV: 'development' }))).not.toThrow();
+  });
+});
+
+describe('MFA enrolment and pending-step checks in the service', () => {
+  const service = new MfaService({} as never, ({ get: () => undefined }) as never);
+  const user = { id: 'user-a', authVersion: 3 };
+  const pending = (overrides: Record<string, unknown>) => ({ userId: 'user-a', authVersion: 3, stage: 'enrol', expiresAt: Date.now() + 60_000, ...overrides });
+  const req = (session: Record<string, unknown>) => ({ session, currentUser: user }) as never;
+  it('admits only a matching, unexpired pending enrolment or a full session of the same user and version', async () => {
+    for (const session of [
+      { mfaPending: pending({ stage: 'verify' }) }, { mfaPending: pending({ stage: 'password' }) }, { mfaPending: pending({ expiresAt: Date.now() - 1 }) },
+      { mfaPending: pending({ userId: 'user-b' }) }, { mfaPending: pending({ authVersion: 2 }) }, {},
+      { userId: 'user-b', authVersion: 3 }, { userId: 'user-a', authVersion: 2 }, { userId: 'user-a', authVersion: 3, mfaPending: pending({}) },
+    ]) {
+      await expect(service.beginEnrolment(req(session))).rejects.toThrow(UnauthorizedException);
+      await expect(service.confirmEnrolment(req(session), '123456')).rejects.toThrow(UnauthorizedException);
+    }
+    // Valid sessions get past the session check; this server has no encryption key configured.
+    for (const session of [{ mfaPending: pending({}) }, { userId: 'user-a', authVersion: 3 }]) {
+      await expect(service.beginEnrolment(req(session))).rejects.toThrow(ServiceUnavailableException);
+    }
+  });
+  it('escalates lockouts without a permanent lock', () => {
+    expect(LOCKOUT_STEPS).toEqual([900, 3600]);
   });
 });

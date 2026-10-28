@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -97,5 +97,37 @@ integration('Applicant email delivery (disposable PostgreSQL)',()=>{
   await request(app.getHttpServer()).post('/api/applicant/begin').set(headers).send({token:inv.token,email:'real.person@company.example'}).expect(400);
   await settle();
   expect(sent).toEqual([]);
+ });
+ const beginFrom=(ip:string,body:Record<string,unknown>)=>request(app.getHttpServer()).post('/api/applicant/begin').set({...headers,'x-client-ip':ip}).send(body).expect(201);
+ const same=(a:{body:Record<string,unknown>},b:{body:Record<string,unknown>})=>expect({...a.body,challengeId:''}).toEqual({...b.body,challengeId:''});
+ it('mails at most three addresses per open invitation link a day, with an unchanged response',async()=>{
+  const inv=await invite();
+  const first=await beginFrom('203.0.113.1',{token:inv.token,email:'one@example.test'});
+  for(const [index,email] of ['two@example.test','three@example.test'].entries())await beginFrom(`203.0.113.${index+2}`,{token:inv.token,email});
+  const capped=await beginFrom('203.0.113.9',{token:inv.token,email:'four@example.test'});
+  // An address already admitted for this link can still get a new code.
+  await beginFrom('203.0.113.10',{token:inv.token,email:'one@example.test'});
+  await settle();
+  same(first,capped);
+  expect(sent.map(message=>message.to)).toEqual(['one@example.test','two@example.test','three@example.test','one@example.test']);
+  expect((await events(inv.id)).filter(event=>event==='VERIFICATION_EMAIL_FAILED')).toHaveLength(1);
+ });
+ it('caps the codes mailed to one address a day, so nobody can flood an applicant through other invitations',async()=>{
+  let count=0;
+  for(let round=0;round<3;round++){
+   const inv=await invite({email:'victim@example.test'});
+   for(let i=0;i<4;i++)await beginFrom(`198.51.100.${++count}`,{token:inv.token,email:'victim@example.test'});
+  }
+  await settle();
+  expect(sent).toHaveLength(10);
+ });
+ it('skips sending once the daily verification budget is used, keeping the response identical',async()=>{
+  const inv=await invite();
+  const before=await beginFrom('203.0.113.20',{token:inv.token,email:'budget.one@example.test'});await settle();
+  await db.query(`UPDATE login_attempts SET attempts=400 WHERE key=$1`,[createHash('sha256').update('applicant:verification-sends').digest('hex')]);
+  const after=await beginFrom('203.0.113.21',{token:inv.token,email:'budget.one@example.test'});await settle();
+  same(before,after);
+  expect(sent.map(message=>message.to)).toEqual(['budget.one@example.test']);
+  expect(await events(inv.id)).toEqual(expect.arrayContaining(['VERIFICATION_EMAIL_SENT','VERIFICATION_EMAIL_FAILED']));
  });
 });

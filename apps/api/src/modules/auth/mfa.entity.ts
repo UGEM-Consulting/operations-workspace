@@ -23,6 +23,12 @@ export enum SecurityEventType {
   MFA_ENROLLED = 'MFA_ENROLLED', MFA_DISABLED = 'MFA_DISABLED', MFA_RESET_BY_ADMIN = 'MFA_RESET_BY_ADMIN',
   MFA_RECOVERY_CODE_USED = 'MFA_RECOVERY_CODE_USED', MFA_RECOVERY_CODES_REGENERATED = 'MFA_RECOVERY_CODES_REGENERATED',
   MFA_LOCKED_OUT = 'MFA_LOCKED_OUT', MFA_POLICY_CHANGED = 'MFA_POLICY_CHANGED',
+  // Account administration (actor = administrator) and self-service password changes. Field names only, never values.
+  USER_CREATED = 'USER_CREATED', USER_ROLE_CHANGED = 'USER_ROLE_CHANGED', USER_STATUS_CHANGED = 'USER_STATUS_CHANGED',
+  USER_EMAIL_CHANGED = 'USER_EMAIL_CHANGED', USER_NAME_CHANGED = 'USER_NAME_CHANGED', USER_PASSWORD_SET = 'USER_PASSWORD_SET',
+  PASSWORD_CHANGED = 'PASSWORD_CHANGED',
+  // Saved countersigning signature: saved or replaced, deleted by its owner, or cleared by an account change.
+  STAFF_SIGNATURE_SAVED = 'STAFF_SIGNATURE_SAVED', STAFF_SIGNATURE_DELETED = 'STAFF_SIGNATURE_DELETED', STAFF_SIGNATURE_CLEARED = 'STAFF_SIGNATURE_CLEARED',
 }
 // Metadata only: never codes, secrets, session identifiers or addresses.
 @Entity('staff_security_events')
@@ -31,7 +37,7 @@ export class StaffSecurityEvent {
   @Column('uuid') userId!: string;
   @Column({ type: 'uuid', nullable: true }) actorId!: string | null;
   @Column({ type: 'varchar', length: 40 }) type!: SecurityEventType;
-  @Column({ type: 'jsonb', default: {} }) metadata!: Record<string, string | number | boolean | null>;
+  @Column({ type: 'jsonb', default: {} }) metadata!: Record<string, string | number | boolean | null | string[]>;
   @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 export enum MfaPolicy { ADMINS = 'ADMINS', ALL_STAFF = 'ALL_STAFF' }

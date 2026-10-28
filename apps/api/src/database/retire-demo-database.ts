@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import 'dotenv/config';
 import { createInterface } from 'node:readline/promises';
 import { DataSource } from 'typeorm';
-import type { Environment } from '../config/environment';
+import { hasDatabaseUrlTlsOverride, type Environment } from '../config/environment';
 import { databaseOptions } from './options';
 
 // One-time operator command for a database that was converted to the retired fictional demo.
@@ -59,7 +59,7 @@ function connection(input: NodeJS.ProcessEnv) {
   let url: URL;
   try { url = new URL(input.DATABASE_URL ?? ''); } catch { throw new RetirementError('Set DATABASE_URL to the database to clean up.'); }
   if (!['postgres:', 'postgresql:'].includes(url.protocol)) throw new RetirementError('DATABASE_URL must be a PostgreSQL URL.');
-  if (['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert'].some(key => url.searchParams.has(key))) throw new RetirementError('Remove SSL parameters from DATABASE_URL and set DATABASE_SSL=true instead.');
+  if (hasDatabaseUrlTlsOverride(url)) throw new RetirementError('Remove SSL parameters from DATABASE_URL and set DATABASE_SSL=true instead.');
   const ssl = input.DATABASE_SSL === 'true';
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && !ssl) throw new RetirementError('External database connections require DATABASE_SSL=true with certificate verification.');
   return { url, env: { DATABASE_URL: url.toString(), DATABASE_SSL: ssl } as Environment };

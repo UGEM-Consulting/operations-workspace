@@ -6,16 +6,19 @@ import connectPgSimple from 'connect-pg-simple';
 import { Pool } from 'pg';
 import { webOrigins, type Environment } from '../../config/environment';
 import type { User } from '../users/user.entity';
+import { setSecurityHeaders } from '../../common/configure-app';
 declare module 'express-session' {
   interface SessionData {
     applicantApplicationId: string; userId: string; authVersion: number; expiresAt: number;
     // Whether this staff session completed two-step verification. Earlier sessions lack it.
     mfa: 'verified' | 'not-required';
-    // Password accepted, second step outstanding. Grants no staff access: userId stays unset.
+    // Password accepted, a further step outstanding: a forced password change or the second factor. Grants no staff
+    // access: userId stays unset. The field name predates the password stage and is kept for running sessions.
     mfaPending: { userId: string; authVersion: number; stage: MfaStage; expiresAt: number };
   }
 }
-export type MfaStage = 'verify' | 'enrol';
+/** Steps after a correct password: a forced password change, then the authenticator code or enrolment. */
+export type MfaStage = 'password' | 'verify' | 'enrol';
 export type AuthRequest = Request & { currentUser: User };
 export const regenerateSession = (req: Request) => new Promise<void>((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
 export const saveSession = (req: Request) => new Promise<void>((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
@@ -28,8 +31,8 @@ export function equalSecret(actual: string | undefined, expected: string): boole
 export function boundary(env: Environment) {
   const origins = webOrigins(env);
   return (req: Request, res: Response, next: NextFunction) => {
+    setSecurityHeaders(res);
     if (req.path === '/api/health' || (env.NODE_ENV !== 'production' && req.path.startsWith('/api/docs'))) return next();
-    res.setHeader('Cache-Control', 'no-store');
     if (!equalSecret(req.get('x-workspace-key'), env.BFF_SHARED_SECRET)) return res.status(403).json({ message: 'Forbidden' });
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
       (!origins.includes(req.get('origin') ?? '') || req.get('x-csrf-protection') !== '1' || !req.is('application/json'))) {
@@ -38,6 +41,8 @@ export function boundary(env: Environment) {
     next();
   };
 }
+// Express routing is case-insensitive (/api/APPLICANT/... reaches applicant routes), so the cookie and store choice is too.
+export const usesApplicantSession = (path: string) => path.toLowerCase().startsWith('/api/applicant/');
 export function sessionOptions(env: Environment, store: session.Store): session.SessionOptions {
   return { store, name: cookieName(env.NODE_ENV === 'production'), secret: env.SESSION_SECRET,
     resave: false, saveUninitialized: false, rolling: false, proxy: true,
@@ -55,6 +60,6 @@ export function installSessions(app: INestApplication, env: Environment): () => 
     errorLog: () => Logger.error('Applicant session store operation failed', 'Sessions') });
   const staffMiddleware = session(sessionOptions(env, store));
   const applicantMiddleware = session({ ...sessionOptions(env, applicantStore), name: env.NODE_ENV === 'production' ? '__Host-applicant.sid' : 'applicant.sid' });
-  app.use((req: Request, res: Response, next: NextFunction) => (req.path.startsWith('/api/applicant/') ? applicantMiddleware : staffMiddleware)(req,res,next));
+  app.use((req: Request, res: Response, next: NextFunction) => (usesApplicantSession(req.path) ? applicantMiddleware : staffMiddleware)(req, res, next));
   return async () => { store.close(); applicantStore.close(); await pool.end(); };
 }

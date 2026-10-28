@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-const sizes = { sm: 'size-6 text-[10px]', md: 'size-8 text-xs', lg: 'size-12 text-base' };
+const sizes = { sm: 'size-6 text-xs', md: 'size-8 text-xs', lg: 'size-12 text-base' };
 export function initials(name: string) { return name.trim().split(/\s+/).slice(0, 2).map(part => part[0]?.toUpperCase() ?? '').join('') || '?'; }
 /** Initials on muted. Decorative when the name is printed beside it. Never use an ID selfie as an avatar. */
 export function Avatar({ name, size = 'md', className }: { name: string; size?: keyof typeof sizes; className?: string }) {

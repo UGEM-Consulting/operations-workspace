@@ -10,8 +10,8 @@ export function applicantStatement(doc: Doc): { statement: string; translatedSta
   statement: `I have opened and read the ${name} and will use it as directed.`,
   translatedStatement: `Я открыл(а) и прочитал(а) документ ${ru} и буду использовать его по назначению.`,
  };
- const intent = 'I intend my typed name and drawn signature to be my legally binding electronic signature.';
- const intentRu = 'Я подтверждаю, что введённое мной имя и нарисованная подпись являются моей юридически обязывающей электронной подписью.';
+ const intent = 'I intend my typed name and my signature (drawn, or adopted from my typed name) to be my legally binding electronic signature.';
+ const intentRu = 'Я подтверждаю, что введённое мной имя и моя подпись (нарисованная или созданная из введённого имени) являются моей юридически обязывающей электронной подписью.';
  return doc.kind === 'SOP' ? {
   statement: `I have read the entire ${name}, I understand it and I agree to follow it. ${intent}`,
   translatedStatement: `Я полностью прочитал(а) документ ${ru}, понимаю его и обязуюсь его соблюдать. ${intentRu}`,
@@ -21,5 +21,5 @@ export function applicantStatement(doc: Doc): { statement: string; translatedSta
  };
 }
 export function companyStatement(doc: Doc, applicantName: string): string {
- return `On behalf of the company, I countersign the ${doc.title} (version ${doc.version}) signed by ${applicantName}. I am authorized to sign it, and I intend my typed name and drawn signature to be my legally binding electronic signature.`;
+ return `On behalf of the company, I countersign the ${doc.title} (version ${doc.version}) signed by ${applicantName}. I am authorized to sign it, and I intend my typed name and my signature (drawn, or adopted from my typed name) to be my legally binding electronic signature.`;
 }

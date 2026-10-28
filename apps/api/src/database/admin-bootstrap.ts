@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { DataSource } from 'typeorm';
-import { validateEnvironment } from '../config/environment';
+import { EnvironmentError, hasDatabaseUrlTlsOverride, validateEnvironment } from '../config/environment';
 import { databaseOptions } from './options';
 import { bootstrapAdmin, bootstrapIdentity, BootstrapError } from './bootstrap-admin';
 
@@ -44,7 +44,7 @@ async function main() {
   // pg connection-string ssl parameters can override explicit TLS verification.
   // Require the normal configuration switch and prohibit URL overrides here.
   const url = new URL(env.DATABASE_URL);
-  if (['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert'].some(key => url.searchParams.has(key))) {
+  if (hasDatabaseUrlTlsOverride(url)) {
     throw new BootstrapError('Remove SSL parameters from DATABASE_URL and configure DATABASE_SSL instead. External connections require DATABASE_SSL=true.');
   }
   if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && !env.DATABASE_SSL) {
@@ -63,6 +63,7 @@ async function main() {
 }
 
 if (require.main === module) void main().catch((error: unknown) => {
-  console.error(error instanceof BootstrapError ? error.message : 'Administrator bootstrap failed. Check configuration, connectivity and applied migrations privately. No error details are logged.');
+  // Environment messages name settings and rules only, never values.
+  console.error(error instanceof BootstrapError || error instanceof EnvironmentError ? error.message : 'Administrator bootstrap failed. Check configuration, connectivity and applied migrations privately. No error details are logged.');
   process.exitCode = 1;
 });

@@ -28,15 +28,18 @@ export async function documentStatus(em: EntityManager, applicationId: string, e
  const selfie = await photoFor(em,applicationId,'SELFIE',submittedAt), idSelfie = await photoFor(em,applicationId,'ID_SELFIE',submittedAt);
  const current = await currentDocuments(em), signed = await signatures(em,applicationId);
  const documents = current.map(doc => {
-  const applicant = signed.find(row => row.kind === doc.kind && row.signerRole === 'APPLICANT') ?? null;
+  // The signature on the current version, else the latest earlier one (kept for display and signed copies).
+  const applicant = signed.find(row => row.documentId === doc.id && row.signerRole === 'APPLICANT') ?? signed.find(row => row.kind === doc.kind && row.signerRole === 'APPLICANT') ?? null;
   const company = applicant && signed.find(row => row.documentId === applicant.documentId && row.signerRole === 'COMPANY') || null;
   return { kind: doc.kind, label: DOCUMENT_RULES[doc.kind].label, requiresSignature: DOCUMENT_RULES[doc.kind].signature, countersign: DOCUMENT_RULES[doc.kind].countersign,
-   current: { id: doc.id, title: doc.title, version: doc.version, pageCount: doc.pageCount }, applicant, company };
+   current: { id: doc.id, title: doc.title, version: doc.version, pageCount: doc.pageCount }, applicant, company, signedCurrent: applicant?.documentId === doc.id };
  });
  const missing: DocumentItem[] = [];
  if (!selfie) missing.push('selfiePhoto');
  if (!idSelfie) missing.push('idPhoto');
- if (documents.some(doc => !doc.applicant)) missing.push('documents');
+ // Applicants always sign the current version: a signature on an earlier version no longer satisfies submission or
+ // approval. Approved and rejected records are final and never re-evaluated (callers ignore missing items there).
+ if (documents.some(doc => !doc.signedCurrent)) missing.push('documents');
  return { required: true, photos: { SELFIE: selfie?.createdAt ?? null, ID_SELFIE: idSelfie?.createdAt ?? null }, documents, missing };
 }
 /** The applicant projection: what to upload and sign, with the exact statements that will be recorded. */

@@ -1,8 +1,6 @@
 "use client";
-import { useTheme } from "next-themes";
-import { Moon, Sun } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { AppearanceSelect } from "./appearance-select";
+/** Kept for existing imports: the same three-way Light / Dark / System menu as the workspace header, so System is always reachable. */
 export function ThemeToggle() {
-  const { resolvedTheme, setTheme } = useTheme();
-  return <Button variant="outline" size="icon" aria-label="Toggle light or dark theme" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}><Sun className="size-4 dark:hidden" /><Moon className="hidden size-4 dark:block" /></Button>;
+  return <AppearanceSelect />;
 }

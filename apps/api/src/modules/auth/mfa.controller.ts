@@ -10,11 +10,12 @@ export class MfaController {
   // Second sign-in step: only a pending 'verify' session reaches it; the service re-reads that state.
   @Roles(...STAFF) @AllowPendingMfa('verify') @Post('auth/mfa/verify') @HttpCode(200)
   verify(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.verifyLogin(req, input.code); }
-  // Enrolment: forced for required roles before any staff access, or voluntary from Account security.
+  // Enrolment: forced for required roles before any staff access, or voluntary from Account security. The service
+  // re-reads which one this session is (a pending 'enrol' sign-in or a full session).
   @Roles(...STAFF) @AllowPendingMfa('enrol') @Post('auth/mfa/enrolment') @HttpCode(200)
-  beginEnrolment(@Req() req: AuthRequest) { return this.mfa.beginEnrolment(req.currentUser); }
+  beginEnrolment(@Req() req: AuthRequest) { return this.mfa.beginEnrolment(req); }
   @Roles(...STAFF) @AllowPendingMfa('enrol') @Post('auth/mfa/enrolment/confirm') @HttpCode(200)
-  confirmEnrolment(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.confirmEnrolment(req.currentUser, input.code, req); }
+  confirmEnrolment(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.confirmEnrolment(req, input.code); }
   @Roles(...STAFF) @Get('auth/mfa')
   status(@Req() req: AuthRequest) { return this.mfa.status(req.currentUser); }
   @Roles(...STAFF) @Post('auth/mfa/recovery-codes') @HttpCode(200)

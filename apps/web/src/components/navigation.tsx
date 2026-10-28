@@ -3,13 +3,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, UserPlus, Mail, Files, FileSignature, Monitor, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { activeNavigationItem, type NavigationItem } from "@/lib/navigation";
 import { Tooltip } from "@/components/ui/tooltip";
 const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, it: Monitor, settings: Settings };
-export function Navigation({ items, collapsed = false, onNavigate }: { items: { key: string; href: string; label: string }[]; collapsed?: boolean; onNavigate?: () => void }) {
+export function Navigation({ items, collapsed = false, onNavigate }: { items: NavigationItem[]; collapsed?: boolean; onNavigate?: () => void }) {
   const pathname = usePathname();
   // Highlight the most specific authorized destination, including its detail pages.
-  const activeHref = items.filter(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
-    .sort((a, b) => b.href.length - a.href.length)[0]?.href;
+  const activeHref = activeNavigationItem(items, pathname)?.href;
   return <nav aria-label="Main navigation" className="flex flex-col gap-1 px-3">
     {items.map(({ key, href, label }) => {
       const Icon = icons[key] ?? LayoutDashboard;

@@ -36,6 +36,6 @@ export class TelegramClient {
   // 403: the user blocked the bot or never started it. 429: rate limited. Others are generic.
   throw new TelegramError(response.status === 403 ? 'FORBIDDEN' : response.status === 429 ? 'RATE_LIMITED' : response.status >= 500 ? 'SERVER' : 'REJECTED');
  }
- getUpdates(offset: number) { return this.call<TelegramUpdate[]>('getUpdates', { offset, timeout: 0, limit: 100, allowed_updates: ['message'] }); }
+ getUpdates(offset: number, limit: number) { return this.call<TelegramUpdate[]>('getUpdates', { offset, timeout: 0, limit, allowed_updates: ['message'] }); }
  sendMessage(chatId: string, text: string) { return this.call<unknown>('sendMessage', { chat_id: chatId, text, link_preview_options: { is_disabled: true } }); }
 }

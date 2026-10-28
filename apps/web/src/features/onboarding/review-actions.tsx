@@ -1,42 +1,60 @@
 'use client';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/alert';
 import { Checkbox, Input, Textarea } from '@/components/ui/field';
-import { mutate } from '@/lib/client-api';
-import { SignaturePad } from './signature-pad';
+import { PendingHint } from '@/components/ui/pending-hint';
+import { errorMessage, mutate } from '@/lib/client-api';
+import type { SavedSignature } from '@/features/auth/saved-signature';
+import { SignaturePad, type SignatureMethod } from './signature-pad';
 import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments } from './types';
 type Action='APPROVE'|'REQUEST_CHANGES'|'REJECT';
 const titles:Record<Action,string>={APPROVE:'Approve application',REQUEST_CHANGES:'Request corrections',REJECT:'Reject application'};
-export function ReviewActions({id,version,employment,requiredFields,documentsRequired,countersign}:{id:string;version:number;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:{mcName:string;teamLead:string;jobTitle:string}}) {
+// While corrections are outstanding (CHANGES_REQUESTED) the only decision left is rejection; approval waits for a resubmission.
+export function ReviewActions({id,version,employment,requiredFields,documentsRequired,countersign,status,savedSignature=null}:{id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:{mcName:string;teamLead:string;jobTitle:string};savedSignature?:SavedSignature|null}) {
  const router=useRouter();
- const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<string|null>(null);
- function open(next:Action){setAction(next);setError('');setSignature(null);}
+ const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState('');
+ const onSignature=useCallback((image:string|null,method:SignatureMethod)=>setSignature(image?{image,method}:null),[]);
+ // A saved signature is offered first; the approver can still sign here instead.
+ const [useSaved,setUseSaved]=useState(!!savedSignature);
+ function open(next:Action){setAction(next);setError('');setSignature(null);setUseSaved(!!savedSignature);}
  // Work phones are assigned by IT; only an invalid legacy value is offered for correction.
  const correctable:RequestableItem[]=[...(Object.keys(fieldLabels) as FieldName[]).filter(field=>field!=='workPhoneNumber'||requiredFields.includes(field)),...(documentsRequired?Object.keys(documentItemLabels) as RequestableItem[]:[])];
  async function decide(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(busy||!action)return;const data=new FormData(event.currentTarget);
   if(action==='REQUEST_CHANGES'&&!data.getAll('requestedFields').length){setError('Select at least one item for the applicant to correct.');return;}
-  if(action==='APPROVE'&&countersign&&!signature){setError('Draw your signature to countersign the NDA.');return;}
+  if(action==='APPROVE'&&countersign&&!useSaved&&!signature){setError('Draw or adopt your signature to countersign the NDA.');return;}
   setBusy(true);setError('');
   try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',employmentConfirmed:data.get('employmentConfirmed')==='on',
    ...(action==='APPROVE'?{employment:{mcName:data.get('mcName'),teamLead:data.get('teamLead'),jobTitle:data.get('jobTitle')}}:{}),
-   ...(action==='APPROVE'&&countersign?{countersignature:{typedName:String(data.get('countersignName')??''),signature,agreed:data.get('countersignAgreed')==='on'}}:{})});setAction(null);router.refresh();}
-  catch(error){setError(error instanceof Error?error.message:'Unable to record decision. Your entries have been kept.');}finally{setBusy(false);}
+   ...(action==='APPROVE'&&countersign?{countersignature:useSaved?{useSavedSignature:true,agreed:data.get('countersignAgreed')==='on'}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method,agreed:data.get('countersignAgreed')==='on'}}:{})});setAction(null);router.refresh();}
+  catch(error){setError(errorMessage(error,'Unable to record decision. Your entries have been kept.'));}finally{setBusy(false);}
  }
- return <><div className="flex flex-wrap gap-3"><Button disabled={requiredFields.length>0} onClick={()=>open('APPROVE')}>Approve</Button><Button variant="outline" onClick={()=>open('REQUEST_CHANGES')}>Request changes</Button><Button variant="outline" className="text-danger" onClick={()=>open('REJECT')}>Reject</Button></div>
- {requiredFields.length>0&&<p className="text-sm text-warning">Approval needs complete applicant information, photos and signatures. Request corrections for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}
+ const awaitingCorrections=status==='CHANGES_REQUESTED';
+ return <><div className="flex flex-wrap gap-3">{!awaitingCorrections&&<><Button disabled={requiredFields.length>0} onClick={()=>open('APPROVE')}>Approve</Button><Button variant="outline" onClick={()=>open('REQUEST_CHANGES')}>Request changes</Button></>}<Button variant="outline" className="text-danger" onClick={()=>open('REJECT')}>Reject</Button></div>
+ {awaitingCorrections&&<p className="text-sm text-muted-foreground">The applicant has not resubmitted the requested corrections. You can wait for their resubmission, or reject: rejecting closes the application and the applicant can no longer edit it.</p>}
+ {!awaitingCorrections&&requiredFields.length>0&&<p className="text-sm text-warning">Approval needs complete applicant information, photos and signatures. Request corrections for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}
  {action&&<Dialog open onClose={()=>setAction(null)} busy={busy} title={titles[action]} size={action==='APPROVE'&&countersign?'lg':'md'} tone={action==='REJECT'?'danger':undefined}
- description={action==='REQUEST_CHANGES'?'Your instructions and selected items will be visible to the applicant. Only these items become editable.':action==='APPROVE'?'Confirm the final employment assignments. Approval is final and creates a manual IT onboarding checklist.':'Rejection closes this application and cannot be undone. Your internal reason will not be shown to the applicant.'}
+ description={action==='REQUEST_CHANGES'?'Your instructions and selected items will be visible to the applicant. Only these items become editable.':action==='APPROVE'?'Confirm the final employment assignments. Approval is final and creates a manual IT onboarding checklist.':awaitingCorrections?'The applicant has not resubmitted; rejecting closes the application and ends their correction access. This cannot be undone. Your internal reason will not be shown to the applicant.':'Rejection closes this application and cannot be undone. Your internal reason will not be shown to the applicant.'}
  actions={<Button form="review-decision" type="submit" variant={action==='REJECT'?'destructive':'default'}>{busy?'Recording decision…':titles[action]}</Button>}>
  <form id="review-decision" onSubmit={decide} className="space-y-5">
+  <PendingHint pending={busy}/>
   {action==='APPROVE'&&<fieldset className="space-y-4"><legend className="mb-3 text-[15px] font-semibold">Final employment assignments</legend>{(['mcName','teamLead','jobTitle'] as const).map(field=><Input key={field} label={fieldLabels[field]} name={field} defaultValue={employment[field]} required maxLength={field==='jobTitle'?100:150} width="md"/>)}<Checkbox name="employmentConfirmed" required label="I have confirmed the MC, team lead and job title."/></fieldset>}
   {action==='APPROVE'&&countersign&&<fieldset className="space-y-4 border-t border-border pt-5"><legend className="mb-3 text-[15px] font-semibold">Countersign the NDA for the company</legend>
    <p className="text-sm text-muted-foreground"><a className="text-primary underline" href={`/api/backend/onboarding/applications/${id}/documents/${countersign.documentId}/signed`} target="_blank" rel="noopener">Open the applicant-signed {countersign.title} (version {countersign.version})</a></p>
-   <Input label="Your full legal name" hint="Latin letters, as on your ID." name="countersignName" required maxLength={100} pattern="[A-Za-z][A-Za-z .,'\-]+" autoComplete="name" width="md"/>
-   <SignaturePad label="Draw your signature" onChange={setSignature} disabled={busy}/>
+   {useSaved&&savedSignature?<div className="space-y-3">
+    {/* eslint-disable-next-line @next/next/no-img-element -- server-provided data URL */}
+    <img src={savedSignature.image} alt={`Your saved signature for ${savedSignature.typedName}`} className="h-20 w-auto max-w-full rounded-sm border border-border bg-white p-2"/>
+    <p className="text-sm">Signing as <span className="font-medium">{savedSignature.typedName}</span> with your saved signature.</p>
+    <Button type="button" variant="outline" size="sm" disabled={busy} onClick={()=>setUseSaved(false)}>Sign here instead</Button>
+   </div>:<>
+   <Input label="Your full legal name" hint="Latin letters, as on your ID." name="countersignName" value={countersignName} onChange={event=>setCountersignName(event.target.value)} required maxLength={100} pattern="[A-Za-z][A-Za-z .,'\-]+" autoComplete="name" width="md"/>
+   <SignaturePad label="Your signature" onChange={onSignature} disabled={busy} allowTyped typedName={countersignName}/>
+   {savedSignature?<Button type="button" variant="outline" size="sm" disabled={busy} onClick={()=>{setUseSaved(true);setSignature(null);}}>Use my saved signature</Button>
+    :<p className="text-[13px] leading-5 text-muted-foreground">Tip: save your signature on <a className="text-primary underline" href="/account/security">Account security</a> to skip this step next time.</p>}
+   </>}
    <Checkbox name="countersignAgreed" required label={countersign.statement}/>
   </fieldset>}
   <Textarea name="reason" label={action==='REQUEST_CHANGES'?'Instructions for the applicant':action==='REJECT'?'Reason for rejection':'Internal comment'} optional={action==='APPROVE'} required={action!=='APPROVE'} maxLength={2000} hint={action==='REQUEST_CHANGES'?'The applicant sees this message.':'Visible to staff only. The applicant never sees it.'}/>

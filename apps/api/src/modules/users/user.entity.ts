@@ -12,6 +12,8 @@ export class User {
   @Column({ type: 'enum', enum: Role, enumName: 'user_role' }) role!: Role;
   @Column({ type: 'enum', enum: UserStatus, enumName: 'user_status', default: UserStatus.ACTIVE }) status!: UserStatus;
   @Column({ default: 1, select: false }) authVersion!: number;
+  // Set when an administrator chose the password; sign-in then requires a new one before any staff access.
+  @Column({ default: false }) mustChangePassword!: boolean;
   @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
   @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
   @Column({ type: 'timestamptz', nullable: true }) lastLoginAt!: Date | null;

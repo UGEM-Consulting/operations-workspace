@@ -8,13 +8,13 @@ const {databaseOptions}=require('../apps/api/dist/database/options.js');
 
  const undoApplicationMigration=async()=>{
   let [latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
-  while(['OptionalEquipmentTask1792740000000','ApplicantUpdates1792730000000','StaffMfa1792720000000','OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
+  while(['SavedStaffSignatures1792780000000','CorrectionRejectionAndDeliveryRetry1792770000000','StaffPasswordChange1792760000000','SignatureMethod1792750000000','OptionalEquipmentTask1792740000000','ApplicantUpdates1792730000000','StaffMfa1792720000000','OnboardingDocuments1792710000000','CompanyEmail1792700000000','RetireDemoDeployment1792690000000','OptionalApplicantWorkPhone1792680000000','StarterDemo1792670000000','DemoEmail1792660000000'].includes(latest?.name)){
    await db.undoLastMigration();[latest]=await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1');
   }
   return db.undoLastMigration();
  };
  try{
-  await db.runMigrations();assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'OptionalEquipmentTask1792740000000');
+  await db.runMigrations();assert.equal((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name,'SavedStaffSignatures1792780000000');
   await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');await undoApplicationMigration();
   assert.equal((await db.query("SELECT to_regclass('public.it_onboarding_requests') AS name"))[0].name,null);
   const [user]=await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Fictional','Migration','it.migration@example.test','SYSTEM_ADMIN','INACTIVE') RETURNING id`);

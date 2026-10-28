@@ -9,7 +9,7 @@ export function DescriptionList({ items, layout = 'grid', columns = 2, className
       const empty = item.value === null || item.value === undefined || item.value === '';
       return <div key={item.label} className={cn('min-w-0', layout === 'grid' ? item.span && 'sm:col-span-full' : 'grid gap-x-4 gap-y-0.5 py-3 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]')}>
         <dt className="text-[13px] leading-5 text-muted-foreground">{item.label}</dt>
-        <dd className={cn('mt-0.5 min-w-0 break-words text-sm leading-[22px]', empty ? 'text-subtle-foreground' : item.mono ? 'font-mono text-[13px]' : 'font-medium', layout === 'rows' && 'sm:mt-0')}>{empty ? item.emptyLabel ?? 'Not provided' : item.value}</dd>
+        <dd className={cn('mt-0.5 min-w-0 break-words text-sm leading-[22px]', empty ? 'italic text-muted-foreground' : item.mono ? 'font-mono text-[13px]' : 'font-medium', layout === 'rows' && 'sm:mt-0')}>{empty ? item.emptyLabel ?? 'Not provided' : item.value}</dd>
       </div>;
     })}
   </dl>;

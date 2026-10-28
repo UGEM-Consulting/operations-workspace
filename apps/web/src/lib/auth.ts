@@ -3,6 +3,8 @@ import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { readBackendConfig } from './backend-connection';
+import { sessionCookieName } from './session-cookie';
+import { identitySchema, readResponse } from './api-schemas';
 export interface StaffUser { id: string; firstName: string; lastName: string; email: string; role: string; status: string; mfaEnabled?: boolean; }
 export interface Identity { user: StaffUser; navigation: { key: string; href: string; label: string }[]; landingPage: string; }
 export function backendConfig() {
@@ -11,7 +13,7 @@ export function backendConfig() {
 export async function apiRequest(path: string) {
   const { base, key } = backendConfig();
   const jar = await cookies();
-  const name = process.env.NODE_ENV === 'production' ? '__Host-operations.sid' : 'operations.sid';
+  const name = sessionCookieName('staff');
   const session = jar.get(name);
   try {
     return await fetch(`${base}/api/${path}`, { headers: { 'x-workspace-key': key, cookie: session ? `${name}=${session.value}` : '' }, cache: 'no-store', signal: AbortSignal.timeout(10000) });
@@ -21,13 +23,13 @@ export async function apiRequest(path: string) {
 }
 export const getIdentity = cache(async (): Promise<Identity | null> => {
   const jar = await cookies();
-  const name = process.env.NODE_ENV === 'production' ? '__Host-operations.sid' : 'operations.sid';
+  const name = sessionCookieName('staff');
   // No cookie means there is no session to verify. Never treat an API outage as a valid session.
   if (!jar.get(name)?.value) return null;
   const response = await apiRequest('auth/me');
   if (response.status === 401) return null;
   if (!response.ok) throw new Error('The authentication service is unavailable. Please try again.');
-  return response.json() as Promise<Identity>;
+  return readResponse<Identity>(response, 'identity', identitySchema);
 });
 export async function requireIdentity() {
   const identity = await getIdentity();

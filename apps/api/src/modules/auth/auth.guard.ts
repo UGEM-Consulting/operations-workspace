@@ -22,6 +22,9 @@ export class AuthGuard implements CanActivate {
     }
     if (!req.session?.userId || !req.session.expiresAt || req.session.expiresAt <= Date.now()) throw new UnauthorizedException();
     const user = await this.load(req.session.userId);
+    // A full session never coexists with a required password change (for example one granted by an older API
+    // instance during a deploy); signing in again leads to the change step.
+    if (user?.mustChangePassword) throw new UnauthorizedException();
     // Sessions without a completed second step end once the user enrols or their role/policy requires MFA.
     if (user && req.session.mfa !== 'verified') {
       const state = await this.mfa.state(user);

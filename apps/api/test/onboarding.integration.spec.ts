@@ -1,7 +1,7 @@
 import { ItModule } from '../src/modules/it/it.module';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -257,6 +257,76 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true}).expect(429);
   expect((await db.getRepository(DispatcherApplication).findOneByOrFail({id:flow.id})).status).toBe('SUBMITTED');
  });
+ it('rejects an application whose corrections are outstanding with the usual requirements, and keeps REJECTED terminal',async()=>{
+  const flow=await submittedApplication();
+  await decision(manager,flow.id,{version:2,decisionType:'REQUEST_CHANGES',reason:'Correct your Telegram',requestedFields:['telegram']}).expect(201);
+  await flow.applicant.patch('/api/applicant/draft').set(headers).send({version:3,telegram:'unsent_correction'}).expect(200);
+  const waiting=await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200);
+  expect(waiting.body).toMatchObject({canReview:false,canReject:true});
+  // Approval still waits for a resubmission; rejection needs confirmation, a reason, the current version and owner scope.
+  await decision(manager,flow.id,{version:4,decisionType:'APPROVE',confirmed:true}).expect(409);
+  await decision(manager,flow.id,{version:4,decisionType:'REQUEST_CHANGES',reason:'Again',requestedFields:['telegram']}).expect(409);
+  await decision(manager,flow.id,{version:4,decisionType:'REJECT',reason:'No response'}).expect(400);
+  await decision(manager,flow.id,{version:4,decisionType:'REJECT',confirmed:true,reason:' '}).expect(400);
+  await decision(manager,flow.id,{version:3,decisionType:'REJECT',confirmed:true,reason:'No response'}).expect(409);
+  await decision(other,flow.id,{version:4,decisionType:'REJECT',confirmed:true,reason:'No response'}).expect(404);
+  await decision(manager,flow.id,{version:4,decisionType:'REJECT',confirmed:true,reason:'Internal: no response to corrections'}).expect(201);
+  const detail=await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200);
+  expect(detail.body.application.status).toBe('REJECTED');expect(detail.body.canReject).toBe(false);
+  expect(detail.body.reviews.at(-1)).toMatchObject({previousStatus:'CHANGES_REQUESTED',newStatus:'REJECTED',decisionType:'REJECT'});
+  // The unsent correction draft never reaches staff, and the applicant can read the outcome but no longer edit.
+  expect(detail.body.application.fields.telegram).toBe(answers.telegram);
+  const app=await db.getRepository(DispatcherApplication).findOneByOrFail({id:flow.id});
+  expect(app.applicantAccessUntil.getTime()).toBeLessThanOrEqual(Date.now()+7*86400000+5000);
+  const own=await flow.applicant.get('/api/applicant/application').set(headers).expect(200);
+  expect(own.body).toMatchObject({canEdit:false,correction:null});expect(JSON.stringify(own.body)).not.toContain('Internal: no response');
+  await flow.applicant.patch('/api/applicant/draft').set(headers).send({version:5,telegram:'late_edit'}).expect(409);
+  await flow.applicant.post('/api/applicant/submit').set(headers).send({version:5,accurate:true}).expect(409);
+  for(const decisionType of ['APPROVE','REQUEST_CHANGES','REJECT'])await decision(admin,flow.id,{version:5,decisionType,confirmed:true,reason:'Reopen attempt',requestedFields:decisionType==='REQUEST_CHANGES'?['telegram']:[]}).expect(409);
+  expect(await db.getRepository(ApplicationActivity).countBy({invitationId:flow.invitation.id,event:'APPLICATION_REJECTED'})).toBe(1);
+  await undoTo('CorrectionRejectionAndDeliveryRetry1792770000000');
+  await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard rejections of outstanding corrections');
+  await db.runMigrations();
+ });
+ it('serialises a rejection of outstanding corrections against a concurrent resubmission',async()=>{
+  for(let round=0;round<3;round++){
+   const flow=await submittedApplication();
+   await decision(manager,flow.id,{version:2,decisionType:'REQUEST_CHANGES',reason:'Correct your Telegram',requestedFields:['telegram']}).expect(201);
+   const [resubmit,reject]=await Promise.all([
+    flow.applicant.post('/api/applicant/submit').set(headers).send({version:3,telegram:'raced_revision',accurate:true}),
+    decision(manager,flow.id,{version:3,decisionType:'REJECT',confirmed:true,reason:'Closing'}),
+   ]);
+   // Both lock the invitation first and check the version, so exactly one wins and the other changes nothing.
+   expect([resubmit.status,reject.status].sort()).toEqual([201,409]);
+   const app=await db.getRepository(DispatcherApplication).findOneByOrFail({id:flow.id});
+   const submissions=await db.query('SELECT count(*)::int AS n FROM application_submissions WHERE "applicationId"=$1',[flow.id]);
+   if(resubmit.status===201){expect(app.status).toBe('RESUBMITTED');expect(submissions[0].n).toBe(2);}
+   else{expect(app.status).toBe('REJECTED');expect(submissions[0].n).toBe(1);}
+   expect(app.version).toBe(4);
+  }
+ });
+ it('rate limits verification per client address without letting one sender block other applicants',async()=>{
+  const inv=await create(),from=(ip:string)=>({...headers,'x-client-ip':ip});
+  const begin=(ip:string,email=payload.email,token=inv.token)=>request(app.getHttpServer()).post('/api/applicant/begin').set(from(ip)).send({email,token});
+  // Five begins per address and client, then 429 for that pair only: the same applicant elsewhere is unaffected.
+  for(let i=0;i<5;i++)await begin('198.51.100.1').expect(201);
+  await begin('198.51.100.1').expect(429);
+  await begin('198.51.100.2').expect(201);
+  // An attacker's flood from one address (unknown tokens, many emails) does not block another client.
+  for(let i=0;i<20;i++)await begin('198.51.100.3',`flood${i}@example.test`,randomBytes(32).toString('hex')).expect(201);
+  await begin('198.51.100.3','flood-more@example.test',randomBytes(32).toString('hex')).expect(429);
+  const other=await create();
+  await begin('198.51.100.4',payload.email,other.token).expect(201);
+  // No cap is shared by every holder of a link: requests from many addresses never lock the real applicant out of it.
+  const shared=await create();
+  for(let i=0;i<12;i++)await begin(`203.0.113.${i+10}`,`holder${i}@example.test`,shared.token).expect(201);
+  await begin('203.0.113.99',payload.email,shared.token).expect(201);
+  // Codes: five wrong attempts per challenge, plus a per-client budget that does not affect other clients.
+  const verifyFrom=(ip:string,challengeId:string)=>request(app.getHttpServer()).post('/api/applicant/verify').set(from(ip)).send({challengeId,code:'00000000'});
+  for(let i=0;i<30;i++)await verifyFrom('198.51.100.5',randomUUID()).expect(401);
+  await verifyFrom('198.51.100.5','00000000-0000-4000-8000-000000000000').expect(429);
+  await verifyFrom('198.51.100.6','00000000-0000-4000-8000-000000000000').expect(401);
+ });
  it('creates a link with no applicant details, default expiry, and no premature identity binding',async()=>{
   const result=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
   const invitation=await db.getRepository(Invitation).findOneByOrFail({id:result.body.id});
@@ -443,10 +513,40 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(results.map(result=>result.status).sort()).toEqual([200,409]);
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:true}).expect(409);
  });
+ it('keeps task notes unless they are sent, requires a reason for blocked tasks and 404s missing tasks',async()=>{
+  const flow=await approvedItFlow(),task=(key:string,body:Record<string,unknown>)=>itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${key}`).set(headers).send(body);
+  let data=await task('BUSINESS_SOFTWARE',{version:0,status:'IN_PROGRESS',notes:'Fictional dispatch software list'}).expect(200);
+  data=await task('BUSINESS_SOFTWARE',{version:1,status:'BLOCKED'}).expect(200);
+  expect(data.body.tasks.find((row:{key:string})=>row.key==='BUSINESS_SOFTWARE')).toMatchObject({status:'BLOCKED',notes:'Fictional dispatch software list'});
+  await task('BUSINESS_SOFTWARE',{version:2,status:'BLOCKED',notes:''}).expect(400);
+  data=await task('BUSINESS_SOFTWARE',{version:2,status:'IN_PROGRESS',notes:''}).expect(200);
+  expect(data.body.tasks.find((row:{key:string})=>row.key==='BUSINESS_SOFTWARE').notes).toBe('');
+  await task('BUSINESS_SOFTWARE',{version:3,status:'BLOCKED'}).expect(400);
+  // A request created before the optional Equipment task existed has no row for it.
+  await db.query(`DELETE FROM it_onboarding_tasks WHERE "requestId"=$1 AND key='EQUIPMENT'`,[flow.requestId]);
+  await task('EQUIPMENT',{version:3,status:'NOT_NEEDED'}).expect(404);
+  await task('NOT_A_TASK',{version:3,status:'COMPLETED'}).expect(404);
+ });
+ it('derives the same request progress in the queue filter (SQL) and the detail view (TypeScript)',async()=>{
+  const flow=await approvedItFlow();
+  const states:[Record<string,string>,boolean,string][]=[[{},false,'PENDING'],[{DISPATCH_GROUP:'IN_PROGRESS'},false,'IN_PROGRESS'],[{EQUIPMENT:'NOT_NEEDED'},false,'IN_PROGRESS'],
+   [{SMS:'COMPLETED'},false,'IN_PROGRESS'],[{SMS:'COMPLETED',CALL_RECORDING:'BLOCKED'},false,'BLOCKED'],[{CALL_RECORDING:'BLOCKED'},true,'COMPLETED']];
+  for(const [tasks,completed,expected] of states){
+   await db.query(`UPDATE it_onboarding_tasks SET status='PENDING' WHERE "requestId"=$1`,[flow.requestId]);
+   for(const [key,status] of Object.entries(tasks))await db.query(`UPDATE it_onboarding_tasks SET status=$3::varchar, notes=CASE WHEN $3::varchar='BLOCKED' THEN 'Fictional reason' ELSE notes END WHERE "requestId"=$1 AND key=$2`,[flow.requestId,key,status]);
+   await db.query(`UPDATE it_onboarding_requests SET "completedAt"=${completed?'now()':'NULL'},"assignedRingCentralPhoneNumber"='+1 202 555 0190',"companyEmail"='alex.demo@example.test',"workPhoneVerifiedAt"=now(),"workPhoneVerifiedBy"=(SELECT id FROM users WHERE email='staff3@example.test') WHERE id=$1`,[flow.requestId]);
+   expect((await itAgent.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200)).body.request.status).toBe(expected);
+   for(const status of ['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'])expect((await itAgent.get(`/api/it/onboarding?status=${status}`).set(headers).expect(200)).body.total).toBe(status===expected?1:0);
+  }
+  await db.query(`UPDATE it_onboarding_requests SET "completedAt"=NULL WHERE id=$1`,[flow.requestId]);
+ });
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
+ // The newest migration file, whatever later work adds; later migrations are stepped back generically first.
+ const newestMigration=()=>db.migrations.map(migration=>migration.name??migration.constructor.name).sort((a,b)=>Number(a.slice(-13))-Number(b.slice(-13))).at(-1);
+ const undoTo=async(name:string)=>{while(await latestMigration()!==name)await db.undoLastMigration();};
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
  // Steps back past the later optional-equipment, applicant-updates and staff MFA migrations.
- const undoStaffMfa=async()=>{await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
+ const undoStaffMfa=async()=>{await undoTo('OptionalEquipmentTask1792740000000');await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
  it('rolls back and reapplies the documents, company email, demo retirement and optional-work-phone migrations on an empty workflow',async()=>{
   await undoStaffMfa();
   await db.undoLastMigration();
@@ -459,7 +559,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await db.query("SELECT purpose FROM deployment_identity"))[0].purpose).toBe('production');
   await db.undoLastMigration();
   await db.runMigrations();
-  expect(await latestMigration()).toBe('OptionalEquipmentTask1792740000000');
+  expect(await latestMigration()).toBe(newestMigration());
   expect((await db.query("SELECT to_regclass('deployment_identity') AS name, to_regclass('demo_mailbox') AS mailbox"))[0]).toEqual({name:null,mailbox:null});
  });
  it('refuses to retire the demo schema on a database bound to the demo deployment',async()=>{
@@ -468,7 +568,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await db.query("UPDATE deployment_identity SET purpose='demo'");
   try { await expect(db.runMigrations()).rejects.toThrow(); expect(await latestMigration()).toBe('OptionalApplicantWorkPhone1792680000000'); }
   finally { await db.query("UPDATE deployment_identity SET purpose='production'"); await db.runMigrations(); }
-  expect(await latestMigration()).toBe('OptionalEquipmentTask1792740000000');
+  expect(await latestMigration()).toBe(newestMigration());
  });
  it('submits and approves without an applicant work phone and completes RingCentral setup without inventing one',async()=>{
   const inv=await create(),applicant=request.agent(app.getHttpServer()),verified=await verify(applicant,inv.token);
@@ -494,6 +594,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // The responsible manager sees the created company accounts as employee details.
   const employee=await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers).expect(200);
   expect(employee.body.itOnboarding).toMatchObject({status:'COMPLETED',companyEmail:'alex.demo@example.test',workPhoneNumber:'+1 202 555 0190'});
+  await undoTo('OptionalEquipmentTask1792740000000');
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded equipment tasks');
   await undoStaffMfa();
   await db.undoLastMigration();

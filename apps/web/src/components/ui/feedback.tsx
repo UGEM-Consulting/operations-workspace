@@ -15,10 +15,12 @@ export function Progress({ label, value, max, valueLabel, compact = false, class
 }
 
 /** Why a list or area is empty and, when possible, the one next action. Failed loads use an Alert instead. */
-export function EmptyState({ icon: Icon = Inbox, title, description, action, compact = false }: { icon?: LucideIcon; title: string; description?: string; action?: ReactNode; compact?: boolean }) {
+/** `headingLevel` follows the surrounding outline (default h3, under a section h2). */
+export function EmptyState({ icon: Icon = Inbox, title, description, action, compact = false, headingLevel = 3 }: { icon?: LucideIcon; title: string; description?: string; action?: ReactNode; compact?: boolean; headingLevel?: 2 | 3 | 4 }) {
+  const Heading = `h${headingLevel}` as const;
   return <div className={cn('flex flex-col items-center text-center', compact ? 'px-4 py-6' : 'px-6 py-10')}>
     <span className="mb-3 grid size-10 place-items-center rounded-md bg-muted text-muted-foreground"><Icon aria-hidden="true" className="size-5" /></span>
-    <h3 className="text-[15px] font-semibold leading-[22px]">{title}</h3>
+    <Heading className="text-[15px] font-semibold leading-[22px]">{title}</Heading>
     {description && <p className="mt-1 max-w-sm text-sm leading-[22px] text-muted-foreground">{description}</p>}
     {action && <div className="mt-4">{action}</div>}
   </div>;

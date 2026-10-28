@@ -11,21 +11,22 @@ import { Table } from '@/components/ui/table';
 import { EmptyState } from '@/components/ui/feedback';
 import { Person } from '@/components/ui/avatar';
 import { useToast } from '@/components/ui/toast';
-import { roleLabel, StatusBadge } from '@/components/ui/status-badge';
+import { Badge, roleLabel, StatusBadge } from '@/components/ui/status-badge';
 import { mutate } from '@/lib/client-api';
 import type { StaffUser } from '@/lib/auth';
 const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST'];
-export function UserManagement({ users, currentUserId }: { users: StaffUser[]; currentUserId: string }) {
+type ManagedUser = StaffUser & { mustChangePassword?: boolean };
+export function UserManagement({ users, currentUserId }: { users: ManagedUser[]; currentUserId: string }) {
   const router = useRouter();
   const toast = useToast();
-  const [editing, setEditing] = useState<StaffUser | null>(null);
+  const [editing, setEditing] = useState<ManagedUser | null>(null);
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState('');
   const visible = users.filter(user => `${user.firstName} ${user.lastName} ${user.email}`.toLowerCase().includes(query.toLowerCase()));
-  function edit(user: StaffUser | null) { setEditing(user); setError(''); setOpen(true); }
+  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
@@ -33,12 +34,14 @@ export function UserManagement({ users, currentUserId }: { users: StaffUser[]; c
     if (!data.password) delete data.password;
     setPending(true); setError('');
     try {
-      await mutate(editing ? `users/${editing.id}` : 'users', editing ? 'PATCH' : 'POST', data);
-      // Self-edits revoke the session; discard the authenticated router cache.
+      // Name-only edits keep sessions; email, role, status and password changes end them.
+      const result = await mutate<{ sessionsRevoked?: boolean }>(editing ? `users/${editing.id}` : 'users', editing ? 'PATCH' : 'POST', data);
+      // A revoked own session: discard the authenticated router cache.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      if (editing?.id === currentUserId) { window.location.assign('/login'); return; }
+      if (editing?.id === currentUserId && result.sessionsRevoked !== false) { window.location.assign('/login'); return; }
       setHighlight(String(data.email).trim().toLowerCase()); setQuery('');
-      toast(editing ? { title: 'User updated', description: 'Their existing sessions have ended.' } : { title: 'User created' });
+      toast(editing ? { title: 'User updated', description: result.sessionsRevoked === false ? undefined : 'Their existing sessions have ended.' }
+        : { title: 'User created', description: 'They choose their own password when they first sign in.' });
       setOpen(false); router.refresh();
     } catch (error) { setError(error instanceof Error ? error.message : 'Unable to save the user. Your entries have been kept.'); }
     finally { setPending(false); }
@@ -51,7 +54,7 @@ export function UserManagement({ users, currentUserId }: { users: StaffUser[]; c
         rowClassName={user => highlight === user.email.toLowerCase() ? 'bg-success-background/50' : undefined} columns={[
           { key: 'person', label: 'Name', primary: true, cell: user => <Person name={`${user.firstName} ${user.lastName}`} secondary={user.email} /> },
           { key: 'role', label: 'Role', cell: user => roleLabel(user.role) },
-          { key: 'status', label: 'Status', cell: user => <StatusBadge status={user.status} /> },
+          { key: 'status', label: 'Status', cell: user => <span className="flex flex-wrap gap-1.5"><StatusBadge status={user.status} />{user.mustChangePassword && <Badge label="Password change pending" tone="warning" />}</span> },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: user => <Button variant="outline" size="sm" onClick={() => edit(user)}>Edit<span className="sr-only"> {user.email}</span></Button> },
         ]} empty={<EmptyState compact title={query ? 'No matching users' : 'No internal users'} description={query ? 'Try another name or email.' : undefined} />}
         footer={<p className="text-[13px] text-muted-foreground">Showing up to 200 internal accounts.</p>} />
@@ -62,8 +65,8 @@ export function UserManagement({ users, currentUserId }: { users: StaffUser[]; c
         <Input label="Email" name="email" type="email" defaultValue={editing?.email} required maxLength={254} width="full" />
         <div className="grid gap-4 sm:grid-cols-2"><Select label="Role" name="role" defaultValue={editing?.role ?? 'DISPATCHER_MANAGER'} width="full" options={roles.map(role => ({ value: role, label: roleLabel(role) }))} /><Select label="Status" name="status" defaultValue={editing?.status ?? 'ACTIVE'} width="full" options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} /></div>
         <Input label={editing ? 'New password' : 'Initial password'} optional={!!editing} name="password" type="password" autoComplete="new-password" required={!editing} minLength={12} maxLength={128} width="full"
-          hint={`Use 12–128 characters.${editing ? ' Leave blank to keep the current password.' : ''}`} />
-        {editing && <Alert tone="warning"><p>Saving changes ends this user’s existing sessions.{editing.id === currentUserId && ' You are editing your own account and will need to sign in again.'}</p></Alert>}
+          hint={`Use 12–128 characters. ${editing?.id === currentUserId ? 'Leave blank to keep your current password.' : `${editing ? 'Leave blank to keep the current password. ' : ''}They must replace it with their own when they next sign in.`}`} />
+        {editing && <Alert tone="warning"><p>Changing the email, role, status or password ends this user’s existing sessions; name changes do not.{editing.id === currentUserId && ' If you change those on your own account, you will need to sign in again.'}</p></Alert>}
         <Notice message={error} error />
       </form>
     </Dialog>}

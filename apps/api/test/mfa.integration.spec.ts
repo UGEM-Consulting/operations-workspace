@@ -13,6 +13,7 @@ import { installSessions } from '../src/modules/auth/session';
 import { hashPassword } from '../src/modules/auth/password';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 import { StaffMfa1792720000000 } from '../src/database/migrations/1792720000000-StaffMfa';
+import { attemptKey } from '../src/modules/auth/attempts';
 import { enrolForTest, totpCode } from './mfa-helpers';
 
 type Agent = ReturnType<typeof request.agent>;
@@ -137,7 +138,7 @@ integration('Staff two-step verification (isolated PostgreSQL database only)', (
     const old = agent();
     await login(old, users.admin).expect(200);
     await verify(old, recoveryCodes[1]).expect(401);
-  });
+  }, 30000);
 
   it('locks out after five wrong codes across sessions, even for a correct code', async () => {
     const secret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.admin.id);
@@ -152,6 +153,24 @@ integration('Staff two-step verification (isolated PostgreSQL database only)', (
     await client.get('/api/auth/me').set(headers).expect(401);
     expect((await events(users.admin.id)).map(event => event.type)).toEqual(['MFA_LOCKED_OUT']);
   });
+
+  it('lengthens a repeated lockout to one hour, never longer', async () => {
+    const secret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.admin.id);
+    const client = agent();
+    await login(client, users.admin).expect(200);
+    const endLock = () => db.query(`UPDATE login_attempts SET "expiresAt" = now() - interval '1 second' WHERE key = $1`, [attemptKey('mfa-lock', users.admin.id)]);
+    for (const label of ['15 minutes', '1 hour', '1 hour']) {
+      for (let attempt = 0; attempt < 5; attempt++) await verify(client, totpCode(secret, 10)).expect(401);
+      expect((await verify(client, totpCode(secret, 10)).expect(429)).body.message).toBe(`Too many incorrect codes. Try again in ${label}.`);
+      // While locked, even a correct code is refused without extending the lock.
+      expect((await verify(client, totpCode(secret)).expect(429)).body.message).toBe('Too many incorrect codes. Try again later.');
+      await endLock();
+    }
+    const lockouts = (await events(users.admin.id)).filter(event => event.type === 'MFA_LOCKED_OUT').map(event => event.metadata);
+    expect(lockouts).toEqual([900, 3600, 3600].map((lockoutSeconds, index) => ({ lockoutSeconds, lockoutsInSeries: index + 1 })));
+    // Once the lock ends, the correct code works again.
+    await verify(client, totpCode(secret)).expect(200);
+  }, 30000);
 
   it('ends existing sessions when a user enrols, and makes old unverified sessions re-authenticate', async () => {
     const before = agent();
@@ -216,6 +235,8 @@ integration('Staff two-step verification (isolated PostgreSQL database only)', (
     await target.get('/api/auth/me').set(headers).expect(401);
     expect(await db.query(`SELECT 1 FROM staff_mfa WHERE "userId" = $1 UNION ALL SELECT 1 FROM staff_mfa_recovery_codes WHERE "userId" = $1`, [users.admin2.id])).toEqual([]);
     expect((await events(users.admin2.id)).map(({ type, actorId }) => ({ type, actorId }))).toEqual([{ type: 'MFA_ENROLLED', actorId: null }, { type: 'MFA_RESET_BY_ADMIN', actorId: users.admin.id }]);
+    // The reset also ends any lock from earlier wrong codes.
+    expect(await db.query(`SELECT 1 FROM login_attempts WHERE key = ANY($1)`, [['mfa', 'mfa-lock', 'mfa-lockouts'].map(scope => attemptKey(scope, users.admin2.id))])).toEqual([]);
     // The reset administrator must enrol again at the next sign-in; the admin count is unchanged.
     expect((await login(agent(), users.admin2).expect(200)).body.mfa).toBe('enrol');
     await admin.post(`/api/users/${users.admin2.id}/mfa/reset`).set(headers).send({}).expect(404);

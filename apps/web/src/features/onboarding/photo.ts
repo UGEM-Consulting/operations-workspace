@@ -1,5 +1,6 @@
 // Photos are re-encoded in the browser before upload: a bounded JPEG that fits the upload limit and carries no
-// camera metadata such as location. Returns base64 without the data-URL prefix.
+// camera metadata such as location. The API strips metadata segments again on its side. Returns base64 without the
+// data-URL prefix.
 const MAX_SIDE = 1600, MAX_BYTES = 2_400_000;
 async function decode(file: File): Promise<CanvasImageSource & { width: number; height: number }> {
  if ('createImageBitmap' in window) return createImageBitmap(file, { imageOrientation: 'from-image' });

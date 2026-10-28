@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Checkbox, inputClass } from '@/components/ui/field';
+import { Checkbox, Input } from '@/components/ui/field';
 import { Alert } from '@/components/ui/alert';
 import { mutate } from '@/lib/client-api';
 import { signInExpired } from './mfa-verify-form';
@@ -49,8 +49,11 @@ export function MfaSetup({ onComplete, doneLabel = 'Continue to workspace' }: { 
     try {
       const data = await mutate('auth/mfa/enrolment/confirm', 'POST', { code });
       setResult({ codes: data.recoveryCodes, landingPage: data.landingPage });
-    } catch (error) { setError(signInExpired(error instanceof Error ? error.message : 'Unable to confirm the code')); }
-    finally { setPending(false); }
+    } catch (error) {
+      setError(signInExpired(error instanceof Error ? error.message : 'Unable to confirm the code'));
+      // After the error renders, so the message is read with the field.
+      setTimeout(() => document.querySelector<HTMLInputElement>('#mfa-setup-code')?.select(), 0);
+    } finally { setPending(false); }
   }
   // A full navigation picks up the regenerated session cookie.
   const done = () => onComplete ? onComplete(result!.landingPage) : window.location.assign(result!.landingPage);
@@ -74,8 +77,7 @@ export function MfaSetup({ onComplete, doneLabel = 'Continue to workspace' }: { 
       </div>
     </div>
     <form onSubmit={confirm} className="space-y-4">
-      <label className="block text-sm font-medium">6-digit code<input name="code" required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} placeholder="123456" className={`${inputClass} font-mono text-lg tracking-[.3em]`} /></label>
-      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      <Input id="mfa-setup-code" label="6-digit code" name="code" required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} placeholder="123456" width="full" className="[&_input]:font-mono [&_input]:text-lg [&_input]:tracking-[.3em]" error={error || undefined} />
       <Button type="submit" disabled={pending} className="w-full">{pending ? 'Confirming…' : 'Turn on two-step verification'}</Button>
     </form>
   </div>;

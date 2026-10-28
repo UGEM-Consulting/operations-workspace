@@ -11,6 +11,10 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
  const count=async(table:string)=>Number((await db.query(`SELECT count(*)::integer AS n FROM ${table}`))[0].n);
  // Recreates the state of a starter database converted to the demo: real operator email, fictional staff and data.
  async function convertedStarter(extraUsers:string[]=[]){
+  if(await latest()==='SavedStaffSignatures1792780000000'){await db.query('TRUNCATE staff_saved_signatures');await db.undoLastMigration();}
+  if(await latest()==='CorrectionRejectionAndDeliveryRetry1792770000000'){await db.query('TRUNCATE applicant_update_deliveries');await db.undoLastMigration();}
+  if(await latest()==='StaffPasswordChange1792760000000'){await db.query('UPDATE users SET "mustChangePassword"=false');await db.undoLastMigration();}
+  if(await latest()==='SignatureMethod1792750000000')await db.undoLastMigration();
   if(await latest()==='OptionalEquipmentTask1792740000000'){await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();}
   if(await latest()==='ApplicantUpdates1792730000000'){await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();}
   if(await latest()==='StaffMfa1792720000000'){await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();}
@@ -58,7 +62,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
   // Real addresses are accepted again once unmarked, and the deploy migration drops the demo schema.
   await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Real','Manager','manager@company.example','DISPATCHER_MANAGER','ACTIVE')`);
   await db.runMigrations();
-  expect(await latest()).toBe('OptionalEquipmentTask1792740000000');
+  expect(await latest()).toBe('SavedStaffSignatures1792780000000');
   await expect(retireDemoDatabase(db,false)).rejects.toThrow('no demo marking');
  });
  it('refuses to delete a non-fictional staff account and changes nothing',async()=>{
