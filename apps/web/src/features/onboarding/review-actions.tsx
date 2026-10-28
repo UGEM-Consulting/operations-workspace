@@ -4,9 +4,10 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/alert';
+import { Checkbox, Input, Textarea } from '@/components/ui/field';
 import { mutate } from '@/lib/client-api';
 import { SignaturePad } from './signature-pad';
-import { documentItemLabels, fieldLabels, FieldName, inputClass, itemLabels, RequestableItem, StaffDocuments } from './types';
+import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments } from './types';
 type Action='APPROVE'|'REQUEST_CHANGES'|'REJECT';
 const titles:Record<Action,string>={APPROVE:'Approve application',REQUEST_CHANGES:'Request corrections',REJECT:'Reject application'};
 export function ReviewActions({id,version,employment,requiredFields,documentsRequired,countersign}:{id:string;version:number;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:{mcName:string;teamLead:string;jobTitle:string}}) {
@@ -27,19 +28,19 @@ export function ReviewActions({id,version,employment,requiredFields,documentsReq
  }
  return <><div className="flex flex-wrap gap-3"><Button disabled={requiredFields.length>0} onClick={()=>open('APPROVE')}>Approve</Button><Button variant="outline" onClick={()=>open('REQUEST_CHANGES')}>Request changes</Button><Button variant="outline" className="text-danger" onClick={()=>open('REJECT')}>Reject</Button></div>
  {requiredFields.length>0&&<p className="text-sm text-warning">Approval needs complete applicant information, photos and signatures. Request corrections for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}
- {action&&<Dialog open onClose={()=>setAction(null)} busy={busy} title={titles[action]}
+ {action&&<Dialog open onClose={()=>setAction(null)} busy={busy} title={titles[action]} size={action==='APPROVE'&&countersign?'lg':'md'} tone={action==='REJECT'?'danger':undefined}
  description={action==='REQUEST_CHANGES'?'Your instructions and selected items will be visible to the applicant. Only these items become editable.':action==='APPROVE'?'Confirm the final employment assignments. Approval is final and creates a manual IT onboarding checklist.':'Rejection closes this application and cannot be undone. Your internal reason will not be shown to the applicant.'}
  actions={<Button form="review-decision" type="submit" variant={action==='REJECT'?'destructive':'default'}>{busy?'Recording decision…':titles[action]}</Button>}>
  <form id="review-decision" onSubmit={decide} className="space-y-5">
-  {action==='APPROVE'&&<fieldset className="space-y-3"><legend className="mb-2 font-medium">Final employment assignments</legend>{(['mcName','teamLead','jobTitle'] as const).map(field=><label key={field} className="block text-sm">{fieldLabels[field]} *<input name={field} defaultValue={employment[field]} required maxLength={field==='jobTitle'?100:150} className={inputClass}/></label>)}<label className="flex items-start gap-3 text-sm"><input type="checkbox" name="employmentConfirmed" required className="mt-1"/>I have confirmed the MC, team lead and job title.</label></fieldset>}
-  {action==='APPROVE'&&countersign&&<fieldset className="space-y-3 border-t border-border pt-5"><legend className="mb-2 font-medium">Countersign the NDA for the company</legend>
+  {action==='APPROVE'&&<fieldset className="space-y-4"><legend className="mb-3 text-[15px] font-semibold">Final employment assignments</legend>{(['mcName','teamLead','jobTitle'] as const).map(field=><Input key={field} label={fieldLabels[field]} name={field} defaultValue={employment[field]} required maxLength={field==='jobTitle'?100:150} width="md"/>)}<Checkbox name="employmentConfirmed" required label="I have confirmed the MC, team lead and job title."/></fieldset>}
+  {action==='APPROVE'&&countersign&&<fieldset className="space-y-4 border-t border-border pt-5"><legend className="mb-3 text-[15px] font-semibold">Countersign the NDA for the company</legend>
    <p className="text-sm text-muted-foreground"><a className="text-primary underline" href={`/api/backend/onboarding/applications/${id}/documents/${countersign.documentId}/signed`} target="_blank" rel="noopener">Open the applicant-signed {countersign.title} (version {countersign.version})</a></p>
-   <label className="block text-sm">Your full legal name (Latin letters) *<input name="countersignName" required maxLength={100} pattern="[A-Za-z][A-Za-z .,'\-]+" autoComplete="name" className={inputClass}/></label>
-   <SignaturePad label="Draw your signature *" onChange={setSignature} disabled={busy}/>
-   <label className="flex items-start gap-3 text-sm"><input type="checkbox" name="countersignAgreed" required className="mt-1"/>{countersign.statement}</label>
+   <Input label="Your full legal name" hint="Latin letters, as on your ID." name="countersignName" required maxLength={100} pattern="[A-Za-z][A-Za-z .,'\-]+" autoComplete="name" width="md"/>
+   <SignaturePad label="Draw your signature" onChange={setSignature} disabled={busy}/>
+   <Checkbox name="countersignAgreed" required label={countersign.statement}/>
   </fieldset>}
-  <label className="block text-sm">{action==='REQUEST_CHANGES'?'Instructions for the applicant *':action==='REJECT'?'Internal rejection reason *':'Internal comment (optional)'}<textarea name="reason" required={action!=='APPROVE'} maxLength={2000} rows={4} className={inputClass}/></label>
-  {action==='REQUEST_CHANGES'?<fieldset className="space-y-3"><legend className="mb-2 text-sm font-medium">Items requiring correction — choose at least one</legend>{requiredFields.length>0&&<p className="text-sm text-muted-foreground">Missing required items are preselected and must be completed.</p>}{correctable.map(field=><label key={field} className="flex items-center gap-3 text-sm"><input type="checkbox" name="requestedFields" value={field} defaultChecked={requiredFields.includes(field)}/>{itemLabels[field]}</label>)}</fieldset>:<label className="flex items-start gap-3 text-sm"><input name="confirmed" type="checkbox" required className="mt-1"/>I confirm this {action==='APPROVE'?'approval':'rejection'}. This decision cannot be reopened.</label>}
+  <Textarea name="reason" label={action==='REQUEST_CHANGES'?'Instructions for the applicant':action==='REJECT'?'Reason for rejection':'Internal comment'} optional={action==='APPROVE'} required={action!=='APPROVE'} maxLength={2000} hint={action==='REQUEST_CHANGES'?'The applicant sees this message.':'Visible to staff only. The applicant never sees it.'}/>
+  {action==='REQUEST_CHANGES'?<fieldset className="space-y-3"><legend className="mb-1 text-sm font-medium">Items to correct</legend><p className="text-[13px] leading-5 text-muted-foreground">Choose at least one; only these become editable.{requiredFields.length>0&&' Missing required items are already selected.'}</p><div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">{correctable.map(field=><Checkbox key={field} name="requestedFields" value={field} defaultChecked={requiredFields.includes(field)} label={itemLabels[field]}/>)}</div></fieldset>:<Checkbox name="confirmed" required label={`I confirm this ${action==='APPROVE'?'approval':'rejection'}. This decision cannot be reopened.`}/>}
   <Notice message={error} error/>
   {error&&<p className="text-sm text-muted-foreground">If another reviewer changed this application, close this dialog and reload its latest details before trying again.</p>}
  </form>

@@ -37,9 +37,10 @@ export function MfaAdministration({ users, currentUserId, policy }: { users: Sta
     <h2 id="mfa-admin-heading" className="text-lg font-semibold">Two-step verification</h2>
     <Card className="space-y-4 p-4 sm:p-5">
       <form onSubmit={savePolicy} className="flex flex-wrap items-end gap-3">
-        <Select label="Required for" name="mfaRequiredFor" defaultValue={policy} width="sm" options={policies} hint="Administrators always need it. Everyone else can turn it on from Account security." className="max-w-md" />
+        <Select label="Required for" name="mfaRequiredFor" defaultValue={policy} width="md" options={policies} />
         <Button type="submit" variant="outline" disabled={pending}>Save requirement</Button>
       </form>
+      <p className="text-[13px] leading-5 text-muted-foreground">Administrators always need it. Everyone else can turn it on from Account security.</p>
       {!resetting && <Notice message={error} error />}
     </Card>
     <Card>

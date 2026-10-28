@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { inputClass } from '@/components/ui/field';
+import { Checkbox, inputClass } from '@/components/ui/field';
+import { Alert } from '@/components/ui/alert';
 import { mutate } from '@/lib/client-api';
 import { signInExpired } from './mfa-verify-form';
 interface Enrolment { qrCode: string; uri: string; manualKey: string; issuer: string; account: string }
@@ -17,13 +18,13 @@ export function RecoveryCodes({ codes, onDone, doneLabel }: { codes: string[]; o
     link.click(); URL.revokeObjectURL(url);
   }
   return <div className="space-y-4">
-    <p className="rounded-lg bg-warning-background p-3 text-sm text-warning">Save these recovery codes somewhere safe, such as your password manager. Each one signs you in once if you lose your phone. They will not be shown again.</p>
+    <Alert tone="warning" title="Save these codes now"><p>Keep them somewhere safe, such as your password manager. Each one signs you in once if you lose your phone. They will not be shown again.</p></Alert>
     <ul aria-label="Recovery codes" className="grid grid-cols-2 gap-2 rounded-lg border bg-muted p-4 font-mono text-sm">{codes.map(code => <li key={code}>{code}</li>)}</ul>
     <div className="flex flex-wrap gap-3">
       <Button type="button" variant="outline" onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); } catch { setCopied(false); } }}>{copied ? 'Copied' : 'Copy codes'}</Button>
       <Button type="button" variant="outline" onClick={download}>Download</Button>
     </div>
-    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={saved} onChange={event => setSaved(event.target.checked)} className="size-4" />I have saved my recovery codes</label>
+    <Checkbox checked={saved} onChange={event => setSaved(event.target.checked)} label="I have saved my recovery codes" />
     <Button type="button" className="w-full" disabled={!saved} onClick={onDone}>{doneLabel}</Button>
   </div>;
 }
