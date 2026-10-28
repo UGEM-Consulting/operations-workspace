@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
-import { Notice } from '@/components/ui/notice';
+import { Notice } from '@/components/ui/alert';
 import { PageHeader } from '@/components/workspace-ui';
 import { mutate } from '@/lib/client-api';
 import { inputClass, readApi } from './types';

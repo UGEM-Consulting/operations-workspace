@@ -1,15 +1,26 @@
-import { CheckCircle2, Circle, Clock3, Ban, TriangleAlert } from 'lucide-react';
 export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
-const tones = {
+const tones: Record<StatusTone, string> = {
   neutral: 'bg-muted text-muted-foreground', info: 'bg-info-background text-info',
   success: 'bg-success-background text-success', warning: 'bg-warning-background text-warning', danger: 'bg-danger-background text-danger',
 };
-const icons = { neutral: Circle, info: Clock3, success: CheckCircle2, warning: TriangleAlert, danger: Ban };
-export function StatusBadge({ label, tone = 'neutral' }: { label: string; tone?: StatusTone }) {
-  const Icon = icons[tone];
-  return <span className={`inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${tones[tone]}`}><Icon aria-hidden="true" className="size-3.5 shrink-0" />{label}</span>;
+
+/** The one status map for application, invitation, IT task and account states. */
+const statuses: Record<string, [label: string, tone: StatusTone]> = {
+  INVITED: ['Invited', 'neutral'], DRAFT: ['Draft', 'neutral'], SUBMITTED: ['Submitted', 'info'], RESUBMITTED: ['Resubmitted', 'info'],
+  CHANGES_REQUESTED: ['Changes requested', 'warning'], APPROVED: ['Approved', 'success'], REJECTED: ['Rejected', 'danger'],
+  PENDING: ['Pending', 'neutral'], OPENED: ['Opened', 'info'], IN_PROGRESS: ['In progress', 'info'], BLOCKED: ['Blocked', 'warning'], COMPLETED: ['Completed', 'success'],
+  ACTIVE: ['Active', 'success'], INACTIVE: ['Inactive', 'neutral'], REVOKED: ['Revoked', 'danger'], EXPIRED: ['Expired', 'neutral'],
+};
+
+/** A word with a tone dot; the word always carries the meaning, never the color alone. */
+export function Badge({ label, tone = 'neutral' }: { label: string; tone?: StatusTone }) {
+  return <span className={`inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium leading-5 ${tones[tone]}`}><span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />{label}</span>;
 }
-export function statusLabel(value: string) { return value.charAt(0) + value.slice(1).toLowerCase().replaceAll('_', ' '); }
+export function StatusBadge({ status }: { status: string }) {
+  const [label, tone] = statuses[status] ?? [statusLabel(status), 'neutral'];
+  return <Badge label={label} tone={tone} />;
+}
+export function statusLabel(value: string) { return statuses[value]?.[0] ?? value.charAt(0) + value.slice(1).toLowerCase().replaceAll('_', ' '); }
 // Role names keep their proper casing (IT, not It).
 const roleLabels: Record<string, string> = { SYSTEM_ADMIN: 'System administrator', DISPATCHER_MANAGER: 'Dispatcher manager', IT_SPECIALIST: 'IT specialist' };
 export function roleLabel(role: string) { return roleLabels[role] ?? statusLabel(role); }

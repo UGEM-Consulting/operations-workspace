@@ -77,9 +77,23 @@
   --overlay: rgba(22, 20, 19, 0.55);
 
   --radius: 0.75rem;
+  --shadow-xs: 0 1px 2px rgba(22, 20, 19, 0.06);
+  --shadow-sm: 0 1px 3px rgba(22, 20, 19, 0.08), 0 1px 2px rgba(22, 20, 19, 0.04);
+  --shadow-md: 0 6px 16px -4px rgba(22, 20, 19, 0.12), 0 2px 4px -2px rgba(22, 20, 19, 0.06);
+  --shadow-lg: 0 20px 48px -12px rgba(22, 20, 19, 0.22), 0 4px 12px -4px rgba(22, 20, 19, 0.08);
+  /* Control density: 44px and 16px text for applicants and phones; staff screens set data-density="compact". */
+  --control: 2.75rem;
+  --control-text: 1rem;
+}
+@media (min-width: 40rem) {
+  [data-density="compact"] { --control: 2.25rem; --control-text: 0.875rem; }
 }
 .dark {
   color-scheme: dark;
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 16px -4px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.7);
   --background: var(--neutral-950);
   --foreground: var(--neutral-50);
   --card: var(--neutral-900);
@@ -178,8 +192,16 @@
   --font-sans: var(--font-epilogue), "Segoe UI", Arial, sans-serif;
   --font-display: var(--font-anton), Impact, "Arial Narrow", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  /* 6px controls, 8px alerts and menus, 12px cards, tables and dialogs, 16px hero panels. */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 0.25rem);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
 }
 @layer base {
   * { border-color: var(--border); }
@@ -190,10 +212,11 @@
     outline: 2px solid var(--ring);
     outline-offset: 3px;
   }
-  :where(input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea) {
+  /* Outranks the Tailwind reset so phones get 16px text (no iOS zoom); utilities can still override. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):not([type="file"]), select, textarea {
     border-color: var(--input);
-    min-height: 2.75rem;
-    font-size: 1rem;
+    min-height: var(--control);
+    font-size: var(--control-text);
   }
   :where(input, textarea)::placeholder { color: var(--subtle-foreground); }
   :where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--primary); }
