@@ -219,7 +219,19 @@
     font-size: var(--control-text);
   }
   :where(input, textarea)::placeholder { color: var(--subtle-foreground); }
-  :where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--primary); }
+  /* 18px boxes: checked fills primary with a primary-foreground tick or dot. Low specificity, so utilities still win. */
+  :where(input[type="checkbox"], input[type="radio"]) {
+    appearance: none; display: inline-grid; place-content: center; flex-shrink: 0; width: 18px; height: 18px; margin: 2px 0 0;
+    border: 1px solid var(--input); background: var(--card); cursor: pointer; transition: background-color 120ms, border-color 120ms;
+  }
+  :where(input[type="checkbox"]) { border-radius: var(--radius-xs); }
+  :where(input[type="radio"]) { border-radius: 9999px; }
+  :where(input[type="checkbox"])::after { content: ""; width: 10px; height: 6px; border-left: 2px solid var(--primary-foreground); border-bottom: 2px solid var(--primary-foreground); transform: translateY(-1px) rotate(-45deg) scale(0); transition: transform 120ms; }
+  :where(input[type="radio"])::after { content: ""; width: 8px; height: 8px; border-radius: 9999px; background: var(--primary-foreground); transform: scale(0); transition: transform 120ms; }
+  :where(input[type="checkbox"], input[type="radio"]):checked { border-color: var(--primary); background: var(--primary); }
+  :where(input[type="checkbox"]):checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
+  :where(input[type="radio"]):checked::after { transform: scale(1); }
+  :where(input[type="checkbox"], input[type="radio"])[aria-invalid="true"] { border-color: var(--danger); }
   :where(input, select, textarea):disabled { cursor: not-allowed; opacity: 0.65; }
   ::selection { background: var(--brand-subtle); color: var(--brand-subtle-foreground); }
 }

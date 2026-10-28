@@ -1,29 +1,39 @@
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ApplicationList, applicationStatuses, inputClass } from './types';
-import { PageHeader, EmptyState } from '@/components/workspace-ui';
+import { Input, Select } from '@/components/ui/field';
+import { Table } from '@/components/ui/table';
+import { Pagination } from '@/components/ui/pagination';
+import { EmptyState } from '@/components/ui/feedback';
+import { Person } from '@/components/ui/avatar';
+import { ApplicationList, applicationStatuses } from './types';
+import { PageHeader } from '@/components/workspace-ui';
 import { StatusBadge, statusLabel } from '@/components/ui/status-badge';
+type ApplicationRow=ApplicationList['items'][number];
 export function Applications({data,filters}:{data:ApplicationList;filters:Record<string,string>}) {
  const pageLink=(page:number)=>`/onboarding/applications?${new URLSearchParams({...filters,page:String(page)})}`;
+ const filtered=filters.search||filters.status!=='ALL';
+ const name=(row:ApplicationRow)=>row.submittedAt?`${row.fields.firstName??''} ${row.fields.lastName??''}`.trim():'Awaiting submission';
  return <div className="space-y-6">
   <PageHeader eyebrow="Onboarding" title="Application review" description="Review submitted applications and request corrections or make a final decision. Correction drafts stay private until resubmitted."/>
-  <Card className="p-5"><form action="/onboarding/applications" className="grid items-end gap-4 sm:grid-cols-2 lg:grid-cols-5">
-   <label className="text-sm lg:col-span-2">Search<input name="search" defaultValue={filters.search} placeholder="Name, email, MC, team lead or reference" maxLength={100} className={inputClass}/></label>
-   <label className="text-sm">Status<select name="status" defaultValue={filters.status} className={inputClass}><option value="ALL">All statuses</option><option value="AWAITING_REVIEW">Awaiting review</option>{applicationStatuses.map(status=><option key={status} value={status}>{statusLabel(status)}</option>)}</select></label>
-   <label className="text-sm">Sort by<select name="sort" defaultValue={filters.sort} className={inputClass}><option value="updatedAt">Last updated</option><option value="submittedAt">Submission date</option><option value="name">Last name</option><option value="status">Status</option></select></label>
-   <label className="text-sm">Direction<select name="direction" defaultValue={filters.direction} className={inputClass}><option value="DESC">Descending</option><option value="ASC">Ascending</option></select></label>
-   <label className="text-sm">Per page<select name="pageSize" defaultValue={filters.pageSize} className={inputClass}>{[10,20,50].map(size=><option key={size}>{size}</option>)}</select></label>
-   <div className="flex items-center gap-3"><Button>Apply filters</Button><Link href="/onboarding/applications" className="text-sm underline">Reset</Link></div>
+  <Card className="p-4 sm:p-5"><form action="/onboarding/applications" className="flex flex-wrap items-end gap-4">
+   <Input label="Search" name="search" type="search" defaultValue={filters.search} placeholder="Name, email, MC, team lead or reference" maxLength={100} width="md"/>
+   <Select label="Status" name="status" defaultValue={filters.status} width="sm" options={[{value:'ALL',label:'All statuses'},{value:'AWAITING_REVIEW',label:'Awaiting review'},...applicationStatuses.map(status=>({value:status,label:statusLabel(status)}))]}/>
+   <Select label="Sort by" name="sort" defaultValue={filters.sort} width="sm" options={[{value:'updatedAt',label:'Last updated'},{value:'submittedAt',label:'Submission date'},{value:'name',label:'Last name'},{value:'status',label:'Status'}]}/>
+   <Select label="Direction" name="direction" defaultValue={filters.direction} width="sm" options={[{value:'DESC',label:'Descending'},{value:'ASC',label:'Ascending'}]}/>
+   <Select label="Per page" name="pageSize" defaultValue={filters.pageSize} width="xs" options={['10','20','50']}/>
+   <div className="flex items-center gap-3"><Button>Apply filters</Button><Button asChild variant="ghost"><Link href="/onboarding/applications">Reset</Link></Button></div>
   </form></Card>
-  <p className="text-sm text-muted-foreground">{data.total} matching application{data.total===1?'':'s'}</p>
-  {data.items.length ? <Card className="overflow-x-auto"><table className="w-full text-left text-sm"><caption className="sr-only">Dispatcher applications in your authorized scope</caption><thead className="border-b border-border bg-muted"><tr>{['Applicant','Employment','Submitted','Status','Last updated','Action'].map(label=><th key={label} scope="col" className="px-5 py-4 font-medium">{label}</th>)}</tr></thead><tbody>{data.items.map(row=><tr key={row.id} className="border-b border-border last:border-0">
-   <td className="px-5 py-4"><p className="font-medium">{row.submittedAt?`${row.fields.firstName??''} ${row.fields.lastName??''}`:'Awaiting submission'}</p><p className="mt-1 break-all text-muted-foreground">{row.email}</p></td>
-   <td className="px-5 py-4"><p>{row.mcName}</p><p className="mt-1 text-xs text-muted-foreground">Team lead: {row.teamLead}</p></td>
-   <td className="whitespace-nowrap px-5 py-4">{row.submittedAt?new Date(row.submittedAt).toLocaleDateString():'—'}</td>
-   <td className="px-5 py-4"><StatusBadge status={row.status}/></td><td className="whitespace-nowrap px-5 py-4">{new Date(row.updatedAt).toLocaleDateString()}</td>
-   <td className="px-5 py-4">{row.submittedAt?<Link href={`/onboarding/applications/${row.id}`} className="font-medium text-primary underline">Review details</Link>:<span className="text-muted-foreground">Not submitted</span>}</td>
-  </tr>)}</tbody></table></Card>:<Card><EmptyState title="No matching applications" description="Try another search or reset filters to see all applications in your scope."/><div className="pb-6 text-center"><Button asChild variant="outline"><Link href="/onboarding/applications">Reset filters</Link></Button></div></Card>}
-  <nav aria-label="Application pagination" className="flex items-center justify-between gap-4"><span className="text-sm">Page {data.page} of {Math.max(data.pageCount,1)}</span><div className="flex gap-4">{data.page>1&&<Link className="inline-flex min-h-11 items-center text-sm text-primary underline" href={pageLink(data.page-1)}>Previous</Link>}{data.page<data.pageCount&&<Link className="inline-flex min-h-11 items-center text-sm text-primary underline" href={pageLink(data.page+1)}>Next</Link>}</div></nav>
+  <Card>
+   <Table caption="Dispatcher applications in your authorized scope" rows={data.items} rowKey={row=>row.id} columns={[
+    {key:'applicant',label:'Applicant',primary:true,cell:row=>row.submittedAt?<Person name={name(row)} secondary={row.email}/>:<Person name={row.email||'Unclaimed invitation'} secondary="Awaiting submission" avatar={false}/>},
+    {key:'employment',label:'Employment',hideBelow:'lg',cell:row=><><p>{row.mcName||'Not provided'}</p><p className="text-[13px] text-muted-foreground">Team lead: {row.teamLead||'Not provided'}</p></>},
+    {key:'submitted',label:'Submitted',nowrap:true,muted:true,hideBelow:'md',cell:row=>row.submittedAt?new Date(row.submittedAt).toLocaleDateString():'—'},
+    {key:'status',label:'Status',cell:row=><StatusBadge status={row.status}/>},
+    {key:'updated',label:'Last updated',nowrap:true,muted:true,hideBelow:'xl',cell:row=>new Date(row.updatedAt).toLocaleDateString()},
+    {key:'action',label:'Action',srOnly:true,action:true,align:'right',cell:row=>row.submittedAt?<Button asChild variant="outline" size="sm"><Link href={`/onboarding/applications/${row.id}`}>Review<span className="sr-only"> {name(row)}</span></Link></Button>:<span className="text-[13px] text-muted-foreground">Not submitted</span>},
+   ]} empty={<EmptyState compact title={filtered?'No matching applications':'No applications yet'} description={filtered?'Try another search or reset filters to see all applications in your scope.':'Applications appear here once applicants start their invitations.'} action={filtered&&<Button asChild variant="outline"><Link href="/onboarding/applications">Reset filters</Link></Button>}/>}
+   footer={<Pagination label="Application pages" page={data.page} pageCount={data.pageCount} pageSize={data.pageSize} total={data.total} href={pageLink}/>}/>
+  </Card>
  </div>;
 }

@@ -1,11 +1,15 @@
 'use client';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { X } from 'lucide-react';
+import { CircleAlert, TriangleAlert, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Button } from './button';
 
-/** Native modal semantics, focus restoration and one consistent discard guard. */
-export function Dialog({ open, onClose, title, description, busy = false, protectChanges = true, closeLabel = 'Cancel', actions, children }: {
-  open: boolean; onClose: () => void; title: string; description?: string;
+// sm for confirmations, md for forms, lg for document review and signing. Under 640px every dialog is a full-height sheet.
+const sizes = { sm: 'sm:max-w-[440px]', md: 'sm:max-w-[560px]', lg: 'sm:max-w-[720px]' };
+
+/** Native modal semantics, focus restoration and one consistent discard guard. A tone makes it an alert dialog with an icon. */
+export function Dialog({ open, onClose, title, description, size = 'md', tone, busy = false, protectChanges = true, closeLabel = 'Cancel', actions, children }: {
+  open: boolean; onClose: () => void; title: string; description?: string; size?: keyof typeof sizes; tone?: 'danger' | 'warning';
   busy?: boolean; protectChanges?: boolean; closeLabel?: string; actions?: ReactNode; children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -38,19 +42,21 @@ export function Dialog({ open, onClose, title, description, busy = false, protec
     onClose();
   }
   if (!open) return null;
-  return <dialog ref={ref} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
+  const Icon = tone === 'danger' ? CircleAlert : TriangleAlert;
+  return <dialog ref={ref} role={tone ? 'alertdialog' : undefined} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
     onCancel={event => { event.preventDefault(); close(); }}
-    className="fixed inset-0 m-auto max-h-[90dvh] w-[calc(100%_-_2rem)] max-w-xl overflow-y-auto rounded-lg border bg-card p-0 text-card-foreground shadow-lg backdrop:bg-overlay">
-    <div className="flex items-start justify-between gap-4 border-b px-4 py-4 sm:px-6">
-      <div><h2 ref={heading} tabIndex={-1} id={`${id}-title`} className="text-[17px] font-semibold leading-6 outline-none">{title}</h2>{description && <p id={`${id}-description`} className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>}</div>
+    className={cn('fixed inset-0 m-auto h-dvh max-h-dvh w-full max-w-none flex-col border-0 bg-card p-0 text-card-foreground shadow-lg backdrop:bg-overlay open:flex sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%_-_2rem)] sm:rounded-lg sm:border', sizes[size])}>
+    <div className="flex shrink-0 items-start justify-between gap-4 border-b px-4 py-4 sm:px-6">
+      {tone && <span aria-hidden="true" className={cn('grid size-9 shrink-0 place-items-center rounded-full', tone === 'danger' ? 'bg-danger-background text-danger' : 'bg-warning-background text-warning')}><Icon className="size-5" /></span>}
+      <div className="min-w-0 flex-1"><h2 ref={heading} tabIndex={-1} id={`${id}-title`} className="text-[17px] font-semibold leading-6 outline-none">{title}</h2>{description && <p id={`${id}-description`} className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>}</div>
       <Button type="button" variant="ghost" size="icon" className="shrink-0" disabled={busy} aria-label={`Close ${title.toLowerCase()}`} onClick={close}><X aria-hidden="true" className="size-5" /></Button>
     </div>
-    <div className="px-4 py-5 sm:px-6" aria-busy={busy}>
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6" aria-busy={busy}>
       {discard && <div role="alert" className="mb-5 space-y-3 rounded-md border border-warning-border bg-warning-background p-4 text-sm"><p className="font-semibold">Discard unsaved changes?</p><p>Your changes have not been saved.</p><div className="flex flex-wrap gap-3"><Button ref={keep} type="button" variant="outline" onClick={() => { setDiscard(false); heading.current?.focus(); }}>Keep editing</Button><Button type="button" variant="destructive" onClick={onClose}>Discard changes</Button></div></div>}
       <fieldset disabled={busy || discard} className="min-w-0" onChangeCapture={() => setDirty(true)}>
         {children}
       </fieldset>
     </div>
-    <div className="sticky bottom-0 flex flex-col-reverse gap-3 border-t bg-card px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={close}>{closeLabel}</Button><fieldset disabled={busy || discard} className="min-w-0 [&_button]:w-full sm:[&_button]:w-auto">{actions}</fieldset></div>
+    <div className="flex shrink-0 flex-col-reverse gap-3 border-t bg-card px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={close}>{closeLabel}</Button><fieldset disabled={busy || discard} className="min-w-0 [&_button]:w-full sm:[&_button]:w-auto">{actions}</fieldset></div>
   </dialog>;
 }

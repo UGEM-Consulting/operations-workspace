@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
 import { apiRequest } from '@/lib/auth';
-import { EmptyState, StatCard } from '@/components/workspace-ui';
+import { StatCard } from '@/components/workspace-ui';
+import { EmptyState } from '@/components/ui/feedback';
 import { StatusBadge } from '@/components/ui/status-badge';
 import type { ApplicationList, ReviewSummary } from '@/features/onboarding/types';
 import { type ItQueue, type Notifications } from '@/features/it/types';
