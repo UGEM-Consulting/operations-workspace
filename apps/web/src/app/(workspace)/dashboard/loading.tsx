@@ -1,2 +1,2 @@
-import { PanelLoading } from '@/components/workspace-ui';
-export default function Loading() { return <PanelLoading />; }
+import { PageLoading } from '@/components/workspace-ui';
+export default function Loading() { return <PageLoading label="Loading your workspace…" />; }

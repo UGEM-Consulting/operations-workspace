@@ -1,1 +1,2 @@
-export default function Loading(){return <p role="status" className="p-6 text-muted-foreground">Loading IT onboarding…</p>;}
+import { PageLoading } from '@/components/workspace-ui';
+export default function Loading() { return <PageLoading label="Loading IT onboarding…" />; }

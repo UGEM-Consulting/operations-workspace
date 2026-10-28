@@ -1,1 +1,2 @@
-export default function Loading() { return <div role="status" className="space-y-5"><p className="text-sm text-muted-foreground">Loading onboarding workspace…</p><div className="h-28 animate-pulse rounded-md bg-muted"/><div className="h-60 animate-pulse rounded-md bg-muted"/></div>; }
+import { PageLoading } from '@/components/workspace-ui';
+export default function Loading() { return <PageLoading label="Loading onboarding…" />; }
