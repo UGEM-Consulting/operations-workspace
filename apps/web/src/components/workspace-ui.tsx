@@ -3,8 +3,13 @@ import { ArrowUpRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Loading, Skeleton } from '@/components/ui/feedback';
 
-export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: ReactNode; action?: ReactNode }) {
-  return <div className="flex flex-wrap items-end justify-between gap-5"><div><p className="text-xs font-medium text-muted-foreground">{eyebrow}</p><h1 className="mt-1 font-sans text-[22px] font-semibold leading-[30px] tracking-[-0.01em]">{title}</h1><p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p></div>{action}</div>;
+/** Page title block. `badge` sits beside the title; `meta` is a row of short facts (reference, dates) for record pages. */
+export function PageHeader({ eyebrow, title, description, action, badge, meta }: { eyebrow?: string; title: string; description?: ReactNode; action?: ReactNode; badge?: ReactNode; meta?: ReactNode[] }) {
+  return <div className="flex flex-wrap items-end justify-between gap-5"><div className="min-w-0">{eyebrow && <p className="text-xs font-medium text-muted-foreground">{eyebrow}</p>}
+    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1"><h1 className="font-sans text-[22px] font-semibold leading-[30px] tracking-[-0.01em]">{title}</h1>{badge}</div>
+    {description && <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>}
+    {meta && <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] leading-5 text-muted-foreground">{meta.map((item, index) => <li key={index} className="min-w-0 break-all sm:break-normal">{item}</li>)}</ul>}
+  </div>{action}</div>;
 }
 export function StatCard({ label, value, detail, href }: { label: string; value: number; detail: string; href: string }) {
   return <Link href={href} className="group rounded-lg border bg-card p-5 shadow-xs transition-colors hover:border-border-strong"><p className="text-xs font-medium text-muted-foreground">{label}</p><div className="mt-4 flex items-end justify-between gap-3"><span className="text-[28px] font-semibold leading-9 tracking-tight tabular-nums">{value}</span><ArrowUpRight aria-hidden="true" className="size-4 text-primary" /></div><p className="mt-3 text-xs text-muted-foreground">{detail}</p></Link>;

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Check, Copy, Download } from 'lucide-react';
+import { ArrowRight, Download } from 'lucide-react';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input, RadioGroup } from '@/components/ui/field';
 import { Alert } from '@/components/ui/alert';
@@ -18,12 +19,6 @@ function StepCount({ current }: { current: number }) {
     <p className="text-sm font-semibold">{STEPS[current]}</p>
     <div aria-hidden="true" className="mt-2 flex gap-1">{STEPS.map((step, index) => <span key={step} className={`h-1 flex-1 rounded-full ${index <= current ? 'bg-primary' : 'bg-muted'}`} />)}</div>
   </div>;
-}
-function CopyButton({ text, label, copiedLabel = 'Copied' }: { text: string; label: string; copiedLabel?: string }) {
-  const [copied, setCopied] = useState(false);
-  return <Button type="button" variant="outline" onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); } catch { setCopied(false); } }}>
-    {copied ? <Check aria-hidden="true" className="size-4" /> : <Copy aria-hidden="true" className="size-4" />}{copied ? copiedLabel : label}
-  </Button>;
 }
 
 /** One-time display of recovery codes with copy and download. */
