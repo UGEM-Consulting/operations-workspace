@@ -20,5 +20,5 @@ class NotificationController {
  @Get() list(@Req() req:AuthRequest){return this.service.notifications(req.currentUser);}
  @Post(':id/read') read(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.readNotification(req.currentUser,id);}
 }
-@Module({controllers:[ItController,NotificationController],providers:[ItService]})
+@Module({controllers:[ItController,NotificationController],providers:[ItService],exports:[ItService]})
 export class ItModule {}

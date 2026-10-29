@@ -20,9 +20,11 @@ export function parseResponse<T>(schema: z.ZodType, data: unknown, resource: str
 /** GET /auth/me */
 export const identitySchema = z.looseObject({
   user: z.looseObject({ id: text, firstName: text, lastName: text, email: text, role: text, status: text, mfaEnabled: z.boolean().optional() }),
-  navigation: z.array(z.looseObject({ key: text, href: text.startsWith('/'), label: text })),
+  navigation: z.array(z.looseObject({ key: text, href: text.startsWith('/'), label: text, section: text.nullable().optional() })),
   landingPage: text.startsWith('/'),
 });
+/** GET /workspace/counts: sidebar counts and unread notifications (null when the role has none). */
+export const workspaceCountsSchema = z.looseObject({ navigation: z.record(z.string(), z.number().int().nonnegative()), unreadNotifications: z.number().int().nonnegative().nullable() });
 
 /** GET /auth/mfa (account security). */
 // Own saved countersigning signature (managers and administrators).

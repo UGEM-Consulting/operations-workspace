@@ -13,5 +13,6 @@ export default async function AccountSecurityPage() {
   if (!response.ok || (signatureResponse && !signatureResponse.ok)) throw new Error('Unable to load account security');
   const status = await readResponse<MfaStatus>(response, 'MFA status', mfaStatusSchema);
   const signature = signatureResponse ? await readResponse<{ saved: SavedSignature | null }>(signatureResponse, 'saved signature', savedSignatureSchema) : null;
-  return <div><PageHeader eyebrow="Your account" title="Account security" description="Your password and the code from your phone that protect your sign-in." /><PasswordSettings account={identity.user.email} />{signature && <SavedSignatureSettings initial={signature.saved} />}<AccountSecurity status={status} /></div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Your account" title="Account security" description="How you sign in to the workspace, and your saved signature for approvals." />
+    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} />{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
 }

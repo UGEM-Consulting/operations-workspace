@@ -5,8 +5,9 @@ import { redirect } from 'next/navigation';
 import { readBackendConfig } from './backend-connection';
 import { sessionCookieName } from './session-cookie';
 import { identitySchema, readResponse } from './api-schemas';
+import type { NavigationItem } from './navigation';
 export interface StaffUser { id: string; firstName: string; lastName: string; email: string; role: string; status: string; mfaEnabled?: boolean; }
-export interface Identity { user: StaffUser; navigation: { key: string; href: string; label: string }[]; landingPage: string; }
+export interface Identity { user: StaffUser; navigation: NavigationItem[]; landingPage: string; }
 export function backendConfig() {
   return readBackendConfig(process.env);
 }

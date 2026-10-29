@@ -1,7 +1,7 @@
 'use client';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { PageCrumb, useLeaveGuard } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox, Input, Select, Textarea } from '@/components/ui/field';
@@ -26,11 +26,13 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[taskError,setTaskError]=useState('');
  const [assigned,setAssigned]=useState(initial.request.assignedRingCentralPhoneNumber??''),[verified,setVerified]=useState(!!initial.request.workPhoneVerifiedAt);
  const [companyEmail,setCompanyEmail]=useState(initial.request.companyEmail??'');
- const [discard,setDiscard]=useState<'refresh'|'leave'|null>(null);
+ const [discard,setDiscard]=useState<'refresh'|{leave:string}|null>(null);
  const {request,tasks}=data,profile=request.profile,closed=!!request.completedAt,busy=!!pending;
  const contactDirty=assigned!==(request.assignedRingCentralPhoneNumber??'')||companyEmail.trim().toLowerCase()!==(request.companyEmail??'')||verified!==!!request.workPhoneVerifiedAt;
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
+ // Breadcrumb, sidebar and notification links ask before discarding unsaved company accounts.
+ useLeaveGuard(useCallback((href:string)=>{if(!contactDirty&&!busy)return true;if(!busy)setDiscard({leave:href});return false;},[contactDirty,busy]));
  useEffect(()=>{if(!contactDirty)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[contactDirty]);
  function applyContact(updated:ItDetail){setData(updated);setAssigned(updated.request.assignedRingCentralPhoneNumber??'');setCompanyEmail(updated.request.companyEmail??'');setVerified(!!updated.request.workPhoneVerifiedAt);}
  async function refresh(){setDiscard(null);setPending('refresh');try{applyContact(await readApi<ItDetail>(`it/onboarding/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh. Your entries have been kept.')});}finally{setPending(null);}}
@@ -51,7 +53,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const renderTask=(task:ItTask,Heading:'h3'|'h4'='h3')=><Card key={task.key} className="space-y-3 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><Heading className="font-semibold">{task.label}{task.optional&&<span className="ml-2 text-xs font-normal text-muted-foreground">Optional</span>}</Heading><StatusBadge status={task.status}/></div><p className="text-sm text-muted-foreground">{task.description}</p>{task.notes&&<p className={`whitespace-pre-wrap break-words rounded-md p-3 text-sm ${task.status==='BLOCKED'?'bg-warning-background text-warning':'bg-muted'}`}>{task.status==='BLOCKED'&&<strong>Blocked: </strong>}{task.notes}</p>}{!closed&&<Button variant="outline" disabled={busy} onClick={()=>open(task)}>Update task<span className="sr-only">: {task.label}</span></Button>}</Card>;
  const fields=[['First name',profile.legalFirstName],['Last name',profile.legalLastName],['American first name',profile.preferredAmericanFirstName],['American last name',profile.preferredAmericanLastName],['Personal email',profile.personalEmail],['Personal phone number',profile.personalPhoneNumber],['MC / Independent',profile.mcName],['Team lead / Independent',profile.teamLead],['Job title',profile.jobTitle],['Company email',request.companyEmail],['Work phone (RingCentral)',request.assignedRingCentralPhoneNumber]];
  return <div className="space-y-6">
- <Link href="/it/tasks" onClick={event=>{if(contactDirty||busy){event.preventDefault();if(!busy)setDiscard('leave');}}} className="inline-flex min-h-11 items-center text-sm text-primary underline">Back to IT onboarding</Link>
+ <PageCrumb label={profile.proposedDisplayName??'Approved dispatcher'}/>
  <PageHeader eyebrow="IT onboarding" title={profile.proposedDisplayName??'Approved dispatcher'} description="Manager-approved employment and a manual setup checklist." action={<StatusBadge status={request.status}/>}/>
  {closed?<Alert tone="success" title="Onboarding completed"><p>The manager was notified in this portal on <LocalTime iso={request.completedAt}/>. This checklist is read-only.</p></Alert>:<Card className="space-y-3 p-4 sm:p-5"><div className="flex flex-wrap items-end justify-between gap-3"><Progress className="min-w-0 flex-1 basis-60" label="Setup progress" value={completed} max={tasks.length} valueLabel={`${completed} of ${tasks.length} tasks done`}/><Button variant="outline" size="sm" disabled={busy} onClick={()=>contactDirty?setDiscard('refresh'):void refresh()}>{pending==='refresh'?'Refreshing…':'Refresh status'}</Button></div><p className="text-sm text-muted-foreground">{tasks.some(task=>task.status==='BLOCKED')?'Resolve the blocked tasks below to continue setup.':'Complete each setup task and save the company email and assigned RingCentral number.'} Completing the final task closes this checklist and notifies the manager in this portal.</p></Card>}
  <details className="rounded-lg border bg-card p-5" open><summary className="cursor-pointer font-semibold">Employee details</summary>{request.profilePhoto&&<figure className="mt-5 space-y-2"><figcaption className="text-sm text-muted-foreground">Profile photo</figcaption><PrivateImage src={`/api/backend/it/onboarding/${request.id}/photo`} alt="Profile photo" className="size-40 rounded-md border object-cover"/></figure>}<DescriptionList className="mt-5" items={fields.map(([label,value])=>({label:label??'',value}))}/></details>
@@ -69,6 +71,6 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager receives a portal notification. Save the company email and assigned RingCentral number first.</p>{contactDirty&&<p>Close this dialog and save your unsaved company account changes before continuing.</p>}<Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
  <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>{taskError&&<p className="text-sm text-muted-foreground">If someone else updated this request, close this dialog and refresh its status before trying again.</p>}</form>
  </Dialog>}
- {discard&&<Dialog open size="sm" tone="warning" title="Discard unsaved company account changes?" description="The company email, RingCentral number or verification changes on this page have not been saved." onClose={()=>setDiscard(null)} protectChanges={false} closeLabel="Keep editing" actions={<Button variant="destructive" onClick={()=>discard==='refresh'?void refresh():router.push('/it/tasks')}>{discard==='refresh'?'Discard and refresh':'Discard and leave'}</Button>}><p className="text-sm">Save your contact changes first if you want to keep them.</p></Dialog>}
+ {discard&&<Dialog open size="sm" tone="warning" title="Discard unsaved company account changes?" description="The company email, RingCentral number or verification changes on this page have not been saved." onClose={()=>setDiscard(null)} protectChanges={false} closeLabel="Keep editing" actions={<Button variant="destructive" onClick={()=>{if(discard==='refresh')void refresh();else{const href=discard.leave;setDiscard(null);applyContact(data);router.push(href);}}}>{discard==='refresh'?'Discard and refresh':'Discard and leave'}</Button>}><p className="text-sm">Save your contact changes first if you want to keep them.</p></Dialog>}
  </div>;
 }

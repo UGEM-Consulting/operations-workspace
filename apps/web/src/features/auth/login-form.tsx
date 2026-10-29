@@ -22,10 +22,10 @@ export function LoginForm() {
     }
   }
   // The credentials message belongs to both fields; it is shown once, under the password.
-  return <form onSubmit={submit} className="mt-7 space-y-5">
-    <Input label="Email" name="email" type="email" autoComplete="username" required autoFocus maxLength={254} width="full" aria-invalid={error ? true : undefined} />
+  return <form onSubmit={submit} className="mt-6 space-y-4">
+    <Input label="Email" name="email" type="email" autoComplete="username" required autoFocus maxLength={254} width="full" placeholder="name@ugemconsulting.com" aria-invalid={error ? true : undefined} />
     <Input ref={password} label="Password" name="password" type="password" autoComplete="current-password" required maxLength={128} width="full" error={error || undefined} />
-    <Button type="submit" disabled={pending} className="w-full">{pending ? 'Signing in…' : 'Sign in'}</Button>
-    <p className="text-xs leading-5 text-muted-foreground">Internal staff access only. Contact your administrator for an account.</p>
+    <Button type="submit" size="lg" disabled={pending} className="w-full">{pending ? 'Signing in…' : 'Sign in'}</Button>
+    <p className="text-center text-[13px] leading-5 text-muted-foreground">Staff only: ask an administrator for an account. Applying to UGEM? Use the link your manager sent you.</p>
   </form>;
 }
