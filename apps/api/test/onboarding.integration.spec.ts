@@ -1,4 +1,5 @@
 import { ItModule } from '../src/modules/it/it.module';
+import { WorkspaceModule } from '../src/modules/workspace/workspace.module';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -37,7 +38,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   db=await new DataSource(databaseOptions(env)).initialize();await db.runMigrations();await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');
   const hash=await hashPassword(password);
   for(const [index,role] of [Role.DISPATCHER_MANAGER,Role.DISPATCHER_MANAGER,Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].entries())await db.getRepository(User).save({firstName:'Fictional',lastName:'Staff',email:`staff${index}@example.test`,role,status:UserStatus.ACTIVE,passwordHash:hash});
-  const module=await Test.createTestingModule({imports:[ConfigModule.forRoot({isGlobal:true,ignoreEnvFile:true,load:[()=>env]}),TypeOrmModule.forRoot(databaseOptions(env)),AuthModule,OnboardingModule,ItModule]}).compile();
+  const module=await Test.createTestingModule({imports:[ConfigModule.forRoot({isGlobal:true,ignoreEnvFile:true,load:[()=>env]}),TypeOrmModule.forRoot(databaseOptions(env)),AuthModule,OnboardingModule,ItModule,WorkspaceModule]}).compile();
   app=module.createNestApplication();closeSessions=installSessions(app,env);configureApp(app,env.CORS_ORIGINS);await app.init();
   const adminUser=await db.getRepository(User).findOneByOrFail({email:'staff2@example.test'});const adminSecret=await enrolForTest(db,env.MFA_ENCRYPTION_KEY!,adminUser.id);
   const agents=[];for(let i=0;i<4;i++){const agent=request.agent(app.getHttpServer());const signedIn=await agent.post('/api/auth/login').set(headers).send({email:`staff${i}@example.test`,password}).expect(200);if(signedIn.body.mfa)expect((await completeMfa(agent,headers,db,adminUser.id,adminSecret)).status).toBe(200);agents.push(agent);}[manager,other,admin,itAgent]=agents;
@@ -604,6 +605,9 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  it('requires phone verification and assigned number for completion, sends one manager notification, and preserves approval',async()=>{
   const flow=await approvedItFlow();
+  // Sidebar counts: open IT requests for IT, unread notifications only for managers, nothing for another manager's records.
+  expect((await itAgent.get('/api/workspace/counts').set(headers).expect(200)).body).toEqual({navigation:{it:1},unreadNotifications:null});
+  expect((await manager.get('/api/workspace/counts').set(headers).expect(200)).body).toEqual({navigation:{applications:0},unreadNotifications:0});
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
   let data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190',companyEmail:'alex.demo@example.test'}).expect(200);
   for(const task of data.body.tasks.slice(0,5))data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED',notes:'Fictional manual check completed'}).expect(200);
@@ -621,6 +625,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   data=await itAgent.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);expect(data.body.request.status).toBe('COMPLETED');
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:finalVersion+1,workPhoneVerified:false}).expect(409);
   const notices=await manager.get('/api/notifications').set(headers).expect(200);expect(notices.body.unread).toBe(1);expect(notices.body.items).toHaveLength(1);
+  expect((await manager.get('/api/workspace/counts').set(headers)).body.unreadNotifications).toBe(1);expect((await other.get('/api/workspace/counts').set(headers)).body.unreadNotifications).toBe(0);
+  expect((await itAgent.get('/api/workspace/counts').set(headers)).body.navigation).toEqual({it:0});
   expect(notices.body.items[0].displayName).toBe('Alex Demo');expect((await other.get('/api/notifications').set(headers)).body.items).toHaveLength(0);
   await other.post(`/api/notifications/${notices.body.items[0].id}/read`).set(headers).send({}).expect(404);
   await itAgent.get('/api/notifications').set(headers).expect(403);

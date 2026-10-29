@@ -1,11 +1,10 @@
 "use client";
 import { useRef, useState } from 'react';
-import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/field';
 import { Notice } from '@/components/ui/alert';
 import { mutate } from '@/lib/client-api';
-import { signInExpired } from './mfa-verify-form';
+import { BackToSignIn, signInExpired } from './mfa-verify-form';
 type FieldName = 'currentPassword' | 'newPassword' | 'confirmPassword';
 const RULE = 'Use 12–128 characters. A passphrase of several unrelated words works well.';
 
@@ -42,7 +41,7 @@ export function PasswordChangeForm({ forced = false, account }: { forced?: boole
       fail(/current password/i.test(message) ? 'currentPassword' : /differs|characters/i.test(message) ? 'newPassword' : null, message);
     } finally { setPending(false); }
   }
-  return <form ref={form} onSubmit={submit} noValidate className={forced ? 'mt-7 space-y-5' : 'space-y-4'}>
+  return <form ref={form} onSubmit={submit} noValidate className={forced ? 'mt-6 space-y-4' : 'space-y-4'}>
     {/* Lets password managers file the new password under the right account. */}
     {account && <input type="text" name="username" autoComplete="username" value={account} readOnly hidden />}
     <Input label="Current password" name="currentPassword" type="password" autoComplete="current-password" required autoFocus={forced} maxLength={128} width={forced ? 'full' : 'md'}
@@ -50,7 +49,7 @@ export function PasswordChangeForm({ forced = false, account }: { forced?: boole
     <Input label="New password" name="newPassword" type="password" autoComplete="new-password" required minLength={12} maxLength={128} width={forced ? 'full' : 'md'} hint={RULE} error={errors.newPassword} />
     <Input label="Confirm new password" name="confirmPassword" type="password" autoComplete="new-password" required maxLength={128} width={forced ? 'full' : 'md'} error={errors.confirmPassword} />
     <Notice message={notice.message} error={notice.error} />
-    <Button type="submit" disabled={pending} className={forced ? 'w-full' : undefined}>{pending ? 'Changing password…' : forced ? 'Change password and continue' : 'Change password'}</Button>
-    {forced && <p className="text-sm"><Link href="/login" className="text-muted-foreground underline-offset-4 hover:underline">Back to sign in</Link></p>}
+    <Button type="submit" size={forced ? 'lg' : 'default'} disabled={pending} className={forced ? 'w-full' : undefined}>{pending ? 'Changing password…' : forced ? 'Change password and continue' : 'Change password'}</Button>
+    {forced && <BackToSignIn />}
   </form>;
 }

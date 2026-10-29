@@ -2,7 +2,8 @@
 import { useCallback, useState } from 'react';
 import { Notice } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Card, CardBody, CardHeader } from '@/components/ui/card';
+import { Badge } from '@/components/ui/status-badge';
 import { Dialog } from '@/components/ui/dialog';
 import { Checkbox, Input } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
@@ -38,16 +39,17 @@ export function SavedSignatureSettings({ initial }: { initial: SavedSignature | 
     catch (error) { setRemoving(false); setNotice({ message: errorMessage(error, 'Unable to remove your signature.'), error: true }); }
     finally { setPending(false); }
   }
-  return <Card className="mt-8 max-w-2xl space-y-5 p-6">
-    <div>
-      <h2 className="text-lg font-semibold">Saved signature</h2>
-      <p className="mt-2 text-sm leading-6 text-muted-foreground">Save your signature once and apply it when you countersign an NDA during approval. You still confirm each document. Only you can see it, and changing it never alters documents you already signed.</p>
-    </div>
+  return <Card>
+    <CardHeader title="Saved signature" description="Apply it when you countersign an NDA during approval. You still confirm each document. Only you can see it, and changing it never alters documents you already signed."
+      actions={<Badge label={saved ? 'Saved' : 'Not saved'} tone={saved ? 'success' : 'neutral'} />} />
+    <CardBody className="space-y-5">
     {saved && !editing && <div className="space-y-4">
-      {/* The ink is dark on a transparent background, so the preview keeps a light surface in both themes. */}
-      {/* eslint-disable-next-line @next/next/no-img-element -- server-provided data URL */}
-      <img src={saved.image} alt={`Your saved signature for ${saved.typedName}`} className="h-20 w-auto max-w-full rounded-sm border border-border bg-white p-2" />
-      <p className="text-sm">Signs as <span className="font-medium">{saved.typedName}</span> · {saved.signatureMethod === 'TYPED' ? 'Adopted from your typed name' : 'Drawn'} · saved <LocalTime iso={saved.updatedAt} /></p>
+      <div className="flex flex-wrap items-center gap-4">
+        {/* The ink is dark on a transparent background, so the preview keeps a light surface in both themes. */}
+        {/* eslint-disable-next-line @next/next/no-img-element -- server-provided data URL */}
+        <img src={saved.image} alt={`Your saved signature for ${saved.typedName}`} className="h-20 w-auto max-w-full rounded-md border border-border bg-white p-2" />
+        <div className="text-sm"><p>Signs as <span className="font-medium">{saved.typedName}</span></p><p className="text-[13px] leading-5 text-muted-foreground">{saved.signatureMethod === 'TYPED' ? 'Adopted from your typed name' : 'Drawn'} · saved <LocalTime iso={saved.updatedAt} /></p></div>
+      </div>
       <div className="flex flex-wrap gap-3">
         <Button variant="outline" onClick={() => { setEditing(true); setNotice({ message: '', error: false }); }}>Replace signature</Button>
         <Button variant="outline" className="text-danger" onClick={() => setRemoving(true)}>Remove</Button>
@@ -63,6 +65,7 @@ export function SavedSignatureSettings({ initial }: { initial: SavedSignature | 
       </div>
     </form>}
     <Notice message={notice.message} error={notice.error} />
+    </CardBody>
     {removing && <Dialog open onClose={() => setRemoving(false)} busy={pending} tone="danger" title="Remove saved signature?" description="You can still sign during each approval, or save a new signature later. Documents you already signed keep their signatures."
       actions={<Button variant="destructive" onClick={() => void remove()} disabled={pending}>{pending ? 'Removing…' : 'Remove signature'}</Button>}><span className="sr-only">Confirm removal</span></Dialog>}
   </Card>;

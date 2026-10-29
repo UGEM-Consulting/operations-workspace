@@ -56,5 +56,5 @@ class ApplicantUpdatesController {
   return this.db.transaction(async em => { const {application,invitation} = await this.applicants.applicant(em,req,true); return this.updates.disconnect(em,application,invitation); });
  }
 }
-@Module({ imports: [EmailModule,StorageModule,UpdatesModule],controllers: [OnboardingController,ApplicantController,ApplicantUpdatesController], providers: [OnboardingService, ReviewService], exports: [OnboardingService] })
+@Module({ imports: [EmailModule,StorageModule,UpdatesModule],controllers: [OnboardingController,ApplicantController,ApplicantUpdatesController], providers: [OnboardingService, ReviewService], exports: [OnboardingService, ReviewService] })
 export class OnboardingModule {}

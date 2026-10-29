@@ -154,7 +154,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await it.get('/api/access/it').set(headers).expect(200);
     await it.get('/api/access/applications').set(headers).expect(403);
     const me = await it.get('/api/auth/me').set(headers).expect(200);
-    expect(me.body.navigation.map((item: { key: string }) => item.key)).toEqual(['dashboard', 'it', 'security']);
+    expect(me.body.navigation.map((item: { key: string; section: string | null }) => [item.key, item.section])).toEqual([['dashboard', null], ['it', 'IT'], ['security', 'Account']]);
   });
   it('rejects disabled users both on login and with an existing session', async () => {
     const agent = request.agent(app.getHttpServer()); await login(agent, Role.IT_SPECIALIST);

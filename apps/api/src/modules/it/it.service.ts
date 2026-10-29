@@ -98,6 +98,18 @@ export class ItService {
    request.version+=1;await em.save(request);return this.detail(em,request);
   });
  }
+ /** Open requests waiting for IT (the sidebar count); same approved-application checks as the queue. */
+ async openCount(user:User){
+  this.allowIt(user);
+  return this.db.getRepository(ItOnboardingRequest).createQueryBuilder('r')
+   .innerJoin(DispatcherApplication,'a','a.id=r.applicationId AND a.status = :approved',{approved:'APPROVED'})
+   .innerJoin(ApplicationReview,'v',"v.id=r.approvalId AND v.applicationId=r.applicationId AND v.decisionType='APPROVE'")
+   .where('r.completedAt IS NULL').getCount();
+ }
+ async unreadCount(user:User){
+  if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER].includes(user.role))throw new ForbiddenException();
+  return this.db.getRepository(PortalNotification).countBy({recipientId:user.id,readAt:IsNull()});
+ }
  async notifications(user:User){
   if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER].includes(user.role))throw new ForbiddenException();
   const result=await this.db.getRepository(PortalNotification).createQueryBuilder('n').innerJoin(ItOnboardingRequest,'r','r.id=n.requestId AND r.managerId = :owner',{owner:user.id})

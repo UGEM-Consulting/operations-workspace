@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { readResponse, reviewDetailSchema, savedSignatureSchema } from '@/lib/api-schemas';
@@ -14,6 +13,7 @@ import { PrivateImage } from '@/components/ui/private-image';
 import { ReviewActions } from '@/features/onboarding/review-actions';
 import { TaskStatus } from '@/features/it/types';
 import { PageHeader } from '@/components/workspace-ui';
+import { PageCrumb } from '@/components/shell-context';
 import { StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { fieldLabels, FieldName, itemLabels, ReviewDetail } from '@/features/onboarding/types';
 export default async function Page({params}:{params:Promise<{id:string}>}) {
@@ -27,8 +27,9 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const personal=(Object.keys(fieldLabels) as FieldName[]).filter(key=>key!=='workPhoneNumber'||!!app.fields.workPhoneNumber).map(key=>[fieldLabels[key],app.fields[key]]);
  const it=data.itOnboarding;
  const fields=[...personal,['Personal email',data.invitation.email]];
- return <div className="space-y-6"><Link href="/onboarding/applications" className="text-sm text-primary underline">Back to applications</Link>
-  <PageHeader eyebrow="Application review" title={`${app.fields.firstName??''} ${app.fields.lastName??''}`} description={app.submittedAt?<>Last submitted <LocalTime iso={app.submittedAt}/></>:'Not submitted yet'} action={<StatusBadge status={app.status}/>}/>
+ const name=`${app.fields.firstName??''} ${app.fields.lastName??''}`.trim()||'Applicant';
+ return <div className="space-y-6"><PageCrumb label={name}/>
+  <PageHeader eyebrow="Application review" title={name} description={app.submittedAt?<>Last submitted <LocalTime iso={app.submittedAt}/></>:'Not submitted yet'} action={<StatusBadge status={app.status}/>}/>
   {data.readyForIt&&<Alert tone="success" title="Approved · IT onboarding"><p>{data.invitation.mcName} · {data.invitation.teamLead} · {data.invitation.jobTitle}</p><p className="text-muted-foreground">{data.itOnboarding?'IT owns the setup checklist. Its progress is separate from application approval.':'This application was approved before IT checklists were introduced. No IT request is linked.'}</p>{it&&<p className="flex items-center gap-2"><span>IT setup:</span><StatusBadge status={it.status as TaskStatus}/></p>}</Alert>}
   {it&&<Card><CardHeader title="Employee details"/><CardBody><DescriptionList items={([['Display name',data.itDetails.proposedDisplayName],['MC / Independent',data.invitation.mcName],['Team lead / Independent',data.invitation.teamLead],['Job title',data.invitation.jobTitle],['Company email',it.companyEmail],['Work phone (RingCentral)',it.workPhoneNumber]] as const).map(([label,value])=>({label,value,emptyLabel:'Pending IT setup'}))}/></CardBody></Card>}
   {app.status==='CHANGES_REQUESTED'&&<Alert tone="info"><p>Waiting for applicant corrections. The values below are the last submitted version; saved correction drafts remain private.</p></Alert>}
