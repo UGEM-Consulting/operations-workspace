@@ -51,7 +51,7 @@ export function NotificationBell({ unread: initialUnread }: { unread: number }) 
         className="z-50 flex max-h-[min(480px,calc(100dvh-80px))] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
         <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
           <p className="flex items-center gap-2 text-[15px] font-semibold">Notifications{unread > 0 && <span className="rounded-full bg-brand-subtle px-2 text-xs font-semibold leading-5 text-brand-subtle-foreground tabular-nums">{unread}</span>}</p>
-          <Link href="/onboarding" onClick={event => { guarded('/onboarding')(event); if (!event.defaultPrevented) setOpen(false); }} className="text-[13px] text-primary underline-offset-4 hover:underline">See all</Link>
+          <Link href="/dashboard#updates" onClick={event => { guarded('/dashboard#updates')(event); if (!event.defaultPrevented) setOpen(false); }} className="text-[13px] text-primary underline-offset-4 hover:underline">See all</Link>
         </div>
         <div className="overflow-y-auto">
           {error ? <div className="space-y-3 p-4"><p role="alert" className="text-sm text-danger">{error}</p><Button size="sm" variant="outline" onClick={() => void load()}>Try again</Button></div>
