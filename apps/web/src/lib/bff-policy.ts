@@ -3,7 +3,8 @@ const ID = '[0-9a-f-]{36}', PHOTO = '(selfie|id-selfie)';
 const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test(path);
 // Private files served as-is (JPEG photos and PDFs) instead of JSON.
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
-  `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`];
+  `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
+  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`];
 export function allowedEndpoint(method: string, path: string): boolean {
   return (method === 'GET' && ['it/onboarding','notifications'].includes(path)) ||
     (method === 'GET' && /^it\/onboarding\/[0-9a-f-]{36}$/.test(path)) ||
@@ -35,7 +36,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Managed lists: add, edit, archive and restore MCs and job titles.
     (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
-    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave)`, path))) ||
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave|contacts)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));

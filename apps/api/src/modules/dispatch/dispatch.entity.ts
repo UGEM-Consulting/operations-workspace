@@ -2,7 +2,9 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
-export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED'] as const;
+export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED'] as const;
+/** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
+export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
 
 /** A dispatcher or support working for UGEM. A record only: dispatch members never sign in to the workspace. */
@@ -13,7 +15,7 @@ export class DispatchMember {
  @Column('varchar', { length: 100 }) firstName!: string;
  @Column('varchar', { length: 100 }) lastName!: string;
  @Column('varchar', { default: 'DISPATCHER' }) position!: Position;
- @Column('varchar', { default: 'ACTIVE' }) status!: 'ACTIVE' | 'LEFT';
+ @Column('varchar', { default: 'ACTIVE' }) status!: MemberStatus;
  @Column('uuid', { nullable: true }) jobTitleId!: string | null;
  @Column('timestamptz') joinedAt!: Date;
  @Column('timestamptz', { nullable: true }) leftAt!: Date | null;
@@ -48,6 +50,20 @@ export class MemberAssignment {
  @Column('varchar', { length: 500, nullable: true }) reason!: string | null;
  @Column('uuid', { nullable: true }) actorId!: string | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** Extra emails and phone numbers staff add to a member. Removing one keeps the row with who and when. */
+@Entity('member_contacts')
+export class MemberContact {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('varchar') kind!: 'EMAIL' | 'PHONE';
+ @Column('varchar', { length: 254 }) value!: string;
+ @Column('varchar', { length: 50, nullable: true }) label!: string | null;
+ @Column('uuid', { nullable: true }) addedBy!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @Column('timestamptz', { nullable: true }) removedAt!: Date | null;
+ @Column('uuid', { nullable: true }) removedBy!: string | null;
 }
 
 /** Who changed a member or team and which fields; never the values. */

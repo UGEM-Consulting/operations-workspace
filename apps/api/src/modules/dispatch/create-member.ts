@@ -5,7 +5,8 @@ import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { DispatchMember, MemberAssignment, Team } from './dispatch.entity';
 
 /**
- * Called only inside the approval transaction: the approved dispatcher becomes a member record (no login), placed by
+ * Called only inside the approval transaction: the approved dispatcher becomes a member record (no login), ONBOARDING
+ * until IT completes setup (see activateMember), placed by
  * matching the confirmed MC, team lead and job title text to the managed lists. Unmatched or "Independent" text leaves
  * that part empty for a manager to set. The unique applicationId keeps it to one member per application.
  */
@@ -25,7 +26,12 @@ export async function createMemberForApproval(em: EntityManager, application: Di
   .andWhere(`(lower(lead.firstName || ' ' || lead.lastName) = :key OR t.nameKey IN (:named, :key) OR left(t.nameKey, length(:prefix)) = :prefix)`, { key: leadKey, named: `${leadKey} team`, prefix: `${leadKey} team (` })
   .orderBy('t.leadMemberId IS NULL', 'ASC').getOne() : null;
  const member = await em.getRepository(DispatchMember).save({ applicationId: application.id, firstName: first.slice(0, 100), lastName: last.slice(0, 100),
-  position: 'DISPATCHER', status: 'ACTIVE', jobTitleId: jobTitle?.id ?? null, joinedAt: approvedAt });
+  position: 'DISPATCHER', status: 'ONBOARDING', jobTitleId: jobTitle?.id ?? null, joinedAt: approvedAt });
  await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: mc?.id ?? null, teamId: team?.id ?? null, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
  return member;
+}
+
+/** Called inside the IT completion transaction: the dispatcher has their accounts and starts working. */
+export async function activateMember(em: EntityManager, applicationId: string) {
+ await em.query(`UPDATE dispatch_members SET status = 'ACTIVE', version = version + 1, "updatedAt" = now() WHERE "applicationId" = $1 AND status = 'ONBOARDING'`, [applicationId]);
 }

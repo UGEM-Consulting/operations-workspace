@@ -37,6 +37,15 @@ class ApplicationFilesController {
  @Get(':id/photos/:kind') @FileResponse() async photo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.service.staffPhoto(req.currentUser, id, photoKindParam(kind))); }
  @Get(':id/documents/:documentId/signed') @FileResponse() async signed(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.service.staffSignedCopy(req.currentUser, id, documentId)); }
 }
+// A dispatcher's photos and signed copies for every dispatcher manager and administrator; the ID selfie only for the
+// responsible manager and administrators.
+@Controller('dispatch/members')
+@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
+class MemberFilesController {
+ constructor(private readonly service: DocumentsService) {}
+ @Get(':id/photos/:kind') @FileResponse() async photo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.service.memberPhoto(req.currentUser, id, photoKindParam(kind))); }
+ @Get(':id/documents/:documentId/signed') @FileResponse() async signed(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.service.memberSignedCopy(req.currentUser, id, documentId)); }
+}
 @Controller('it/onboarding')
 @Roles(Role.SYSTEM_ADMIN, Role.IT_SPECIALIST)
 class ItPhotoController {
@@ -55,5 +64,5 @@ class ApplicantDocumentsController {
  @Post('documents/:id/sign') sign(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApplicantSignatureDto) { return this.service.sign(req, id, dto, clientContext(req)); }
  @Get('documents/:id/signed') @FileResponse() async signed(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return send(await this.service.applicantSignedCopy(req, id)); }
 }
-@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService] })
+@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService] })
 export class DocumentsModule {}

@@ -1,7 +1,6 @@
 'use client';
-import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
-import { PageCrumb, useLeaveGuard } from '@/components/shell-context';
+import { useState } from 'react';
+import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { RefreshCw } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -24,35 +23,45 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
 import { ItDetail, ItTask, taskDone, taskOutcomes, TaskOutcome } from './types';
 const RINGCENTRAL=['RINGCENTRAL','SMS','CALL_RECORDING'];
-/** An IT request: the setup checklist with progress, and the profile and company accounts in a side rail. */
+// The account a task creates: recorded first in that task's dialog, before its status can change.
+const ACCOUNTS:Record<string,{label:string;prompt:string;type:'email'|'tel';max:number;placeholder:string;hint?:string}>={
+ GOOGLE_WORKSPACE:{label:'Company email',prompt:'company email',type:'email',max:254,placeholder:'name@ugemconsulting.com'},
+ RINGCENTRAL:{label:'Assigned RingCentral number',prompt:'RingCentral number',type:'tel',max:40,placeholder:'+1 202 555 0190',hint:'Include the country code, such as +1 202 555 0190.'}};
+/**
+ * An IT request: the setup checklist with progress and the profile in a side rail. The Google Workspace and RingCentral
+ * dialogs ask for the company email or number first; the status can change once it is filled in.
+ */
 export function ItOnboarding({initial}:{initial:ItDetail}){
- const router=useRouter();
  const toast=useToast();
- const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'contact'|'task'|null>(null);
+ const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[taskError,setTaskError]=useState('');
- const [assigned,setAssigned]=useState(initial.request.assignedRingCentralPhoneNumber??''),[verified,setVerified]=useState(!!initial.request.workPhoneVerifiedAt);
- const [companyEmail,setCompanyEmail]=useState(initial.request.companyEmail??'');
- const [discard,setDiscard]=useState<'refresh'|{leave:string}|null>(null);
+ const [account,setAccount]=useState(''),[verified,setVerified]=useState(false);
  const {request,tasks}=data,profile=request.profile,closed=!!request.completedAt,busy=!!pending;
- const contactDirty=assigned!==(request.assignedRingCentralPhoneNumber??'')||companyEmail.trim().toLowerCase()!==(request.companyEmail??'')||verified!==!!request.workPhoneVerifiedAt;
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
- // Breadcrumb, sidebar and notification links ask before discarding unsaved company accounts.
- useLeaveGuard(useCallback((href:string)=>{if(!contactDirty&&!busy)return true;if(!busy)setDiscard({leave:href});return false;},[contactDirty,busy]));
- useEffect(()=>{if(!contactDirty)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[contactDirty]);
- function applyContact(updated:ItDetail){setData(updated);setAssigned(updated.request.assignedRingCentralPhoneNumber??'');setCompanyEmail(updated.request.companyEmail??'');setVerified(!!updated.request.workPhoneVerifiedAt);}
- async function refresh(){setDiscard(null);setPending('refresh');try{applyContact(await readApi<ItDetail>(`it/onboarding/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh. Your entries have been kept.')});}finally{setPending(null);}}
- async function contact(event:React.FormEvent<HTMLFormElement>){event.preventDefault();if(busy)return;setPending('contact');try{applyContact(await mutate<ItDetail>(`it/onboarding/${request.id}/contact`,'PATCH',{version:request.version,workPhoneVerified:verified,assignedRingCentralPhoneNumber:assigned,companyEmail}));toast({title:'Company accounts saved'});}catch(error){toast({tone:'danger',title:'Company accounts not saved',description:errorMessage(error,'Unable to save. Your entries have been kept.')});}finally{setPending(null);}}
- function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setTaskError('');}
+ const field=editing?ACCOUNTS[editing.key]:undefined;
+ const recorded=(key:string)=>key==='GOOGLE_WORKSPACE'?request.companyEmail??'':key==='RINGCENTRAL'?request.assignedRingCentralPhoneNumber??'':'';
+ const legacyPhone=!!profile.workPhoneNumber?.trim();
+ async function refresh(){setPending('refresh');try{setData(await readApi<ItDetail>(`it/onboarding/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh.')});}finally{setPending(null);}}
+ function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setTaskError('');setAccount(recorded(task.key));setVerified(!!request.workPhoneVerifiedAt);}
  async function update(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(!editing||busy)return;
   const values=new FormData(event.currentTarget),notes=String(values.get('notes')??'');
+  if(field&&!account.trim()){setTaskError(`Enter the ${field.prompt} first.`);return;}
   if(taskStatus==='BLOCKED'&&!notes.trim()){setTaskError('Describe what is blocking this task.');return;}
-  if(completing&&contactDirty){setTaskError('Save your company account changes before completing onboarding.');return;}
   setPending('task');setTaskError('');
-  try{const updated=await mutate<ItDetail>(`it/onboarding/${request.id}/tasks/${editing.key}`,'PATCH',{version:request.version,status:taskStatus,notes});
-   // Task updates must never overwrite unsaved contact fields.
-   setData(updated);setEditing(null);toast(updated.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has a new portal notification.'}:{title:'Checklist task updated'});
+  try{
+   // The account is saved first (its own versioned change), then the task with the version it returns.
+   let version=request.version;
+   const accountChanged=!!field&&(account.trim()!==recorded(editing.key)||(editing.key==='RINGCENTRAL'&&legacyPhone&&verified!==!!request.workPhoneVerifiedAt));
+   if(accountChanged){
+    const saved=await mutate<ItDetail>(`it/onboarding/${request.id}/contact`,'PATCH',{version,workPhoneVerified:editing.key==='RINGCENTRAL'?verified:!!request.workPhoneVerifiedAt,
+     ...(editing.key==='GOOGLE_WORKSPACE'?{companyEmail:account.trim()}:{assignedRingCentralPhoneNumber:account.trim()})});
+    setData(saved);version=saved.request.version;
+   }
+   const updated=taskStatus===editing.status&&notes===editing.notes&&accountChanged?null:await mutate<ItDetail>(`it/onboarding/${request.id}/tasks/${editing.key}`,'PATCH',{version,status:taskStatus,notes});
+   if(updated)setData(updated);setEditing(null);
+   toast(updated?.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has a new portal notification.'}:{title:accountChanged&&!updated?`${field!.label} saved`:'Checklist task updated'});
   }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
  }
  const name=profile.proposedDisplayName??'Approved dispatcher';
@@ -69,7 +78,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  <PageCrumb label={name}/>
  <PageHeader title={name} badge={<StatusBadge status={closed?'COMPLETED':request.status}/>}
   meta={[created&&<>Request created <LocalTime iso={created} format="date"/></>,`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
-  action={!closed&&<Button variant="outline" disabled={busy} onClick={()=>contactDirty?setDiscard('refresh'):void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
+  action={!closed&&<Button variant="outline" disabled={busy} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
   <div className="min-w-0 space-y-6">
    {closed?<Alert tone="success" title="Setup complete"><p>Finished <LocalTime iso={request.completedAt}/>. The manager was notified and this checklist is read-only.</p></Alert>
@@ -89,28 +98,24 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
      {label:'Legal name',value:[profile.legalFirstName,profile.legalLastName].filter(Boolean).join(' ')},
      {label:'Personal email',value:profile.personalEmail&&<><span className="block break-all">{profile.personalEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.personalEmail} label="Copy email" size="sm" variant="ghost"/></span></>},
      {label:'Personal phone',value:profile.personalPhoneNumber,mono:true},
-     {label:'MC / Independent',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle}]}/>
-   </CardBody></Card>
-   <Card><CardHeader title="Company accounts" description={closed?'The manager sees these on the employee details.':'Both are needed to finish setup. The manager will see these.'}/><CardBody>
-    {closed?<DescriptionList layout="rows" items={[{label:'Company email',value:request.companyEmail},{label:'Work phone (RingCentral)',value:request.assignedRingCentralPhoneNumber,mono:true}]}/>
-    :<form onSubmit={contact}><fieldset disabled={busy} className="space-y-4">
-     <Input label="Company email" name="companyEmail" type="email" maxLength={254} value={companyEmail} onChange={event=>setCompanyEmail(event.target.value)} placeholder="name@ugemconsulting.com" autoComplete="off" width="full"/>
-     <Input label="RingCentral number" name="assigned" type="tel" maxLength={40} value={assigned} onChange={event=>setAssigned(event.target.value)} placeholder="+1 202 555 0190" hint="Include the country code, e.g. +1 202 555 0190." width="full"/>
-     {!!profile.workPhoneNumber?.trim()&&<div className="space-y-2 rounded-md bg-muted px-3 py-2.5 text-sm"><p className="flex flex-wrap items-center gap-2">Older application work phone: <span className="font-mono text-[13px]">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></p>
-      <Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label="I verified this work phone number."/></div>}
-     <Button className="w-full">{pending==='contact'?'Saving…':'Save company accounts'}</Button>
-     {contactDirty&&<p role="status" className="text-center text-sm text-warning">Unsaved changes</p>}
-     <PendingHint pending={pending==='contact'||pending==='refresh'}/>
-    </fieldset></form>}
+     {label:'MC / Independent',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle},
+     // Recorded in the Google Workspace and RingCentral tasks; the manager sees these on the employee details.
+     {label:'Company email',value:request.companyEmail,emptyLabel:'Set in the Google Workspace task'},
+     {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber,mono:true,emptyLabel:'Set in the RingCentral task'},
+     ...(legacyPhone?[{label:'Older application work phone',value:<span className="flex flex-wrap items-center gap-2"><span className="font-mono text-[13px]">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></span>}]:[])]}/>
    </CardBody></Card>
    <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they do not create accounts or send messages. Never enter passwords or tokens in notes.</p>
   </div>
  </div>
  {editing&&<Dialog open onClose={()=>setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual setup work." busy={pending==='task'} actions={<Button form="it-task-editor" type="submit">{pending==='task'?'Saving…':completing?'Complete onboarding':'Save task'}</Button>}>
- <form id="it-task-editor" onSubmit={update} className="space-y-4"><Select label="Status" name="status" value={taskStatus} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm" options={taskOutcomes.filter(status=>status!=='NOT_NEEDED'||editing.optional).map(status=>({value:status,label:statusLabel(status)}))}/><Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
- {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager receives a portal notification. Save the company email and assigned RingCentral number first.</p>{contactDirty&&<p>Close this dialog and save your unsaved company account changes before continuing.</p>}<Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
+ <form id="it-task-editor" onSubmit={update} className="space-y-4">
+ {field&&<Input label={field.label} name="account" type={field.type} required maxLength={field.max} value={account} onChange={event=>setAccount(event.target.value)} placeholder={field.placeholder} autoComplete="off" width="md"
+  hint={field.hint??'The manager sees it on the employee details.'}/>}
+ {editing.key==='RINGCENTRAL'&&legacyPhone&&<Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label={`I verified the older application work phone (${profile.workPhoneNumber}).`}/>}
+ <Select label="Status" name="status" value={taskStatus} disabled={!!field&&!account.trim()} hint={field&&!account.trim()?`Enter the ${field.prompt} first.`:undefined} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm" options={taskOutcomes.filter(status=>status!=='NOT_NEEDED'||editing.optional).map(status=>({value:status,label:statusLabel(status)}))}/><Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
+ {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager receives a portal notification. It needs the company email and RingCentral number recorded in their tasks.</p><Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
  <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>{taskError&&<p className="text-sm text-muted-foreground">If someone else updated this request, close this dialog and refresh its status before trying again.</p>}</form>
  </Dialog>}
- {discard&&<Dialog open size="sm" tone="warning" title="Discard unsaved company account changes?" description="The company email, RingCentral number or verification changes on this page have not been saved." onClose={()=>setDiscard(null)} protectChanges={false} closeLabel="Keep editing" actions={<Button variant="destructive" onClick={()=>{if(discard==='refresh')void refresh();else{const href=discard.leave;setDiscard(null);applyContact(data);router.push(href);}}}>{discard==='refresh'?'Discard and refresh':'Discard and leave'}</Button>}><p className="text-sm">Save your contact changes first if you want to keep them.</p></Dialog>}
+
  </div>;
 }

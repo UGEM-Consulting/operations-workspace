@@ -559,7 +559,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  // The newest migration file, whatever later work adds; later migrations are stepped back generically first.
  const newestMigration=()=>db.migrations.map(migration=>migration.name??migration.constructor.name).sort((a,b)=>Number(a.slice(-13))-Number(b.slice(-13))).at(-1);
  // The notifications migration refuses rollback while delivery history exists; clear this disposable database's rows first.
- const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
+ const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
  // Steps back past the later optional-equipment, applicant-updates and staff MFA migrations.
  const undoStaffMfa=async()=>{await undoTo('OptionalEquipmentTask1792740000000');await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
@@ -635,9 +635,13 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await manager.get('/api/notifications').set(headers)).body.items).toHaveLength(0);
   data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version,workPhoneVerified:true,assignedRingCentralPhoneNumber:'+1 202 555 0190'}).expect(200);
   const finalVersion=data.body.request.version;
+  // The dispatcher record stays Onboarding until IT completes setup, then becomes Active in the same transaction.
+  const memberStatus=async()=>db.query('SELECT status FROM dispatch_members WHERE "applicationId"=$1',[flow.id]);
+  expect(await memberStatus()).toEqual([{status:'ONBOARDING'}]);
   const finished=await Promise.all([1,2].map(()=>itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${last.key}`).set(headers).send({version:finalVersion,status:'COMPLETED',notes:'Fictional approved business software confirmed'})));
   expect(finished.map(result=>result.status).sort()).toEqual([200,409]);
   data=await itAgent.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);expect(data.body.request.status).toBe('COMPLETED');
+  expect(await memberStatus()).toEqual([{status:'ACTIVE'}]);
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:finalVersion+1,workPhoneVerified:false}).expect(409);
   const notices=await manager.get('/api/notifications').set(headers).expect(200);expect(notices.body.unread).toBe(1);expect(notices.body.items).toHaveLength(1);
   expect((await manager.get('/api/workspace/counts').set(headers)).body.unreadNotifications).toBe(1);expect((await other.get('/api/workspace/counts').set(headers)).body.unreadNotifications).toBe(0);

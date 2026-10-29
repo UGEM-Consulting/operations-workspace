@@ -20,8 +20,8 @@ export function StatusBadge({ status }: { status: string }) {
   const [label, tone] = statuses[status] ?? [statusLabel(status), 'neutral'];
   return <Badge label={label} tone={tone} />;
 }
-// Sentence case from the enum, keeping the IT abbreviation (IT_REQUEST_CREATED → IT request created).
-export function statusLabel(value: string) { return statuses[value]?.[0] ?? (value.charAt(0) + value.slice(1).toLowerCase().replaceAll('_', ' ')).replace(/\bit\b/gi, 'IT'); }
+// Sentence case from the enum, keeping the IT, NDA and SOP abbreviations (IT_REQUEST_CREATED → IT request created).
+export function statusLabel(value: string) { return statuses[value]?.[0] ?? (value.charAt(0) + value.slice(1).toLowerCase().replaceAll('_', ' ')).replace(/\b(it|nda|sop)\b/gi, word => word.toUpperCase()); }
 // Role names keep their proper casing (IT, not It).
 const roleLabels: Record<string, string> = { SYSTEM_ADMIN: 'System administrator', DISPATCHER_MANAGER: 'Dispatcher manager', IT_SPECIALIST: 'IT specialist' };
 export function roleLabel(role: string) { return roleLabels[role] ?? statusLabel(role); }
