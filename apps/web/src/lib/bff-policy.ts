@@ -34,6 +34,9 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.
     (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
+    // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave)`, path))) ||
+    (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));
 }

@@ -1,4 +1,5 @@
 import { createItRequest } from '../it/create-request';
+import { createMemberForApproval } from '../dispatch/create-member';
 import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
 import { provisioningDetails, requiredApplicantFields } from './application-requirements';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
@@ -154,6 +155,8 @@ export class ReviewService {
    }
    // A new IT checklist alerts the IT specialists; sent after the approval commits.
    if(nextStatus==='APPROVED')alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation));
+   // The approved dispatcher becomes a dispatch member record (no login), placed by the confirmed assignments.
+   if(nextStatus==='APPROVED'&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});
    // The applicant's chosen channels are queued with the decision and sent only after it commits.
