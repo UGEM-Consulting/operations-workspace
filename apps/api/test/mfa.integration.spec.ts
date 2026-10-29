@@ -87,7 +87,7 @@ integration('Staff two-step verification (isolated PostgreSQL database only)', (
     expect(codes).toHaveLength(10);
     for (const { codeHash } of codes) expect(codeHash).toMatch(/^\$argon2id\$/);
     const audit = await events(users.admin.id);
-    expect(audit).toEqual([{ type: 'MFA_ENROLLED', actorId: null, metadata: { recoveryCodes: 10 } }]);
+    expect(audit).toEqual([{ type: 'MFA_ENROLLED', actorId: null, metadata: { recoveryCodes: 10, method: 'TOTP' } }]);
     expect(JSON.stringify(audit)).not.toContain(secret);
     await client.post('/api/auth/mfa/enrolment').set(headers).send({}).expect(409);
   });

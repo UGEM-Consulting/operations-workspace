@@ -7,6 +7,8 @@ Applicants verify their personal email with an 8-digit code before they can open
 | `none` (default) | Local development and tests | No email. Codes are issued privately with `npm run verification:demo -- <reference>`. In production this mode refuses verification (503) while the rest of the API keeps working. |
 | `smtp` | Production (Google Workspace) and local development (Mailpit) | Codes are emailed. |
 
+The API sends three kinds of email: applicant verification codes (below), applicant status updates (docs/applicant-updates.md) and staff two-step verification codes for people who chose email codes (README, "Staff two-step verification"). Staff codes go only to the signed-in person's account email and contain only the code and what it is for.
+
 Outside production, only fictional `@example.test` addresses are accepted, and SMTP may only target a local inbox on `localhost`, so development can never email real people. Production accepts real addresses.
 
 ## How delivery works

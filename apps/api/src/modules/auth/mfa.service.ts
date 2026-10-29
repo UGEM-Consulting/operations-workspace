@@ -5,8 +5,10 @@ import { DataSource, EntityManager } from 'typeorm';
 import { EnvironmentError } from '../../config/environment';
 import { Role, User, UserStatus, publicUser } from '../users/user.entity';
 import { attemptKey, clearAttempts, countAttempt, countSliding, lockKey, readAttempts } from './attempts';
+import { EmailService } from '../email/email.service';
+import { consumeEmailCode, EMAIL_SENDS_PER_WINDOW, type EmailCodePurpose, generateEmailCode, hasEmailCode, maskEmail, resendAfter, storeEmailCode } from './mfa-email';
 import { RECOVERY_CODE_COUNT, SecretBox, formatManualKey, matchTotp, newRecoveryCode, newTotpSecret, normalizeRecoveryCode, totpUri } from './mfa-crypto';
-import { MfaPolicy, SecurityEventType, StaffMfa, StaffRecoveryCode, StaffSecurityEvent, StaffSecuritySettings } from './mfa.entity';
+import { MfaMethod, MfaPolicy, SecurityEventType, StaffMfa, StaffRecoveryCode, StaffSecurityEvent, StaffSecuritySettings } from './mfa.entity';
 import { clearSavedSignature } from '../documents/saved-signature';
 import { hashPassword, verifyPassword } from './password';
 import { accessFor } from './policy';
@@ -23,17 +25,29 @@ const LOCKOUT_SECONDS = 900;
 export const LOCKOUT_STEPS = [900, 3600];
 const LOCKOUT_MEMORY_SECONDS = 86_400;
 const lockoutLabel = (seconds: number) => seconds >= 3600 ? `${seconds / 3600} hour${seconds === 3600 ? '' : 's'}` : `${seconds / 60} minutes`;
-const PENDING_SECONDS: Record<MfaStage, number> = { password: 600, verify: 300, enrol: 900 };
+// The code step allows for an emailed code arriving late; it stays far shorter than a session.
+const PENDING_SECONDS: Record<MfaStage, number> = { password: 600, verify: 600, enrol: 900 };
 const PENDING_PAGES: Record<MfaStage, string> = { password: '/login/password', verify: '/login/mfa', enrol: '/login/mfa-setup' };
 /** Every per-user code counter (hashed keys); an administrator reset clears them all. */
-const codeKeys = (userId: string) => ({ failures: attemptKey('mfa', userId), lock: attemptKey('mfa-lock', userId), lockouts: attemptKey('mfa-lockouts', userId) });
+const codeKeys = (userId: string) => ({ failures: attemptKey('mfa', userId), lock: attemptKey('mfa-lock', userId), lockouts: attemptKey('mfa-lockouts', userId),
+  sends: attemptKey('mfa-email-send', userId) });
 export const mfaRequired = (role: Role, policy: MfaPolicy) => role === Role.SYSTEM_ADMIN || policy === MfaPolicy.ALL_STAFF;
-type CodeKind = 'totp' | 'recovery';
+/** Administrators keep an authenticator app: their account can change everyone else's. */
+export const emailCodesAllowed = (role: Role) => role !== Role.SYSTEM_ADMIN;
+type CodeKind = 'totp' | 'email' | 'recovery';
+/** Removes an email-code enrolment when the user becomes an administrator; they set up an authenticator at the next sign-in. */
+export async function removeEmailEnrolment(manager: EntityManager, userId: string, actorId: string) {
+  const removed = await manager.delete(StaffMfa, { userId, method: MfaMethod.EMAIL });
+  if (!removed.affected) return;
+  await manager.delete(StaffRecoveryCode, { userId });
+  await manager.query('DELETE FROM staff_mfa_email_codes WHERE "userId" = $1', [userId]);
+  await manager.insert(StaffSecurityEvent, { userId, actorId, type: SecurityEventType.MFA_RESET_BY_ADMIN, metadata: { reason: 'administrator-role', method: MfaMethod.EMAIL } });
+}
 
 @Injectable()
 export class MfaService {
   private readonly box: SecretBox | null;
-  constructor(private readonly db: DataSource, private readonly config: ConfigService) {
+  constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService) {
     const key = config.get<string>('MFA_ENCRYPTION_KEY');
     // Administrators must use two-step verification, so production cannot run without the key.
     if (!key && config.get('NODE_ENV') === 'production') throw new EnvironmentError('The production API requires MFA_ENCRYPTION_KEY');
@@ -41,11 +55,11 @@ export class MfaService {
   }
 
   async state(user: Pick<User, 'id' | 'role'>, manager: DataSource | EntityManager = this.db) {
-    const [row]: { enrolled: boolean; policy: MfaPolicy | null }[] = await manager.query(`SELECT
-      EXISTS(SELECT 1 FROM staff_mfa WHERE "userId" = $1 AND "confirmedAt" IS NOT NULL) AS enrolled,
+    const [row]: { method: MfaMethod | null; policy: MfaPolicy | null }[] = await manager.query(`SELECT
+      (SELECT method FROM staff_mfa WHERE "userId" = $1 AND "confirmedAt" IS NOT NULL) AS method,
       (SELECT "mfaRequiredFor" FROM staff_security_settings WHERE id = 1) AS policy`, [user.id]);
     const policy = row.policy ?? MfaPolicy.ADMINS;
-    return { enrolled: row.enrolled, required: mfaRequired(user.role, policy), policy };
+    return { enrolled: row.method !== null, method: row.method, required: mfaRequired(user.role, policy), policy };
   }
 
   /**
@@ -90,53 +104,94 @@ export class MfaService {
 
   async verifyLogin(req: AuthRequest, code: string) {
     const user = this.pendingUser(req, 'verify');
-    const kind = await this.checkCode(user, code, true);
+    const kind = await this.checkCode(user, code, true, 'login');
     const result = await this.establish(req, user, 'verified');
     return kind === 'recovery' ? { ...result, recoveryCodesRemaining: await this.remainingRecoveryCodes(user.id) } : result;
   }
 
   async status(user: User) {
-    const { enrolled, required, policy } = await this.state(user);
+    const { enrolled, method, required, policy } = await this.state(user);
     const row = await this.db.getRepository(StaffMfa).findOneBy({ userId: user.id });
-    return { enabled: enrolled, required, policy, enabledAt: enrolled ? row?.confirmedAt ?? null : null,
-      recoveryCodesRemaining: enrolled ? await this.remainingRecoveryCodes(user.id) : 0 };
+    return { enabled: enrolled, method, required, policy, enabledAt: enrolled ? row?.confirmedAt ?? null : null,
+      recoveryCodesRemaining: enrolled ? await this.remainingRecoveryCodes(user.id) : 0,
+      emailCodesAvailable: emailCodesAllowed(user.role) && this.email.enabled, email: maskEmail(user.email) };
   }
 
-  /** Stores a new unconfirmed secret and returns it once for the authenticator app. */
-  async beginEnrolment(req: AuthRequest) {
+  /** The sign-in step: which kind of code to ask for. For email codes, sends one unless a recent one is outstanding. */
+  async loginChallenge(req: AuthRequest, resend: boolean) {
+    const user = this.pendingUser(req, 'verify');
+    const { method } = await this.state(user);
+    if (method !== MfaMethod.EMAIL) return { method: MfaMethod.TOTP };
+    if (resend || !await hasEmailCode(this.db, user.id, 'login')) await this.sendEmailCode(user, 'login');
+    return { method, sentTo: maskEmail(user.email), resendAfter: await resendAfter(this.db, user.id, 'login') };
+  }
+
+  /** What this person may choose when setting up two-step verification. */
+  methods(req: AuthRequest) {
     const user = this.enrolmentUser(req);
+    return { methods: emailCodesAllowed(user.role) && this.email.enabled ? [MfaMethod.TOTP, MfaMethod.EMAIL] : [MfaMethod.TOTP], email: maskEmail(user.email) };
+  }
+
+  /** A code for confirming Account security changes, for email-code users. */
+  async sendManageCode(user: User) {
+    if ((await this.state(user)).method !== MfaMethod.EMAIL) throw new BadRequestException('Your account uses an authenticator app');
+    await this.sendEmailCode(user, 'manage');
+    return { sentTo: maskEmail(user.email), resendAfter: await resendAfter(this.db, user.id, 'manage') };
+  }
+
+  /**
+   * Starts enrolment. An authenticator app gets a new unconfirmed secret, returned once; email codes get a code sent
+   * to the account email (calling again resends after a short wait).
+   */
+  async beginEnrolment(req: AuthRequest, method: MfaMethod = MfaMethod.TOTP) {
+    const user = this.enrolmentUser(req);
+    if (method === MfaMethod.EMAIL) {
+      if (!emailCodesAllowed(user.role)) throw new BadRequestException('Administrators must use an authenticator app');
+      if (!this.email.enabled) throw new ServiceUnavailableException('Email codes are not available on this server');
+      const rows: unknown[] = await this.db.query(`INSERT INTO staff_mfa ("userId", method, "secretCiphertext") VALUES ($1, 'EMAIL', NULL)
+        ON CONFLICT ("userId") DO UPDATE SET method = 'EMAIL', "secretCiphertext" = NULL, "lastUsedStep" = NULL, "updatedAt" = now()
+        WHERE staff_mfa."confirmedAt" IS NULL RETURNING "userId"`, [user.id]);
+      if (!rows.length) throw new ConflictException('Two-step verification is already turned on');
+      await this.sendEmailCode(user, 'enrol');
+      return { method, sentTo: maskEmail(user.email), resendAfter: await resendAfter(this.db, user.id, 'enrol') };
+    }
     const box = this.requireBox();
     if (await countAttempt(this.db, attemptKey('mfa-enrol', user.id), LOCKOUT_SECONDS) > 10) throw new HttpException('Too many setup attempts. Try again later.', 429);
     const secret = newTotpSecret();
-    const rows: unknown[] = await this.db.query(`INSERT INTO staff_mfa ("userId", "secretCiphertext") VALUES ($1, $2)
-      ON CONFLICT ("userId") DO UPDATE SET "secretCiphertext" = EXCLUDED."secretCiphertext", "lastUsedStep" = NULL, "updatedAt" = now()
+    const rows: unknown[] = await this.db.query(`INSERT INTO staff_mfa ("userId", method, "secretCiphertext") VALUES ($1, 'TOTP', $2)
+      ON CONFLICT ("userId") DO UPDATE SET method = 'TOTP', "secretCiphertext" = EXCLUDED."secretCiphertext", "lastUsedStep" = NULL, "updatedAt" = now()
       WHERE staff_mfa."confirmedAt" IS NULL RETURNING "userId"`, [user.id, box.seal(secret, user.id)]);
     if (!rows.length) throw new ConflictException('Two-step verification is already turned on');
     const uri = totpUri(secret, user.email, ISSUER);
     const svg = await qrSvg(uri, { type: 'svg', errorCorrectionLevel: 'M', margin: 1 });
-    return { qrCode: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`, uri, manualKey: formatManualKey(secret), issuer: ISSUER, account: user.email };
+    return { method, qrCode: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`, uri, manualKey: formatManualKey(secret), issuer: ISSUER, account: user.email };
   }
 
   /** The first correct code confirms enrolment, issues recovery codes and revokes every other session. */
   async confirmEnrolment(req: AuthRequest, code: string) {
     const user = this.enrolmentUser(req);
-    const box = this.requireBox();
     await this.countCodeAttempt(user);
     const row = await this.db.getRepository(StaffMfa).createQueryBuilder('mfa').addSelect(['mfa.secretCiphertext', 'mfa.lastUsedStep'])
       .where('mfa.userId = :id AND mfa.confirmedAt IS NULL', { id: user.id }).getOne();
     if (!row) throw new ConflictException('Start two-step verification setup again');
-    const step = matchTotp(box.open(row.secretCiphertext, user.id), code.trim());
-    if (step === null) throw new UnauthorizedException('Invalid verification code');
+    let step: number | null = null;
+    if (row.method === MfaMethod.EMAIL) {
+      if (!emailCodesAllowed(user.role)) throw new BadRequestException('Administrators must use an authenticator app');
+      if (!await consumeEmailCode(this.db, user.id, 'enrol', code.trim())) throw new UnauthorizedException('Invalid verification code');
+    } else {
+      step = matchTotp(this.requireBox().open(row.secretCiphertext!, user.id), code.trim());
+      if (step === null) throw new UnauthorizedException('Invalid verification code');
+    }
     const codes = Array.from({ length: RECOVERY_CODE_COUNT }, newRecoveryCode);
     const hashes = await this.hashRecoveryCodes(codes);
     const updated = await this.db.transaction(async manager => {
       const current = await this.lockUser(manager, user.id);
-      const confirmed = await manager.createQueryBuilder().update(StaffMfa).set({ confirmedAt: () => 'now()', lastUsedStep: String(step) })
-        .where('"userId" = :id AND "confirmedAt" IS NULL', { id: user.id }).execute();
+      const confirmed = await manager.createQueryBuilder().update(StaffMfa).set({ confirmedAt: () => 'now()', lastUsedStep: step === null ? null : String(step) })
+        .where('"userId" = :id AND "confirmedAt" IS NULL AND method = :method', { id: user.id, method: row.method }).execute();
       if (!confirmed.affected) throw new ConflictException('Two-step verification is already turned on');
       await this.replaceRecoveryCodes(manager, user.id, hashes);
       await revokeUserSessions(manager, current);
-      await this.audit(manager, user.id, null, SecurityEventType.MFA_ENROLLED, { recoveryCodes: RECOVERY_CODE_COUNT });
+      await this.audit(manager, user.id, null, SecurityEventType.MFA_ENROLLED, { recoveryCodes: RECOVERY_CODE_COUNT, method: row.method });
       return current;
     });
     await clearAttempts(this.db, codeKeys(user.id).failures);
@@ -144,7 +199,7 @@ export class MfaService {
   }
 
   async regenerateRecoveryCodes(user: User, code: string) {
-    await this.checkCode(user, code, false);
+    await this.checkCode(user, code, false, 'manage');
     const codes = Array.from({ length: RECOVERY_CODE_COUNT }, newRecoveryCode);
     const hashes = await this.hashRecoveryCodes(codes);
     await this.db.transaction(async manager => {
@@ -159,7 +214,7 @@ export class MfaService {
   /** Optional roles only. Requires a current code; other sessions end and this one continues without MFA. */
   async disable(user: User, code: string, req: AuthRequest) {
     if ((await this.state(user)).required) throw new BadRequestException('Your role requires two-step verification');
-    await this.checkCode(user, code, true);
+    await this.checkCode(user, code, true, 'manage');
     const updated = await this.db.transaction(async manager => {
       const current = await this.lockUser(manager, user.id);
       if ((await this.state(current, manager)).required) throw new BadRequestException('Your role requires two-step verification');
@@ -233,15 +288,31 @@ export class MfaService {
     throw new HttpException(`Too many incorrect codes. Try again in ${lockoutLabel(seconds)}.`, 429);
   }
 
-  /** Rate-limited TOTP check with replay protection, falling back to single-use recovery codes. */
-  private async checkCode(user: User, code: string, allowRecovery: boolean): Promise<CodeKind> {
-    const box = this.requireBox();
+  /** Sends a new code for this purpose unless one was sent moments ago. Sends per user are capped across purposes. */
+  private async sendEmailCode(user: User, purpose: EmailCodePurpose) {
+    if (!this.email.enabled) throw new ServiceUnavailableException('Email codes are not available on this server');
+    const keys = codeKeys(user.id);
+    if (await readAttempts(this.db, keys.sends) >= EMAIL_SENDS_PER_WINDOW) throw new HttpException('Too many codes sent. Try again in 15 minutes.', 429);
+    const code = generateEmailCode();
+    if (!await storeEmailCode(this.db, user.id, purpose, code)) return;
+    await countAttempt(this.db, keys.sends, LOCKOUT_SECONDS);
+    const sent = await this.email.sendStaffCode(user.email, code, purpose);
+    if (sent !== true) {
+      // The code was never delivered; let the person ask again straight away.
+      await this.db.query('DELETE FROM staff_mfa_email_codes WHERE "userId" = $1 AND purpose = $2', [user.id, purpose]);
+      throw new ServiceUnavailableException('The code could not be emailed. Try again shortly, or use a recovery code.');
+    }
+  }
+
+  /** Rate-limited check of the enrolled method (TOTP with replay protection, or a single-use emailed code), then recovery codes. */
+  private async checkCode(user: User, code: string, allowRecovery: boolean, purpose: Exclude<EmailCodePurpose, 'enrol'>): Promise<CodeKind> {
     await this.countCodeAttempt(user);
     const row = await this.db.getRepository(StaffMfa).createQueryBuilder('mfa').addSelect('mfa.secretCiphertext')
       .where('mfa.userId = :id AND mfa.confirmedAt IS NOT NULL', { id: user.id }).getOne();
     if (!row) throw new UnauthorizedException('Invalid verification code');
     const token = code.trim();
-    const step = matchTotp(box.open(row.secretCiphertext, user.id), token);
+    if (row.method === MfaMethod.EMAIL && await consumeEmailCode(this.db, user.id, purpose, token)) return this.accepted(user, 'email');
+    const step = row.method === MfaMethod.TOTP ? matchTotp(this.requireBox().open(row.secretCiphertext!, user.id), token) : null;
     if (step !== null) {
       // Each time step is accepted once, even across concurrent requests.
       const accepted = await this.db.createQueryBuilder().update(StaffMfa).set({ lastUsedStep: String(step) })
@@ -288,6 +359,7 @@ export class MfaService {
 
   private async removeEnrolment(manager: EntityManager, user: User) {
     await manager.delete(StaffRecoveryCode, { userId: user.id });
+    await manager.query('DELETE FROM staff_mfa_email_codes WHERE "userId" = $1', [user.id]);
     await manager.delete(StaffMfa, { userId: user.id });
     await revokeUserSessions(manager, user);
   }

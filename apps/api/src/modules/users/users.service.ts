@@ -6,6 +6,7 @@ import { hashPassword } from '../auth/password';
 import { revokeUserSessions } from '../auth/revoke';
 import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { clearSavedSignature } from '../documents/saved-signature';
+import { removeEmailEnrolment } from '../auth/mfa.service';
 type Editable = 'firstName' | 'lastName' | 'email' | 'role' | 'status';
 const EDITABLE: Editable[] = ['firstName', 'lastName', 'email', 'role', 'status'];
 // Audit event per kind of change. Names change nothing about access; the others end the user's sessions.
@@ -21,9 +22,9 @@ export class UsersService {
   constructor(private readonly db: DataSource) {}
   async list() {
     const users = await this.db.getRepository(User).find({ order: { createdAt: 'ASC' }, take: 200 });
-    const enrolled: { userId: string }[] = await this.db.query(`SELECT "userId" FROM staff_mfa WHERE "confirmedAt" IS NOT NULL`);
-    const ids = new Set(enrolled.map(row => row.userId));
-    return users.map(user => ({ ...publicUser(user), mfaEnabled: ids.has(user.id), mustChangePassword: user.mustChangePassword }));
+    const enrolled: { userId: string; method: string }[] = await this.db.query(`SELECT "userId", method FROM staff_mfa WHERE "confirmedAt" IS NOT NULL`);
+    const methods = new Map(enrolled.map(row => [row.userId, row.method]));
+    return users.map(user => ({ ...publicUser(user), mfaEnabled: methods.has(user.id), mfaMethod: methods.get(user.id) ?? null, mustChangePassword: user.mustChangePassword }));
   }
   /** The administrator chose the initial password, so the user must replace it at the first sign-in. */
   async create(dto: CreateUserDto, actor: User) {
@@ -70,6 +71,8 @@ export class UsersService {
           // saves their signature again. An administrator editing their own account keeps theirs.
           if (id !== actor.id) await clearSavedSignature(manager, id, actor.id, 'account-change');
         }
+        // Administrators must use an authenticator app; a new administrator with email codes sets one up at the next sign-in.
+        if (changed.includes('role') && user.role === Role.SYSTEM_ADMIN) await removeEmailEnrolment(manager, id, actor.id);
         for (const event of events) {
           await this.audit(manager, id, actor.id, event.type, { fields: event.fields.filter(field => changed.includes(field)), sessionsRevoked });
         }
