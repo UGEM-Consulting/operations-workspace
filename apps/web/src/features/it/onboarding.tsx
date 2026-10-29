@@ -3,7 +3,11 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { PageCrumb, useLeaveGuard } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { RefreshCw } from 'lucide-react';
+import { Card, CardBody, CardHeader } from '@/components/ui/card';
+import { Checklist, type ChecklistItem } from '@/components/ui/checklist';
+import { CopyButton } from '@/components/ui/copy-button';
+import { Avatar } from '@/components/ui/avatar';
 import { Checkbox, Input, Select, Textarea } from '@/components/ui/field';
 import { Progress } from '@/components/ui/feedback';
 import { DescriptionList } from '@/components/ui/description-list';
@@ -19,6 +23,8 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
 import { ItDetail, ItTask, taskDone, taskOutcomes, TaskOutcome } from './types';
+const RINGCENTRAL=['RINGCENTRAL','SMS','CALL_RECORDING'];
+/** An IT request: the setup checklist with progress, and the profile and company accounts in a side rail. */
 export function ItOnboarding({initial}:{initial:ItDetail}){
  const router=useRouter();
  const toast=useToast();
@@ -49,23 +55,57 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
    setData(updated);setEditing(null);toast(updated.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has a new portal notification.'}:{title:'Checklist task updated'});
   }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
  }
- // Tasks inside the RingCentral group sit one heading level below it.
- const renderTask=(task:ItTask,Heading:'h3'|'h4'='h3')=><Card key={task.key} className="space-y-3 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><Heading className="font-semibold">{task.label}{task.optional&&<span className="ml-2 text-xs font-normal text-muted-foreground">Optional</span>}</Heading><StatusBadge status={task.status}/></div><p className="text-sm text-muted-foreground">{task.description}</p>{task.notes&&<p className={`whitespace-pre-wrap break-words rounded-md p-3 text-sm ${task.status==='BLOCKED'?'bg-warning-background text-warning':'bg-muted'}`}>{task.status==='BLOCKED'&&<strong>Blocked: </strong>}{task.notes}</p>}{!closed&&<Button variant="outline" disabled={busy} onClick={()=>open(task)}>Update task<span className="sr-only">: {task.label}</span></Button>}</Card>;
- const fields=[['First name',profile.legalFirstName],['Last name',profile.legalLastName],['American first name',profile.preferredAmericanFirstName],['American last name',profile.preferredAmericanLastName],['Personal email',profile.personalEmail],['Personal phone number',profile.personalPhoneNumber],['MC / Independent',profile.mcName],['Team lead / Independent',profile.teamLead],['Job title',profile.jobTitle],['Company email',request.companyEmail],['Work phone (RingCentral)',request.assignedRingCentralPhoneNumber]];
+ const name=profile.proposedDisplayName??'Approved dispatcher';
+ const blocked=tasks.filter(task=>task.status==='BLOCKED');
+ const created=data.activity.find(event=>event.event==='IT_REQUEST_CREATED')?.createdAt??data.activity[0]?.createdAt;
+ const toChecklist=(task:ItTask):ChecklistItem=>({id:task.key,title:task.label,optional:task.optional,description:task.description,status:task.status,note:task.notes||undefined,
+  meta:task.status!=='PENDING'&&<>Updated <LocalTime iso={task.updatedAt}/></>,
+  action:!closed&&<Button variant="outline" size="sm" disabled={busy} onClick={()=>open(task)}>Update<span className="sr-only">: {task.label}</span></Button>});
+ // RingCentral, SMS and call recording are one group, shown where the first of them falls in the checklist.
+ const grouped=tasks.filter(task=>RINGCENTRAL.includes(task.key)),firstGrouped=tasks.findIndex(task=>RINGCENTRAL.includes(task.key));
+ const sections=tasks.flatMap((task,index):{heading?:string;items:ItTask[]}[]=>index===firstGrouped?[{heading:'RingCentral',items:grouped}]:RINGCENTRAL.includes(task.key)?[]:[{heading:undefined,items:[task]}]);
+ const activityTone=(event:ItDetail['activity'][number])=>event.event==='IT_ONBOARDING_COMPLETED'||event.metadata.newStatus==='COMPLETED'?'success' as const:event.metadata.newStatus==='BLOCKED'?'warning' as const:'neutral' as const;
  return <div className="space-y-6">
- <PageCrumb label={profile.proposedDisplayName??'Approved dispatcher'}/>
- <PageHeader eyebrow="IT onboarding" title={profile.proposedDisplayName??'Approved dispatcher'} description="Manager-approved employment and a manual setup checklist." action={<StatusBadge status={request.status}/>}/>
- {closed?<Alert tone="success" title="Onboarding completed"><p>The manager was notified in this portal on <LocalTime iso={request.completedAt}/>. This checklist is read-only.</p></Alert>:<Card className="space-y-3 p-4 sm:p-5"><div className="flex flex-wrap items-end justify-between gap-3"><Progress className="min-w-0 flex-1 basis-60" label="Setup progress" value={completed} max={tasks.length} valueLabel={`${completed} of ${tasks.length} tasks done`}/><Button variant="outline" size="sm" disabled={busy} onClick={()=>contactDirty?setDiscard('refresh'):void refresh()}>{pending==='refresh'?'Refreshing…':'Refresh status'}</Button></div><p className="text-sm text-muted-foreground">{tasks.some(task=>task.status==='BLOCKED')?'Resolve the blocked tasks below to continue setup.':'Complete each setup task and save the company email and assigned RingCentral number.'} Completing the final task closes this checklist and notifies the manager in this portal.</p></Card>}
- <details className="rounded-lg border bg-card p-5" open><summary className="cursor-pointer font-semibold">Employee details</summary>{request.profilePhoto&&<figure className="mt-5 space-y-2"><figcaption className="text-sm text-muted-foreground">Profile photo</figcaption><PrivateImage src={`/api/backend/it/onboarding/${request.id}/photo`} alt="Profile photo" className="size-40 rounded-md border object-cover"/></figure>}<DescriptionList className="mt-5" items={fields.map(([label,value])=>({label:label??'',value}))}/></details>
- <Card className="space-y-5 p-5 sm:p-6"><div><h2 className="font-semibold">Company accounts</h2><p className="mt-1 text-sm text-muted-foreground">Record the accounts you created. Both are required before onboarding can finish and appear on the employee details for the manager.</p></div>
- {profile.workPhoneNumber?.trim()&&<div className="flex flex-wrap items-center gap-3 text-sm"><span>Applicant-provided work phone (older application):</span><span className="font-medium">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></div>}
- <form onSubmit={contact} className="space-y-4"><fieldset disabled={closed||busy} className="grid gap-4"><div className="flex flex-wrap gap-4"><Input label="Company email" name="companyEmail" type="email" maxLength={254} value={companyEmail} onChange={event=>setCompanyEmail(event.target.value)} placeholder="name@ugemconsulting.com" autoComplete="off" width="md"/><Input label="Assigned RingCentral phone number" name="assigned" type="tel" maxLength={40} value={assigned} onChange={event=>setAssigned(event.target.value)} placeholder="+1 202 555 0190" aria-describedby="ringcentral-help" width="md"/></div><p id="ringcentral-help" className="-mt-2 text-[13px] leading-5 text-muted-foreground">Phone numbers use 7–15 digits; international formatting is accepted.</p>{!!profile.workPhoneNumber?.trim()&&<Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label="I verified the applicant-provided work phone number."/>}{!closed&&<div className="flex flex-wrap items-center gap-3"><Button>{pending==='contact'?'Saving…':'Save company accounts'}</Button>{contactDirty&&<p role="status" className="text-sm text-warning">Unsaved changes</p>}</div>}<PendingHint pending={pending==='contact'||pending==='refresh'}/></fieldset></form>
- {request.workPhoneVerifiedAt&&<p className="text-xs text-muted-foreground">Verified <LocalTime iso={request.workPhoneVerifiedAt}/></p>}</Card>
- <section aria-labelledby="checklist-title" className="space-y-4"><h2 id="checklist-title" className="text-lg font-semibold">Setup checklist</h2>
- <Card className="space-y-4 p-5 sm:p-6"><h3 className="font-semibold">RingCentral</h3>{tasks.filter(task=>['RINGCENTRAL','SMS','CALL_RECORDING'].includes(task.key)).map(task=>renderTask(task,'h4'))}</Card>
- <div className="grid gap-4">{tasks.filter(task=>!['RINGCENTRAL','SMS','CALL_RECORDING'].includes(task.key)).map(task=>renderTask(task))}</div></section>
- <details className="rounded-lg border bg-card p-6"><summary className="cursor-pointer font-semibold">Activity history</summary><Timeline className="mt-5" items={[...data.activity].reverse().map(event=>({id:event.id,title:`${statusLabel(event.event)}${event.metadata.key?` · ${statusLabel(String(event.metadata.key))}`:''}`,meta:<LocalTime iso={event.createdAt}/>}))}/></details>
- <p className="text-xs text-muted-foreground">Checklist updates are manual records; they do not create external accounts or send messages. Never enter passwords or tokens in notes.</p>
+ <PageCrumb label={name}/>
+ <PageHeader title={name} badge={<StatusBadge status={closed?'COMPLETED':request.status}/>}
+  meta={[created&&<>Request created <LocalTime iso={created} format="date"/></>,`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
+  action={!closed&&<Button variant="outline" disabled={busy} onClick={()=>contactDirty?setDiscard('refresh'):void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
+ <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
+  <div className="min-w-0 space-y-6">
+   {closed?<Alert tone="success" title="Setup complete"><p>Finished <LocalTime iso={request.completedAt}/>. The manager was notified and this checklist is read-only.</p></Alert>
+    :blocked.length>0&&<Alert tone="warning" title={blocked.length===1?'1 task is blocked':`${blocked.length} tasks are blocked`}><ul className="space-y-1">{blocked.map(task=><li key={task.key}><span className="font-medium">{task.label}:</span> {task.notes}</li>)}</ul></Alert>}
+   <Card>
+    <CardHeader title="Setup checklist" description={closed?'Every task is finished.':'Finishing the last task completes setup and lets the manager know.'}
+     actions={<Progress className="w-44" label="Progress" value={completed} max={tasks.length}/>}/>
+    <div className="mt-3 border-t border-border">{sections.map((section,index)=><Checklist key={section.items[0].key} className={index>0?'border-t border-border':undefined} heading={section.heading} titleAs={section.heading?'h4':'h3'} items={section.items.map(toChecklist)}/>)}</div>
+   </Card>
+   <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(event=>({id:event.id,tone:activityTone(event),title:`${statusLabel(event.event)}${event.metadata.key?` · ${statusLabel(String(event.metadata.key))}`:''}`,meta:<LocalTime iso={event.createdAt}/>}))}/></CardBody></Card>
+  </div>
+  <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
+   <Card><CardHeader title="Profile"/><CardBody className="space-y-4">
+    <div className="flex items-center gap-3">{request.profilePhoto?<PrivateImage src={`/api/backend/it/onboarding/${request.id}/photo`} alt="Profile photo" className="size-14 shrink-0 rounded-full border object-cover"/>:<Avatar name={name} size="lg"/>}
+     <div className="min-w-0"><p className="truncate font-medium">{name}</p><p className="text-[13px] text-muted-foreground">Proposed display name</p></div></div>
+    <DescriptionList layout="rows" items={[
+     {label:'Legal name',value:[profile.legalFirstName,profile.legalLastName].filter(Boolean).join(' ')},
+     {label:'Personal email',value:profile.personalEmail&&<><span className="block break-all">{profile.personalEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.personalEmail} label="Copy email" size="sm" variant="ghost"/></span></>},
+     {label:'Personal phone',value:profile.personalPhoneNumber,mono:true},
+     {label:'MC / Independent',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle}]}/>
+   </CardBody></Card>
+   <Card><CardHeader title="Company accounts" description={closed?'The manager sees these on the employee details.':'Both are needed to finish setup. The manager will see these.'}/><CardBody>
+    {closed?<DescriptionList layout="rows" items={[{label:'Company email',value:request.companyEmail},{label:'Work phone (RingCentral)',value:request.assignedRingCentralPhoneNumber,mono:true}]}/>
+    :<form onSubmit={contact}><fieldset disabled={busy} className="space-y-4">
+     <Input label="Company email" name="companyEmail" type="email" maxLength={254} value={companyEmail} onChange={event=>setCompanyEmail(event.target.value)} placeholder="name@ugemconsulting.com" autoComplete="off" width="full"/>
+     <Input label="RingCentral number" name="assigned" type="tel" maxLength={40} value={assigned} onChange={event=>setAssigned(event.target.value)} placeholder="+1 202 555 0190" hint="Include the country code, e.g. +1 202 555 0190." width="full"/>
+     {!!profile.workPhoneNumber?.trim()&&<div className="space-y-2 rounded-md bg-muted px-3 py-2.5 text-sm"><p className="flex flex-wrap items-center gap-2">Older application work phone: <span className="font-mono text-[13px]">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></p>
+      <Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label="I verified this work phone number."/></div>}
+     <Button className="w-full">{pending==='contact'?'Saving…':'Save company accounts'}</Button>
+     {contactDirty&&<p role="status" className="text-center text-sm text-warning">Unsaved changes</p>}
+     <PendingHint pending={pending==='contact'||pending==='refresh'}/>
+    </fieldset></form>}
+   </CardBody></Card>
+   <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they do not create accounts or send messages. Never enter passwords or tokens in notes.</p>
+  </div>
+ </div>
  {editing&&<Dialog open onClose={()=>setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual setup work." busy={pending==='task'} actions={<Button form="it-task-editor" type="submit">{pending==='task'?'Saving…':completing?'Complete onboarding':'Save task'}</Button>}>
  <form id="it-task-editor" onSubmit={update} className="space-y-4"><Select label="Status" name="status" value={taskStatus} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm" options={taskOutcomes.filter(status=>status!=='NOT_NEEDED'||editing.optional).map(status=>({value:status,label:statusLabel(status)}))}/><Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
  {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager receives a portal notification. Save the company email and assigned RingCentral number first.</p>{contactDirty&&<p>Close this dialog and save your unsaved company account changes before continuing.</p>}<Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
