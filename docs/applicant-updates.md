@@ -28,6 +28,20 @@ A message is sent when a manager **requests changes**, **approves** or **rejects
 | `TELEGRAM_BOT_USERNAME` | The bot's username, ending in `bot` (used in connect links). |
 | `TELEGRAM_API_BASE` | Defaults to `https://api.telegram.org`, the only value allowed in production. Outside production only a local fake server on localhost is allowed, so development and tests never reach Telegram. |
 
+## Setup complete and staff alerts
+
+Authorized on October 29, 2026. These use their own outbox (`notification_deliveries`) with the same queue-then-send rules as decision updates.
+
+| Message | Sent when | To | Channels |
+| --- | --- | --- | --- |
+| Your UGEM work accounts are ready | IT completes the setup checklist | The new hire | Their chosen channels (email by default, from `EMAIL_FROM`) |
+| An application is waiting for your review | An application is submitted or resubmitted | Its assigned manager | Telegram, if they connected it |
+| A new IT setup checklist is waiting | A manager approves an application | Every active IT specialist | Telegram, if they connected it |
+
+The new-hire message tells them to look for Google's invitation in their personal inbox and to check Spam; it never includes their new company address, names or phone numbers. Staff alerts contain only what is waiting and a link that needs a workspace sign-in.
+
+Staff connect Telegram under **Account security → Telegram alerts**: *Connect Telegram*, *Open Telegram*, press *Start*, then *Check connection*. The link works once for 30 minutes. One Telegram chat belongs to one staff member; connecting it to another account moves it. Sending `/stop` to the bot turns off both applicant and staff messages for that chat. Staff who have not connected Telegram are recorded as `SKIPPED` (`NOT_CONNECTED`), and alerts for deactivated accounts fail with `INACTIVE`.
+
 ## Turning Telegram on (operator steps, not automated)
 
 1. In Telegram, open **@BotFather**, send `/newbot`, and name it *UGEM Hiring* (username like `ugem_hiring_bot`; enter it in `TELEGRAM_BOT_USERNAME` without the @). Keep the token private.

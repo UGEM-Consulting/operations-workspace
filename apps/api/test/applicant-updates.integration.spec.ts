@@ -36,6 +36,9 @@ integration('Applicant status updates by email and Telegram (disposable PostgreS
   sendStatusUpdate:async(to:string,content:{subject:string;text:string})=>{await new Promise(resolve=>setTimeout(resolve,20));if(statusResult!==true)return statusResult;emails.push({to,subject:content.subject,text:content.text});return true as const;},
   runInBackground:(task:()=>Promise<void>)=>{if(!drop)tasks.push(task());}};
  const settle=async()=>{while(tasks.length)await Promise.all(tasks.splice(0));};
+ // Steps back to a migration; the notifications migration refuses rollback while delivery history exists, so this disposable database's rows are cleared first.
+ const latest=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
+ const undoTo=async(name:string)=>{while(await latest()!==name){if(await latest()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
  const events=async(invitationId:string)=>(await db.getRepository(ApplicationActivity).findBy({invitationId})).map(row=>row.event);
  const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',telegram:'fictional_demo',mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'};
  let nextUpdate=100;
@@ -112,7 +115,7 @@ integration('Applicant status updates by email and Telegram (disposable PostgreS
   const deliveries=await db.getRepository(ApplicantUpdateDelivery).findBy({applicationId:id});
   expect(deliveries.map(row=>[row.channel,row.status]).sort()).toEqual([['EMAIL','SENT'],['TELEGRAM','SENT']]);
   // Step back past the later migrations first, then restore them.
-  while((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name!=='ApplicantUpdates1792730000000')await db.undoLastMigration();
+  await undoTo('ApplicantUpdates1792730000000');
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard applicant update preferences or delivery records');
   await db.runMigrations();
  });
@@ -166,7 +169,7 @@ integration('Applicant status updates by email and Telegram (disposable PostgreS
   // A sender that died mid-send leaves SENDING; the claim is retaken only once it is stale.
   emails.length=0;await db.query(`UPDATE applicant_update_deliveries SET status='SENDING',"sentAt"=NULL,"claimedAt"=now() WHERE "applicationId"=$1`,[id]);
   updatesService().sweep();await settle();expect(emails).toHaveLength(0);
-  while((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name!=='CorrectionRejectionAndDeliveryRetry1792770000000')await db.undoLastMigration();
+  await undoTo('CorrectionRejectionAndDeliveryRetry1792770000000');
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard in-flight applicant update deliveries');
   await db.runMigrations();
   await age(id,'claimedAt',11);updatesService().sweep();await settle();

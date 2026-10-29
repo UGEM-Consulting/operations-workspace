@@ -16,6 +16,7 @@ import { User, Role } from '../users/user.entity';
 import { canAccessAssignedApplication } from '../auth/policy';
 import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
 import { StorageService } from '../storage/storage.service';
+import { NotificationsService } from '../updates/notifications.service';
 import { applicantDocuments, documentStatus } from '../documents/requirements';
 type ApplicantDocuments = Awaited<ReturnType<typeof applicantDocuments>>;
 import { BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, VerifyApplicantDto } from './dto';
@@ -37,7 +38,8 @@ export const SEND_LIMITS = { perAddressDaily: 10, addressesPerOpenInvitation: 3,
 @Injectable()
 export class OnboardingService {
  private readonly logger = new Logger('ApplicantVerification');
- constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly storage: StorageService) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly storage: StorageService,
+  private readonly notifications: NotificationsService) {}
  private limit(key: string, max = 10, seconds = 900) { return onboardingLimit(this.db,key,max,seconds); }
  private get production() { return this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'; }
  // Development and tests use fictional example.test identities only; production accepts real addresses.
@@ -201,7 +203,9 @@ export class OnboardingService {
  async save(req: Request, input: DraftDto | SubmitDto, submit: boolean) {
   if (!req.session?.applicantApplicationId) throw new UnauthorizedException();
   await this.limit('save:'+req.session.applicantApplicationId,60,60);
-  return this.db.transaction(async em => {
+  // Review alerts for the assigned manager are queued with the submission and sent after it commits.
+  let alerts: string[] = [];
+  const view = await this.db.transaction(async em => {
    const { application: app, invitation: inv } = await this.applicant(em,req,true);
    // Retry only the most recent submission, never apply stale requests to a later correction cycle.
    if (['SUBMITTED','RESUBMITTED'].includes(app.status) && submit && input.version === app.version-1) return this.applicantView(em,app,inv);
@@ -236,7 +240,10 @@ export class OnboardingService {
    }
    await em.save(app);
    await this.activity(em,inv.id,submit ? (correcting ? 'APPLICATION_RESUBMITTED' : 'APPLICATION_SUBMITTED') : (correcting ? 'CORRECTIONS_SAVED' : 'DRAFT_SAVED'));
+   if (submit) alerts = await this.notifications.queueReviewWaiting(em,app);
    return this.applicantView(em,app,inv,documents);
   });
+  this.notifications.dispatch(alerts);
+  return view;
  }
 }

@@ -4,6 +4,7 @@ import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, TaskUpdateDto } from './it.dto';
 import { ItService } from './it.service';
+import { UpdatesModule } from '../updates/updates.module';
 @Controller('it/onboarding')
 @Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
 class ItController {
@@ -20,5 +21,5 @@ class NotificationController {
  @Get() list(@Req() req:AuthRequest){return this.service.notifications(req.currentUser);}
  @Post(':id/read') read(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.readNotification(req.currentUser,id);}
 }
-@Module({controllers:[ItController,NotificationController],providers:[ItService],exports:[ItService]})
+@Module({imports:[UpdatesModule],controllers:[ItController,NotificationController],providers:[ItService],exports:[ItService]})
 export class ItModule {}

@@ -10,7 +10,7 @@ import { readApi } from './types';
 interface Updates { email: boolean; telegram: boolean; emailAvailable: boolean; telegramAvailable: boolean; telegramConnected: boolean; telegramUsername: string | null }
 type Pending = 'save' | 'link' | 'check' | 'disconnect' | null;
 
-/** The applicant chooses email, Telegram or both for decision updates, and connects the company Telegram bot. */
+/** The applicant chooses email, Telegram or both for decision and setup updates, and connects the company Telegram bot. */
 export function ApplicantUpdates({ email }: { email: string | null }) {
  const [data, setData] = useState<Updates | null>(null), [pending, setPending] = useState<Pending>(null);
  const toast = useToast(), [error, setError] = useState(''), [link, setLink] = useState<string | null>(null);
@@ -30,8 +30,8 @@ export function ApplicantUpdates({ email }: { email: string | null }) {
  };
  const busy = !!pending;
  return <fieldset className="space-y-4 rounded-md border border-border p-4" aria-describedby="updates-help">
-  <legend className="px-1 text-sm font-semibold">How should we tell you about decisions?</legend>
-  <p id="updates-help" className="text-sm text-muted-foreground">We send a short message when your manager approves your application, asks for changes or closes it. Messages include your application reference but never your personal details.</p>
+  <legend className="px-1 text-sm font-semibold">How should we send you updates?</legend>
+  <p id="updates-help" className="text-sm text-muted-foreground">We send a short message when your manager approves your application, asks for changes or closes it, and when IT has your work accounts ready. Messages never include your personal details.</p>
   <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1" checked={data.email} disabled={busy} onChange={event => choose({ email: event.target.checked, telegram: data.telegram })} />
    <span>Email{email && <span className="text-muted-foreground"> to {email}</span>}{!data.emailAvailable && <span className="block text-muted-foreground">Email updates are not switched on yet; check this page instead.</span>}</span></label>
   <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1" checked={data.telegram} disabled={busy || (!data.telegramAvailable && !data.telegram)} onChange={event => choose({ email: data.email, telegram: event.target.checked })} />
