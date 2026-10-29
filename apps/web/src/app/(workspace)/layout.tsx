@@ -1,6 +1,7 @@
 import { apiRequest, requireIdentity } from '@/lib/auth';
 import { readResponse, workspaceCountsSchema } from '@/lib/api-schemas';
-import type { WorkspaceCounts } from '@/lib/navigation';
+import { cookies } from 'next/headers';
+import { SIDEBAR_COOKIE, type WorkspaceCounts } from '@/lib/navigation';
 import { WorkspaceShell } from '@/components/workspace-shell';
 import { ToastProvider } from '@/components/ui/toast';
 
@@ -12,6 +13,6 @@ async function workspaceCounts(): Promise<WorkspaceCounts | null> {
   } catch { return null; }
 }
 export default async function WorkspaceLayout({ children }: { children: React.ReactNode }) {
-  const [identity, counts] = await Promise.all([requireIdentity(), workspaceCounts()]);
-  return <ToastProvider><WorkspaceShell identity={identity} counts={counts}>{children}</WorkspaceShell></ToastProvider>;
+  const [identity, counts, jar] = await Promise.all([requireIdentity(), workspaceCounts(), cookies()]);
+  return <ToastProvider><WorkspaceShell identity={identity} counts={counts} collapsed={jar.get(SIDEBAR_COOKIE)?.value === 'collapsed'}>{children}</WorkspaceShell></ToastProvider>;
 }
