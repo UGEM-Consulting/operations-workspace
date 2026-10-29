@@ -35,6 +35,7 @@ export function navigationSections(items: readonly NavigationItem[]) {
 // pages can read them (a server import from a client module gets a reference, not the object).
 export const INVITATION_DEFAULTS: Record<string, string> = { status: 'ALL', search: '' };
 export const USER_DEFAULTS: Record<string, string> = { status: 'ALL', search: '' };
+export const LIST_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
 export function queueHref(path: string, filters: Record<string, string>, changes: Record<string, string>) {
   return `${path}?${new URLSearchParams({ ...filters, page: '1', ...changes })}`;
 }

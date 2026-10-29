@@ -38,7 +38,7 @@ integration('Applicant status updates by email and Telegram (disposable PostgreS
  const settle=async()=>{while(tasks.length)await Promise.all(tasks.splice(0));};
  // Steps back to a migration; the notifications migration refuses rollback while delivery history exists, so this disposable database's rows are cleared first.
  const latest=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
- const undoTo=async(name:string)=>{while(await latest()!==name){if(await latest()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
+ const undoTo=async(name:string)=>{while(await latest()!==name){if(await latest()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latest()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
  const events=async(invitationId:string)=>(await db.getRepository(ApplicationActivity).findBy({invitationId})).map(row=>row.event);
  const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',telegram:'fictional_demo',mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'};
  let nextUpdate=100;
