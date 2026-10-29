@@ -22,9 +22,11 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger('Email');
   private readonly transport: Transporter | null;
   private readonly from: string | undefined;
+  private readonly staffFrom: string | undefined;
   private readonly pending = new Set<Promise<void>>();
   constructor(config: ConfigService) {
     this.from = config.get<string>('EMAIL_FROM');
+    this.staffFrom = config.get<string>('STAFF_EMAIL_FROM');
     if (config.get('EMAIL_DELIVERY') !== 'smtp') { this.transport = null; return; }
     // validateEnvironment requires authenticated TLS (465/587) in production and a localhost inbox elsewhere.
     const port = Number(config.get('SMTP_PORT') ?? 465), user = config.get<string>('SMTP_USER');
@@ -36,6 +38,8 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
     });
   }
   get enabled() { return this.transport !== null; }
+  /** Staff two-step verification codes need their own sender (STAFF_EMAIL_FROM), never the applicant address. */
+  get staffCodesEnabled() { return this.transport !== null && !!this.staffFrom; }
   onModuleInit() {
     // Report misconfiguration early without blocking startup or logging server responses.
     if (this.transport) void this.transport.verify()
@@ -52,15 +56,16 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
   }
   /** Sends one staff two-step verification code. Never throws; returns true or a safe failure code. */
   sendStaffCode(to: string, code: string, purpose: EmailCodePurpose): Promise<true | string> {
-    return this.send(to, staffCodeEmail(code, purpose), 'Sign-in code');
+    if (!this.staffFrom) return Promise.resolve('DISABLED');
+    return this.send(to, staffCodeEmail(code, purpose), 'Sign-in code', this.staffFrom);
   }
   /** Sends one application status update. Never throws; returns true or a safe failure code. */
   sendStatusUpdate(to: string, content: { subject: string; text: string; html: string }): Promise<true | string> {
     return this.send(to, content, 'Status update');
   }
-  private async send(to: string, content: { subject: string; text: string; html: string }, kind: string): Promise<true | string> {
+  private async send(to: string, content: { subject: string; text: string; html: string }, kind: string, from = this.from): Promise<true | string> {
     if (!this.transport) return 'DISABLED';
-    const message = { from: this.from, to, ...content };
+    const message = { from, to, ...content };
     for (let attempt = 0; ; attempt++) {
       try { await this.transport.sendMail(message); return true; }
       catch (error) {

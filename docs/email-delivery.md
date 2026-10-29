@@ -51,8 +51,11 @@ SMTP_PORT=465
 SMTP_USER=onboarding@ugemconsulting.com
 SMTP_PASSWORD=<16-character app password>
 EMAIL_FROM=UGEM Operations <onboarding@ugemconsulting.com>
+STAFF_EMAIL_FROM=UGEM Workspace <no-reply@ugemconsulting.com>
 EMAIL_DELIVERY=smtp
 ```
+
+Staff two-step verification codes never use the onboarding address. `STAFF_EMAIL_FROM` is a separate sender that the same SMTP mailbox sends as: in Google Workspace, add the address as an alias of the onboarding user (Admin console, user, "Alternate email addresses"), then in that mailbox's Gmail settings add it under "Accounts → Send mail as" and confirm it. Without that confirmation Gmail rewrites the From header back to the mailbox. Validation refuses a `STAFF_EMAIL_FROM` equal to `EMAIL_FROM`. Without `STAFF_EMAIL_FROM`, email codes are not offered and staff use authenticator apps.
 
 Validation fails closed: production SMTP must authenticate on TLS port 465 (implicit TLS) or 587 (STARTTLS required), with TLS 1.2+ and certificate verification. `EMAIL_FROM` must be exactly one address, optionally with a display name, and no line breaks.
 
@@ -72,6 +75,7 @@ EMAIL_DELIVERY=smtp
 SMTP_HOST=localhost
 SMTP_PORT=1025
 EMAIL_FROM=Operations Local <no-reply@example.test>
+STAFF_EMAIL_FROM=Workspace Local <security@example.test>
 ```
 
 Start Mailpit (`mailpit --listen 127.0.0.1:8025 --smtp 127.0.0.1:1025`), restart the API, and open <http://localhost:8025>.

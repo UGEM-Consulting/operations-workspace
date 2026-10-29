@@ -46,6 +46,10 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
+      # Staff two-step verification codes: a different sender, e.g. a Gmail "Send mail as" alias of SMTP_USER.
+      # Without it staff can only use authenticator apps.
+      - key: STAFF_EMAIL_FROM
+        sync: false
       # Applicant photos and signed documents: a private Google Cloud Storage bucket. The production API refuses
       # to start without these; set them before deploying. GCS_CREDENTIALS_BASE64 is a secret.
       - key: STORAGE_DRIVER

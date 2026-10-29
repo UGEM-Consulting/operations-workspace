@@ -31,7 +31,7 @@ integration('Staff two-step verification with email codes (isolated PostgreSQL d
   // Captures codes instead of sending mail; `accept` simulates the mail server refusing a message.
   const sent: { to: string; code: string; purpose: string }[] = [];
   let accept = true;
-  const email = { enabled: true, onModuleInit: () => undefined, onApplicationShutdown: async () => undefined,
+  const email = { enabled: true, staffCodesEnabled: true, onModuleInit: () => undefined, onApplicationShutdown: async () => undefined,
     sendStaffCode: async (to: string, code: string, purpose: string) => { if (!accept) return 'ECONNECTION'; sent.push({ to, code, purpose }); return true; } };
   const agent = (): Agent => request.agent(app.getHttpServer());
   const login = (client: Agent, user: User) => client.post('/api/auth/login').set(headers).send({ email: user.email, password });
