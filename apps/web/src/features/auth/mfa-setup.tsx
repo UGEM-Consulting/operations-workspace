@@ -2,9 +2,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Check, Copy, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Checkbox, Input } from '@/components/ui/field';
+import { Checkbox, Input, RadioGroup } from '@/components/ui/field';
 import { Alert } from '@/components/ui/alert';
-import { mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate, readApi } from '@/lib/client-api';
+import { ResendCode, type EmailCodeSent } from './email-code';
 import { BackToSignIn, signInExpired } from './mfa-verify-form';
 import { SignInHeading } from './sign-in-frame';
 interface Enrolment { qrCode: string; uri: string; manualKey: string; issuer: string; account: string }
@@ -48,23 +49,45 @@ export function RecoveryCodes({ codes, onDone, doneLabel }: { codes: string[]; o
   </div>;
 }
 
+
+type Method = 'TOTP' | 'EMAIL';
+type Started = ({ method: 'TOTP' } & Enrolment) | ({ method: 'EMAIL' } & EmailCodeSent);
+const stepTitles: Record<Method, string> = { TOTP: 'Set up two-step verification', EMAIL: 'Turn on email codes' };
+
 /**
- * Authenticator enrolment: install, scan the QR code or type the key, confirm one code; then the recovery codes.
+ * Enrolment: choose a method when email codes are allowed (never for administrators), then confirm one code: from an
+ * authenticator app (scan the QR code or type the key) or emailed to the account email. Then the recovery codes.
  * `signIn` renders the sign-in page's step count and headings; on Account security the surrounding card provides them.
  */
 export function MfaSetup({ onComplete, onCancel, doneLabel = 'Continue to workspace', signIn = false }: { onComplete?: (landingPage: string) => void; onCancel?: () => void; doneLabel?: string; signIn?: boolean }) {
-  const [enrolment, setEnrolment] = useState<Enrolment | null>(null);
+  const [options, setOptions] = useState<{ methods: Method[]; email: string } | null>(null);
+  const [choice, setChoice] = useState<Method>('TOTP');
+  const [started, setStarted] = useState<Started | null>(null);
+  const [sentAt, setSentAt] = useState(0);
   const [result, setResult] = useState<{ codes: string[]; landingPage: string } | null>(null);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
-  const started = useRef(false);
-  async function begin() {
-    setError('');
-    try { setEnrolment(await mutate('auth/mfa/enrolment', 'POST')); }
+  const [resending, setResending] = useState(false);
+  const loaded = useRef(false);
+  async function begin(method: Method, resend = false) {
+    setError(''); setResending(resend);
+    // Older clients sent no body, which the API still treats as an authenticator app.
+    try { setStarted(await mutate<Started>('auth/mfa/enrolment', 'POST', method === 'EMAIL' ? { method } : {})); setSentAt(Date.now()); }
     catch (error) { setError(signInExpired(error instanceof Error ? error.message : 'Unable to start setup')); }
+    finally { setResending(false); }
   }
-  // Each start replaces the unconfirmed key, so request it once per visit.
-  useEffect(() => { if (!started.current) { started.current = true; void begin(); } }, []);
+  useEffect(() => {
+    if (loaded.current) return;
+    loaded.current = true;
+    // With one method there is nothing to choose: start at once. Each start replaces the unconfirmed key, so once per visit.
+    readApi<{ methods: Method[]; email: string }>('auth/mfa/methods').then(data => {
+      if (data.methods.length > 1) setOptions(data); else void begin('TOTP');
+    }, error => {
+      // An API older than email codes has no methods route; everyone uses an authenticator app there.
+      if (error instanceof ApiError && error.status === 404) void begin('TOTP');
+      else setError(signInExpired(errorMessage(error, 'Unable to start setup')));
+    });
+  }, []);
   async function confirm(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(''); setPending(true);
     const code = String(new FormData(event.currentTarget).get('code') ?? '').trim();
@@ -79,13 +102,44 @@ export function MfaSetup({ onComplete, onCancel, doneLabel = 'Continue to worksp
   }
   // A full navigation picks up the regenerated session cookie.
   const done = () => onComplete ? onComplete(result!.landingPage) : window.location.assign(result!.landingPage);
+  const viaEmail = started?.method === 'EMAIL';
+  const lost = viaEmail ? 'If you can’t get into your email' : 'If you lose your phone';
   if (result) return <div>
-    {signIn ? <><StepCount current={1} /><SignInHeading title="Save your recovery codes" description="If you lose your phone, each code signs you in once instead of an authenticator code." /></>
-      : <><h3 className="font-semibold">Two-step verification is on. Save your recovery codes</h3><p className="mt-1 text-sm text-muted-foreground">If you lose your phone, each code signs you in once instead of an authenticator code.</p></>}
+    {signIn ? <><StepCount current={1} /><SignInHeading title="Save your recovery codes" description={`${lost}, each code signs you in once instead.`} /></>
+      : <><h3 className="font-semibold">Two-step verification is on. Save your recovery codes</h3><p className="mt-1 text-sm text-muted-foreground">{lost}, each code signs you in once instead.</p></>}
     <div className="mt-5"><RecoveryCodes codes={result.codes} onDone={done} doneLabel={doneLabel} /></div>
   </div>;
-  const heading = signIn && <><StepCount current={0} /><SignInHeading title="Set up two-step verification" description="Your account must use it. It takes about two minutes and protects the workspace if your password is ever stolen." /></>;
-  if (!enrolment) return <div>{heading}<div className="mt-6 space-y-4">{error ? <><p role="alert" className="text-sm text-danger">{error}</p>{signIn && <BackToSignIn />}</> : <p role="status" className="text-sm text-muted-foreground">Preparing your setup key…</p>}</div></div>;
+  const heading = signIn && <><StepCount current={0} /><SignInHeading title={stepTitles[viaEmail ? 'EMAIL' : 'TOTP']} description="Your account must use it. It takes about two minutes and protects the workspace if your password is ever stolen." /></>;
+  const cancel = onCancel && <Button type="button" variant="outline" disabled={pending} onClick={onCancel}>Cancel</Button>;
+  const back = signIn && <div className="mt-2"><BackToSignIn /></div>;
+  if (!started && options) return <div>
+    {heading}
+    <div className="mt-6 space-y-5">
+      <RadioGroup name="mfaMethod" label="How do you want to get your codes?" cards value={choice} onChange={value => setChoice(value as Method)} options={[
+        { value: 'TOTP', label: 'Authenticator app (recommended)', description: 'Google Authenticator, Microsoft Authenticator or 1Password. Works even without email or signal.' },
+        { value: 'EMAIL', label: 'Email codes', description: `We email a 6-digit code to ${options.email} each time you sign in.` },
+      ]} />
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      <div className="flex flex-wrap gap-3"><Button type="button" size={signIn ? 'lg' : 'default'} className={signIn ? 'w-full' : undefined} onClick={() => void begin(choice)}>Continue</Button>{cancel}</div>
+    </div>
+    {back}
+  </div>;
+  if (!started) return <div>{heading}<div className="mt-6 space-y-4">{error ? <><p role="alert" className="text-sm text-danger">{error}</p>{signIn && <BackToSignIn />}</> : <p role="status" className="text-sm text-muted-foreground">Preparing your setup…</p>}</div></div>;
+  const codeField = <Input id="mfa-setup-code" label="6-digit code" name="code" required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} placeholder="123456" width="sm" className="[&_input]:font-mono [&_input]:text-lg [&_input]:tracking-[.3em]" error={error || undefined} />;
+  const submit = <div className="flex flex-wrap gap-3">
+    <Button type="submit" size={signIn ? 'lg' : 'default'} disabled={pending} className={signIn ? 'w-full' : undefined}>{pending ? 'Confirming…' : viaEmail ? 'Turn on email codes' : 'Turn on two-step verification'}</Button>
+    {cancel}
+  </div>;
+  if (started.method === 'EMAIL') return <div>
+    {heading}
+    <form onSubmit={confirm} className="mt-6 space-y-4">
+      <p className="text-sm leading-6">We emailed a 6-digit code to <span className="font-medium">{started.sentTo}</span>. Enter it to turn on email codes. It expires in 10 minutes.</p>
+      {codeField}
+      <ResendCode sent={started} sentAt={sentAt} pending={resending} onResend={() => void begin('EMAIL', true)} />
+      {submit}
+    </form>
+    {back}
+  </div>;
   return <div>
     {heading}
     <form onSubmit={confirm}>
@@ -95,23 +149,19 @@ export function MfaSetup({ onComplete, onCancel, doneLabel = 'Continue to worksp
           <><p className="text-[15px] font-semibold leading-6">Scan this QR code with the app</p>
             <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
               {/* eslint-disable-next-line @next/next/no-img-element -- server-generated data URL */}
-              <img src={enrolment.qrCode} alt={`QR code to add ${enrolment.account} to your authenticator app`} width={168} height={168} className="size-42 rounded-md border border-border bg-white p-2 max-sm:mx-auto" />
+              <img src={started.qrCode} alt={`QR code to add ${started.account} to your authenticator app`} width={168} height={168} className="size-42 rounded-md border border-border bg-white p-2 max-sm:mx-auto" />
               <div className="min-w-0 space-y-3">
                 <p className="text-[13px] leading-5 text-muted-foreground">Can’t scan? In the app choose “Enter a setup key” and type this key.</p>
-                <div><p className="text-sm font-medium">Setup key</p><code className="mt-1 block break-all rounded-sm border border-border bg-muted px-3 py-2 font-mono text-[15px] tracking-wider">{enrolment.manualKey}</code></div>
-                <div className="flex flex-wrap items-center gap-3"><CopyButton text={enrolment.manualKey.replace(/\s+/g, '')} label="Copy key" /><a href={enrolment.uri} className="text-sm text-primary underline-offset-4 hover:underline sm:hidden">Open in authenticator app</a></div>
-                <p className="text-[13px] leading-5 text-muted-foreground">Account: {enrolment.account} · time-based</p>
+                <div><p className="text-sm font-medium">Setup key</p><code className="mt-1 block break-all rounded-sm border border-border bg-muted px-3 py-2 font-mono text-[15px] tracking-wider">{started.manualKey}</code></div>
+                <div className="flex flex-wrap items-center gap-3"><CopyButton text={started.manualKey.replace(/\s+/g, '')} label="Copy key" /><a href={started.uri} className="text-sm text-primary underline-offset-4 hover:underline sm:hidden">Open in authenticator app</a></div>
+                <p className="text-[13px] leading-5 text-muted-foreground">Account: {started.account} · time-based</p>
               </div>
             </div></>,
-          <><p className="text-[15px] font-semibold leading-6">Enter the 6-digit code the app shows</p>
-            <Input id="mfa-setup-code" label="6-digit code" name="code" required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} placeholder="123456" width="sm" className="[&_input]:font-mono [&_input]:text-lg [&_input]:tracking-[.3em]" error={error || undefined} /></>,
+          <><p className="text-[15px] font-semibold leading-6">Enter the 6-digit code the app shows</p>{codeField}</>,
         ].map((content, index) => <li key={index} className="relative grid gap-3 pl-10"><span aria-hidden="true" className="absolute left-0 top-0 grid size-7 place-items-center rounded-full bg-muted text-[13px] font-semibold">{index + 1}</span>{content}</li>)}
       </ol>
-      <div className="flex flex-wrap gap-3">
-        <Button type="submit" size={signIn ? 'lg' : 'default'} disabled={pending} className={signIn ? 'w-full' : undefined}>{pending ? 'Confirming…' : 'Turn on two-step verification'}</Button>
-        {onCancel && <Button type="button" variant="outline" disabled={pending} onClick={onCancel}>Cancel</Button>}
-      </div>
+      {submit}
     </form>
-    {signIn && <div className="mt-2"><BackToSignIn /></div>}
+    {back}
   </div>;
 }

@@ -1,9 +1,13 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-// Staff two-step verification (TOTP). Secrets are AES-256-GCM ciphertext; recovery codes are Argon2id hashes.
+/** TOTP: an authenticator app. EMAIL: single-use codes sent to the account email (never for administrators). */
+export enum MfaMethod { TOTP = 'TOTP', EMAIL = 'EMAIL' }
+// Staff two-step verification. TOTP secrets are AES-256-GCM ciphertext; recovery codes are Argon2id hashes.
 @Entity('staff_mfa')
 export class StaffMfa {
   @PrimaryColumn('uuid') userId!: string;
-  @Column({ type: 'text', select: false }) secretCiphertext!: string;
+  @Column({ type: 'varchar', length: 10, default: MfaMethod.TOTP }) method!: MfaMethod;
+  // NULL for email codes.
+  @Column({ type: 'text', nullable: true, select: false }) secretCiphertext!: string | null;
   // NULL while enrolment awaits its first confirming code.
   @Column({ type: 'timestamptz', nullable: true }) confirmedAt!: Date | null;
   // Highest accepted TOTP time step; codes for this or earlier steps are replays.

@@ -2,6 +2,8 @@ import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs
 import { ConfigService } from '@nestjs/config';
 import { createTransport, type Transporter } from 'nodemailer';
 import { verificationEmail } from './verification-email';
+import { staffCodeEmail } from './staff-code-email';
+import type { EmailCodePurpose } from '../auth/mfa-email';
 
 // Only these Nodemailer error codes are logged; raw messages can contain addresses or server replies.
 const SAFE_FAILURE_CODES = new Set(['EAUTH', 'ECONNECTION', 'ETIMEDOUT', 'EDNS', 'ESOCKET', 'ETLS', 'EENVELOPE', 'EMESSAGE', 'EPROTOCOL']);
@@ -47,6 +49,10 @@ export class EmailService implements OnModuleInit, OnApplicationShutdown {
   /** Sends one verification code, retrying transient failures. Never throws; returns whether it was accepted. */
   sendVerificationCode(to: string, code: string): Promise<boolean> {
     return this.send(to, verificationEmail(code), 'Verification').then(result => result === true);
+  }
+  /** Sends one staff two-step verification code. Never throws; returns true or a safe failure code. */
+  sendStaffCode(to: string, code: string, purpose: EmailCodePurpose): Promise<true | string> {
+    return this.send(to, staffCodeEmail(code, purpose), 'Sign-in code');
   }
   /** Sends one application status update. Never throws; returns true or a safe failure code. */
   sendStatusUpdate(to: string, content: { subject: string; text: string; html: string }): Promise<true | string> {

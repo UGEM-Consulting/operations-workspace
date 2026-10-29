@@ -23,8 +23,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && path === 'auth/password') ||
     (method === 'GET' && ['auth/me', 'users'].includes(path)) ||
     // Staff two-step verification: sign-in step, enrolment, own settings, administrator reset and policy.
-    (method === 'POST' && ['auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable'].includes(path)) ||
-    (method === 'GET' && ['auth/mfa', 'settings/security'].includes(path)) || (method === 'PATCH' && path === 'settings/security') ||
+    (method === 'POST' && ['auth/mfa/verify', 'auth/mfa/challenge', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/email-code', 'auth/mfa/recovery-codes', 'auth/mfa/disable'].includes(path)) ||
+    (method === 'GET' && ['auth/mfa', 'auth/mfa/methods', 'settings/security'].includes(path)) || (method === 'PATCH' && path === 'settings/security') ||
     (method === 'POST' && match(`users/${ID}/mfa/reset`, path)) ||
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     // The approver's own saved countersigning signature.

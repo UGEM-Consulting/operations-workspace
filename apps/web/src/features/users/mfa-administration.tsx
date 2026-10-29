@@ -47,7 +47,7 @@ export function MfaAdministration({ users, currentUserId, policy }: { users: Sta
       <CardHeader title="Staff" description={`${enrolled.length} of ${users.length} users have two-step verification on.`} />
       <Table caption="Two-step verification by user" rows={users} rowKey={user => user.id} className="mt-3 border-t border-border" columns={[
         { key: 'person', label: 'User', primary: true, cell: user => <Person name={`${user.firstName} ${user.lastName}`} secondary={user.email} /> },
-        { key: 'status', label: 'Two-step verification', cell: user => <Badge label={user.mfaEnabled ? 'On' : 'Off'} tone={user.mfaEnabled ? 'success' : 'neutral'} /> },
+        { key: 'status', label: 'Two-step verification', cell: user => <span className="flex flex-wrap items-center gap-2"><Badge label={user.mfaEnabled ? 'On' : 'Off'} tone={user.mfaEnabled ? 'success' : 'neutral'} />{user.mfaEnabled && <span className="text-[13px] text-muted-foreground">{user.mfaMethod === 'EMAIL' ? 'Email codes' : 'Authenticator app'}</span>}</span> },
         { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: user => user.mfaEnabled && user.id !== currentUserId && <Button variant="outline" size="sm" onClick={() => { setResetting(user); setError(''); }}>Reset<span className="sr-only"> two-step verification for {user.email}</span></Button> },
       ]} footer={<p className="text-[13px] text-muted-foreground">Reset only after confirming the person’s identity. Use Account security for your own account.</p>} />
     </Card>

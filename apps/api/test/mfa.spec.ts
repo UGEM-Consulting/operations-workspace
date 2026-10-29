@@ -84,14 +84,14 @@ describe('MFA policy and configuration', () => {
   });
   it('refuses to start the production API without the encryption key', () => {
     const config = (values: Record<string, string>) => ({ get: (key: string) => values[key] }) as never;
-    expect(() => new MfaService({} as never, config({ NODE_ENV: 'production' }))).toThrow('MFA_ENCRYPTION_KEY');
-    expect(() => new MfaService({} as never, config({ NODE_ENV: 'production', MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64') }))).not.toThrow();
-    expect(() => new MfaService({} as never, config({ NODE_ENV: 'development' }))).not.toThrow();
+    expect(() => new MfaService({} as never, config({ NODE_ENV: 'production' }), {} as never)).toThrow('MFA_ENCRYPTION_KEY');
+    expect(() => new MfaService({} as never, config({ NODE_ENV: 'production', MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64') }), {} as never)).not.toThrow();
+    expect(() => new MfaService({} as never, config({ NODE_ENV: 'development' }), {} as never)).not.toThrow();
   });
 });
 
 describe('MFA enrolment and pending-step checks in the service', () => {
-  const service = new MfaService({} as never, ({ get: () => undefined }) as never);
+  const service = new MfaService({} as never, ({ get: () => undefined }) as never, {} as never);
   const user = { id: 'user-a', authVersion: 3 };
   const pending = (overrides: Record<string, unknown>) => ({ userId: 'user-a', authVersion: 3, stage: 'enrol', expiresAt: Date.now() + 60_000, ...overrides });
   const req = (session: Record<string, unknown>) => ({ session, currentUser: user }) as never;
@@ -111,5 +111,22 @@ describe('MFA enrolment and pending-step checks in the service', () => {
   });
   it('escalates lockouts without a permanent lock', () => {
     expect(LOCKOUT_STEPS).toEqual([900, 3600]);
+  });
+});
+
+describe('Staff email codes', () => {
+  it('sends six random digits, masks addresses and keeps the email to the code and its purpose', () => {
+    const { generateEmailCode, maskEmail, emailCodeHash } = jest.requireActual('../src/modules/auth/mfa-email');
+    const { staffCodeEmail } = jest.requireActual('../src/modules/email/staff-code-email');
+    for (let index = 0; index < 50; index++) expect(generateEmailCode()).toMatch(/^[0-9]{6}$/);
+    expect(maskEmail('jordan.lee@example.test')).toBe('j••••••@example.test');
+    expect(maskEmail('al@example.test')).toBe('a•••@example.test');
+    expect(emailCodeHash('user-a', 'login', '123456')).not.toBe(emailCodeHash('user-a', 'manage', '123456'));
+    expect(emailCodeHash('user-a', 'login', '123456')).not.toBe(emailCodeHash('user-b', 'login', '123456'));
+    const message = staffCodeEmail('123456', 'login');
+    expect(message.text).toContain('123456');
+    expect(message.text).toContain('to finish signing in');
+    expect(`${message.text}${message.html}`).not.toMatch(/https?:|@/);
+    expect(() => staffCodeEmail('12345', 'login')).toThrow();
   });
 });

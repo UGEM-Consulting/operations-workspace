@@ -29,7 +29,9 @@ export const workspaceCountsSchema = z.looseObject({ navigation: z.record(z.stri
 /** GET /auth/mfa (account security). */
 // Own saved countersigning signature (managers and administrators).
 export const savedSignatureSchema = z.looseObject({ saved: z.looseObject({ typedName: text, signatureMethod: z.enum(['DRAWN', 'TYPED']), updatedAt: text, image: z.string().startsWith('data:image/png;base64,') }).nullable() });
-export const mfaStatusSchema = z.looseObject({ enabled: z.boolean(), required: z.boolean(), policy: text, enabledAt: nullableText, recoveryCodesRemaining: z.number() });
+export const mfaStatusSchema = z.looseObject({ enabled: z.boolean(), required: z.boolean(), policy: text, enabledAt: nullableText, recoveryCodesRemaining: z.number(),
+  // Absent from an older API: treated as an authenticator app with email codes unavailable.
+  method: z.enum(['TOTP', 'EMAIL']).nullable().optional(), emailCodesAvailable: z.boolean().optional(), email: text.optional() });
 
 /** GET /onboarding/applications/:id */
 export const reviewDetailSchema = z.looseObject({
