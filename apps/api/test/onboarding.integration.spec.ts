@@ -528,6 +528,73 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(await db.query('SELECT count(*)::integer AS n FROM it_onboarding_requests WHERE "applicationId"=$1',[verified.id])).toEqual([{n:0}]);
   expect(await db.query('SELECT "supportsMemberId" FROM invitations WHERE id=$1',[created.body.id])).toEqual([{supportsMemberId:other.id}]);
  });
+ it('lets a linked team lead ask for a support in their team to become a dispatcher, and approval starts their IT setup',async()=>{
+  await db.query(`UPDATE dispatch_members SET "accountUserId"=NULL`);await db.query(`DELETE FROM users WHERE role::text='TEAM_LEAD'`);
+  await db.query('TRUNCATE dispatch_members,member_support_links,promotion_requests,mcs,teams,job_titles CASCADE');
+  const [mc]=await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Northwind Freight','northwind freight') RETURNING id`);
+  const [title]=await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Dispatcher','dispatcher') RETURNING id`);
+  const member=async(first:string)=>(await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ($1,'Dispatcher','DISPATCHER','ACTIVE',now()-interval '30 days') RETURNING id`,[first]))[0].id as string;
+  const lead=await member('Lead'),helper=await member('Helper'),outsider=await member('Outsider');
+  const [team]=await db.query(`INSERT INTO teams (name,"nameKey","mcId","leadMemberId") VALUES ('Lead team','lead team',$1,$2) RETURNING id`,[mc.id,lead]);
+  for(const id of [lead,helper])await db.query(`INSERT INTO member_assignments ("memberId","mcId","teamId","startedAt") VALUES ($1,$2,$3,now()-interval '30 days')`,[id,mc.id,team.id]);
+  // A support for Helper (in Lead's team), approved through the usual application.
+  const created=await manager.post('/api/onboarding/invitations').set(headers).send({email:payload.email,position:'SUPPORT',supportsMemberId:helper,expirationDays:7,telegramRequired:false}).expect(201);
+  const applicant=request.agent(app.getHttpServer());const verified=await verify(applicant,created.body.url.split('#').pop());
+  const personal={firstName:answers.firstName,lastName:answers.lastName,personalPhoneNumber:answers.personalPhoneNumber,preferredAmericanFirstName:'Sky',preferredAmericanLastName:'Support'};
+  await applicant.patch('/api/applicant/draft').set(headers).send({...personal,version:0}).expect(200);
+  await applicant.post('/api/applicant/submit').set(headers).send({...personal,accurate:true,version:1}).expect(201);
+  await manager.post(`/api/onboarding/applications/${verified.id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true}).expect(201);
+  const [support]=await db.query('SELECT id FROM dispatch_members WHERE "applicationId"=$1',[verified.id]);
+
+  // An administrator links the team lead account to Lead's dispatcher record.
+  const account={firstName:'Lead',lastName:'Dispatcher',email:'team.lead@example.test',password,role:'TEAM_LEAD'};
+  expect((await admin.post('/api/users').set(headers).send(account).expect(400)).body.message).toBe('Choose the dispatcher record for this team lead.');
+  await admin.post('/api/users').set(headers).send({...account,memberId:support.id}).expect(400);
+  const user=(await admin.post('/api/users').set(headers).send({...account,memberId:lead}).expect(201)).body;
+  await admin.post('/api/users').set(headers).send({...account,email:'second.lead@example.test',memberId:lead}).expect(409);
+  expect((await admin.get('/api/users').set(headers).expect(200)).body.find((row:{id:string})=>row.id===user.id)).toMatchObject({role:'TEAM_LEAD',memberId:lead});
+  const teamLead=request.agent(app.getHttpServer());
+  await teamLead.post('/api/auth/login').set(headers).send({email:account.email,password}).expect(200);
+  expect((await teamLead.post('/api/auth/password').set(headers).send({currentPassword:password,newPassword:`${password}-changed`}).expect(200)).body.landingPage).toBe('/team');
+  expect((await teamLead.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item:{key:string})=>item.key)).toEqual(['myteam','security']);
+  await teamLead.get('/api/onboarding/applications').set(headers).expect(403);
+  await teamLead.get('/api/dispatch/members').set(headers).expect(403);
+  await manager.get('/api/team').set(headers).expect(403);
+  const view=(await teamLead.get('/api/team').set(headers).expect(200)).body;
+  expect(view.teams.map((row:{name:string})=>row.name)).toEqual(['Lead team']);
+  expect(view.dispatchers.map((row:{name:string;lead:boolean})=>[row.name,row.lead])).toEqual([['Helper Dispatcher',false],['Lead Dispatcher',true]]);
+  expect(view.supports).toMatchObject([{id:support.id,name:'Sky Support',dispatcherId:helper,pending:null}]);
+
+  // Requests: only for supports in the team, one open at a time; a decline needs a note.
+  await teamLead.post('/api/team/promotions').set(headers).send({supportId:outsider,reason:'Not in my team'}).expect(404);
+  const first=(await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Ready to dispatch on their own.'}).expect(201)).body;
+  expect((await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Again'}).expect(409)).body.message).toBe('There is already an open request for this support.');
+  expect((await manager.get('/api/workspace/counts').set(headers).expect(200)).body.navigation.promotions).toBe(1);
+  await manager.post(`/api/dispatch/promotions/${first.id}/decide`).set(headers).send({version:1,decision:'DECLINE'}).expect(400);
+  await manager.post(`/api/dispatch/promotions/${first.id}/decide`).set(headers).send({version:1,decision:'DECLINE',note:'Needs another month.'}).expect(201);
+  const second=(await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'A month later: ready.'}).expect(201)).body;
+  const listed=(await manager.get('/api/dispatch/promotions?status=PENDING').set(headers).expect(200)).body.items;
+  expect(listed).toMatchObject([{id:second.id,support:'Sky Support',dispatcher:'Helper Dispatcher',team:'Lead team',requestedBy:'Lead Dispatcher'}]);
+  await manager.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:1,decision:'APPROVE',mcId:mc.id,teamId:team.id}).expect(400);
+  const approved=(await manager.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:1,decision:'APPROVE',mcId:mc.id,teamId:team.id,jobTitleId:title.id}).expect(201)).body;
+  await manager.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:2,decision:'APPROVE',mcId:mc.id,teamId:team.id,jobTitleId:title.id}).expect(409);
+
+  // Approval: an onboarding dispatcher in the team, no support link, and an IT request with the confirmed employment.
+  expect(await db.query('SELECT position,status,"jobTitleId" FROM dispatch_members WHERE id=$1',[support.id])).toEqual([{position:'DISPATCHER',status:'ONBOARDING',jobTitleId:title.id}]);
+  expect(await db.query('SELECT count(*)::integer AS n FROM member_support_links WHERE "supportId"=$1 AND "endedAt" IS NULL',[support.id])).toEqual([{n:0}]);
+  expect(await db.query('SELECT "teamId" FROM member_assignments WHERE "memberId"=$1 AND "endedAt" IS NULL',[support.id])).toEqual([{teamId:team.id}]);
+  const it=(await itAgent.get(`/api/it/onboarding/${approved.itRequestId}`).set(headers).expect(200)).body;
+  expect(it.request.profile).toMatchObject({mcName:'Northwind Freight',teamLead:'Lead Dispatcher',jobTitle:'Dispatcher',proposedDisplayName:'Sky Support'});
+  expect((await teamLead.get('/api/team').set(headers).expect(200)).body.requests.map((row:{status:string})=>row.status)).toEqual(['APPROVED','DECLINED']);
+  const events=await db.query(`SELECT event FROM dispatch_events WHERE "memberId"=$1 ORDER BY "createdAt"`,[support.id]);
+  expect(events.map((row:{event:string})=>row.event)).toEqual(['PROMOTION_REQUESTED','PROMOTION_DECLINED','PROMOTION_REQUESTED','PROMOTION_APPROVED']);
+
+  // Access follows the team: once Lead no longer leads it, the account sees no team and cannot request.
+  await db.query('UPDATE teams SET "leadMemberId"=NULL WHERE id=$1',[team.id]);
+  expect((await teamLead.get('/api/team').set(headers).expect(200)).body.teams).toEqual([]);
+  await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Again'}).expect(403);
+  await db.query(`UPDATE dispatch_members SET "accountUserId"=NULL`);await db.query(`DELETE FROM users WHERE role::text='TEAM_LEAD'`);
+ });
  it('enforces IT/admin roles, approval-only projections, session identity and CSRF',async()=>{
   const flow=await approvedItFlow();await admin.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
   await manager.get('/api/it/onboarding').set(headers).expect(403);await other.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(403);
@@ -588,7 +655,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  // The newest migration file, whatever later work adds; later migrations are stepped back generically first.
  const newestMigration=()=>db.migrations.map(migration=>migration.name??migration.constructor.name).sort((a,b)=>Number(a.slice(-13))-Number(b.slice(-13))).at(-1);
  // The notifications migration refuses rollback while delivery history exists; clear this disposable database's rows first.
- const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='SupportMembers1792840000000')await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`);if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
+ const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='TeamLeads1792850000000')await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`);if(await latestMigration()==='SupportMembers1792840000000')await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`);if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
  // Steps back past the later optional-equipment, applicant-updates and staff MFA migrations.
  const undoStaffMfa=async()=>{await undoTo('OptionalEquipmentTask1792740000000');await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};
@@ -651,7 +718,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const flow=await approvedItFlow();
   // Sidebar counts: open IT requests for IT, unread notifications only for managers, nothing for another manager's records.
   expect((await itAgent.get('/api/workspace/counts').set(headers).expect(200)).body).toEqual({navigation:{it:1},unreadNotifications:null});
-  expect((await manager.get('/api/workspace/counts').set(headers).expect(200)).body).toEqual({navigation:{applications:0},unreadNotifications:0});
+  expect((await manager.get('/api/workspace/counts').set(headers).expect(200)).body).toEqual({navigation:{applications:0,promotions:0},unreadNotifications:0});
   await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/RINGCENTRAL`).set(headers).send({version:0,status:'COMPLETED'}).expect(400);
   let data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190',companyEmail:'alex.demo@example.test'}).expect(200);
   for(const task of data.body.tasks.slice(0,5))data=await itAgent.patch(`/api/it/onboarding/${flow.requestId}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED',notes:'Fictional manual check completed'}).expect(200);

@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-export enum Role { SYSTEM_ADMIN = 'SYSTEM_ADMIN', DISPATCHER_MANAGER = 'DISPATCHER_MANAGER', IT_SPECIALIST = 'IT_SPECIALIST' }
+// TEAM_LEAD: a dispatcher who leads a team, linked to their dispatch member record (dispatch_members.accountUserId).
+export enum Role { SYSTEM_ADMIN = 'SYSTEM_ADMIN', DISPATCHER_MANAGER = 'DISPATCHER_MANAGER', IT_SPECIALIST = 'IT_SPECIALIST', TEAM_LEAD = 'TEAM_LEAD' }
 export enum UserStatus { ACTIVE = 'ACTIVE', INACTIVE = 'INACTIVE' }
 @Entity('users')
 @Index('users_email_lower_unique', { synchronize: false })

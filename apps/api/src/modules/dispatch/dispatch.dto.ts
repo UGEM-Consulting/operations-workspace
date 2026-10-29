@@ -53,3 +53,19 @@ export class AddContactDto {
  @text() @IsOptional() @IsString() @MaxLength(50) label?: string;
 }
 export const validPhone = (value: string) => value.length <= 40 && INTERNATIONAL_PHONE_PATTERN.test(value);
+export class CreatePromotionDto {
+ @IsUUID() supportId!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why this support is ready to be a dispatcher.' }) @MaxLength(1000) reason!: string;
+}
+export class PromotionQueryDto {
+ @IsOptional() @IsIn(['PENDING', 'APPROVED', 'DECLINED', 'CANCELLED', 'ALL']) status?: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED' | 'ALL';
+}
+/** Approving sets where they will work: mcId null means Independent (no team). Declining needs a note. */
+export class DecidePromotionDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(['APPROVE', 'DECLINE']) decision!: 'APPROVE' | 'DECLINE';
+ @text() @IsOptional() @IsString() @MaxLength(1000) note?: string;
+ @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() mcId?: string | null;
+ @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
+ @IsOptional() @IsUUID() jobTitleId?: string;
+}

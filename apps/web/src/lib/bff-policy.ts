@@ -38,6 +38,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
     (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave|contacts|reassign)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
+    // Promotions: a team lead's request or cancellation, and a manager's decision.
+    (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path))) ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));
 }

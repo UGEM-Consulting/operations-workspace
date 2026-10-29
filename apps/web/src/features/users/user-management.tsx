@@ -17,13 +17,15 @@ import { mutate } from '@/lib/client-api';
 import { USER_DEFAULTS } from '@/lib/navigation';
 import type { StaffUser } from '@/lib/auth';
 import { PageHeader } from '@/components/workspace-ui';
-const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST'];
-type ManagedUser = StaffUser & { mustChangePassword?: boolean };
+const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD'];
+type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null };
+/** A dispatcher record a team lead account can link to; what the account sees follows the team it leads. */
+export interface LeadChoice { id: string; name: string; team: string | null }
 /**
  * Staff accounts with status tabs and search kept in the URL; filtering happens here because the API returns every account.
  * `page` renders it as the Staff accounts page; otherwise it is a card on Settings (an older API without that page).
  */
-export function UserManagement({ users, currentUserId, filters, page = false }: { users: ManagedUser[]; currentUserId: string; filters: Record<string, string>; page?: boolean }) {
+export function UserManagement({ users, currentUserId, filters, page = false, leads = [] }: { users: ManagedUser[]; currentUserId: string; filters: Record<string, string>; page?: boolean; leads?: LeadChoice[] }) {
   const router = useRouter();
   const toast = useToast();
   const [editing, setEditing] = useState<ManagedUser | null>(null);
@@ -34,7 +36,9 @@ export function UserManagement({ users, currentUserId, filters, page = false }: 
   const searched = users.filter(user => `${user.firstName} ${user.lastName} ${user.email}`.toLowerCase().includes(filters.search.toLowerCase()));
   const visible = searched.filter(user => filters.status === 'ALL' || user.status === filters.status);
   const filtered = filters.search !== '' || filters.status !== 'ALL';
-  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); }
+  const [role, setRole] = useState('DISPATCHER_MANAGER');
+  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); }
+  const linked = (user: ManagedUser) => leads.find(lead => lead.id === user.memberId);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
@@ -67,7 +71,7 @@ export function UserManagement({ users, currentUserId, filters, page = false }: 
       <Table caption="Internal staff accounts" rows={visible} rowKey={user => user.id} className="border-t border-border"
         rowClassName={user => highlight === user.email.toLowerCase() ? 'bg-success-background/50' : undefined} columns={[
           { key: 'person', label: 'Name', primary: true, cell: user => <Person name={`${user.firstName} ${user.lastName}`} secondary={user.email} /> },
-          { key: 'role', label: 'Role', cell: user => roleLabel(user.role) },
+          { key: 'role', label: 'Role', cell: user => user.role === 'TEAM_LEAD' && linked(user) ? <>{roleLabel(user.role)}<span className="block text-[13px] text-muted-foreground">{linked(user)!.team ?? 'No team led'}</span></> : roleLabel(user.role) },
           { key: 'status', label: 'Status', cell: user => <span className="flex flex-wrap gap-1.5"><StatusBadge status={user.status} />{user.mustChangePassword && <Badge label="Password change pending" tone="warning" />}</span> },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: user => <Button variant="outline" size="sm" onClick={() => edit(user)}>Edit<span className="sr-only"> {user.email}</span></Button> },
         ]} empty={<EmptyState compact title={filtered ? 'No matching accounts' : 'No staff accounts'} description={filtered ? 'Try another status, name or email.' : undefined} />}
@@ -77,7 +81,10 @@ export function UserManagement({ users, currentUserId, filters, page = false }: 
       <form id="user-editor" onSubmit={submit} className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2"><Input label="First name" name="firstName" defaultValue={editing?.firstName} required maxLength={100} width="full" /><Input label="Last name" name="lastName" defaultValue={editing?.lastName} required maxLength={100} width="full" /></div>
         <Input label="Email" name="email" type="email" defaultValue={editing?.email} required maxLength={254} width="full" />
-        <div className="grid gap-4 sm:grid-cols-2"><Select label="Role" name="role" defaultValue={editing?.role ?? 'DISPATCHER_MANAGER'} width="full" options={roles.map(role => ({ value: role, label: roleLabel(role) }))} /><Select label="Status" name="status" defaultValue={editing?.status ?? 'ACTIVE'} width="full" options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} /></div>
+        <div className="grid gap-4 sm:grid-cols-2"><Select label="Role" name="role" value={role} onChange={event => setRole(event.target.value)} width="full" options={roles.map(role => ({ value: role, label: roleLabel(role) }))} /><Select label="Status" name="status" defaultValue={editing?.status ?? 'ACTIVE'} width="full" options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} /></div>
+        {role === 'TEAM_LEAD' && <Select label="Team lead’s dispatcher record" name="memberId" defaultValue={editing?.memberId ?? ''} required placeholder="Choose a dispatcher" width="full"
+          options={leads.map(lead => ({ value: lead.id, label: lead.team ? `${lead.name} · leads ${lead.team}` : `${lead.name} · leads no team yet` }))}
+          hint="They see and act only for the team this dispatcher leads. Changing it ends their sessions." />}
         <Input label={editing ? 'New password' : 'Initial password'} optional={!!editing} name="password" type="password" autoComplete="new-password" required={!editing} minLength={12} maxLength={128} width="full"
           hint={`Use 12–128 characters. ${editing?.id === currentUserId ? 'Leave blank to keep your current password.' : `${editing ? 'Leave blank to keep the current password. ' : ''}They must replace it with their own when they next sign in.`}`} />
         {editing && <Alert tone="warning"><p>Changing the email, role, status or password ends this user’s existing sessions; name changes do not.{editing.id === currentUserId && ' If you change those on your own account, you will need to sign in again.'}</p></Alert>}

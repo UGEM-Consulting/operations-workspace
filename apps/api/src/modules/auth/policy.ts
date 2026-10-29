@@ -13,12 +13,15 @@ export const AllowPendingPasswordChange = () => AllowPendingMfa('password');
 export const STAFF = Object.values(Role);
 // section groups the sidebar; 'Account' items appear in the account menu instead of the main list.
 const navigation = [
-  { key: 'dashboard', href: '/dashboard', label: 'Dashboard', section: null, roles: STAFF },
+  { key: 'dashboard', href: '/dashboard', label: 'Dashboard', section: null, roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER, Role.IT_SPECIALIST] },
+  // A team lead sees only their own team; access follows the team their dispatcher record leads.
+  { key: 'myteam', href: '/team', label: 'My team', section: null, roles: [Role.TEAM_LEAD] },
   { key: 'invitations', href: '/onboarding/invitations', label: 'Invitations', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'applications', href: '/onboarding/applications', label: 'Applications', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'documents', href: '/onboarding/documents', label: 'Documents', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'teams', href: '/dispatch/teams', label: 'Teams', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'dispatchers', href: '/dispatch/dispatchers', label: 'Dispatchers', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
+  { key: 'promotions', href: '/dispatch/promotions', label: 'Promotions', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', section: 'IT', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
   { key: 'lists', href: '/lists', label: 'Lists', section: 'Admin', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'users', href: '/staff-accounts', label: 'Staff accounts', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
@@ -27,7 +30,7 @@ const navigation = [
 ];
 export function accessFor(user: User) {
   return { navigation: navigation.filter(item => item.roles.includes(user.role)).map(({ key, href, label, section }) => ({ key, href, label, section })),
-    landingPage: user.role === Role.IT_SPECIALIST ? '/it/tasks' : '/dashboard' };
+    landingPage: user.role === Role.IT_SPECIALIST ? '/it/tasks' : user.role === Role.TEAM_LEAD ? '/team' : '/dashboard' };
 }
 export function requirePage(user: User, key: string): void {
   if (!accessFor(user).navigation.some(item => item.key === key)) throw new ForbiddenException();
