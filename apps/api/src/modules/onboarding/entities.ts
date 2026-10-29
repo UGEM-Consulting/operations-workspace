@@ -21,6 +21,9 @@ export class Invitation {
  @Column('varchar', { nullable: true }) mcName!: string | null;
  @Column('varchar', { nullable: true }) teamLead!: string | null;
  @Column('varchar', { nullable: true }) jobTitle!: string | null;
+ // DISPATCHER (default) or SUPPORT, who assists one dispatcher (the manager's choice, confirmed at approval).
+ @Column('varchar', { default: 'DISPATCHER' }) position!: 'DISPATCHER' | 'SUPPORT';
+ @Column('uuid', { nullable: true }) supportsMemberId!: string | null;
  @Column() telegramRequired!: boolean;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @Column('timestamptz') expiresAt!: Date;

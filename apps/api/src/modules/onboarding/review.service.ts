@@ -1,5 +1,5 @@
 import { createItRequest } from '../it/create-request';
-import { createMemberForApproval } from '../dispatch/create-member';
+import { createMemberForApproval, createSupportForApproval, supportedDispatcher } from '../dispatch/create-member';
 import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
 import { provisioningDetails, requiredApplicantFields } from './application-requirements';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
@@ -82,19 +82,29 @@ export class ReviewService {
   const pendingCountersign=documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant;
   // Active list entries for the approval pickers. The decision still carries the chosen names as text, so an older web
   // client without pickers keeps working, and approval matches the text back to these entries.
-  const employmentOptions=canReview?await this.employmentOptions():null;
+  const support=invitation.position==='SUPPORT';
+  const employmentOptions=canReview&&!support?await this.employmentOptions():null;
+  // A support's dispatcher, and the dispatchers a manager may pick instead while deciding.
+  const supports=support?{supportsMemberId:invitation.supportsMemberId,options:await this.dispatcherOptions(invitation.supportsMemberId)}:null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
    // The responsible manager sees the company accounts IT created; never IT notes or verification metadata.
    itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
    // Historical decisions are never second-guessed: missing photos/signatures only matter while the application is open.
-   requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {}),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
+   requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {},invitation.position),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
    documents:{required:documents.required,photos:{selfie:!!documents.photos.SELFIE,idSelfie:!!documents.photos.ID_SELFIE},
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
     countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
-   canReview, canReject, readyForIt:application.status === 'APPROVED', employmentOptions };
+   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support, employmentOptions, supports };
+ }
+ /** Current dispatchers (not left, including those in IT setup) with where they work now, plus the one already picked. */
+ async dispatcherOptions(current: string | null) {
+  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.status, m.name AS mc, t.name AS team
+   FROM dispatch_members d LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
+   LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
+   WHERE d.position = 'DISPATCHER' AND (d.status <> 'LEFT' OR d.id = $1) ORDER BY lower(d."firstName"), lower(d."lastName")`, [current]);
  }
  async employmentOptions() {
   const [mcs, teams, jobTitles] = await Promise.all([
@@ -125,12 +135,17 @@ export class ReviewService {
    if (application.version !== input.version) throw new ConflictException('This application changed. Reload before deciding.');
    const nextStatus: ApplicationStatus = input.decisionType === 'APPROVE' ? 'APPROVED' : input.decisionType === 'REJECT' ? 'REJECTED' : 'CHANGES_REQUESTED';
    requireTransition(application.status,nextStatus);
-   if (input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
+   // Supports have no employment of their own and no IT setup; approval confirms the dispatcher they assist.
+   const support = invitation.position === 'SUPPORT';
+   if (support && (input.employment || input.employmentConfirmed)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
+   if (!support && input.supportsMemberId) throw new BadRequestException('Only a support is approved with a dispatcher.');
+   if (input.supportsMemberId && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher is confirmed during approval.');
+   if (!support && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
    // Under the invitation lock, so the applicant cannot upload or sign concurrently.
    const documents = await documentStatus(em,id,this.storage.enabled);
-   const missing: RequestableItem[] = [...requiredApplicantFields(submitted?.fields ?? {}),...documents.missing];
+   const missing: RequestableItem[] = [...requiredApplicantFields(submitted?.fields ?? {},invitation.position),...documents.missing];
    if (input.decisionType === 'APPROVE' && missing.length) throw new BadRequestException(`Required applicant fields must be completed before approval. Request corrections for: ${missing.join(', ')}.`);
    const countersign = input.decisionType === 'APPROVE' ? documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant : undefined;
    if (input.countersignature && !countersign) throw new BadRequestException('No NDA countersignature is needed for this application.');
@@ -165,14 +180,22 @@ export class ReviewService {
     await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
    }
    // A new IT checklist alerts the IT specialists; sent after the approval commits.
-   if(nextStatus==='APPROVED')alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation));
+   if(nextStatus==='APPROVED'&&!support)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation));
    // The approved dispatcher becomes a dispatch member record (no login), placed by the confirmed assignments.
-   if(nextStatus==='APPROVED'&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
+   if(nextStatus==='APPROVED'&&!support&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
+   // An approved support becomes an active support record linked to the dispatcher confirmed here (no IT setup).
+   if(nextStatus==='APPROVED'&&support){
+    const dispatcherId=input.supportsMemberId??invitation.supportsMemberId;
+    if(!dispatcherId)throw new BadRequestException('Choose the dispatcher this support will assist.');
+    await supportedDispatcher(em,dispatcherId);
+    if(dispatcherId!==invitation.supportsMemberId){invitation.supportsMemberId=dispatcherId;await em.save(invitation);}
+    await createSupportForApproval(em,application,submitted?.fields??{},dispatcherId,review.createdAt);
+   }
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});
    // The applicant's chosen channels are queued with the decision and sent only after it commits.
    await this.updates.queue(em,application,review);
-   return {id:review.id,status:application.status,version:application.version,readyForIt:application.status==='APPROVED'};
+   return {id:review.id,status:application.status,version:application.version,readyForIt:application.status==='APPROVED'&&!support};
   });
   this.updates.dispatch(result.id);
   this.notifications.dispatch(alerts);

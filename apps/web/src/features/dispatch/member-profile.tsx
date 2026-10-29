@@ -23,7 +23,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { Choice, fullName, MemberProfile, statusBadge, TeamRow } from './types';
 
-type Action = 'move' | 'leave' | 'title' | 'contact';
+type Action = 'move' | 'reassign' | 'leave' | 'title' | 'contact';
 const today = () => new Date().toLocaleDateString('en-CA');
 // One reachable way to contact the dispatcher: where it came from, and a copy button.
 function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; value: string; source: string; action?: React.ReactNode }) {
@@ -39,7 +39,7 @@ function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; 
  * every way to reach them (company accounts, application contacts and ones staff added), signed documents, IT setup
  * progress, and where they work now and before. Moves and departures add history; nothing is overwritten.
  */
-export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[] }) {
+export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers = [] }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[]; dispatchers?: { id: string; name: string; mc: string | null; team: string | null }[] }) {
   const router = useRouter();
   const toast = useToast();
   const [action, setAction] = useState<Action | null>(null);
@@ -49,6 +49,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts;
   const badge = statusBadge[member.status];
+  // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
+  const support = member.position === 'SUPPORT', supportOf = member.supportOf ?? null;
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
   function start(next: Action) { setAction(next); setError(''); setMcId(member.current?.mcId ?? ''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -57,11 +59,12 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     setPending('form'); setError('');
     try {
-      if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId || null, teamId: form.teamId || null, startedAt: form.startedAt, reason: form.reason });
+      if (action === 'reassign') await mutate(`dispatch/members/${member.id}/reassign`, 'POST', { version: member.version, dispatcherId: form.dispatcherId, startedAt: form.startedAt, reason: form.reason });
+      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId || null, teamId: form.teamId || null, startedAt: form.startedAt, reason: form.reason });
       else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason });
       else if (action === 'title') await mutate(`dispatch/members/${member.id}`, 'PATCH', { version: member.version, jobTitleId: form.jobTitleId || null });
       else await mutate(`dispatch/members/${member.id}/contacts`, 'POST', { kind, value: form.value, ...(form.label?.trim() ? { label: form.label } : {}) });
-      toast({ title: action === 'move' ? `${name} moved` : action === 'leave' ? `${name} marked as left` : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
+      toast({ title: action === 'reassign' ? 'Dispatcher changed' : action === 'move' ? `${name} moved` : action === 'leave' ? `${name} marked as left` : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(null); }
@@ -81,12 +84,14 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
       {member.photo ? <a href={`/api/backend/dispatch/members/${member.id}/photos/selfie`} target="_blank" rel="noopener" className="shrink-0 rounded-lg focus-visible:outline-2" title="Open the photo full size">
         <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/selfie`} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></a> : <Avatar name={name} size="lg" />}
       <div className="min-w-0 flex-1"><PageHeader title={name} badge={<Badge label={badge.label} tone={badge.tone} />}
-        meta={[current ? <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No MC or team',
+        meta={[support ? (supportOf ? <>Support for {supportOf.dispatcher} · {where(supportOf)}</> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No dispatcher')
+          : current ? <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No MC or team',
           member.leadOf ? `Team lead of ${member.leadOf.name}` : member.position === 'SUPPORT' ? 'Support' : member.jobTitle?.name ?? 'Dispatcher',
           <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
         action={open && <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => start('leave')}><UserMinus aria-hidden="true" className="size-4" />Mark as left</Button>
-          <Button onClick={() => start('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button></div>} /></div>
+          {support ? <Button onClick={() => start('reassign')}><Route aria-hidden="true" className="size-4" />Change dispatcher</Button>
+            : <Button onClick={() => start('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button>}</div>} /></div>
     </div>
     {member.status === 'ONBOARDING' && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
     {member.status === 'LEFT' && <Alert tone="info" title="This dispatcher has left"><p>The record and its history are kept. It can’t be moved or edited.</p></Alert>}
@@ -101,7 +106,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
                 { label: 'First name', value: details.legalFirstName }, { label: 'Last name', value: details.legalLastName },
                 { label: 'American first name', value: details.preferredAmericanFirstName }, { label: 'American last name', value: details.preferredAmericanLastName },
                 { label: 'Telegram', value: details.telegram ? `@${details.telegram.replace(/^@/, '')}` : null },
-                { label: 'Employment on the application', value: [details.jobTitle, details.mcName, details.teamLead].filter(Boolean).join(' · ') || null }]} /></CardBody>
+                ...(support ? [] : [{ label: 'Employment on the application', value: [details.jobTitle, details.mcName, details.teamLead].filter(Boolean).join(' · ') || null }])]} /></CardBody>
             </Card>}
                 <Card>
               <CardHeader title="Contacts" description="Every way to reach this dispatcher." actions={open && <Button size="sm" variant="outline" onClick={() => start('contact')}><Plus aria-hidden="true" className="size-4" />Add email or phone</Button>} />
@@ -139,31 +144,51 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
                   {!member.photo && !member.idPhoto && !member.documents?.length && <p className="text-sm text-muted-foreground">No photos or signed documents.</p>}
             </div>,
             history: <div className="space-y-6">
-            <Card>
+            {support && <Card>
+              <CardHeader title="Dispatcher history" description="Every dispatcher this support has assisted. Changes are recorded, never overwritten." />
+              <CardBody><Timeline items={(member.supportHistory ?? []).map(row => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const, icon: <Users aria-hidden="true" />,
+                title: `${row.dispatcher}${row.dispatcherStatus === 'LEFT' ? ' (left)' : ''}`,
+                meta: <><LocalTime iso={row.startedAt} format="date" /> – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.changedBy ? ` · by ${row.changedBy}` : ''}</>, body: row.reason ?? undefined }))} /></CardBody>
+            </Card>}
+            {!support && <Card>
               <CardHeader title="MC and team history" description="Every MC and team this dispatcher has worked for. Moves are recorded, never overwritten." />
               <CardBody><Timeline items={member.history.map((row, index) => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
                 icon: index < member.history.length - 1 && member.history[index + 1].mcId === row.mcId ? <Users aria-hidden="true" /> : <Building2 aria-hidden="true" />,
                 title: where(row), meta: <><LocalTime iso={row.startedAt} format="date" /> – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
                 body: row.reason ?? undefined }))} /></CardBody>
-            </Card>
+            </Card>}
                   {member.activity && member.activity.length > 0 && <Card><CardHeader title="Onboarding" description="From the invitation to IT setup." />
                 <CardBody><Timeline items={[...member.activity].reverse().map(item => ({ id: item.id, title: statusLabel(item.event), meta: <LocalTime iso={item.createdAt} /> }))} /></CardBody></Card>}
             </div>,
           }} />
       </div>
       <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
-        <Card>
+        {support ? <Card>
+          <CardHeader title="Now" />
+          <CardBody><DescriptionList layout="rows" items={[
+            { label: 'Supports', value: supportOf ? <Link href={`/dispatch/dispatchers/${supportOf.dispatcherId}`} className="text-primary underline-offset-4 hover:underline">{supportOf.dispatcher}</Link> : null, emptyLabel: 'No dispatcher' },
+            { label: 'MC', value: supportOf ? supportOf.mc ?? 'Independent' : null, emptyLabel: '—' },
+            { label: 'Team', value: supportOf?.team, emptyLabel: 'No team' },
+            { label: 'Since', value: supportOf ? <LocalTime iso={supportOf.startedAt} format="date" /> : null, emptyLabel: '—' }]} /></CardBody>
+        </Card> : <Card>
           <CardHeader title="Now" actions={open && <Button variant="ghost" size="sm" onClick={() => start('title')}>Change job title</Button>} />
           <CardBody><DescriptionList layout="rows" items={[
             { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : current ? 'Independent' : null, emptyLabel: 'None' },
             { label: 'Team', value: current?.team, emptyLabel: 'No team' },
             { label: 'Job title', value: member.jobTitle?.name, emptyLabel: 'Not set' },
             { label: 'Since', value: current ? <LocalTime iso={current.startedAt} format="date" /> : null, emptyLabel: '—' }]} /></CardBody>
-        </Card>
+        </Card>}
+        {!support && !!member.supports?.length && <Card>
+          <CardHeader title="Supports" description="Updaters who assist this dispatcher." />
+          <ul className="mt-3 divide-y divide-border border-t border-border">{member.supports.map(row => <li key={row.id} className="flex items-center justify-between gap-3 px-4 py-3 sm:px-5">
+            <Link href={`/dispatch/dispatchers/${row.id}`} className="min-w-0 text-sm font-medium text-primary underline-offset-4 hover:underline">{row.name}</Link>
+            <span className="shrink-0 text-[13px] text-muted-foreground">since <LocalTime iso={row.since} format="date" /></span></li>)}</ul>
+        </Card>}
         <Card>
-          <CardHeader title="IT setup" />
+          <CardHeader title={support ? 'Onboarding' : 'IT setup'} />
           <CardBody className="space-y-3 text-sm">
-            {!accounts ? <p className="text-muted-foreground">No IT setup request for this dispatcher.</p>
+            {support ? <p className="text-muted-foreground">Supports need no IT setup or company accounts.</p>
+              : !accounts ? <p className="text-muted-foreground">No IT setup request for this dispatcher.</p>
               : accounts.completedAt ? <p>Setup complete <LocalTime iso={accounts.completedAt} format="date" />.</p>
               : <><p>In progress. The dispatcher becomes Active when IT finishes.</p>{progress}</>}
             {member.canOpenApplication && member.applicationId && <Link href={`/onboarding/applications/${member.applicationId}`} className="inline-block text-primary underline-offset-4 hover:underline">Open onboarding record</Link>}
@@ -173,10 +198,16 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
       </div>
     </div>
     {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' ? 'warning' : undefined}
-      title={action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as left?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
-      description={action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'The record and its history are kept. Leaving a team also ends being its lead.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
-      actions={<Button type="submit" form="member-action" variant={action === 'leave' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? 'Mark as left' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
+      title={action === 'reassign' ? `Change ${name}’s dispatcher` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as left?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
+      description={action === 'reassign' ? 'They start assisting the new dispatcher on the start date; the current one stays in the history.' : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'The record and its history are kept. Leaving a team also ends being its lead.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
+      actions={<Button type="submit" form="member-action" variant={action === 'leave' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'reassign' ? 'Change dispatcher' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? 'Mark as left' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
+        {action === 'reassign' && <>
+          <Select label="New dispatcher" name="dispatcherId" required placeholder="Choose a dispatcher" width="full"
+            options={dispatchers.filter(option => option.id !== supportOf?.dispatcherId).map(option => ({ value: option.id, label: [option.name, option.mc ?? 'Independent', option.team].filter(Boolean).join(' · ') }))} />
+          <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
+          <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Blake needed help with updates." />
+        </>}
         {action === 'move' && <>
           <Select label="MC" name="mcId" value={mcId} onChange={event => setMcId(event.target.value)} width="full"
             options={[{ value: '', label: 'Independent' }, ...mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))]} />

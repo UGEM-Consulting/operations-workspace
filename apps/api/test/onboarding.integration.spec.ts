@@ -499,6 +499,35 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(await db.query(`SELECT a."mcId",a."teamId",d."jobTitleId" FROM dispatch_members d JOIN member_assignments a ON a."memberId"=d.id WHERE d."applicationId"=$1`,[flow.id]))
    .toEqual([{mcId:mc.id,teamId:team.id,jobTitleId:title.id}]);
  });
+ it('invites a support for a dispatcher, skips employment and IT setup, and approves them linked to the confirmed dispatcher',async()=>{
+  await db.query('TRUNCATE dispatch_members,member_support_links CASCADE');
+  const [lead]=await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Lead','Dispatcher','DISPATCHER','ACTIVE',now()) RETURNING id`);
+  const [other]=await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Other','Dispatcher','DISPATCHER','ONBOARDING',now()) RETURNING id`);
+  const invite=(body:Record<string,unknown>)=>manager.post('/api/onboarding/invitations').set(headers).send({expirationDays:7,telegramRequired:false,...body});
+  expect((await invite({position:'SUPPORT'}).expect(400)).body.message).toBe('Choose the dispatcher this support will assist.');
+  await invite({position:'SUPPORT',supportsMemberId:lead.id,mcName:'Independent'}).expect(400);
+  await invite({supportsMemberId:lead.id}).expect(400);
+  const created=await invite({email:payload.email,position:'SUPPORT',supportsMemberId:lead.id}).expect(201);
+  expect((await manager.get('/api/onboarding/invitations').set(headers).expect(200)).body.find((row:{id:string})=>row.id===created.body.id))
+   .toMatchObject({position:'SUPPORT',supports:{id:lead.id,name:'Lead Dispatcher'}});
+  // The applicant submits without any employment answers.
+  const applicant=request.agent(app.getHttpServer());const verified=await verify(applicant,created.body.url.split('#').pop());
+  expect((await applicant.get('/api/applicant/application').set(headers).expect(200)).body.invitation.position).toBe('SUPPORT');
+  const personal={firstName:answers.firstName,lastName:answers.lastName,personalPhoneNumber:answers.personalPhoneNumber,preferredAmericanFirstName:'Sky',preferredAmericanLastName:'Support'};
+  await applicant.patch('/api/applicant/draft').set(headers).send({...personal,version:0}).expect(200);
+  await applicant.post('/api/applicant/submit').set(headers).send({...personal,accurate:true,version:1}).expect(201);
+  const detail=(await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers).expect(200)).body;
+  expect(detail).toMatchObject({requiredFields:[],employmentOptions:null,supports:{supportsMemberId:lead.id}});
+  expect(detail.supports.options.map((option:{name:string;status:string})=>[option.name,option.status])).toEqual([['Lead Dispatcher','ACTIVE'],['Other Dispatcher','ONBOARDING']]);
+  // Supports are approved without employment, with the dispatcher confirmed or changed.
+  await decision(manager,verified.id,{version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}}).expect(400);
+  const approved=await manager.post(`/api/onboarding/applications/${verified.id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true,supportsMemberId:other.id}).expect(201);
+  expect(approved.body.readyForIt).toBe(false);
+  expect(await db.query(`SELECT d.position,d.status,d."firstName",l."dispatcherId" FROM dispatch_members d JOIN member_support_links l ON l."supportId"=d.id WHERE d."applicationId"=$1`,[verified.id]))
+   .toEqual([{position:'SUPPORT',status:'ACTIVE',firstName:'Sky',dispatcherId:other.id}]);
+  expect(await db.query('SELECT count(*)::integer AS n FROM it_onboarding_requests WHERE "applicationId"=$1',[verified.id])).toEqual([{n:0}]);
+  expect(await db.query('SELECT "supportsMemberId" FROM invitations WHERE id=$1',[created.body.id])).toEqual([{supportsMemberId:other.id}]);
+ });
  it('enforces IT/admin roles, approval-only projections, session identity and CSRF',async()=>{
   const flow=await approvedItFlow();await admin.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
   await manager.get('/api/it/onboarding').set(headers).expect(403);await other.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(403);
@@ -559,7 +588,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  // The newest migration file, whatever later work adds; later migrations are stepped back generically first.
  const newestMigration=()=>db.migrations.map(migration=>migration.name??migration.constructor.name).sort((a,b)=>Number(a.slice(-13))-Number(b.slice(-13))).at(-1);
  // The notifications migration refuses rollback while delivery history exists; clear this disposable database's rows first.
- const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
+ const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='SupportMembers1792840000000')await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`);if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
  // Steps back past the later optional-equipment, applicant-updates and staff MFA migrations.
  const undoStaffMfa=async()=>{await undoTo('OptionalEquipmentTask1792740000000');await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};

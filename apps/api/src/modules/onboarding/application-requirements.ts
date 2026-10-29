@@ -2,8 +2,9 @@ import type { ApplicationFields, CorrectionField } from './entities';
 // Structural validation: 7–15 digits, optional leading +, common international separators.
 // Preserve supplied formatting and do not assume a country or invent a work number.
 export const INTERNATIONAL_PHONE_PATTERN = /^(?=(?:\D*\d){7,15}\D*$)\+?[\d\s().-]+$/;
-export function requiredApplicantFields(fields: ApplicationFields): CorrectionField[] {
- const required: CorrectionField[] = ['firstName','lastName','personalPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName','mcName','teamLead','jobTitle'];
+/** Supports have no employment of their own (it follows the dispatcher they assist), so they skip MC, team lead and job title. */
+export function requiredApplicantFields(fields: ApplicationFields, position: 'DISPATCHER' | 'SUPPORT' = 'DISPATCHER'): CorrectionField[] {
+ const required: CorrectionField[] = ['firstName','lastName','personalPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName',...(position === 'SUPPORT' ? [] : ['mcName','teamLead','jobTitle'] as CorrectionField[])];
  const missing = required.filter(key => {
   const value = fields[key];
   if (typeof value !== 'string' || !value.trim()) return true;

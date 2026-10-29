@@ -68,6 +68,8 @@ function Form({ initial }: { initial: ApplicantRecord }) {
  const [failed,setFailed]=useState(false),[leaving,setLeaving]=useState(false),[referenceMessage,setReferenceMessage]=useState('');
  const [conflict,setConflict]=useState(false),[reverify,setReverify]=useState(false),[verifiedAt,setVerifiedAt]=useState(0),[submitAttempted,setSubmitAttempted]=useState(false);
  const steps=record.documents.required?documentSteps:baseSteps,reviewStep=steps.length-1;
+ // A support (updater) assists one dispatcher and has no employment of their own: their manager sets the assignment.
+ const support=record.invitation.position==='SUPPORT';
  const stepHeading=useRef<HTMLHeadingElement>(null),resultHeading=useRef<HTMLHeadingElement>(null);
  // Focus moves to the step heading when the user changes step, not on first load and not when an invalid field takes focus.
  const focusHeading=useRef(false),[submittedHere,setSubmittedHere]=useState(false);
@@ -101,13 +103,13 @@ function Form({ initial }: { initial: ApplicantRecord }) {
   }
   const fields=stepFields[index];
   if(fields.some(field=>errors[field]))return 'attention';
-  if(stepIssues({...formValues(record),...watched} as Values,record.invitation.telegramRequired,fields).length)return submitAttempted||fields.some(field=>requested(field as FieldName))?'attention':null;
+  if(stepIssues({...formValues(record),...watched} as Values,record.invitation.telegramRequired,fields,support).length)return submitAttempted||fields.some(field=>requested(field as FieldName))?'attention':null;
   return 'complete';
  }
  function continueStep() {
   // Documents and review have no answer fields of their own; locked correction fields are never checked here.
   const fields=(stepFields[step]??[]).filter(field=>editable(field as FieldName));
-  const issues=stepIssues(getValues(),record.invitation.telegramRequired,fields);
+  const issues=stepIssues(getValues(),record.invitation.telegramRequired,fields,support);
   clearErrors(fields as (keyof Values)[]);
   if(issues.length){for(const issue of issues)setError(issue.path[0] as keyof Values,{message:issue.message});setFailed(true);setMessage(`Please correct the highlighted fields. ${[...new Set(issues.map(issue=>issue.message))].join(' ')}`);setInvalidField({field:issues[0].path[0] as keyof Values});return;}
   setFailed(false);setMessage('');goTo(step+1);
@@ -122,7 +124,7 @@ function Form({ initial }: { initial: ApplicantRecord }) {
  async function save(values:Values,submit:boolean) {
   if(submit)setSubmitAttempted(true);
   if(submit&&record.documents.missing.length){setFailed(true);setStep(2);setMessage('Upload both photos and sign every required document before submitting.');return;}
-  if(submit){const checked=applicationSubmitSchema(record.invitation.telegramRequired).safeParse(values);
+  if(submit){const checked=applicationSubmitSchema(record.invitation.telegramRequired,support).safeParse(values);
    if(!checked.success){for(const issue of checked.error.issues)setError(issue.path[0] as keyof Values,{message:issue.message});showValidationErrors(checked.error.issues);return;}}
   setBusy(true);setFailed(false);setMessage('');setConflict(false);
   try {
@@ -177,7 +179,8 @@ function Form({ initial }: { initial: ApplicantRecord }) {
  {record.correction&&<Alert tone="warning" title="Corrections requested"><p className="whitespace-pre-wrap break-words">{record.correction.reason}</p><p>Items to update: {record.correction.requestedFields.map(field=>itemLabels[field]).join(', ')}.</p><p className="text-[13px] text-muted-foreground">Only the items marked Needs correction can change. Save your progress, then resubmit for review. Access expires <LocalTime iso={record.accessUntil} format="date"/>.</p></Alert>}
  <form noValidate onSubmit={handleSubmit(values=>save(values,true),invalidForm)}><fieldset disabled={busy} className="min-w-0"><Card className="space-y-5 p-6 sm:p-8"><h2 ref={stepHeading} tabIndex={-1} className="text-lg font-semibold outline-none">{steps[step]}</h2><p className="text-sm text-muted-foreground">Step {step+1} of {steps.length}. All fields are required unless marked optional.</p>
  {step===0&&<div className="grid gap-4 sm:grid-cols-2">{personalShown.map(name=>field(name,{required:['firstName','lastName','personalPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName'].includes(name)||(name==='telegram'&&record.invitation.telegramRequired),maxLength:['personalPhoneNumber','workPhoneNumber'].includes(name)?40:100,hint:['personalPhoneNumber','workPhoneNumber'].includes(name)?phoneHint:undefined}))}<Input id="field-verifiedEmail" label="Verified personal email" type="email" readOnly value={record.invitation.email??''} hint="Verified when you started. It cannot be changed." className="sm:col-span-2" width="full"/></div>}
- {step===1&&<><p className="text-sm text-muted-foreground">Enter your employment details. Your manager will confirm the final assignments before approval. IT will assign your work phone number when setting up RingCentral.</p><div className="grid gap-4">{employmentFields.map(name=><div key={name} className="grid gap-2">{field(name,{required:true,maxLength:name==='jobTitle'?100:150})}{name!=='jobTitle'&&<Checkbox label="Independent" checked={watched[name]==='Independent'} disabled={!editable(name)} onChange={event=>setValue(name,event.target.checked?'Independent':'',{shouldDirty:true,shouldValidate:!!errors[name]})}/>}</div>)}</div></>}
+ {step===1&&support&&<p className="text-sm leading-6 text-muted-foreground">You’re joining as a support (updater), working with one of our dispatchers. Your manager sets your assignment, so there’s nothing to fill in here. Continue to the next step.</p>}
+ {step===1&&!support&&<><p className="text-sm text-muted-foreground">Enter your employment details. Your manager will confirm the final assignments before approval. IT will assign your work phone number when setting up RingCentral.</p><div className="grid gap-4">{employmentFields.map(name=><div key={name} className="grid gap-2">{field(name,{required:true,maxLength:name==='jobTitle'?100:150})}{name!=='jobTitle'&&<Checkbox label="Independent" checked={watched[name]==='Independent'} disabled={!editable(name)} onChange={event=>setValue(name,event.target.checked?'Independent':'',{shouldDirty:true,shouldValidate:!!errors[name]})}/>}</div>)}</div></>}
  {steps[step]==='Documents & signatures'&&<ApplicantDocuments record={record} onRecord={setRecord} busy={busy}/>}
  {step===reviewStep&&<>{record.documents.missing.length>0&&<Alert tone="warning"><p>Still needed: {record.documents.missing.map(item=>itemLabels[item]).join(', ')}.</p></Alert>}<DescriptionList items={reviewItems}/><ApplicantUpdates email={record.invitation.email}/><Checkbox {...register('accurate')} label="I confirm that the information is accurate." error={!!errors.accurate} aria-describedby={errors.accurate?'accurate-error':undefined} className="border-t border-border pt-5"/>{errors.accurate&&<p id="accurate-error" className="text-sm text-danger">{errors.accurate.message}</p>}</>}
  {message&&<Alert tone={failed?(conflict?'warning':'danger'):'success'} role={failed?'alert':'status'} action={conflict?<Button type="button" size="sm" variant="outline" onClick={()=>void reloadLatest()}>Reload latest</Button>:undefined}><p>{message}</p>{conflict&&<p className="text-[13px] text-muted-foreground">Reload latest replaces your unsaved entries with the saved version.</p>}</Alert>}
