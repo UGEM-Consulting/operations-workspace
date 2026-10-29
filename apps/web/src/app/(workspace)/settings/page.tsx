@@ -1,14 +1,17 @@
 import { apiRequest, requirePage, type StaffUser } from '@/lib/auth';
 import { readResponse } from '@/lib/api-schemas';
 import { UserManagement } from '@/features/users/user-management';
+import { USER_DEFAULTS } from '@/lib/navigation';
 import { MfaAdministration } from '@/features/users/mfa-administration';
 import { PageHeader } from '@/components/workspace-ui';
 export const metadata = { title: 'Settings' };
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const identity = await requirePage('settings');
+  const params = await searchParams;
+  const filters = Object.fromEntries(Object.entries(USER_DEFAULTS).map(([key, value]) => [key, typeof params[key] === 'string' ? params[key].slice(0, 100) : value]));
   const [response, security] = await Promise.all([apiRequest('users'), apiRequest('settings/security')]);
   if (!response.ok) throw new Error('Unable to load users');
   if (!security.ok) throw new Error('Unable to load security settings');
   const [users, { mfaRequiredFor }] = await Promise.all([readResponse<StaffUser[]>(response, 'users'), readResponse<{ mfaRequiredFor: string }>(security, 'security settings')]);
-  return <div><PageHeader eyebrow="Administration" title="Workspace settings" description="Manage internal accounts and workspace access." /><UserManagement users={users} currentUserId={identity.user.id} /><MfaAdministration users={users} currentUserId={identity.user.id} policy={mfaRequiredFor} /></div>;
+  return <div><PageHeader eyebrow="Administration" title="Workspace settings" description="Manage internal accounts and workspace access." /><UserManagement users={users} currentUserId={identity.user.id} filters={filters} /><MfaAdministration users={users} currentUserId={identity.user.id} policy={mfaRequiredFor} /></div>;
 }

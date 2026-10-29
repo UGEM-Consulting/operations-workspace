@@ -31,6 +31,10 @@ export function navigationSections(items: readonly NavigationItem[]) {
   return sections;
 }
 /** A queue URL from the current filters plus changes; any change goes back to page 1. Usable on server and client. */
+// URL filter defaults for lists filtered in the browser. They live here, not in the 'use client' list components, so server
+// pages can read them (a server import from a client module gets a reference, not the object).
+export const INVITATION_DEFAULTS: Record<string, string> = { status: 'ALL', search: '' };
+export const USER_DEFAULTS: Record<string, string> = { status: 'ALL', search: '' };
 export function queueHref(path: string, filters: Record<string, string>, changes: Record<string, string>) {
   return `${path}?${new URLSearchParams({ ...filters, page: '1', ...changes })}`;
 }

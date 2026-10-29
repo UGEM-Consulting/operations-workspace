@@ -12,11 +12,12 @@ export interface SortOption { value: string; label: string }
 
 /**
  * The toolbar above every queue: status tabs with counts, search, one sort menu and Clear. Filters live in the URL,
- * so the server renders the filtered list and links can be shared. Sort values are "field:direction".
+ * so the server renders the filtered list and links can be shared. Sort values are "field:direction"; without sortOptions
+ * there is no sort menu.
  */
 export function FilterBar({ path, filters, statuses, statusKey = 'status', searchLabel, sortOptions, defaults }: {
   path: string; filters: Record<string, string>; statuses: (TabItem & { key: string })[]; statusKey?: string; searchLabel: string;
-  sortOptions: SortOption[]; defaults: Record<string, string>;
+  sortOptions?: SortOption[]; defaults: Record<string, string>;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState(filters.search ?? '');
@@ -30,12 +31,12 @@ export function FilterBar({ path, filters, statuses, statusKey = 'status', searc
         <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <input type="search" aria-label={searchLabel} placeholder={searchLabel} value={query} maxLength={100} onChange={event => setQuery(event.target.value)} className={cn(inputClass, 'mt-0 w-full pl-8')} />
       </form>
-      <label className="sr-only" htmlFor="queue-sort">Sort</label>
+      {sortOptions && <><label className="sr-only" htmlFor="queue-sort">Sort</label>
       <div className="relative flex items-center"><select id="queue-sort" value={sortOptions.some(option => option.value === sortValue) ? sortValue : ''} className={cn(inputClass, 'mt-0 w-auto cursor-pointer appearance-none pr-9')}
         onChange={event => { const [sort, direction] = event.target.value.split(':'); router.push(queueHref(path, filters, { sort, direction })); }}>
         {!sortOptions.some(option => option.value === sortValue) && <option value="" disabled>Custom order</option>}
         {sortOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select><ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 size-4 text-muted-foreground" /></div>
+      </select><ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 size-4 text-muted-foreground" /></div></>}
       {filtered && <Link href={queueHref(path, filters, { ...defaults, search: '' })} onClick={() => setQuery('')} className="inline-flex min-h-(--control) items-center gap-1 rounded-sm px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"><X aria-hidden="true" className="size-4" />Clear</Link>}
     </div>
   </div>;
