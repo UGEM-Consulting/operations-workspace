@@ -1,21 +1,17 @@
 import { Suspense } from 'react';
-import Link from 'next/link';
-import { ArrowRight, ArrowUpRight } from 'lucide-react';
 import { requirePage } from '@/lib/auth';
-import { PageHeader, PageLoading } from '@/components/workspace-ui';
-import { Button } from '@/components/ui/button';
+import { PageLoading } from '@/components/workspace-ui';
 import { ReviewWork, ItWork } from '@/features/dashboard/work-queues';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Overview' };
+/** Home for every staff member: managers see their review work and IT updates; IT sees setup requests; admins see both. */
 export default async function Dashboard() {
   const identity = await requirePage('dashboard');
   const has = (key: string) => identity.navigation.some(item => item.key === key);
-  const primary = identity.navigation.find(item => item.key === 'applications') ?? identity.navigation.find(item => item.key === 'it') ?? identity.navigation.find(item => item.key !== 'dashboard');
-  return <div className="space-y-7">
-    <PageHeader eyebrow="Your operations, connected" title="Workspace overview" description={`Welcome back, ${identity.user.firstName}. Review what needs attention and keep your team moving forward.`} />
-    <section className="flex flex-wrap items-center justify-between gap-5 rounded-lg bg-sidebar px-6 py-6 text-white sm:px-7"><div className="flex items-start gap-4"><span aria-hidden="true" className="mt-1 h-12 w-1 shrink-0 rounded-full bg-brand-orange" /><div><p className="text-xs font-semibold uppercase tracking-[.12em] text-sidebar-accent">Your next steps</p><h2 className="mt-2 text-lg font-semibold">Continue your next task</h2><p className="mt-2 max-w-lg text-xs leading-6 text-sidebar-foreground">{has('applications') ? 'Review submitted applications, confirm assignments, and follow IT completion updates.' : 'Review approved onboarding requests and keep each setup checklist moving.'}</p></div></div>{primary && <Button asChild className="bg-brand-orange text-brand-ink hover:bg-brand-orange/85"><Link href={primary.href}>Go to {primary.label} <ArrowRight aria-hidden="true" className="size-4" /></Link></Button>}</section>
-    {has('applications') && <Suspense fallback={<PageLoading label="Loading applications…" header={false} />}><ReviewWork /></Suspense>}
-    {has('it') && <Suspense fallback={<PageLoading label="Loading IT onboarding…" header={false} />}><ItWork /></Suspense>}
-    <section aria-labelledby="workspace-shortcuts"><h2 id="workspace-shortcuts" className="mb-4 text-lg font-semibold">Your workspace</h2><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{identity.navigation.filter(item => item.key !== 'dashboard').map(item => <Link key={item.key} href={item.href} className="flex items-center justify-between gap-3 rounded-md border bg-card p-5 text-sm font-medium transition-colors hover:border-primary/50 hover:bg-accent">{item.label}<ArrowUpRight aria-hidden="true" className="size-4 text-primary" /></Link>)}</div></section>
+  const reviews = has('applications'), it = has('it');
+  return <div className="space-y-10">
+    {reviews && <Suspense fallback={<PageLoading label="Loading applications…" />}><ReviewWork firstName={identity.user.firstName} /></Suspense>}
+    {it && <Suspense fallback={<PageLoading label="Loading IT setup…" header={!reviews} />}><ItWork heading={reviews ? 'h2' : 'h1'} /></Suspense>}
+    {!reviews && !it && <div><h1 className="font-sans text-[22px] font-semibold leading-[30px] tracking-[-0.01em]">Welcome back, {identity.user.firstName}</h1><p className="mt-1 text-sm leading-6 text-muted-foreground">Your workspace pages are in the menu.</p></div>}
   </div>;
 }
