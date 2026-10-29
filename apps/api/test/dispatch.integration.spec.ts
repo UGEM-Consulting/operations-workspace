@@ -34,7 +34,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     return app.id as string;
   }
   const mc = async (name: string) => (await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ($1::varchar,lower($1::varchar)) RETURNING id`, [name]))[0].id as string;
-  const members = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as { id: string; firstName: string; lastName: string; mc: string | null; team: string | null; lead: boolean; version: number; jobTitle: string | null }[];
+  const members = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as { id: string; firstName: string; lastName: string; mc: string | null; teamId: string | null; team: string | null; lead: boolean; version: number; jobTitle: string | null }[];
   const byName = async (first: string) => (await members()).find(item => item.firstName === first)!;
 
   beforeAll(async () => {
@@ -96,6 +96,12 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     expect(member).toMatchObject({ lastName: 'Fictional', mc: 'Northwind Freight', team: 'Avery Lead team', jobTitle: null, lead: false });
     expect((await agents.manager.get(`/api/dispatch/members/${member.id}`).set(headers).expect(200)).body).toMatchObject({ applicationId: id, current: { teamId: team.id, reason: 'Joined after onboarding was approved.' } });
     await expect(db.transaction(em => createMemberForApproval(em, application, {}, { mcName: '', teamLead: '', jobTitle: '' }, new Date()))).rejects.toThrow();
+    // A team the backfill named with its MC ("Quinn Lead team (Northwind Freight)") still matches the team lead text.
+    const suffixed = (await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Quinn Lead team (Northwind Freight)', mcId: northwind }).expect(201)).body;
+    const second = await approved(['Robin', 'Fictional'], { mcName: 'Northwind Freight', teamLead: 'Quinn Lead', jobTitle: 'Dispatcher' });
+    await db.transaction(async em => createMemberForApproval(em, await em.getRepository(DispatcherApplication).findOneByOrFail({ id: second }), { preferredAmericanFirstName: 'Robin', preferredAmericanLastName: 'Fictional' },
+      { mcName: 'Northwind Freight', teamLead: 'Quinn Lead', jobTitle: 'Dispatcher' }, new Date('2026-10-21T15:00:00Z')));
+    expect((await byName('Robin')).teamId).toBe(suffixed.id);
   });
 
   it('moves dispatchers between MCs and teams as history, keeps team leads inside their team and records changes without values', async () => {

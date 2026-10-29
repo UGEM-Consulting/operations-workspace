@@ -93,7 +93,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
     ...(changes>0?[{key:'changes',label:'What changed',count:changes}]:[]),{key:'history',label:'History'}]}
     panels={{overview,documents,changes:whatChanged,history}}/>
    <aside aria-label="Decision" className="space-y-4 xl:sticky xl:top-20">
-    {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} savedSignature={savedSignature} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
+    {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} savedSignature={savedSignature} options={data.employmentOptions??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">
      <p>Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.</p>

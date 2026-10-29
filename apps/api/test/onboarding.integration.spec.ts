@@ -485,6 +485,20 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true}).expect(409);
   expect((await itAgent.get('/api/it/onboarding').set(headers)).body.total).toBe(1);
  });
+ it('offers the managed list choices while deciding and places the approved dispatcher in the picked team',async()=>{
+  await db.query('TRUNCATE mcs,job_titles,list_events,dispatch_events CASCADE');
+  const [mc]=await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Fictional Approved MC','fictional approved mc') RETURNING id`);
+  const [title]=await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Dispatcher','dispatcher') RETURNING id`);
+  const [team]=await db.query(`INSERT INTO teams (name,"nameKey","mcId") VALUES ('Blue team','blue team',$1) RETURNING id`,[mc.id]);
+  const flow=await submittedApplication();
+  expect((await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200)).body.employmentOptions)
+   .toEqual({mcs:[{id:mc.id,name:'Fictional Approved MC'}],teams:[{id:team.id,name:'Blue team',mcId:mc.id,lead:null}],jobTitles:[{id:title.id,name:'Dispatcher'}]});
+  // A team without a lead is picked by its name; the decision still carries text.
+  await decision(manager,flow.id,{version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Fictional Approved MC',teamLead:'Blue team',jobTitle:'Dispatcher'}}).expect(201);
+  expect((await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200)).body.employmentOptions).toBeNull();
+  expect(await db.query(`SELECT a."mcId",a."teamId",d."jobTitleId" FROM dispatch_members d JOIN member_assignments a ON a."memberId"=d.id WHERE d."applicationId"=$1`,[flow.id]))
+   .toEqual([{mcId:mc.id,teamId:team.id,jobTitleId:title.id}]);
+ });
  it('enforces IT/admin roles, approval-only projections, session identity and CSRF',async()=>{
   const flow=await approvedItFlow();await admin.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
   await manager.get('/api/it/onboarding').set(headers).expect(403);await other.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(403);
