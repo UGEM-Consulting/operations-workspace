@@ -147,6 +147,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     const manager = request.agent(app.getHttpServer()); await login(manager, Role.DISPATCHER_MANAGER);
     await manager.get('/api/access/applications').set(headers).expect(200);
     await manager.get('/api/access/it').set(headers).expect(403);
+    await manager.get('/api/access/users').set(headers).expect(403);
     await manager.get('/api/users').set(headers).expect(403);
     await manager.patch(`/api/users/${accounts.get(Role.DISPATCHER_MANAGER)!.id}`).set(headers).send({ role: Role.SYSTEM_ADMIN }).expect(403);
     await manager.post('/api/users').set(headers).send({}).expect(403);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { activeNavigationItem, breadcrumbTrail, navigationSections } from './navigation.ts';
 
 const items = [
-  { key: 'dashboard', href: '/dashboard', label: 'Overview', section: null },
+  { key: 'dashboard', href: '/dashboard', label: 'Dashboard', section: null },
   { key: 'onboarding', href: '/onboarding', label: 'Dispatcher onboarding', section: 'Onboarding' },
   { key: 'applications', href: '/onboarding/applications', label: 'Applications', section: 'Onboarding' },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', section: 'IT' },

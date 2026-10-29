@@ -3,7 +3,7 @@ import { requirePage } from '@/lib/auth';
 import { PageLoading } from '@/components/workspace-ui';
 import { ReviewWork, ItWork } from '@/features/dashboard/work-queues';
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Overview' };
+export const metadata = { title: 'Dashboard' };
 /** Home for every staff member: managers see their review work and IT updates; IT sees setup requests; admins see both. */
 export default async function Dashboard() {
   const identity = await requirePage('dashboard');

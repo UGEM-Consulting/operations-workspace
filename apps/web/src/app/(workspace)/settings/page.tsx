@@ -13,5 +13,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   if (!response.ok) throw new Error('Unable to load users');
   if (!security.ok) throw new Error('Unable to load security settings');
   const [users, { mfaRequiredFor }] = await Promise.all([readResponse<StaffUser[]>(response, 'users'), readResponse<{ mfaRequiredFor: string }>(security, 'security settings')]);
-  return <div><PageHeader eyebrow="Administration" title="Workspace settings" description="Manage internal accounts and workspace access." /><UserManagement users={users} currentUserId={identity.user.id} filters={filters} /><MfaAdministration users={users} currentUserId={identity.user.id} policy={mfaRequiredFor} /></div>;
+  // Staff accounts has its own page; an older API without that navigation item still gets the list here.
+  const separate = identity.navigation.some(item => item.key === 'users');
+  return <div><PageHeader title="Settings" description="Workspace-wide security settings." />{!separate && <UserManagement users={users} currentUserId={identity.user.id} filters={filters} />}<MfaAdministration users={users} currentUserId={identity.user.id} policy={mfaRequiredFor} /></div>;
 }

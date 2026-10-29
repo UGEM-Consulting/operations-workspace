@@ -16,10 +16,14 @@ import { Badge, roleLabel, StatusBadge } from '@/components/ui/status-badge';
 import { mutate } from '@/lib/client-api';
 import { USER_DEFAULTS } from '@/lib/navigation';
 import type { StaffUser } from '@/lib/auth';
+import { PageHeader } from '@/components/workspace-ui';
 const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST'];
 type ManagedUser = StaffUser & { mustChangePassword?: boolean };
-/** Staff accounts with status tabs and search kept in the URL; filtering happens here because the API returns every account. */
-export function UserManagement({ users, currentUserId, filters }: { users: ManagedUser[]; currentUserId: string; filters: Record<string, string> }) {
+/**
+ * Staff accounts with status tabs and search kept in the URL; filtering happens here because the API returns every account.
+ * `page` renders it as the Staff accounts page; otherwise it is a card on Settings (an older API without that page).
+ */
+export function UserManagement({ users, currentUserId, filters, page = false }: { users: ManagedUser[]; currentUserId: string; filters: Record<string, string>; page?: boolean }) {
   const router = useRouter();
   const toast = useToast();
   const [editing, setEditing] = useState<ManagedUser | null>(null);
@@ -50,10 +54,13 @@ export function UserManagement({ users, currentUserId, filters }: { users: Manag
     } catch (error) { setError(error instanceof Error ? error.message : 'Unable to save the user. Your entries have been kept.'); }
     finally { setPending(false); }
   }
-  return <div className="mt-8 space-y-5">
+  const description = 'People who can sign in to the workspace. Applicants don’t need accounts.';
+  const add = (size?: 'sm') => <Button size={size} onClick={() => edit(null)}><Plus aria-hidden="true" className="size-4" />Add staff member</Button>;
+  return <div className={page ? 'space-y-6' : 'mt-8 space-y-5'}>
+    {page && <PageHeader title="Staff accounts" description={description} action={add()} />}
     <Card>
-      <CardHeader title="Staff accounts" description="People who can sign in to the workspace. Applicants don’t need accounts." actions={<Button size="sm" onClick={() => edit(null)}><Plus aria-hidden="true" className="size-4" />Add staff member</Button>} />
-      <FilterBar path="/settings" filters={filters} defaults={USER_DEFAULTS} searchLabel="Search name or email" statuses={[
+      {!page && <CardHeader title="Staff accounts" description={description} actions={add('sm')} />}
+      <FilterBar path={page ? '/staff-accounts' : '/settings'} filters={filters} defaults={USER_DEFAULTS} searchLabel="Search name or email" statuses={[
         { key: 'ACTIVE', label: 'Active', count: searched.filter(user => user.status === 'ACTIVE').length },
         { key: 'INACTIVE', label: 'Inactive', count: searched.filter(user => user.status === 'INACTIVE').length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
