@@ -13,11 +13,12 @@ export const AllowPendingPasswordChange = () => AllowPendingMfa('password');
 export const STAFF = Object.values(Role);
 // section groups the sidebar; 'Account' items appear in the account menu instead of the main list.
 const navigation = [
-  { key: 'dashboard', href: '/dashboard', label: 'Overview', section: null, roles: STAFF },
+  { key: 'dashboard', href: '/dashboard', label: 'Dashboard', section: null, roles: STAFF },
   { key: 'invitations', href: '/onboarding/invitations', label: 'Invitations', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'applications', href: '/onboarding/applications', label: 'Applications', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'documents', href: '/onboarding/documents', label: 'Documents', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', section: 'IT', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
+  { key: 'users', href: '/staff-accounts', label: 'Staff accounts', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'settings', href: '/settings', label: 'Settings', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'security', href: '/account/security', label: 'Account security', section: 'Account', roles: STAFF },
 ];

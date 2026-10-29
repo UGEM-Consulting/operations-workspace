@@ -78,7 +78,7 @@ Every protected request reloads the user from PostgreSQL. Email, role, status an
 | Current user, logout, dashboard | Yes | Yes | Yes |
 | Onboarding invitations/applications | Yes | Yes | No |
 | Approved IT onboarding requests/checklists | Yes | No | Yes |
-| Settings and user administration | Yes | No | No |
+| Staff accounts and Settings | Yes | No | No |
 | Account security (own two-step verification) | Yes | Yes | Yes |
 
 A global NestJS guard requires authentication and explicit role metadata; endpoints without a role policy are denied. Health, login, logout and applicant routes are explicitly public to the staff guard. Applicant record routes independently enforce restricted applicant sessions. Login/logout still require the BFF boundary and CSRF checks. The API returns permitted navigation and role landing destinations. Next.js uses those results and calls API page authorization endpoints rather than copying the permission matrix. `canAccessAssignedApplication` provides a tested foundation requiring a database-loaded assignment for managers; future controllers must invoke it after loading records. Onboarding record endpoints enforce this policy against database assignments.
@@ -341,7 +341,7 @@ The staff approval/IT demo is ready for hosting after environment setup and appr
 
 ## First real administrator bootstrap
 
-`seed:demo` remains fictional-only and refuses production. Use the separate **manual** `admin:bootstrap` command for a first real administrator. It creates one ACTIVE SYSTEM_ADMIN with the existing Argon2id password helper. It refuses if **any** SYSTEM_ADMIN exists (even inactive), or if the normalized email belongs to any existing user. It never overwrites, promotes, reactivates or resets an account. After bootstrap, use authenticated Settings for further staff management. Bootstrap is not account recovery.
+`seed:demo` remains fictional-only and refuses production. Use the separate **manual** `admin:bootstrap` command for a first real administrator. It creates one ACTIVE SYSTEM_ADMIN with the existing Argon2id password helper. It refuses if **any** SYSTEM_ADMIN exists (even inactive), or if the normalized email belongs to any existing user. It never overwrites, promotes, reactivates or resets an account. After bootstrap, use the authenticated Staff accounts page for further staff management. Bootstrap is not account recovery.
 
 Build the API using Node 24 and apply reviewed migrations explicitly before bootstrap. No new migration is needed. Administrator bootstrap never runs during startup or normal builds. The command requires an interactive terminal and asks for the password twice with echo suppressed (12–128 characters, no control characters). Use a unique password from your password manager. Do not pass a password as an argument, environment variable, pipe, shell command, or job command; do not record the terminal session. Exit status is nonzero on failure. Success prints only a generic confirmation.
 
