@@ -39,7 +39,7 @@ integration('Managed lists (disposable PostgreSQL)', () => {
     app = module.createNestApplication(); closeSessions = installSessions(app, env); configureApp(app, env.CORS_ORIGINS); await app.init();
   }, 30000);
   beforeEach(async () => {
-    await db.query('TRUNCATE users, staff_sessions, login_attempts, invitations, list_events, mcs, job_titles CASCADE');
+    await db.query('TRUNCATE users, staff_sessions, login_attempts, invitations, list_events, mcs, job_titles, dispatch_events CASCADE');
     const passwordHash = await hashPassword(password);
     for (const [key, role] of [['manager', Role.DISPATCHER_MANAGER], ['it', Role.IT_SPECIALIST]] as const) {
       users[key] = await db.getRepository(User).save({ firstName: 'Fictional', lastName: 'Staff', email: `lists.${key}@example.test`, role, status: UserStatus.ACTIVE, passwordHash });
@@ -50,10 +50,10 @@ integration('Managed lists (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, list_events, mcs, job_titles CASCADE'); await db.destroy(); } });
 
   it('starts the lists from manager-confirmed assignments, one entry per name however it was typed, without Independent', async () => {
-    await db.query('TRUNCATE list_events'); await db.undoLastMigration(); expect(await latest()).toBe('Notifications1792800000000');
+    await db.query('TRUNCATE list_events, dispatch_events'); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('Notifications1792800000000');
     await approved('Northwind Freight', 'Dispatcher'); await approved('  northwind   FREIGHT ', 'dispatcher'); await approved('Independent', 'Senior dispatcher');
     await approved('Lakeside Carriers', 'Dispatcher', 'SUBMITTED');
-    await db.runMigrations(); expect(await latest()).toBe('ManagedLists1792810000000');
+    await db.runMigrations(); expect(await latest()).toBe('DispatchTeams1792820000000');
     const body = (await mcs().expect(200)).body;
     expect(body.items.map((item: { name: string; usage: number }) => [item.name, item.usage])).toEqual([['Lakeside Carriers', 0], ['Northwind Freight', 2]]);
     expect(body.counts).toEqual({ active: 2, archived: 0 });
@@ -100,7 +100,9 @@ integration('Managed lists (disposable PostgreSQL)', () => {
 
   it('refuses to roll back once someone has changed a list, so manual entries are never lost', async () => {
     await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'Kept Carrier', mcNumber: '765432' }).expect(201);
+    await db.query('TRUNCATE dispatch_events'); await db.undoLastMigration();
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard managed list changes');
     expect(await latest()).toBe('ManagedLists1792810000000');
+    await db.runMigrations();
   });
 });

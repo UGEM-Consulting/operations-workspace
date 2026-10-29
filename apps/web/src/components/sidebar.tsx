@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useSyncExternalStore } from 'react';
-import { ChevronsUpDown, FileSignature, Files, Layers, LayoutDashboard, ListChecks, LogOut, Mail, Monitor, PanelLeftClose, PanelLeftOpen, Settings, ShieldCheck, UserPlus, Users } from 'lucide-react';
+import { ChevronsUpDown, FileSignature, Files, Headset, Layers, LayoutDashboard, ListChecks, LogOut, Mail, Monitor, PanelLeftClose, PanelLeftOpen, Settings, ShieldCheck, UserPlus, Users, UsersRound } from 'lucide-react';
 import type { Identity } from '@/lib/auth';
 import { brand } from '@/lib/brand';
 import { cn } from '@/lib/utils';
@@ -15,7 +15,7 @@ import { useToast } from './ui/toast';
 import { Tooltip } from './ui/tooltip';
 import { useGuardedLink, useShell } from './shell-context';
 
-const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, it: Monitor, lists: ListChecks, users: Users, settings: Settings, security: ShieldCheck };
+const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, teams: UsersRound, dispatchers: Headset, it: Monitor, lists: ListChecks, users: Users, settings: Settings, security: ShieldCheck };
 const wide = '(min-width: 1280px)';
 function useWide() {
   return useSyncExternalStore(change => { const media = window.matchMedia(wide); media.addEventListener('change', change); return () => media.removeEventListener('change', change); },
