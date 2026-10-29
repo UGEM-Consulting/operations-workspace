@@ -18,6 +18,8 @@ import { Table } from '@/components/ui/table';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { INVITATION_DEFAULTS } from '@/lib/navigation';
 import { Invitation, readApi } from './types';
+import { EmploymentPicker, type Employment, type EmploymentOptions } from './employment-picker';
+const NO_EMPLOYMENT: Employment = { mcName: '', teamLead: '', jobTitle: '' };
 const PATH='/onboarding/invitations';
 // Invitation states in the manager's words; the badges use the same labels as the tabs.
 const STATUSES=[['PENDING','Not opened','neutral'],['OPENED','In progress','info'],['COMPLETED','Submitted','success'],['EXPIRED','Expired','neutral'],['REVOKED','Revoked','danger']] as const;
@@ -26,10 +28,11 @@ const EXPIRY=[3,7,14,30];
 
 /**
  * Invitation links in the manager's scope (the most recent 200), filtered in the browser by the status and search in the URL.
- * Create invitation makes a seven-day link in one click; Create with options adds an expected email or another expiry.
+ * Create invitation makes a seven-day link in one click; Create with options adds an expected email, another expiry
+ * and, from the managed lists, the MC, team and job title to pre-fill (sent as the existing text fields).
  * The raw link is shown once, so leaving before copying it asks first.
  */
-export function Invitations({initial,filters}:{initial:Invitation[];filters:Record<string,string>}) {
+export function Invitations({initial,filters,options=null}:{initial:Invitation[];filters:Record<string,string>;options?:EmploymentOptions|null}) {
  const [rows,setRows]=useState(initial),[server,setServer]=useState(initial);
  // A filter change re-renders the page with a fresh list from the server; take it without an effect.
  if(server!==initial){setServer(initial);setRows(initial);}
@@ -37,18 +40,19 @@ export function Invitations({initial,filters}:{initial:Invitation[];filters:Reco
  const [pending,setPending]=useState<'create'|'revoke'|null>(null),[error,setError]=useState('');
  const [url,setUrl]=useState(''),[linkOpen,setLinkOpen]=useState(false),[copied,setCopied]=useState(false),[copyMessage,setCopyMessage]=useState('');
  const [revoking,setRevoking]=useState<Invitation|null>(null),[revokeError,setRevokeError]=useState('');
- const [options,setOptions]=useState(false),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
+ const [optionsOpen,setOptionsOpen]=useState(false),[employment,setEmployment]=useState<Employment>(NO_EMPLOYMENT),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
  useEffect(()=>{if(!url||copied)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[url,copied]);
  async function refreshRows(){try{setRows(await readApi<Invitation[]>('onboarding/invitations'));}catch{setError('Your change was saved, but the list could not refresh. Reload the page to see the latest invitations.');}}
  async function create(withOptions:boolean) {
   if(pending)return;
   // The previous link has not been copied yet: show it again rather than replacing it.
-  if(url&&!copied){setOptions(false);setLinkOpen(true);return;}
+  if(url&&!copied){setOptionsOpen(false);setLinkOpen(true);return;}
   const expiry=withOptions?days:7;
   setPending('create');setError('');
   try {
-   const result=await mutate<{url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),expirationDays:expiry});
-   setUrl(result.url);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptions(false);setEmail('');setLinkOpen(true);
+   const assignments=withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
+   const result=await mutate<{url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,expirationDays:expiry});
+   setUrl(result.url);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setLinkOpen(true);
    await refreshRows();
   }catch(error){toast({tone:'danger',title:'Invitation not created',description:errorMessage(error,'Unable to create invitation.')});}finally{setPending(null);}
  }
@@ -59,8 +63,8 @@ export function Invitations({initial,filters}:{initial:Invitation[];filters:Reco
  const filtered=filters.search!==''||filters.status!=='ALL';
  return <div className="space-y-6">
   <PageHeader title="Invitations" description="Create a private link for each applicant. Links aren’t emailed: send them yourself."
-   action={<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={!!pending} onClick={()=>url&&!copied?setLinkOpen(true):setOptions(true)}><SlidersHorizontal aria-hidden="true" className="size-4"/>Create with options</Button>
-    <Button disabled={!!pending} onClick={()=>void create(false)}><Plus aria-hidden="true" className="size-4"/>{pending==='create'&&!options?'Creating…':'Create invitation'}</Button></div>}/>
+   action={<div className="flex flex-wrap gap-2"><Button variant="outline" disabled={!!pending} onClick={()=>url&&!copied?setLinkOpen(true):setOptionsOpen(true)}><SlidersHorizontal aria-hidden="true" className="size-4"/>Create with options</Button>
+    <Button disabled={!!pending} onClick={()=>void create(false)}><Plus aria-hidden="true" className="size-4"/>{pending==='create'&&!optionsOpen?'Creating…':'Create invitation'}</Button></div>}/>
   <PendingHint pending={pending==='create'}/>
   {error&&<Alert tone="warning"><p>{error}</p></Alert>}
   {url&&!linkOpen&&<Alert tone={copied?'info':'warning'} title={copied?'Latest invitation link':'Your new link has not been copied'} action={<Button size="sm" variant="outline" onClick={()=>setLinkOpen(true)}>Show link</Button>}><p>It expires in {linkDays} days and can’t be shown again after you leave this page.</p></Alert>}
@@ -79,10 +83,13 @@ export function Invitations({initial,filters}:{initial:Invitation[];filters:Reco
     :<EmptyState compact title="Create your first invitation" description="Each link lets one applicant verify their email and fill in their application." action={<Button disabled={!!pending} onClick={()=>void create(false)}><Plus aria-hidden="true" className="size-4"/>Create invitation</Button>}/>}
    footer={<p className="text-[13px] text-muted-foreground">{visible.length} invitation{visible.length===1?'':'s'} · the most recent 200 in your scope.</p>}/>
   </Card>
-  {options&&<Dialog open onClose={()=>setOptions(false)} busy={pending==='create'} title="Create an invitation" description="Both settings are optional. The applicant fills in everything else."
+  {optionsOpen&&<Dialog open onClose={()=>setOptionsOpen(false)} busy={pending==='create'} title="Create an invitation" description="Every setting is optional. The applicant fills in everything else."
    actions={<Button type="submit" form="invitation-options">{pending==='create'?'Creating…':'Create invitation'}</Button>}>
    <form id="invitation-options" onSubmit={event=>{event.preventDefault();void create(true);}} className="space-y-4">
     <Input label="Applicant’s personal email" optional name="expectedEmail" type="email" value={email} onChange={event=>setEmail(event.target.value)} maxLength={254} placeholder="name@example.com" hint="If you add one, only that person can use the link. Otherwise the first applicant to verify their email claims it." width="full"/>
+    {options&&<fieldset className="space-y-3 border-t border-border pt-4"><legend className="float-left mb-1 w-full text-sm font-medium">Employment</legend>
+     <p className="text-[13px] leading-5 text-muted-foreground">Pre-fills the applicant’s answers. You confirm them again at approval.</p>
+     <EmploymentPicker optional options={options} original={NO_EMPLOYMENT} onChange={setEmployment}/></fieldset>}
     <Select label="Expires after" name="expirationDays" value={String(days)} onChange={event=>setDays(Number(event.target.value))} width="sm" options={EXPIRY.map(value=>({value:String(value),label:`${value} days`}))}/>
    </form>
   </Dialog>}

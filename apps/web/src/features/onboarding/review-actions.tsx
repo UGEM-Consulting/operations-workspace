@@ -11,6 +11,7 @@ import { PendingHint } from '@/components/ui/pending-hint';
 import { errorMessage, mutate } from '@/lib/client-api';
 import type { SavedSignature } from '@/features/auth/saved-signature';
 import { SignaturePad, type SignatureMethod } from './signature-pad';
+import { EmploymentPicker, pickedEmployment, type EmploymentOptions } from './employment-picker';
 import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments } from './types';
 type Action='APPROVE'|'REQUEST_CHANGES'|'REJECT';
 type Employment={mcName:string;teamLead:string;jobTitle:string};
@@ -19,20 +20,21 @@ const employmentFields=['mcName','teamLead','jobTitle'] as const;
 
 /**
  * The decision rail on the application page. The final MC, team lead and job title are confirmed in the rail; Approve
- * opens a dialog for the NDA countersignature (when needed), an internal comment and the final confirmation.
+ * opens a dialog for the NDA countersignature (when needed), an internal comment and the final confirmation. With
+ * `options` (from an API that has the managed lists) they are picked from the lists; otherwise typed as before.
  * While corrections are outstanding (CHANGES_REQUESTED) the only decision left is rejection; approval waits for a resubmission.
  */
-export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,status,savedSignature=null}:{id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:Employment;savedSignature?:SavedSignature|null}) {
+export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,status,savedSignature=null,options=null}:{id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null}) {
  const router=useRouter();
  const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState('');
- const [employment,setEmployment]=useState<Employment>(initial),[employmentConfirmed,setEmploymentConfirmed]=useState(false),[railError,setRailError]=useState('');
+ const [employment,setEmployment]=useState<Employment>(()=>options?pickedEmployment(options,initial):initial),[employmentConfirmed,setEmploymentConfirmed]=useState(false),[railError,setRailError]=useState('');
  const onSignature=useCallback((image:string|null,method:SignatureMethod)=>setSignature(image?{image,method}:null),[]);
  // A saved signature is offered first; the approver can still sign here instead.
  const [useSaved,setUseSaved]=useState(!!savedSignature);
  function open(next:Action){setAction(next);setError('');setSignature(null);setUseSaved(!!savedSignature);}
  function approve(){
-  if(employmentFields.some(field=>!employment[field].trim())){setRailError('Fill in the MC, team lead and job title.');return;}
-  if(!employmentConfirmed){setRailError('Confirm the MC, team lead and job title first.');return;}
+  if(employmentFields.some(field=>!employment[field].trim())){setRailError(options?'Choose the MC, team and job title.':'Fill in the MC, team lead and job title.');return;}
+  if(!employmentConfirmed){setRailError(options?'Confirm the MC, team and job title first.':'Confirm the MC, team lead and job title first.');return;}
   setRailError('');open('APPROVE');
  }
  // Work phones are assigned by IT; only an invalid legacy value is offered for correction.
@@ -59,8 +61,9 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
     </>:<>
      <fieldset className="space-y-4" disabled={blocked}>
       <legend className="sr-only">Final employment assignments</legend>
-      {employmentFields.map(field=><Input key={field} label={fieldLabels[field]} name={field} value={employment[field]} onChange={event=>setEmployment(current=>({...current,[field]:event.target.value}))} required maxLength={field==='jobTitle'?100:150} width="full"/>)}
-      <Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label="The MC, team lead and job title are correct."/>
+      {options?<EmploymentPicker options={options} original={initial} onChange={setEmployment} disabled={blocked}/>
+       :employmentFields.map(field=><Input key={field} label={fieldLabels[field]} name={field} value={employment[field]} onChange={event=>setEmployment(current=>({...current,[field]:event.target.value}))} required maxLength={field==='jobTitle'?100:150} width="full"/>)}
+      <Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label={options?'The MC, team and job title are correct.':'The MC, team lead and job title are correct.'}/>
      </fieldset>
      {blocked&&<p className="text-[13px] leading-5 text-warning">Approval needs complete applicant information, photos and signatures. Request corrections for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}
      <Notice message={railError} error/>

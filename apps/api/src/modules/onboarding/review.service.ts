@@ -80,6 +80,9 @@ export class ReviewService {
   // Outstanding corrections can still be rejected (CHANGES_REQUESTED -> REJECTED); approval waits for a resubmission.
   const canReject=canReview||application.status==='CHANGES_REQUESTED';
   const pendingCountersign=documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant;
+  // Active list entries for the approval pickers. The decision still carries the chosen names as text, so an older web
+  // client without pickers keeps working, and approval matches the text back to these entries.
+  const employmentOptions=canReview?await this.employmentOptions():null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
@@ -91,7 +94,15 @@ export class ReviewService {
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
     countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
-   canReview, canReject, readyForIt:application.status === 'APPROVED' };
+   canReview, canReject, readyForIt:application.status === 'APPROVED', employmentOptions };
+ }
+ async employmentOptions() {
+  const [mcs, teams, jobTitles] = await Promise.all([
+   this.db.query(`SELECT id, name FROM mcs WHERE "archivedAt" IS NULL ORDER BY "nameKey"`),
+   this.db.query(`SELECT t.id, t.name, t."mcId", CASE WHEN l.id IS NULL THEN NULL ELSE l."firstName" || ' ' || l."lastName" END AS lead
+    FROM teams t LEFT JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE t."archivedAt" IS NULL ORDER BY t."nameKey"`),
+   this.db.query(`SELECT id, name FROM job_titles WHERE "archivedAt" IS NULL ORDER BY "nameKey"`)]);
+  return { mcs, teams, jobTitles };
  }
  async decide(user: User, id: string, input: ReviewDto, client: ClientContext) {
   await onboardingLimit(this.db,'review:'+user.id,30,60);
