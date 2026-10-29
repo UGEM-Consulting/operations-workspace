@@ -1,6 +1,8 @@
 /** A destination from /auth/me. `section` groups the sidebar; 'Account' items live in the account menu. */
 export interface NavigationItem { key: string; href: string; label: string; section?: string | null }
 export interface Crumb { label: string; href?: string }
+/** A per-browser display preference (not identity): the server reads it so a collapsed sidebar renders collapsed. */
+export const SIDEBAR_COOKIE = 'workspace-sidebar';
 /** Work waiting for the signed-in person (GET /workspace/counts). */
 export interface WorkspaceCounts { navigation: Record<string, number>; unreadNotifications: number | null }
 const contains = (href: string, pathname: string) => pathname === href || pathname.startsWith(`${href}/`);
