@@ -114,7 +114,7 @@ export class MfaService {
     const row = await this.db.getRepository(StaffMfa).findOneBy({ userId: user.id });
     return { enabled: enrolled, method, required, policy, enabledAt: enrolled ? row?.confirmedAt ?? null : null,
       recoveryCodesRemaining: enrolled ? await this.remainingRecoveryCodes(user.id) : 0,
-      emailCodesAvailable: emailCodesAllowed(user.role) && this.email.enabled, email: maskEmail(user.email) };
+      emailCodesAvailable: emailCodesAllowed(user.role) && this.email.staffCodesEnabled, email: maskEmail(user.email) };
   }
 
   /** The sign-in step: which kind of code to ask for. For email codes, sends one unless a recent one is outstanding. */
@@ -129,7 +129,7 @@ export class MfaService {
   /** What this person may choose when setting up two-step verification. */
   methods(req: AuthRequest) {
     const user = this.enrolmentUser(req);
-    return { methods: emailCodesAllowed(user.role) && this.email.enabled ? [MfaMethod.TOTP, MfaMethod.EMAIL] : [MfaMethod.TOTP], email: maskEmail(user.email) };
+    return { methods: emailCodesAllowed(user.role) && this.email.staffCodesEnabled ? [MfaMethod.TOTP, MfaMethod.EMAIL] : [MfaMethod.TOTP], email: maskEmail(user.email) };
   }
 
   /** A code for confirming Account security changes, for email-code users. */
@@ -147,7 +147,7 @@ export class MfaService {
     const user = this.enrolmentUser(req);
     if (method === MfaMethod.EMAIL) {
       if (!emailCodesAllowed(user.role)) throw new BadRequestException('Administrators must use an authenticator app');
-      if (!this.email.enabled) throw new ServiceUnavailableException('Email codes are not available on this server');
+      if (!this.email.staffCodesEnabled) throw new ServiceUnavailableException('Email codes are not available on this server');
       const rows: unknown[] = await this.db.query(`INSERT INTO staff_mfa ("userId", method, "secretCiphertext") VALUES ($1, 'EMAIL', NULL)
         ON CONFLICT ("userId") DO UPDATE SET method = 'EMAIL', "secretCiphertext" = NULL, "lastUsedStep" = NULL, "updatedAt" = now()
         WHERE staff_mfa."confirmedAt" IS NULL RETURNING "userId"`, [user.id]);
@@ -290,7 +290,7 @@ export class MfaService {
 
   /** Sends a new code for this purpose unless one was sent moments ago. Sends per user are capped across purposes. */
   private async sendEmailCode(user: User, purpose: EmailCodePurpose) {
-    if (!this.email.enabled) throw new ServiceUnavailableException('Email codes are not available on this server');
+    if (!this.email.staffCodesEnabled) throw new ServiceUnavailableException('Email codes are not available on this server');
     const keys = codeKeys(user.id);
     if (await readAttempts(this.db, keys.sends) >= EMAIL_SENDS_PER_WINDOW) throw new HttpException('Too many codes sent. Try again in 15 minutes.', 429);
     const code = generateEmailCode();

@@ -35,6 +35,19 @@ describe('SMTP delivery configuration', () => {
     { EMAIL_FROM: 'Ops <a@example.test>, <b@example.test>' }, { EMAIL_FROM: 'x@y <a@example.test>' }, { EMAIL_FROM: 'a@example.test, b@example.test' },
     { SMTP_HOST: 'localhost', SMTP_PORT: '1025', SMTP_USER: '', SMTP_PASSWORD: '' },
   ])('rejects unsafe or incomplete production SMTP settings %#', override => { expect(() => validateEnvironment({ ...smtp, ...override })).toThrow(); });
+  it('sends staff codes only from a separate STAFF_EMAIL_FROM, never the applicant sender', async () => {
+    expect(new EmailService(new ConfigService(validateEnvironment(smtp))).staffCodesEnabled).toBe(false);
+    const staff = validateEnvironment({ ...smtp, STAFF_EMAIL_FROM: 'UGEM Workspace <no-reply@example.test>' });
+    const service = new EmailService(new ConfigService(staff));
+    expect(service.staffCodesEnabled).toBe(true);
+    const sent: { from: string }[] = [];
+    (service as unknown as { transport: { sendMail: (message: { from: string }) => Promise<void> } }).transport = { sendMail: async message => { sent.push(message); } };
+    await expect(service.sendStaffCode('person@example.test', '123456', 'login')).resolves.toBe(true);
+    await service.sendStatusUpdate('applicant@example.test', { subject: 's', text: 't', html: 'h' });
+    expect(sent.map(message => message.from)).toEqual(['UGEM Workspace <no-reply@example.test>', 'Operations <sender@example.test>']);
+    for (const same of ['sender@example.test', 'Other name <SENDER@example.test>']) expect(() => validateEnvironment({ ...smtp, STAFF_EMAIL_FROM: same })).toThrow('different address');
+    expect(() => validateEnvironment({ ...smtp, STAFF_EMAIL_FROM: 'a@example.test\r\nBcc: victim@example.test' })).toThrow();
+  });
   it('allows only a local test inbox outside production, never a real mail server', () => {
     expect(validateEnvironment(local).SMTP_HOST).toBe('localhost');
     expect(() => validateEnvironment({ ...local, SMTP_HOST: 'smtp.gmail.com' })).toThrow('local test inbox');

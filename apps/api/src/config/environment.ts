@@ -3,7 +3,7 @@ export interface Environment {
   NODE_ENV: 'development' | 'test' | 'production'; PORT: number;
   DATABASE_URL: string; DATABASE_SSL: boolean; CORS_ORIGINS: string; SESSION_SECRET: string; BFF_SHARED_SECRET: string; WEB_ORIGIN: string; SESSION_TTL_SECONDS: number;
   DEPLOYMENT_PURPOSE: 'local' | 'staging' | 'production';
-  EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string;
+  EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string; STAFF_EMAIL_FROM?: string;
   STORAGE_DRIVER: 'none' | 'local' | 'gcs'; STORAGE_LOCAL_DIR?: string; GCS_BUCKET?: string; GCS_CREDENTIALS_BASE64?: string;
   MFA_ENCRYPTION_KEY?: string;
   TELEGRAM_DELIVERY: 'none' | 'bot'; TELEGRAM_BOT_TOKEN?: string; TELEGRAM_BOT_USERNAME?: string; TELEGRAM_API_BASE: string;
@@ -26,6 +26,8 @@ const TELEGRAM_API = 'https://api.telegram.org';
 const RETIRED_DEMO_SETTINGS = ['DEMO_EMAIL_MODE', 'DEMO_STARTER_MODE', 'DEMO_FICTIONAL_DATA_ONLY', 'DEMO_DEPLOYMENT_ID', 'DEMO_MAILBOX_KEY'];
 // One address, optionally with a display name: "Name <a@b>" or "a@b". No line breaks, lists or nested addresses.
 const SENDER = /^(?:[^<>@\r\n,;"]*<[^<>@\s,;"]+@[^<>@\s,;"]+>|[^<>@\s,;"]+@[^<>@\s,;"]+)$/;
+/** The bare, lower-case address of a sender such as "Name <a@b>" or "a@b". */
+const senderAddress = (sender?: string) => (sender?.match(/<([^>]+)>\s*$/)?.[1] ?? sender ?? '').trim().toLowerCase();
 // URL accepts wildcard hosts such as https://*.example.test; origins must name a literal host or IP address.
 const LITERAL_HOST = /^([a-z0-9-]+\.)*[a-z0-9-]+$|^\[[0-9a-f:.]+\]$/;
 // Comma-separated exact HTTP(S) origins (no path, wildcard or trailing slash), normalized without spaces.
@@ -57,6 +59,8 @@ const schema = Joi.object({
   SMTP_USER: Joi.string().max(254).empty(''),
   SMTP_PASSWORD: Joi.string().max(256).empty(''),
   EMAIL_FROM: Joi.string().trim().max(320).pattern(SENDER).empty(''),
+  // Sender of staff two-step verification codes (an alias the SMTP mailbox may send as); email codes are off without it.
+  STAFF_EMAIL_FROM: Joi.string().trim().max(320).pattern(SENDER).empty(''),
   STORAGE_DRIVER: Joi.string().valid('none', 'local', 'gcs').default('none'),
   STORAGE_LOCAL_DIR: Joi.string().max(500).empty(''),
   // Bucket naming rules: 3–63 lowercase letters, digits, dashes, underscores or dots.
@@ -100,6 +104,8 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   if (env.EMAIL_DELIVERY === 'smtp') {
     if (!env.SMTP_HOST || !env.EMAIL_FROM) throw new EnvironmentError('SMTP delivery requires SMTP_HOST and a valid EMAIL_FROM');
     if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) throw new EnvironmentError('SMTP_USER and SMTP_PASSWORD must be set together');
+    // Staff codes must never come from the applicant (onboarding) address.
+    if (env.STAFF_EMAIL_FROM && senderAddress(env.STAFF_EMAIL_FROM) === senderAddress(env.EMAIL_FROM)) throw new EnvironmentError('STAFF_EMAIL_FROM must be a different address from EMAIL_FROM');
     if (env.NODE_ENV !== 'production') {
       // Development and tests use fictional data only: never a real mail server, only a local inbox such as Mailpit.
       if (!LOCAL_HOSTS.includes(env.SMTP_HOST)) throw new EnvironmentError('Outside production, SMTP may only target a local test inbox on localhost');
