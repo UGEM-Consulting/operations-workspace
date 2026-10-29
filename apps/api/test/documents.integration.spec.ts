@@ -196,7 +196,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
  it('refuses to roll back the documents migration while documents or photos exist',async()=>{
   await publishAll();
   // Newer migrations go first, each after removing the records its rollback refuses to discard.
-  const cleanup:Record<string,string>={OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
+  const cleanup:Record<string,string>={ManagedLists1792810000000:'TRUNCATE list_events',OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
   for(let name=await latestMigration();name!=='OnboardingDocuments1792710000000';name=await latestMigration()){if(cleanup[name])await db.query(cleanup[name]);await db.undoLastMigration();}
   await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard company documents');
