@@ -34,6 +34,7 @@ export function Teams({ data, mcs, members, filters }: { data: TeamList; mcs: Ch
   const filtered = filters.search !== '' || filters.status !== TEAM_DEFAULTS.status;
   const team = editing === 'new' ? null : editing;
   // Only the team's own active dispatchers can lead it.
+  // Only the team's own active dispatchers can lead it (not those still in IT setup).
   const candidates = team ? members.filter(member => member.teamId === team.id && member.status === 'ACTIVE' && member.position === 'DISPATCHER') : [];
   function open(next: TeamRow | 'new') { setEditing(next); setError(''); }
   async function save(event: React.FormEvent<HTMLFormElement>) {
@@ -42,7 +43,7 @@ export function Teams({ data, mcs, members, filters }: { data: TeamList; mcs: Ch
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     setPending('save'); setError('');
     try {
-      if (team) await mutate(`dispatch/teams/${team.id}`, 'PATCH', { version: team.version, name: form.name, ...(team.members ? {} : { mcId: form.mcId }), leadMemberId: form.leadMemberId || null });
+      if (team) await mutate(`dispatch/teams/${team.id}`, 'PATCH', { version: team.version, name: form.name, ...(team.members + (team.onboarding ?? 0) ? {} : { mcId: form.mcId }), leadMemberId: form.leadMemberId || null });
       else await mutate('dispatch/teams', 'POST', { name: form.name, mcId: form.mcId });
       toast({ title: team ? 'Team updated' : 'Team added' });
       setEditing(null); router.refresh();
@@ -71,11 +72,11 @@ export function Teams({ data, mcs, members, filters }: { data: TeamList; mcs: Ch
       <Table caption="Teams" className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
         { key: 'team', label: 'Team', primary: true, cell: row => <Person name={row.name} secondary={row.lead ? `Team lead ${row.lead.name}` : 'No team lead yet'} /> },
         { key: 'mc', label: 'MC', cell: row => row.mc.name },
-        { key: 'members', label: 'Dispatchers', align: 'right', cell: row => <span className="tabular-nums">{row.members}</span> },
+        { key: 'members', label: 'Dispatchers', align: 'right', cell: row => <span className="tabular-nums">{row.members}{row.onboarding ? <span className="ml-1 text-[13px] text-muted-foreground">+{row.onboarding} onboarding</span> : null}</span> },
         { key: 'status', label: 'Status', hideBelow: 'md', cell: row => <Badge label={row.archived ? 'Archived' : 'Active'} tone={row.archived ? 'neutral' : 'success'} /> },
         { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: row => <span className="flex justify-end gap-1">
           {!row.archived && <Button variant="outline" size="sm" disabled={!!pending} onClick={() => open(row)}>Edit<span className="sr-only"> {row.name}</span></Button>}
-          <Button variant="ghost" size="sm" disabled={!!pending || (!row.archived && row.members > 0)} title={!row.archived && row.members > 0 ? 'Move its dispatchers first' : undefined} onClick={() => void archive(row)}>
+          <Button variant="ghost" size="sm" disabled={!!pending || (!row.archived && row.members + (row.onboarding ?? 0) > 0)} title={!row.archived && row.members + (row.onboarding ?? 0) > 0 ? 'Move its dispatchers first' : undefined} onClick={() => void archive(row)}>
             {pending === row.id ? 'Saving…' : row.archived ? 'Restore' : 'Archive'}<span className="sr-only"> {row.name}</span></Button></span> },
       ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />
         : <EmptyState compact title="No teams yet" description={mcs.some(mc => !mc.archived) ? 'Add a team for each MC and team lead.' : 'Add an MC in Admin › Lists first; every team works for one MC.'} />}
@@ -85,8 +86,8 @@ export function Teams({ data, mcs, members, filters }: { data: TeamList; mcs: Ch
       actions={<Button type="submit" form="team-editor">{pending === 'save' ? 'Saving…' : team ? 'Save changes' : 'Add team'}</Button>}>
       <form id="team-editor" onSubmit={save} className="space-y-4">
         <Input label="Team name" name="name" defaultValue={team?.name} required maxLength={100} autoComplete="off" width="full" hint="Usually the team lead’s name, such as Avery team." />
-        <Select label="MC" name="mcId" defaultValue={team?.mc.id ?? ''} required disabled={!!team?.members} placeholder={team ? undefined : 'Choose an MC'} width="full"
-          options={activeMcs.map(mc => ({ value: mc.id, label: mc.name }))} hint={team?.members ? 'A team keeps its MC while it has dispatchers.' : undefined} />
+        <Select label="MC" name="mcId" defaultValue={team?.mc.id ?? ''} required disabled={!!team && team.members + (team.onboarding ?? 0) > 0} placeholder={team ? undefined : 'Choose an MC'} width="full"
+          options={activeMcs.map(mc => ({ value: mc.id, label: mc.name }))} hint={team && team.members + (team.onboarding ?? 0) > 0 ? 'A team keeps its MC while it has dispatchers.' : undefined} />
         {team && <Select label="Team lead" name="leadMemberId" defaultValue={team.lead?.id ?? ''} placeholder="No team lead" width="full"
           options={candidates.map(member => ({ value: member.id, label: fullName(member) }))} hint={candidates.length ? 'One of this team’s dispatchers.' : 'Move a dispatcher into this team first.'} />}
         <Notice message={error} error />

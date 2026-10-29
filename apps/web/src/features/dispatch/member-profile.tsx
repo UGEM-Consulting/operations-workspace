@@ -2,79 +2,158 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Building2, Route, UserMinus, Users } from 'lucide-react';
+import { Building2, FileText, Mail, Phone, Plus, Route, UserMinus, Users } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog } from '@/components/ui/dialog';
 import { Alert, Notice } from '@/components/ui/alert';
 import { Avatar } from '@/components/ui/avatar';
 import { DescriptionList } from '@/components/ui/description-list';
+import { Progress } from '@/components/ui/feedback';
 import { Input, Select, Textarea } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
+import { PrivateImage } from '@/components/ui/private-image';
 import { Timeline } from '@/components/ui/timeline';
-import { Badge } from '@/components/ui/status-badge';
+import { Badge, statusLabel } from '@/components/ui/status-badge';
+import { Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { Choice, fullName, MemberProfile, TeamRow } from './types';
+import { Choice, fullName, MemberProfile, statusBadge, TeamRow } from './types';
 
-type Action = 'move' | 'leave' | 'title';
+type Action = 'move' | 'leave' | 'title' | 'contact';
 const today = () => new Date().toLocaleDateString('en-CA');
+// One reachable way to contact the dispatcher: where it came from, and a copy button.
+function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; value: string; source: string; action?: React.ReactNode }) {
+  return <li className="flex items-center gap-3 px-4 py-3 sm:px-5">
+    <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+    <div className="min-w-0 flex-1"><p className="break-all text-sm font-medium">{value}</p><p className="text-[13px] text-muted-foreground">{source}</p></div>
+    <span className="flex shrink-0 items-center gap-1"><CopyButton text={value} label="Copy" size="sm" variant="ghost" />{action}</span>
+  </li>;
+}
 
 /**
- * One dispatcher (a record, no login): where they work now, every MC and team before, and their company accounts.
- * Moves and departures add history; nothing is overwritten. Moving out of a team ends being its lead.
+ * One dispatcher (a record, no login), for every dispatcher manager and administrator: the approved application details,
+ * every way to reach them (company accounts, application contacts and ones staff added), signed documents, IT setup
+ * progress, and where they work now and before. Moves and departures add history; nothing is overwritten.
  */
 export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[] }) {
   const router = useRouter();
   const toast = useToast();
   const [action, setAction] = useState<Action | null>(null);
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [mcId, setMcId] = useState(member.current?.mcId ?? '');
-  const name = fullName(member), active = member.status === 'ACTIVE', current = member.current;
+  const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
+  const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts;
+  const badge = statusBadge[member.status];
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
-  function open(next: Action) { setAction(next); setError(''); setMcId(member.current?.mcId ?? ''); }
+  function start(next: Action) { setAction(next); setError(''); setMcId(member.current?.mcId ?? ''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending || !action) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
-    setPending(true); setError('');
+    setPending('form'); setError('');
     try {
       if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId || null, teamId: form.teamId || null, startedAt: form.startedAt, reason: form.reason });
       else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason });
-      else await mutate(`dispatch/members/${member.id}`, 'PATCH', { version: member.version, jobTitleId: form.jobTitleId || null });
-      toast({ title: action === 'move' ? `${name} moved` : action === 'leave' ? `${name} marked as left` : 'Job title updated' });
+      else if (action === 'title') await mutate(`dispatch/members/${member.id}`, 'PATCH', { version: member.version, jobTitleId: form.jobTitleId || null });
+      else await mutate(`dispatch/members/${member.id}/contacts`, 'POST', { kind, value: form.value, ...(form.label?.trim() ? { label: form.label } : {}) });
+      toast({ title: action === 'move' ? `${name} moved` : action === 'leave' ? `${name} marked as left` : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
-    finally { setPending(false); }
+    finally { setPending(null); }
+  }
+  async function removeContact(id: string) {
+    if (pending) return;
+    setPending(id);
+    try { await mutate(`dispatch/members/${member.id}/contacts/${id}/remove`, 'POST', {}); toast({ title: 'Contact removed' }); router.refresh(); }
+    catch (error) { toast({ tone: 'danger', title: 'Not removed', description: errorMessage(error, 'Reload the page and try again.') }); }
+    finally { setPending(null); }
   }
   const where = (row: { mc: string | null; team: string | null }) => row.mc ? `${row.mc}${row.team ? ` · ${row.team}` : ''}` : 'Independent';
+  const progress = accounts?.total ? <Progress label="IT setup" value={accounts.done ?? 0} max={accounts.total} /> : null;
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <div className="flex flex-wrap items-start gap-4">
-      <Avatar name={name} size="lg" />
-      <div className="min-w-0 flex-1"><PageHeader title={name} badge={<Badge label={active ? 'Active' : 'Left'} tone={active ? 'success' : 'neutral'} />}
+      {member.photo ? <a href={`/api/backend/dispatch/members/${member.id}/photos/selfie`} target="_blank" rel="noopener" className="shrink-0 rounded-lg focus-visible:outline-2" title="Open the photo full size">
+        <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/selfie`} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></a> : <Avatar name={name} size="lg" />}
+      <div className="min-w-0 flex-1"><PageHeader title={name} badge={<Badge label={badge.label} tone={badge.tone} />}
         meta={[current ? <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No MC or team',
-          member.leadOf ? `Team lead of ${member.leadOf.name}` : member.position === 'SUPPORT' ? 'Support' : 'Dispatcher',
-          <>Joined <LocalTime iso={member.joinedAt} format="date" /></>]}
-        action={active && <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => open('leave')}><UserMinus aria-hidden="true" className="size-4" />Mark as left</Button>
-          <Button onClick={() => open('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button></div>} /></div>
+          member.leadOf ? `Team lead of ${member.leadOf.name}` : member.position === 'SUPPORT' ? 'Support' : member.jobTitle?.name ?? 'Dispatcher',
+          <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
+        action={open && <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => start('leave')}><UserMinus aria-hidden="true" className="size-4" />Mark as left</Button>
+          <Button onClick={() => start('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button></div>} /></div>
     </div>
-    {!active && <Alert tone="info" title="This dispatcher has left"><p>The record and its history are kept. It can’t be moved or edited.</p></Alert>}
+    {member.status === 'ONBOARDING' && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
+    {member.status === 'LEFT' && <Alert tone="info" title="This dispatcher has left"><p>The record and its history are kept. It can’t be moved or edited.</p></Alert>}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
-      <Card>
-        <CardHeader title="MC and team history" description="Every MC and team this dispatcher has worked for. Moves are recorded, never overwritten." />
-        <CardBody><Timeline items={member.history.map((row, index) => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
-          icon: index < member.history.length - 1 && member.history[index + 1].mcId === row.mcId ? <Users aria-hidden="true" /> : <Building2 aria-hidden="true" />,
-          title: where(row), meta: <><LocalTime iso={row.startedAt} format="date" /> – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
-          body: row.reason ?? undefined }))} /></CardBody>
-      </Card>
+      <div className="min-w-0">
+        <Tabs label="Dispatcher sections" defaultValue="overview" items={[{ key: 'overview', label: 'Overview' }, { key: 'files', label: 'Photos and documents', count: (member.photo ? 1 : 0) + (member.idPhoto ? 1 : 0) + (member.documents?.length ?? 0) }, { key: 'history', label: 'History' }]}
+          panels={{
+            overview: <div className="space-y-6">
+            {details && <Card>
+              <CardHeader title="Personal details" description={<>From the approved application{details.submittedAt ? <>, last submitted <LocalTime iso={details.submittedAt} format="date" /></> : null}.</>} />
+              <CardBody><DescriptionList items={[
+                { label: 'First name', value: details.legalFirstName }, { label: 'Last name', value: details.legalLastName },
+                { label: 'American first name', value: details.preferredAmericanFirstName }, { label: 'American last name', value: details.preferredAmericanLastName },
+                { label: 'Telegram', value: details.telegram ? `@${details.telegram.replace(/^@/, '')}` : null },
+                { label: 'Employment on the application', value: [details.jobTitle, details.mcName, details.teamLead].filter(Boolean).join(' · ') || null }]} /></CardBody>
+            </Card>}
+                <Card>
+              <CardHeader title="Contacts" description="Every way to reach this dispatcher." actions={open && <Button size="sm" variant="outline" onClick={() => start('contact')}><Plus aria-hidden="true" className="size-4" />Add email or phone</Button>} />
+              <ul className="mt-3 divide-y divide-border border-t border-border">
+                {accounts?.companyEmail && <ContactRow icon={Mail} value={accounts.companyEmail} source="Company email (IT)" />}
+                {accounts?.workPhone && <ContactRow icon={Phone} value={accounts.workPhone} source="Work phone, RingCentral (IT)" />}
+                {details?.personalEmail && <ContactRow icon={Mail} value={details.personalEmail} source="Personal email (application)" />}
+                {details?.personalPhoneNumber && <ContactRow icon={Phone} value={details.personalPhoneNumber} source="Personal phone (application)" />}
+                {(member.contacts ?? []).map(contact => <ContactRow key={contact.id} icon={contact.kind === 'EMAIL' ? Mail : Phone} value={contact.value}
+                  source={`${contact.label ?? (contact.kind === 'EMAIL' ? 'Email' : 'Phone')} · added${contact.addedBy ? ` by ${contact.addedBy}` : ''}`}
+                  action={open && <Button size="sm" variant="ghost" className="text-danger" disabled={!!pending} onClick={() => void removeContact(contact.id)}>{pending === contact.id ? 'Removing…' : 'Remove'}<span className="sr-only"> {contact.value}</span></Button>} />)}
+                {!accounts?.companyEmail && !accounts?.workPhone && !details?.personalEmail && !details?.personalPhoneNumber && !member.contacts?.length &&
+                  <li className="px-4 py-4 text-sm text-muted-foreground sm:px-5">No contacts yet.</li>}
+              </ul>
+            </Card>
+                </div>,
+            files: <div className="space-y-6">
+              {(member.photo || member.idPhoto) && <Card><CardHeader title="Photos" description="As the applicant sent them. Open a photo to see it full size." />
+                <CardBody><div className="grid max-w-md grid-cols-2 gap-4">
+                  {member.photo && <figure className="space-y-2"><a href={`/api/backend/dispatch/members/${member.id}/photos/selfie`} target="_blank" rel="noopener" className="block rounded-md focus-visible:outline-2">
+              <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/selfie`} alt={`Selfie of ${name}`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></a>
+              <figcaption className="text-[13px] leading-5"><span className="font-medium">Selfie</span><span className="block text-muted-foreground">Also the profile photo.</span></figcaption></figure>}
+                  {member.idPhoto && <figure className="space-y-2"><a href={`/api/backend/dispatch/members/${member.id}/photos/id-selfie`} target="_blank" rel="noopener" className="block rounded-md focus-visible:outline-2">
+              <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/id-selfie`} alt={`Selfie of ${name} holding an ID`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></a>
+              <figcaption className="text-[13px] leading-5"><span className="font-medium">Selfie holding an ID</span><span className="block text-muted-foreground">Visible to the responsible manager and administrators only.</span></figcaption></figure>}
+                </div></CardBody></Card>}
+            {member.documents && member.documents.length > 0 && <Card>
+              <CardHeader title="Signed documents" />
+              <ul className="mt-3 divide-y divide-border border-t border-border">{member.documents.map(doc => <li key={doc.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+                <span className="flex min-w-0 items-center gap-3"><FileText aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0"><span className="block text-sm font-medium">{doc.title}</span>
+                  <span className="text-[13px] text-muted-foreground">Version {doc.version} · signed <LocalTime iso={doc.signedAt} format="date" /></span></span></span>
+                <a className="text-sm text-primary underline-offset-4 hover:underline" href={`/api/backend/dispatch/members/${member.id}/documents/${doc.id}/signed`} target="_blank" rel="noopener">Open signed copy<span className="sr-only"> of {doc.title}</span></a>
+              </li>)}</ul>
+            </Card>}
+                  {!member.photo && !member.idPhoto && !member.documents?.length && <p className="text-sm text-muted-foreground">No photos or signed documents.</p>}
+            </div>,
+            history: <div className="space-y-6">
+            <Card>
+              <CardHeader title="MC and team history" description="Every MC and team this dispatcher has worked for. Moves are recorded, never overwritten." />
+              <CardBody><Timeline items={member.history.map((row, index) => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
+                icon: index < member.history.length - 1 && member.history[index + 1].mcId === row.mcId ? <Users aria-hidden="true" /> : <Building2 aria-hidden="true" />,
+                title: where(row), meta: <><LocalTime iso={row.startedAt} format="date" /> – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
+                body: row.reason ?? undefined }))} /></CardBody>
+            </Card>
+                  {member.activity && member.activity.length > 0 && <Card><CardHeader title="Onboarding" description="From the invitation to IT setup." />
+                <CardBody><Timeline items={[...member.activity].reverse().map(item => ({ id: item.id, title: statusLabel(item.event), meta: <LocalTime iso={item.createdAt} /> }))} /></CardBody></Card>}
+            </div>,
+          }} />
+      </div>
       <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
         <Card>
-          <CardHeader title="Now" actions={active && <Button variant="ghost" size="sm" onClick={() => open('title')}>Change job title</Button>} />
+          <CardHeader title="Now" actions={open && <Button variant="ghost" size="sm" onClick={() => start('title')}>Change job title</Button>} />
           <CardBody><DescriptionList layout="rows" items={[
             { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : current ? 'Independent' : null, emptyLabel: 'None' },
             { label: 'Team', value: current?.team, emptyLabel: 'No team' },
@@ -82,19 +161,21 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
             { label: 'Since', value: current ? <LocalTime iso={current.startedAt} format="date" /> : null, emptyLabel: '—' }]} /></CardBody>
         </Card>
         <Card>
-          <CardHeader title="Employee details" description="The company accounts IT recorded." />
-          <CardBody><DescriptionList layout="rows" items={[
-            { label: 'Company email', value: member.accounts?.companyEmail, emptyLabel: 'Pending IT setup' },
-            { label: 'Work phone (RingCentral)', value: member.accounts?.workPhone, mono: true, emptyLabel: 'Pending IT setup' }]} />
-            {member.applicationId && <Link href={`/onboarding/applications/${member.applicationId}`} className="mt-4 inline-block text-sm text-primary underline-offset-4 hover:underline">Open onboarding record</Link>}</CardBody>
+          <CardHeader title="IT setup" />
+          <CardBody className="space-y-3 text-sm">
+            {!accounts ? <p className="text-muted-foreground">No IT setup request for this dispatcher.</p>
+              : accounts.completedAt ? <p>Setup complete <LocalTime iso={accounts.completedAt} format="date" />.</p>
+              : <><p>In progress. The dispatcher becomes Active when IT finishes.</p>{progress}</>}
+            {member.canOpenApplication && member.applicationId && <Link href={`/onboarding/applications/${member.applicationId}`} className="inline-block text-primary underline-offset-4 hover:underline">Open onboarding record</Link>}
+          </CardBody>
         </Card>
         <p className="text-xs leading-5 text-muted-foreground">Dispatcher managers and administrators see this record. Dispatchers don’t have accounts and never see the workspace.</p>
       </div>
     </div>
-    {action && <Dialog open onClose={() => setAction(null)} busy={pending} tone={action === 'leave' ? 'warning' : undefined}
-      title={action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as left?` : 'Change job title'}
-      description={action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'The record and its history are kept. Leaving a team also ends being its lead.' : undefined}
-      actions={<Button type="submit" form="member-action" variant={action === 'leave' ? 'destructive' : 'default'}>{pending ? 'Saving…' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? 'Mark as left' : 'Save job title'}</Button>}>
+    {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' ? 'warning' : undefined}
+      title={action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as left?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
+      description={action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'The record and its history are kept. Leaving a team also ends being its lead.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
+      actions={<Button type="submit" form="member-action" variant={action === 'leave' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? 'Mark as left' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
         {action === 'move' && <>
           <Select label="MC" name="mcId" value={mcId} onChange={event => setMcId(event.target.value)} width="full"
@@ -111,6 +192,12 @@ export function MemberProfileView({ member, mcs, teams, jobTitles }: { member: M
         </>}
         {action === 'title' && <Select label="Job title" name="jobTitleId" defaultValue={member.jobTitle?.id ?? ''} placeholder="Not set" width="full"
           options={jobTitles.filter(title => !title.archived || title.id === member.jobTitle?.id).map(title => ({ value: title.id, label: title.name }))} />}
+        {action === 'contact' && <>
+          <Select label="Type" name="kind" value={kind} onChange={event => setKind(event.target.value as 'EMAIL' | 'PHONE')} width="sm" options={[{ value: 'PHONE', label: 'Phone number' }, { value: 'EMAIL', label: 'Email' }]} />
+          <Input key={kind} label={kind === 'EMAIL' ? 'Email' : 'Phone number'} name="value" type={kind === 'EMAIL' ? 'email' : 'tel'} required maxLength={kind === 'EMAIL' ? 254 : 40} autoComplete="off" width="md"
+            hint={kind === 'PHONE' ? 'Include the country code, such as +1 469 555 0181.' : undefined} />
+          <Input label="Label" optional name="label" maxLength={50} autoComplete="off" width="md" hint="Such as Second phone or Spouse." />
+        </>}
         <Notice message={error} error />
       </form>
     </Dialog>}

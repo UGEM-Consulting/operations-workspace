@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { activateMember } from '../dispatch/create-member';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { ApplicationActivity, ApplicationReview, DispatcherApplication } from '../onboarding/entities';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
@@ -98,6 +99,8 @@ export class ItService {
     const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId});
     await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'IT_ONBOARDING_COMPLETED'});
     notices=await this.alerts.queueSetupComplete(em,request);
+    // The dispatcher record leaves Onboarding with the completed setup.
+    await activateMember(em,request.applicationId);
    }
    request.version+=1;await em.save(request);return this.detail(em,request);
   });

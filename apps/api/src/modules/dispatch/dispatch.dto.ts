@@ -1,12 +1,13 @@
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 const present = (_object: unknown, value: unknown) => value !== undefined;
 
 export class StatusQueryDto {
- @IsOptional() @IsIn(['ACTIVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ACTIVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
+ @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
 }
 export class CreateTeamDto {
  @name() @IsString() @MinLength(1, { message: 'Enter a team name.' }) @MaxLength(100) name!: string;
@@ -37,3 +38,12 @@ export class UpdateMemberDto {
  @IsInt() @Min(1) version!: number;
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() jobTitleId?: string | null;
 }
+/** An extra email or phone number. Phones use the same structural rule as applicant phones; emails are lowercased. */
+export class AddContactDto {
+ @IsIn(['EMAIL', 'PHONE']) kind!: 'EMAIL' | 'PHONE';
+ @text() @IsString() @MaxLength(254)
+ @ValidateIf((object: AddContactDto) => object.kind === 'EMAIL') @IsEmail({}, { message: 'Enter a valid email address.' })
+ value!: string;
+ @text() @IsOptional() @IsString() @MaxLength(50) label?: string;
+}
+export const validPhone = (value: string) => value.length <= 40 && INTERNATIONAL_PHONE_PATTERN.test(value);

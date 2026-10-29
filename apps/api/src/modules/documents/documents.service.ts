@@ -157,6 +157,25 @@ export class DocumentsService {
   await onboardingLimit(this.db,'signed-copy:'+user.id,60,900);
   return this.signedCopy(this.db.manager,application.id,documentId,'staff');
  }
+ // A dispatch member's approved application. Every dispatcher manager and administrator may read the dispatcher's
+ // record (agreed 2026-10-29); the role check is the controller's @Roles.
+ private async memberApplication(memberId: string) {
+  const [row] = await this.db.query(`SELECT a.id FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" WHERE d.id = $1 AND a.status = 'APPROVED'`, [memberId]);
+  if (!row) throw new NotFoundException();
+  return this.db.getRepository(DispatcherApplication).findOneByOrFail({ id: row.id });
+ }
+ /** The dispatcher's photos as of the last submission. The ID selfie keeps its rule: responsible manager or administrator. */
+ async memberPhoto(user: User, memberId: string, kind: PhotoKind): Promise<FileResult> {
+  const application = await this.memberApplication(memberId);
+  if (kind === 'ID_SELFIE' && !canAccessAssignedApplication(user,application)) throw new NotFoundException();
+  const photo = await photoFor(this.db.manager,application.id,kind,application.submittedAt); if (!photo) throw new NotFoundException();
+  return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
+ }
+ async memberSignedCopy(user: User, memberId: string, documentId: string) {
+  const application = await this.memberApplication(memberId);
+  await onboardingLimit(this.db,'signed-copy:'+user.id,60,900);
+  return this.signedCopy(this.db.manager,application.id,documentId,'staff');
+ }
  /** IT sees only the profile photo (plain selfie) of an approved request, never the ID selfie. */
  async itPhoto(user: User, requestId: string): Promise<FileResult> {
   if (user.status !== UserStatus.ACTIVE || ![Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].includes(user.role)) throw new ForbiddenException();
