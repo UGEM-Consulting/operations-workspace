@@ -2,7 +2,8 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
-export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED'] as const;
+export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -17,6 +18,8 @@ export class DispatchMember {
  @Column('varchar', { default: 'DISPATCHER' }) position!: Position;
  @Column('varchar', { default: 'ACTIVE' }) status!: MemberStatus;
  @Column('uuid', { nullable: true }) jobTitleId!: string | null;
+ // The team lead's sign-in account, when this dispatcher has one (at most one record per account).
+ @Column('uuid', { nullable: true }) accountUserId!: string | null;
  @Column('timestamptz') joinedAt!: Date;
  @Column('timestamptz', { nullable: true }) leftAt!: Date | null;
  @Column('integer', { default: 1 }) version!: number;
@@ -77,6 +80,23 @@ export class MemberContact {
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @Column('timestamptz', { nullable: true }) removedAt!: Date | null;
  @Column('uuid', { nullable: true }) removedBy!: string | null;
+}
+
+/** A team lead asks for a support in their team to become a dispatcher; a manager approves or declines. */
+@Entity('promotion_requests')
+export class PromotionRequest {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') supportId!: string;
+ @Column('uuid', { nullable: true }) requestedBy!: string | null;
+ @Column('varchar', { length: 1000 }) reason!: string;
+ @Column('varchar', { default: 'PENDING' }) status!: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED';
+ @Column('uuid', { nullable: true }) decidedBy!: string | null;
+ @Column('timestamptz', { nullable: true }) decidedAt!: Date | null;
+ @Column('varchar', { length: 1000, nullable: true }) note!: string | null;
+ @Column('uuid', { nullable: true }) itRequestId!: string | null;
+ @Column('integer', { default: 1 }) version!: number;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }
 
 /** Who changed a member or team and which fields; never the values. */

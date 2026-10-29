@@ -13,7 +13,8 @@ const EDITABLE: Editable[] = ['firstName', 'lastName', 'email', 'role', 'status'
 const CHANGE_EVENTS: { type: SecurityEventType; fields: string[]; revokes: boolean }[] = [
   { type: SecurityEventType.USER_NAME_CHANGED, fields: ['firstName', 'lastName'], revokes: false },
   { type: SecurityEventType.USER_EMAIL_CHANGED, fields: ['email'], revokes: true },
-  { type: SecurityEventType.USER_ROLE_CHANGED, fields: ['role'], revokes: true },
+  // A team lead's dispatcher record decides what they can see, so changing it is a role change.
+  { type: SecurityEventType.USER_ROLE_CHANGED, fields: ['role', 'memberId'], revokes: true },
   { type: SecurityEventType.USER_STATUS_CHANGED, fields: ['status'], revokes: true },
   { type: SecurityEventType.USER_PASSWORD_SET, fields: ['password'], revokes: true },
 ];
@@ -24,22 +25,43 @@ export class UsersService {
     const users = await this.db.getRepository(User).find({ order: { createdAt: 'ASC' }, take: 200 });
     const enrolled: { userId: string; method: string }[] = await this.db.query(`SELECT "userId", method FROM staff_mfa WHERE "confirmedAt" IS NOT NULL`);
     const methods = new Map(enrolled.map(row => [row.userId, row.method]));
-    return users.map(user => ({ ...publicUser(user), mfaEnabled: methods.has(user.id), mfaMethod: methods.get(user.id) ?? null, mustChangePassword: user.mustChangePassword }));
+    const links: { id: string; accountUserId: string }[] = await this.db.query(`SELECT id, "accountUserId" FROM dispatch_members WHERE "accountUserId" IS NOT NULL`);
+    const members = new Map(links.map(row => [row.accountUserId, row.id]));
+    return users.map(user => ({ ...publicUser(user), mfaEnabled: methods.has(user.id), mfaMethod: methods.get(user.id) ?? null, mustChangePassword: user.mustChangePassword, memberId: members.get(user.id) ?? null }));
   }
   /** The administrator chose the initial password, so the user must replace it at the first sign-in. */
   async create(dto: CreateUserDto, actor: User) {
-    const { password, ...fields } = dto;
+    const { password, memberId, ...fields } = dto;
     const passwordHash = await hashPassword(password);
     try {
       return await this.db.transaction(async manager => {
         await this.lockAdministration(manager, actor);
         const repo = manager.getRepository(User);
         const user = await repo.save(repo.create({ ...fields, passwordHash, mustChangePassword: true }));
-        const provided = Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key);
+        const linked = await this.linkMember(manager, user, memberId);
+        const provided = [...Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key), ...(linked ? ['memberId'] : [])];
         await this.audit(manager, user.id, actor.id, SecurityEventType.USER_CREATED, { fields: [...provided, 'password'] });
         return publicUser(user);
       });
     } catch (error) { return this.handleError(error); }
+  }
+  /**
+   * A team lead's account points at exactly one current dispatcher record; other roles point at none. Returns whether the
+   * link changed. The unique index keeps one account per dispatcher.
+   */
+  private async linkMember(manager: EntityManager, user: User, requested: string | null | undefined) {
+    const [current] = await manager.query(`SELECT id FROM dispatch_members WHERE "accountUserId" = $1 FOR UPDATE`, [user.id]);
+    const target = user.role === Role.TEAM_LEAD ? (requested === undefined ? current?.id ?? null : requested) : null;
+    if (user.role === Role.TEAM_LEAD && !target) throw new BadRequestException('Choose the dispatcher record for this team lead.');
+    if ((current?.id ?? null) === target) return false;
+    if (target) {
+      const [member] = await manager.query(`SELECT position, status, "accountUserId" FROM dispatch_members WHERE id = $1 FOR UPDATE`, [target]);
+      if (!member || member.position !== 'DISPATCHER' || member.status === 'LEFT') throw new BadRequestException('A team lead account links to a current dispatcher.');
+      if (member.accountUserId) throw new ConflictException('This dispatcher already has a team lead account.');
+    }
+    if (current) await manager.query(`UPDATE dispatch_members SET "accountUserId" = NULL WHERE id = $1`, [current.id]);
+    if (target) await manager.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [user.id, target]);
+    return true;
   }
   async update(id: string, dto: UpdateUserDto, actor: User) {
     const passwordHash = dto.password ? await hashPassword(dto.password) : undefined;
@@ -56,6 +78,7 @@ export class UsersService {
         // The editor submits every field; only real differences count as changes.
         const changed: string[] = EDITABLE.filter(key => dto[key] !== undefined && dto[key] !== user[key]);
         for (const key of changed) Object.assign(user, { [key]: dto[key as Editable] });
+        if (await this.linkMember(manager, user, dto.memberId)) changed.push('memberId');
         if (passwordHash) {
           changed.push('password');
           user.passwordHash = passwordHash;

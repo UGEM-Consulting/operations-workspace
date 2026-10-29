@@ -58,7 +58,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
-    await db.query('TRUNCATE dispatch_events, member_contacts, member_support_links'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('ManagedLists1792810000000');
+    await db.query('TRUNCATE dispatch_events, member_contacts, member_support_links'); await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('ManagedLists1792810000000');
     try { await backfilled(); } finally { await db.runMigrations(); }
   });
   async function backfilled() {
@@ -69,7 +69,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await approved(['Casey', 'Morgan'], { mcName: 'Lakeside Carriers', teamLead: 'Lee Lead', jobTitle: 'Senior dispatcher' });
     await approved(['Indy', 'Pendent'], { mcName: 'Independent', teamLead: 'Independent', jobTitle: 'Dispatcher' });
     await approved(['Not', 'Approved'], { mcName: 'Northwind Freight', teamLead: 'Lee Lead', jobTitle: 'Dispatcher' }, 'SUBMITTED');
-    await db.runMigrations(); expect(await latest()).toBe('SupportMembers1792840000000');
+    await db.runMigrations(); expect(await latest()).toBe('TeamLeads1792850000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -83,7 +83,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('SupportMembers1792840000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('TeamLeads1792850000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -220,7 +220,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
-    await db.undoLastMigration(); await db.undoLastMigration();
+    await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration();
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard dispatch team changes');
     expect(await latest()).toBe('DispatchTeams1792820000000');
     await db.runMigrations();
