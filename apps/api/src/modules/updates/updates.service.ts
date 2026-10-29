@@ -8,7 +8,7 @@ import { ApplicationActivity, ApplicationReview, DispatcherApplication, Invitati
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { DECISION_STATUSES, type DecisionStatus, statusMessage } from './status-messages';
 import { TelegramClient, TelegramError, type TelegramUpdate } from './telegram.client';
-import { ApplicantUpdateDelivery, ApplicantUpdateSettings, TelegramLinkToken, TelegramPollState, type UpdateChannel } from './updates.entity';
+import { ApplicantUpdateDelivery, ApplicantUpdateSettings, StaffTelegramLink, StaffTelegramLinkToken, TelegramLinkToken, TelegramPollState, type UpdateChannel } from './updates.entity';
 
 const LINK_TTL_MS = 30 * 60000;
 // Serializes Telegram polling across API instances so each update is handled once.
@@ -75,7 +75,7 @@ export class UpdatesService implements OnApplicationBootstrap, BeforeApplication
  async checkConnection(application: DispatcherApplication) {
   if (!this.telegram.enabled) throw new BadRequestException('Telegram updates are not available yet.');
   await onboardingLimit(this.db, 'telegram-check:' + application.id, 30, 600);
-  await this.poll();
+  await this.pollTelegram();
   return this.view(this.db.manager, application.id);
  }
  async disconnect(em: EntityManager, application: DispatcherApplication, invitation: Invitation) {
@@ -84,7 +84,8 @@ export class UpdatesService implements OnApplicationBootstrap, BeforeApplication
   await em.getRepository(ApplicationActivity).save({ invitationId: invitation.id, actorId: null, event: 'TELEGRAM_DISCONNECTED' });
   return this.view(em, application.id);
  }
- private async poll() {
+ /** Reads new bot messages (applicant and staff connect links, /stop) under the polling lock; also used for staff checks. */
+ async pollTelegram() {
   const runner = this.db.createQueryRunner(), replies: [string, string][] = [];
   let failure: string | null = null;
   try {
@@ -121,14 +122,25 @@ export class UpdatesService implements OnApplicationBootstrap, BeforeApplication
   const text = (message.text ?? '').trim(), chatId = String(message.chat.id);
   if (text === '/stop') {
    await em.getRepository(ApplicantUpdateSettings).update({ telegramChatId: chatId }, { telegramChatId: null, telegramUsername: null, telegramLinkedAt: null, telegram: false, email: true });
-   return [chatId, 'You will no longer get UGEM application updates here.'];
+   await em.getRepository(StaffTelegramLink).delete({ chatId });
+   return [chatId, 'You will no longer get UGEM updates here.'];
   }
   const token = /^\/start ([A-Za-z0-9_-]{43})$/.exec(text)?.[1];
-  if (!token) return [chatId, 'This bot sends updates about UGEM dispatcher applications. Use the Connect Telegram button on your application page to start.'];
-  const link = await em.getRepository(TelegramLinkToken).findOne({ where: { tokenHash: hash(token), consumedAt: IsNull(), expiresAt: MoreThan(new Date()) }, lock: { mode: 'pessimistic_write' } });
-  if (!link) return [chatId, 'This connect link has expired or was already used. Open your application page and press Connect Telegram again.'];
-  link.consumedAt = new Date(); await em.save(link);
+  if (!token) return [chatId, 'This bot sends UGEM updates. Use the Connect Telegram button on your application page, or in Account security if you work at UGEM, to start.'];
   const username = message.from?.username && /^[A-Za-z0-9_]{5,32}$/.test(message.from.username) ? message.from.username : null;
+  const fresh = { tokenHash: hash(token), consumedAt: IsNull(), expiresAt: MoreThan(new Date()) };
+  const staff = await em.getRepository(StaffTelegramLinkToken).findOne({ where: fresh, lock: { mode: 'pessimistic_write' } });
+  if (staff) {
+   staff.consumedAt = new Date(); await em.save(staff);
+   // One chat belongs to one staff member: connecting it to another account moves it.
+   await em.getRepository(StaffTelegramLink).delete({ chatId });
+   await em.query(`INSERT INTO staff_telegram_links ("userId","chatId",username,"linkedAt") VALUES ($1,$2,$3,now())
+    ON CONFLICT ("userId") DO UPDATE SET "chatId"=EXCLUDED."chatId", username=EXCLUDED.username, "linkedAt"=now()`, [staff.userId, chatId, username]);
+   return [chatId, 'Connected. You will get UGEM Workspace alerts here. Send /stop to turn them off.'];
+  }
+  const link = await em.getRepository(TelegramLinkToken).findOne({ where: fresh, lock: { mode: 'pessimistic_write' } });
+  if (!link) return [chatId, 'This connect link has expired or was already used. Press Connect Telegram again to get a new one.'];
+  link.consumedAt = new Date(); await em.save(link);
   // An upsert, because the applicant may be saving preferences at the same moment.
   await em.query(`INSERT INTO applicant_update_settings ("applicationId",email,telegram,"telegramChatId","telegramUsername","telegramLinkedAt") VALUES ($1,true,true,$2,$3,now())
    ON CONFLICT ("applicationId") DO UPDATE SET telegram=true, "telegramChatId"=EXCLUDED."telegramChatId", "telegramUsername"=EXCLUDED."telegramUsername", "telegramLinkedAt"=now(), "updatedAt"=now()`,

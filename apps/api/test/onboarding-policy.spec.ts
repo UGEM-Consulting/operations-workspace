@@ -39,7 +39,7 @@ it('buckets applicant rate limits by the BFF-forwarded client address',()=>{
 });
 it('fails closed for production verification before accessing the database',async()=>{
  const config=new ConfigService({NODE_ENV:'production'});
- const service=new OnboardingService({} as DataSource,config,new EmailService(config),{enabled:true} as StorageService);
+ const service=new OnboardingService({} as DataSource,config,new EmailService(config),{enabled:true} as StorageService,{} as never);
  await expect(service.begin({email:'fictional@example.test',token:'a'.repeat(64)},{} as Request)).rejects.toThrow('not configured');
  await expect(service.verify({challengeId:'unused',code:'12345678'},{} as Request)).rejects.toThrow('not configured');
 });

@@ -33,6 +33,9 @@ export const mfaStatusSchema = z.looseObject({ enabled: z.boolean(), required: z
   // Absent from an older API: treated as an authenticator app with email codes unavailable.
   method: z.enum(['TOTP', 'EMAIL']).nullable().optional(), emailCodesAvailable: z.boolean().optional(), email: text.optional() });
 
+/** GET /staff/telegram: own Telegram alert connection. */
+export const staffTelegramSchema = z.looseObject({ available: z.boolean(), connected: z.boolean(), username: nullableText, alerts: z.array(z.enum(['REVIEW_WAITING', 'IT_SETUP_WAITING'])) });
+
 /** GET /onboarding/applications/:id */
 export const reviewDetailSchema = z.looseObject({
   application: z.looseObject({ id: text, status: text, fields, version: z.number(), submittedAt: nullableText }),

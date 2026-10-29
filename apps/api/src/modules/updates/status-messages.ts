@@ -1,4 +1,5 @@
 import type { ApplicationStatus } from '../onboarding/entities';
+import { renderEmail } from '../email/layout';
 export type DecisionStatus = Extract<ApplicationStatus, 'CHANGES_REQUESTED' | 'APPROVED' | 'REJECTED'>;
 export const DECISION_STATUSES: readonly ApplicationStatus[] = ['CHANGES_REQUESTED', 'APPROVED', 'REJECTED'];
 
@@ -16,12 +17,6 @@ export function statusMessage(status: DecisionStatus, reference: string, resumeU
  }[status];
  const subject = { CHANGES_REQUESTED: 'Changes requested on your UGEM application', APPROVED: 'Your UGEM application was approved', REJECTED: 'An update on your UGEM application' }[status];
  const access = [`To check your application, open ${resumeUrl} and enter your email and this application reference:`, reference];
- const text = [...lines, '', ...access, '', 'This is an automated message; replies are not monitored.'].join('\n');
- const html = `<!doctype html><html><body style="margin:0;padding:24px;font-family:Arial,Helvetica,sans-serif;color:#202020;background:#ffffff">
-${lines.map(line => `<p style="margin:0 0 16px">${line}</p>`).join('\n')}
-<p style="margin:0 0 8px">To check your application, open <a href="${resumeUrl}">${resumeUrl}</a> and enter your email and this application reference:</p>
-<p style="margin:0 0 16px;font-family:'Courier New',monospace;font-size:15px">${reference}</p>
-<p style="margin:0;color:#5f5a57;font-size:13px">This is an automated message; replies are not monitored.</p>
-</body></html>`;
- return { subject, text, html, telegram: [...lines, '', ...access].join('\n') };
+ const email = renderEmail({ subject, paragraphs: lines, link: { lead: 'To check your application, open this page and enter your email and the application reference below:', url: resumeUrl }, code: reference });
+ return { ...email, telegram: [...lines, '', ...access].join('\n') };
 }

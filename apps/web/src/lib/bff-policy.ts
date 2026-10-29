@@ -28,6 +28,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && match(`users/${ID}/mfa/reset`, path)) ||
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     // The approver's own saved countersigning signature.
+    // Own Telegram connection for workspace alerts.
+    (method === 'GET' && path === 'staff/telegram') || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && path === 'staff/signature') || (method === 'POST' && ['staff/signature', 'staff/signature/delete'].includes(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||

@@ -16,6 +16,7 @@ import { CompanyDocument, DocumentSignature, StaffSavedSignature } from '../docu
 import { onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
 import { UpdatesService } from '../updates/updates.service';
+import { NotificationsService } from '../updates/notifications.service';
 
 // Joins each application's latest submitted revision once (at most one row: versions are unique per application),
 // so search, sorting and projection read s.fields instead of repeating a correlated subquery per expression.
@@ -25,7 +26,7 @@ const submittedFields = 's.fields';
 const REJECTED_CORRECTION_ACCESS_MS = 7*86400000;
 @Injectable()
 export class ReviewService {
- constructor(private readonly db: DataSource, private readonly storage: StorageService, private readonly updates: UpdatesService) {}
+ constructor(private readonly db: DataSource, private readonly storage: StorageService, private readonly updates: UpdatesService, private readonly notifications: NotificationsService) {}
  private scoped(user: User) {
   if (user.status !== UserStatus.ACTIVE || ![Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER].includes(user.role)) throw new ForbiddenException();
   const query = this.db.getRepository(DispatcherApplication).createQueryBuilder('a');
@@ -101,6 +102,7 @@ export class ReviewService {
   if (input.decisionType === 'REQUEST_CHANGES' && !input.requestedFields.length) throw new BadRequestException('Select at least one field to correct.');
   if (input.decisionType !== 'REQUEST_CHANGES' && !input.confirmed) throw new BadRequestException('Confirm the decision before continuing.');
   if (input.decisionType !== 'REQUEST_CHANGES' && input.requestedFields.length) throw new BadRequestException('Correction fields are only valid for a change request.');
+  let alerts: string[] = [];
   const result = await this.db.transaction(async em => {
    const initial = await em.getRepository(DispatcherApplication).findOneBy({id});
    if (!initial || !canAccessAssignedApplication(user,initial)) throw new NotFoundException();
@@ -150,7 +152,8 @@ export class ReviewService {
      signatureImage:countersignImage,signatureMethod:saved?.signatureMethod ?? input.countersignature.signatureMethod ?? 'DRAWN',fromSavedSignature:!!saved,consent:null,statement:companyStatement(doc,countersign.typedName),translatedStatement:null,documentSha256:doc.sha256,...client});
     await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
    }
-   if(nextStatus==='APPROVED')await createItRequest(em,application,review,submitted?.fields??{},invitation);
+   // A new IT checklist alerts the IT specialists; sent after the approval commits.
+   if(nextStatus==='APPROVED')alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation));
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});
    // The applicant's chosen channels are queued with the decision and sent only after it commits.
@@ -158,6 +161,7 @@ export class ReviewService {
    return {id:review.id,status:application.status,version:application.version,readyForIt:application.status==='APPROVED'};
   });
   this.updates.dispatch(result.id);
+  this.notifications.dispatch(alerts);
   return result;
  }
 }

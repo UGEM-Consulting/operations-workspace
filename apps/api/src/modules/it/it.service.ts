@@ -6,6 +6,7 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { photoFor } from '../documents/requirements';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, TaskUpdateDto } from './it.dto';
+import { NotificationsService } from '../updates/notifications.service';
 import { IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, itStatus, itStatusSql, PortalNotification, taskDone } from './it.entity';
 
 const statusSql=itStatusSql('r');
@@ -17,7 +18,7 @@ export async function approvedApplication(em:EntityManager,request:ItOnboardingR
 }
 @Injectable()
 export class ItService {
- constructor(private readonly db:DataSource){}
+ constructor(private readonly db:DataSource,private readonly alerts:NotificationsService){}
  private allowIt(user:User){if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].includes(user.role))throw new ForbiddenException();}
  async queue(user:User,input:ItQueueDto){
   this.allowIt(user);
@@ -74,7 +75,9 @@ export class ItService {
   this.allowIt(user);await onboardingLimit(this.db,'it-task:'+user.id,120,60);
   if(!IT_CHECKLIST.some(template=>template.key===key))throw new NotFoundException();
   if(input.status==='NOT_NEEDED'&&!isOptionalTask(key))throw new BadRequestException('Only optional tasks can be marked not needed.');
-  return this.db.transaction(async em=>{
+  // The new hire's "setup complete" message is queued with the completion and sent after it commits.
+  let notices:string[]=[];
+  const result=await this.db.transaction(async em=>{
    const request=await this.locked(em,id,input.version);
    // A request created before an optional task existed has no row for it.
    const task=await em.getRepository(ItOnboardingTask).findOneBy({requestId:id,key});if(!task)throw new NotFoundException();
@@ -94,9 +97,12 @@ export class ItService {
     await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'IT_ONBOARDING_COMPLETED',metadata:{}});
     const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId});
     await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'IT_ONBOARDING_COMPLETED'});
+    notices=await this.alerts.queueSetupComplete(em,request);
    }
    request.version+=1;await em.save(request);return this.detail(em,request);
   });
+  this.alerts.dispatch(notices);
+  return result;
  }
  /** Open requests waiting for IT (the sidebar count); same approved-application checks as the queue. */
  async openCount(user:User){
