@@ -30,3 +30,7 @@ export function navigationSections(items: readonly NavigationItem[]) {
   }
   return sections;
 }
+/** A queue URL from the current filters plus changes; any change goes back to page 1. Usable on server and client. */
+export function queueHref(path: string, filters: Record<string, string>, changes: Record<string, string>) {
+  return `${path}?${new URLSearchParams({ ...filters, page: '1', ...changes })}`;
+}
