@@ -1,8 +1,9 @@
+import { BadRequestException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import type { ApplicationFields, DispatcherApplication } from '../onboarding/entities';
 import { EmploymentAssignments } from '../onboarding/entities';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
-import { DispatchMember, MemberAssignment, Team } from './dispatch.entity';
+import { DispatchMember, MemberAssignment, MemberSupportLink, Team } from './dispatch.entity';
 
 /**
  * Called only inside the approval transaction: the approved dispatcher becomes a member record (no login), ONBOARDING
@@ -34,4 +35,25 @@ export async function createMemberForApproval(em: EntityManager, application: Di
 /** Called inside the IT completion transaction: the dispatcher has their accounts and starts working. */
 export async function activateMember(em: EntityManager, applicationId: string) {
  await em.query(`UPDATE dispatch_members SET status = 'ACTIVE', version = version + 1, "updatedAt" = now() WHERE "applicationId" = $1 AND status = 'ONBOARDING'`, [applicationId]);
+}
+
+/** A dispatcher a support can assist: a dispatcher record that hasn't left (still in IT setup is fine). */
+export async function supportedDispatcher(em: EntityManager, id: string) {
+ const dispatcher = await em.getRepository(DispatchMember).findOneBy({ id });
+ if (!dispatcher || dispatcher.position !== 'DISPATCHER' || dispatcher.status === 'LEFT') throw new BadRequestException('Choose a current dispatcher for this support.');
+ return dispatcher;
+}
+
+/**
+ * Called only inside the approval transaction for a support invitation: the support becomes an ACTIVE member record
+ * (no IT setup) linked to the dispatcher they assist. Supports have no MC, team or job title of their own.
+ */
+export async function createSupportForApproval(em: EntityManager, application: DispatcherApplication, fields: ApplicationFields, dispatcherId: string, approvedAt: Date) {
+ await supportedDispatcher(em, dispatcherId);
+ const first = fields.preferredAmericanFirstName?.trim() || fields.firstName?.trim() || 'Support';
+ const last = fields.preferredAmericanLastName?.trim() || fields.lastName?.trim() || '';
+ const member = await em.getRepository(DispatchMember).save({ applicationId: application.id, firstName: first.slice(0, 100), lastName: last.slice(0, 100),
+  position: 'SUPPORT', status: 'ACTIVE', jobTitleId: null, joinedAt: approvedAt });
+ await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
+ return member;
 }

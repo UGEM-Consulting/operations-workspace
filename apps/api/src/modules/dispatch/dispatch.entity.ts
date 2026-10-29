@@ -2,7 +2,7 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
-export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED'] as const;
+export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -45,6 +45,19 @@ export class MemberAssignment {
  @Column('uuid') memberId!: string;
  @Column('uuid', { nullable: true }) mcId!: string | null;
  @Column('uuid', { nullable: true }) teamId!: string | null;
+ @Column('timestamptz') startedAt!: Date;
+ @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
+ @Column('varchar', { length: 500, nullable: true }) reason!: string | null;
+ @Column('uuid', { nullable: true }) actorId!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** Which dispatcher a support assists from a date; the open row (no endedAt) is now. Changes add rows, never overwrite. */
+@Entity('member_support_links')
+export class MemberSupportLink {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') supportId!: string;
+ @Column('uuid') dispatcherId!: string;
  @Column('timestamptz') startedAt!: Date;
  @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
  @Column('varchar', { length: 500, nullable: true }) reason!: string | null;

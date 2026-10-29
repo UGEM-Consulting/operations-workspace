@@ -14,7 +14,7 @@ import { hashPassword } from '../src/modules/auth/password';
 import { User, Role, UserStatus } from '../src/modules/users/user.entity';
 import { ListsModule } from '../src/modules/lists/lists.module';
 import { DispatchModule } from '../src/modules/dispatch/dispatch.module';
-import { activateMember, createMemberForApproval } from '../src/modules/dispatch/create-member';
+import { activateMember, createMemberForApproval, createSupportForApproval } from '../src/modules/dispatch/create-member';
 import { DispatcherApplication } from '../src/modules/onboarding/entities';
 type Agent = ReturnType<typeof request.agent>;
 const integration = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -34,7 +34,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     return app.id as string;
   }
   const mc = async (name: string) => (await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ($1::varchar,lower($1::varchar)) RETURNING id`, [name]))[0].id as string;
-  const members = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as { id: string; firstName: string; lastName: string; mc: string | null; teamId: string | null; team: string | null; lead: boolean; version: number; jobTitle: string | null; status: string }[];
+  const members = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as { id: string; firstName: string; lastName: string; mc: string | null; teamId: string | null; team: string | null; lead: boolean; version: number; jobTitle: string | null; status: string; position: string; dispatcher: string | null }[];
   const byName = async (first: string) => (await members()).find(item => item.firstName === first)!;
 
   beforeAll(async () => {
@@ -47,7 +47,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     app = module.createNestApplication(); closeSessions = installSessions(app, env); configureApp(app, env.CORS_ORIGINS); await app.init();
   }, 30000);
   beforeEach(async () => {
-    await db.query('TRUNCATE users, staff_sessions, login_attempts, invitations, list_events, mcs, job_titles, dispatch_events, dispatch_members, teams, member_assignments CASCADE');
+    await db.query('TRUNCATE users, staff_sessions, login_attempts, invitations, list_events, mcs, job_titles, dispatch_events, dispatch_members, teams, member_assignments, member_support_links CASCADE');
     const passwordHash = await hashPassword(password);
     for (const [key, role] of [['manager', Role.DISPATCHER_MANAGER], ['it', Role.IT_SPECIALIST]] as const) {
       users[key] = await db.getRepository(User).save({ firstName: 'Fictional', lastName: 'Staff', email: `dispatch.${key}@example.test`, role, status: UserStatus.ACTIVE, passwordHash });
@@ -58,7 +58,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
-    await db.query('TRUNCATE dispatch_events, member_contacts'); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('ManagedLists1792810000000');
+    await db.query('TRUNCATE dispatch_events, member_contacts, member_support_links'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('ManagedLists1792810000000');
     try { await backfilled(); } finally { await db.runMigrations(); }
   });
   async function backfilled() {
@@ -69,7 +69,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await approved(['Casey', 'Morgan'], { mcName: 'Lakeside Carriers', teamLead: 'Lee Lead', jobTitle: 'Senior dispatcher' });
     await approved(['Indy', 'Pendent'], { mcName: 'Independent', teamLead: 'Independent', jobTitle: 'Dispatcher' });
     await approved(['Not', 'Approved'], { mcName: 'Northwind Freight', teamLead: 'Lee Lead', jobTitle: 'Dispatcher' }, 'SUBMITTED');
-    await db.runMigrations(); expect(await latest()).toBe('DispatcherContacts1792830000000');
+    await db.runMigrations(); expect(await latest()).toBe('SupportMembers1792840000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -83,7 +83,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('DispatcherContacts1792830000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('SupportMembers1792840000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -182,12 +182,45 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     expect(JSON.stringify(events)).not.toMatch(/jordan|469|Home/i);
   });
 
+  it('keeps a support with one dispatcher at a time: changes are history, Move is refused, leaving ends the link', async () => {
+    const northwind = await mc('Northwind Freight');
+    const red = (await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Red team', mcId: northwind }).expect(201)).body;
+    const make = async (first: string, kind: 'DISPATCHER' | 'SUPPORT', dispatcherId?: string) => {
+      const app = await approved([first, 'Fictional'], { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' });
+      const application = await db.getRepository(DispatcherApplication).findOneByOrFail({ id: app });
+      const fields = { preferredAmericanFirstName: first, preferredAmericanLastName: 'Fictional' };
+      await db.transaction(async em => { if (kind === 'SUPPORT') await createSupportForApproval(em, application, fields, dispatcherId!, new Date('2026-03-01T20:00:00Z')); else await createMemberForApproval(em, application, fields, { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' }, new Date('2026-02-01T12:00:00Z')); });
+      return byName(first);
+    };
+    const avery = await make('Avery', 'DISPATCHER'), blake = await make('Blake', 'DISPATCHER');
+    const sky = await make('Sky', 'SUPPORT', avery.id);
+    // The database keeps microseconds (an approval's time); a same-day change must still end after it started.
+    await db.query("UPDATE member_support_links SET \"startedAt\" = '2026-03-01 20:00:00.000400+00' WHERE \"supportId\" = $1", [sky.id]);
+    // A support works where their dispatcher works.
+    expect(await byName('Sky')).toMatchObject({ position: 'SUPPORT', status: 'ACTIVE', mc: 'Northwind Freight', team: 'Red team', teamId: red.id, dispatcher: 'Avery Fictional' });
+    expect((await agents.manager.get(`/api/dispatch/members/${avery.id}`).set(headers).expect(200)).body.supports.map((row: { name: string }) => row.name)).toEqual(['Sky Fictional']);
+    await agents.manager.post(`/api/dispatch/members/${sky.id}/move`).set(headers).send({ version: 1, mcId: null, startedAt: '2026-04-01', reason: 'Try' }).expect(400);
+    await agents.manager.post(`/api/dispatch/members/${sky.id}/reassign`).set(headers).send({ version: 1, dispatcherId: avery.id, startedAt: '2026-04-01', reason: 'Same' }).expect(400);
+    await agents.manager.post(`/api/dispatch/members/${sky.id}/reassign`).set(headers).send({ version: 1, dispatcherId: sky.id, startedAt: '2026-04-01', reason: 'Self' }).expect(400);
+    await agents.manager.post(`/api/dispatch/members/${avery.id}/reassign`).set(headers).send({ version: 1, dispatcherId: blake.id, startedAt: '2026-04-01', reason: 'Not a support' }).expect(400);
+    await agents.manager.post(`/api/dispatch/members/${sky.id}/reassign`).set(headers).send({ version: 1, dispatcherId: blake.id, startedAt: '2026-03-01', reason: 'Blake needs help' }).expect(201);
+    // Changed the same day the support started: the new link starts when the old one did, not earlier.
+    const profile = (await agents.manager.get(`/api/dispatch/members/${sky.id}`).set(headers).expect(200)).body;
+    expect(profile.supportOf.startedAt).toBe('2026-03-01T20:00:00.001Z');
+    expect(profile.supportOf).toMatchObject({ dispatcherId: blake.id, dispatcher: 'Blake Fictional', team: 'Red team' });
+    expect(profile.supportHistory.map((row: { dispatcher: string; endedAt: string | null; changedBy: string | null }) => [row.dispatcher, row.endedAt?.slice(0, 10) ?? null, row.changedBy]))
+      .toEqual([['Blake Fictional', null, 'Fictional Staff'], ['Avery Fictional', '2026-03-01', null]]);
+    await agents.manager.post(`/api/dispatch/members/${sky.id}/leave`).set(headers).send({ version: 2, leftAt: '2026-05-01', reason: 'Resigned' }).expect(201);
+    expect(await db.query('SELECT count(*)::integer AS n FROM member_support_links WHERE "supportId" = $1 AND "endedAt" IS NULL', [sky.id])).toEqual([{ n: 0 }]);
+    expect((await agents.manager.get(`/api/dispatch/members/${blake.id}`).set(headers).expect(200)).body.supports).toEqual([]);
+  });
+
   it('keeps teams and dispatchers to dispatcher managers and administrators, and refuses to roll back after changes', async () => {
     await agents.it.get('/api/dispatch/members').set(headers).expect(403);
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
-    await db.undoLastMigration();
+    await db.undoLastMigration(); await db.undoLastMigration();
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard dispatch team changes');
     expect(await latest()).toBe('DispatchTeams1792820000000');
     await db.runMigrations();

@@ -29,6 +29,12 @@ export class MoveMemberDto {
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher is moving.' }) @MaxLength(500) reason!: string;
 }
+export class ReassignSupportDto {
+ @IsInt() @Min(1) version!: number;
+ @IsUUID() dispatcherId!: string;
+ @IsDateString({ strict: true }) startedAt!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why the support is changing dispatcher.' }) @MaxLength(500) reason!: string;
+}
 export class LeaveMemberDto {
  @IsInt() @Min(1) version!: number;
  @IsDateString({ strict: true }) leftAt!: string;

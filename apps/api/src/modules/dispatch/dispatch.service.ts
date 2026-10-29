@@ -3,11 +3,20 @@ import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
-import { AddContactDto, CreateTeamDto, LeaveMemberDto, MoveMemberDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
-import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberContact, Team } from './dispatch.entity';
+import { AddContactDto, CreateTeamDto, LeaveMemberDto, MoveMemberDto, ReassignSupportDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
+import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberContact, MemberSupportLink, Team } from './dispatch.entity';
+import { supportedDispatcher } from './create-member';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 // A date picked in the form is stored at midday UTC, so it shows as the same calendar day in every US time zone.
+// A change dated the same day as the period it ends starts at that period's start: a date picked in a form is midday UTC,
+// while an approval or earlier change that same day may have a later time. Anything clearly earlier is refused.
+function notBefore(date: Date, previous: Date, message: string) {
+ if (date.getTime() > previous.getTime()) return date;
+ // One millisecond after: the database keeps microseconds that a JavaScript date would round down to before the start.
+ if (previous.getTime() - date.getTime() <= 36 * 3600_000) return new Date(previous.getTime() + 1);
+ throw new BadRequestException(message);
+}
 function day(value: string) {
  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00Z` : value);
  if (Number.isNaN(date.getTime())) throw new BadRequestException('Choose a valid date.');
@@ -78,9 +87,12 @@ export class DispatchService {
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'LEFT' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", a."startedAt" AS since, m.name AS mc, t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead
+    jt.name AS "jobTitle", coalesce(sl."startedAt", a."startedAt") AS since, m.name AS mc, t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
+    sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
    FROM dispatch_members d LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
-   LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = d.id ORDER BY x."startedAt" DESC, x."createdAt" DESC LIMIT 1) a ON true
+   LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id ORDER BY l."startedAt" DESC, l."createdAt" DESC LIMIT 1) sl ON true
+   LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId"
+   LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = coalesce(sl."dispatcherId", d.id) ORDER BY x."startedAt" DESC, x."createdAt" DESC LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    WHERE ($1 = 'ALL' OR d.status = $1) ORDER BY lower(d."firstName"), lower(d."lastName") LIMIT 1000`, [status]);
   const [counts] = await this.db.query(`SELECT count(*) FILTER (WHERE status = 'ONBOARDING')::integer AS onboarding, count(*) FILTER (WHERE status = 'ACTIVE')::integer AS active, count(*) FILTER (WHERE status = 'LEFT')::integer AS left FROM dispatch_members`);
@@ -122,11 +134,21 @@ export class DispatchService {
   const canOpenApplication = !!application && (user.role === Role.SYSTEM_ADMIN || application.assignedManagerId === user.id);
   const fields = (application?.fields ?? {}) as Record<string, string | undefined>;
   const current = history.find((row: { endedAt: Date | null }) => row.endedAt === null) ?? null;
+  // A support's dispatchers over time (the open row is now, with that dispatcher's MC and team); a dispatcher's supports now.
+  const supportHistory = member.position === 'SUPPORT' ? await this.db.query(`SELECT l.id, l."startedAt", l."endedAt", l.reason, d.id AS "dispatcherId",
+    d."firstName" || ' ' || d."lastName" AS dispatcher, d.status AS "dispatcherStatus", m.name AS mc, t.name AS team,
+    CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
+   FROM member_support_links l JOIN dispatch_members d ON d.id = l."dispatcherId" LEFT JOIN users u ON u.id = l."actorId"
+   LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
+   LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
+   WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC`, [id]) : [];
+  const supports = member.position === 'DISPATCHER' ? await this.db.query(`SELECT s.id, s."firstName" || ' ' || s."lastName" AS name, s.status, l."startedAt" AS since
+   FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" WHERE l."dispatcherId" = $1 AND l."endedAt" IS NULL ORDER BY lower(s."firstName")`, [id]) : [];
   return { id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null,
    // The onboarding record itself stays with its responsible manager and administrators.
-   canOpenApplication, activity,
+   canOpenApplication, activity, supportHistory, supportOf: supportHistory.find((row: { endedAt: Date | null }) => row.endedAt === null) ?? null, supports,
    details: application ? { legalFirstName: fields.firstName ?? null, legalLastName: fields.lastName ?? null, preferredAmericanFirstName: fields.preferredAmericanFirstName ?? null,
     preferredAmericanLastName: fields.preferredAmericanLastName ?? null, personalEmail: application.email, personalPhoneNumber: fields.personalPhoneNumber ?? null,
     telegram: fields.telegram ?? null, mcName: fields.mcName ?? null, teamLead: fields.teamLead ?? null, jobTitle: fields.jobTitle ?? null, submittedAt: application.submittedAt } : null,
@@ -164,7 +186,8 @@ export class DispatchService {
  async move(user: User, id: string, dto: MoveMemberDto) {
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
-   const startedAt = day(dto.startedAt);
+   if (member.position === 'SUPPORT') throw new BadRequestException('Supports work where their dispatcher works. Change their dispatcher instead.');
+   let startedAt = day(dto.startedAt);
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
    if (dto.mcId) await this.activeMc(em, dto.mcId);
    const teamId = dto.mcId ? dto.teamId ?? null : null;
@@ -173,7 +196,7 @@ export class DispatchService {
     if (!team || team.archivedAt || team.mcId !== dto.mcId) throw new BadRequestException('Choose an active team of the selected MC.');
    }
    if (current && current.mcId === dto.mcId && current.teamId === teamId) throw new BadRequestException('The dispatcher already works for this MC and team.');
-   if (current && startedAt < current.startedAt) throw new BadRequestException('The move can’t start before the current MC and team did.');
+   if (current) startedAt = notBefore(startedAt, current.startedAt, 'The move can’t start before the current MC and team did.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
    const leadCleared = await this.clearLead(em, id, teamId);
@@ -186,13 +209,35 @@ export class DispatchService {
  async leave(user: User, id: string, dto: LeaveMemberDto) {
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
-   const leftAt = day(dto.leftAt);
+   let leftAt = day(dto.leftAt);
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
-   if (current && leftAt < current.startedAt) throw new BadRequestException('The leaving date can’t be before the current MC and team started.');
+   if (current) leftAt = notBefore(leftAt, current.startedAt, 'The leaving date can’t be before the current MC and team started.');
    if (current) { current.endedAt = leftAt; await em.save(current); }
+   // A support leaving stops assisting their dispatcher on the same day.
+   const link = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
+   if (link) leftAt = notBefore(leftAt, link.startedAt, 'The leaving date can’t be before they started with their dispatcher.');
+   if (link) { link.endedAt = leftAt; await em.save(link); }
    const leadCleared = await this.clearLead(em, id, null);
    member.status = 'LEFT'; member.leftAt = leftAt; member.version += 1; await em.save(member);
    await this.event(em, user, 'MEMBER_LEFT', { memberId: id }, { leadCleared, reasonGiven: true });
+   return { id, version: member.version };
+  });
+ }
+
+ /** A support starts assisting another dispatcher: the current link ends on the start date and stays in the history. */
+ async reassignSupport(user: User, id: string, dto: ReassignSupportDto) {
+  return this.write(async em => {
+   const member = await this.lockMember(em, id, dto.version);
+   if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support has a dispatcher to change.');
+   let startedAt = day(dto.startedAt);
+   await supportedDispatcher(em, dto.dispatcherId);
+   const current = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
+   if (current?.dispatcherId === dto.dispatcherId) throw new BadRequestException('The support already assists this dispatcher.');
+   if (current) startedAt = notBefore(startedAt, current.startedAt, 'The change can’t start before the current dispatcher did.');
+   if (current) { current.endedAt = startedAt; await em.save(current); }
+   await em.getRepository(MemberSupportLink).save({ supportId: id, dispatcherId: dto.dispatcherId, startedAt, reason: dto.reason, actorId: user.id });
+   member.version += 1; await em.save(member);
+   await this.event(em, user, 'SUPPORT_REASSIGNED', { memberId: id }, { fields: ['dispatcherId'] });
    return { id, version: member.version };
   });
  }

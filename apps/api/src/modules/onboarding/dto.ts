@@ -11,6 +11,9 @@ export class CreateInvitationDto {
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(150) mcName?: string;
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(150) teamLead?: string;
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(100) jobTitle?: string;
+ // A support skips the employment questions and has no IT setup; supportsMemberId is the dispatcher they assist.
+ @optional() @IsIn(['DISPATCHER','SUPPORT']) position?: 'DISPATCHER' | 'SUPPORT';
+ @optional() @IsUUID() supportsMemberId?: string;
  @IsInt() @Min(1) @Max(30) expirationDays = 7;
  @IsBoolean() telegramRequired = false;
 }
@@ -51,6 +54,8 @@ export class EmploymentAssignmentsDto {
  @trim() @IsString() @MinLength(1) @MaxLength(100) jobTitle!: string;
 }
 export class ReviewDto {
+ // Approving a support: the dispatcher they assist (defaults to the one on the invitation).
+ @optional() @IsUUID() supportsMemberId?: string;
  @IsInt() @Min(0) version!: number;
  @IsIn(['APPROVE','REQUEST_CHANGES','REJECT']) decisionType!: DecisionType;
  @optional() @trim() @IsString() @MaxLength(2000) reason?: string;

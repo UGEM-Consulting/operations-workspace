@@ -17,7 +17,7 @@ import { Checkbox, Input, Select } from '@/components/ui/field';
 import { Table } from '@/components/ui/table';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { INVITATION_DEFAULTS } from '@/lib/navigation';
-import { Invitation, readApi } from './types';
+import { Invitation, readApi, type DispatcherOption } from './types';
 import { EmploymentPicker, type Employment, type EmploymentOptions } from './employment-picker';
 const NO_EMPLOYMENT: Employment = { mcName: '', teamLead: '', jobTitle: '' };
 const PATH='/onboarding/invitations';
@@ -32,7 +32,7 @@ const EXPIRY=[3,7,14,30];
  * and, from the managed lists, the MC, team and job title to pre-fill (sent as the existing text fields).
  * The raw link is shown once, so leaving before copying it asks first.
  */
-export function Invitations({initial,filters,options=null}:{initial:Invitation[];filters:Record<string,string>;options?:EmploymentOptions|null}) {
+export function Invitations({initial,filters,options=null,dispatchers=null}:{initial:Invitation[];filters:Record<string,string>;options?:EmploymentOptions|null;dispatchers?:DispatcherOption[]|null}) {
  const [rows,setRows]=useState(initial),[server,setServer]=useState(initial);
  // A filter change re-renders the page with a fresh list from the server; take it without an effect.
  if(server!==initial){setServer(initial);setRows(initial);}
@@ -40,6 +40,7 @@ export function Invitations({initial,filters,options=null}:{initial:Invitation[]
  const [pending,setPending]=useState<'create'|'revoke'|null>(null),[error,setError]=useState('');
  const [url,setUrl]=useState(''),[linkOpen,setLinkOpen]=useState(false),[copied,setCopied]=useState(false),[copyMessage,setCopyMessage]=useState('');
  const [revoking,setRevoking]=useState<Invitation|null>(null),[revokeError,setRevokeError]=useState('');
+ const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'>('DISPATCHER'),[supportsId,setSupportsId]=useState('');
  const [optionsOpen,setOptionsOpen]=useState(false),[employment,setEmployment]=useState<Employment>(NO_EMPLOYMENT),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
  useEffect(()=>{if(!url||copied)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[url,copied]);
  async function refreshRows(){try{setRows(await readApi<Invitation[]>('onboarding/invitations'));}catch{setError('Your change was saved, but the list could not refresh. Reload the page to see the latest invitations.');}}
@@ -50,9 +51,12 @@ export function Invitations({initial,filters,options=null}:{initial:Invitation[]
   const expiry=withOptions?days:7;
   setPending('create');setError('');
   try {
-   const assignments=withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
+   // A support names the dispatcher they will assist and has no employment of their own; a dispatcher sends no position, as before.
+   const support=withOptions&&position==='SUPPORT';
+   if(support&&!supportsId){toast({tone:'danger',title:'Choose a dispatcher',description:'Pick the dispatcher this support will assist.'});setPending(null);return;}
+   const assignments=support?{position:'SUPPORT',supportsMemberId:supportsId}:withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
    const result=await mutate<{url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,expirationDays:expiry});
-   setUrl(result.url);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setLinkOpen(true);
+   setUrl(result.url);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setPosition('DISPATCHER');setSupportsId('');setLinkOpen(true);
    await refreshRows();
   }catch(error){toast({tone:'danger',title:'Invitation not created',description:errorMessage(error,'Unable to create invitation.')});}finally{setPending(null);}
  }
@@ -74,7 +78,7 @@ export function Invitations({initial,filters,options=null}:{initial:Invitation[]
    <Table caption="Invitations in your scope" className="border-t border-border" rows={visible} rowKey={row=>row.id} columns={[
     {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<Person name={row.email} secondary="Verified email" avatar={false}/>
      :<Person name={row.status==='PENDING'?'Not opened yet':'Not claimed yet'} secondary={row.expectedEmail?`For ${row.expectedEmail}`:'Anyone with the link'} avatar={false}/>},
-    {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||'Applicant provides'},
+    {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>row.position==='SUPPORT'?`Support for ${row.supports?.name??'a dispatcher'}`:[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||'Applicant provides'},
     {key:'status',label:'Status',cell:row=><InvitationBadge status={row.status}/>},
     {key:'created',label:'Created',nowrap:true,muted:true,hideBelow:'lg',cell:row=><LocalTime iso={row.createdAt} format="date"/>},
     {key:'expires',label:'Expires',nowrap:true,muted:true,hideBelow:'md',cell:row=>row.status==='COMPLETED'?'Used':<LocalTime iso={row.expiresAt} format="date"/>},
@@ -87,7 +91,11 @@ export function Invitations({initial,filters,options=null}:{initial:Invitation[]
    actions={<Button type="submit" form="invitation-options">{pending==='create'?'Creating…':'Create invitation'}</Button>}>
    <form id="invitation-options" onSubmit={event=>{event.preventDefault();void create(true);}} className="space-y-4">
     <Input label="Applicant’s personal email" optional name="expectedEmail" type="email" value={email} onChange={event=>setEmail(event.target.value)} maxLength={254} placeholder="name@example.com" hint="If you add one, only that person can use the link. Otherwise the first applicant to verify their email claims it." width="full"/>
-    {options&&<fieldset className="space-y-3 border-t border-border pt-4"><legend className="float-left mb-1 w-full text-sm font-medium">Employment</legend>
+    {dispatchers&&<Select label="Position" name="position" value={position} onChange={event=>setPosition(event.target.value as 'DISPATCHER'|'SUPPORT')} width="sm"
+     options={[{value:'DISPATCHER',label:'Dispatcher'},{value:'SUPPORT',label:'Support (updater)'}]} hint={position==='SUPPORT'?'Supports assist one dispatcher. They skip the employment questions and need no IT setup.':undefined}/>}
+    {dispatchers&&position==='SUPPORT'&&<Select label="Supports" name="supportsMemberId" value={supportsId} onChange={event=>setSupportsId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
+     options={dispatchers.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')}))} hint={dispatchers.length?undefined:'There are no dispatcher records yet.'}/>}
+    {options&&position==='DISPATCHER'&&<fieldset className="space-y-3 border-t border-border pt-4"><legend className="float-left mb-1 w-full text-sm font-medium">Employment</legend>
      <p className="text-[13px] leading-5 text-muted-foreground">Pre-fills the applicant’s answers. You confirm them again at approval.</p>
      <EmploymentPicker optional options={options} original={NO_EMPLOYMENT} onChange={setEmployment}/></fieldset>}
     <Select label="Expires after" name="expirationDays" value={String(days)} onChange={event=>setDays(Number(event.target.value))} width="sm" options={EXPIRY.map(value=>({value:String(value),label:`${value} days`}))}/>

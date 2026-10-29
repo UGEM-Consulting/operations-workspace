@@ -1,4 +1,5 @@
 import { digest, generateVerificationCode } from './verification-code';
+import { supportedDispatcher } from '../dispatch/create-member';
 export { digest } from './verification-code';
 import { EmailService } from '../email/email.service';
 import { requiredApplicantFields } from './application-requirements';
@@ -51,12 +52,18 @@ export class OnboardingService {
  }
  async create(user: User, input: CreateInvitationDto) {
   if (input.email && this.fictionalOnly && !input.email.endsWith('@example.test')) throw new BadRequestException('Outside production, invitations accept only fictional example.test addresses.');
+  const support = input.position === 'SUPPORT';
+  if (support && !input.supportsMemberId) throw new BadRequestException('Choose the dispatcher this support will assist.');
+  if (!support && input.supportsMemberId) throw new BadRequestException('Only a support invitation names a dispatcher.');
+  if (support && (input.mcName || input.teamLead || input.jobTitle)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
   await this.limit('create:'+user.id,30);
   const token = randomBytes(32).toString('hex');
   const invitation = await this.db.transaction(async em => {
+   if (support) await supportedDispatcher(em, input.supportsMemberId!);
    const inv = await em.getRepository(Invitation).save({ email: null, expectedEmail: input.email ?? null, mcName: input.mcName ?? null, teamLead: input.teamLead ?? null, jobTitle: input.jobTitle ?? null,
+    position: support ? 'SUPPORT' : 'DISPATCHER', supportsMemberId: support ? input.supportsMemberId! : null,
     telegramRequired: input.telegramRequired, managerId: user.id, tokenHash: digest(token), expiresAt: new Date(Date.now()+input.expirationDays*86400000) });
-   await em.getRepository(DispatcherApplication).save({ invitationId: inv.id, assignedManagerId: user.id, status: 'INVITED', fields: {mcName:input.mcName ?? '',teamLead:input.teamLead ?? '',jobTitle:input.jobTitle ?? 'Dispatcher'}, applicantAccessUntil: inv.expiresAt });
+   await em.getRepository(DispatcherApplication).save({ invitationId: inv.id, assignedManagerId: user.id, status: 'INVITED', fields: support ? {} : {mcName:input.mcName ?? '',teamLead:input.teamLead ?? '',jobTitle:input.jobTitle ?? 'Dispatcher'}, applicantAccessUntil: inv.expiresAt });
    await this.activity(em,inv.id,'INVITATION_CREATED',user.id);
    return inv;
   });
@@ -66,7 +73,10 @@ export class OnboardingService {
  }
  async invitations(user: User) {
   const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? {} : { managerId: user.id }, order: { createdAt: 'DESC' }, take: 200 });
-  return rows.map(row => ({ ...row, status: invitationStatus(row) }));
+  // A support invitation shows the dispatcher they will assist.
+  const ids = [...new Set(rows.map(row => row.supportsMemberId).filter((id): id is string => !!id))];
+  const names: Record<string,string> = ids.length ? Object.fromEntries((await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name FROM dispatch_members WHERE id = ANY($1)`, [ids])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
+  return rows.map(row => ({ ...row, status: invitationStatus(row), supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null }));
  }
  async revoke(user: User, id: string) {
   await this.db.transaction(async em => {
@@ -170,7 +180,7 @@ export class OnboardingService {
   return { application: current, invitation: inv };
  }
  /** What the applicant may change now: answer fields plus photo/signature items. */
- async editable(em: EntityManager, app: DispatcherApplication, known?: ApplicantDocuments) {
+ async editable(em: EntityManager, app: DispatcherApplication, known?: ApplicantDocuments, position: 'DISPATCHER' | 'SUPPORT' = 'DISPATCHER') {
   const correction = app.status === 'CHANGES_REQUESTED'
    ? await em.getRepository(ApplicationReview).findOne({where:{applicationId:app.id,decisionType:'REQUEST_CHANGES'},order:{applicationVersion:'DESC'}}) : null;
   const lastSubmission = correction ? await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:app.id},order:{version:'DESC'}}) : null;
@@ -178,16 +188,16 @@ export class OnboardingService {
   const documents: Pick<ApplicantDocuments,'required'|'missing'> = known ?? await documentStatus(em,app.id,this.storage.enabled);
   // Existing correction rounds must allow completion of newly required fields too. Base this
   // on the submitted revision so saved values remain editable until the applicant resubmits.
-  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...requiredApplicantFields(lastSubmission?.fields ?? {}),...documents.missing])] : [];
+  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...requiredApplicantFields(lastSubmission?.fields ?? {},position),...documents.missing])] : [];
   const editableFields: RequestableItem[] = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS,...(documents.required ? DOCUMENT_ITEMS : [])] : [];
   return { correction, effectiveCorrections, editableFields, documents };
  }
  private async applicantView(em: EntityManager, app: DispatcherApplication, inv: Invitation, known?: ApplicantDocuments) {
   const documents = known ?? await applicantDocuments(em,app.id,this.storage.enabled);
-  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app,documents);
+  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app,documents,inv.position);
   // Explicit projection: no internal review comments, reviewer identity or histories to applicants.
   return { application:{id:app.id,invitationId:app.invitationId,status:app.status,fields:app.fields,version:app.version,updatedAt:app.updatedAt,submittedAt:app.submittedAt},
-   invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired},
+   invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired,position:inv.position},
    correction:correction ? {id:correction.id,reason:correction.reason,requestedFields:effectiveCorrections,createdAt:correction.createdAt} : null,
    editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents };
  }
@@ -213,7 +223,7 @@ export class OnboardingService {
    if (input.version !== app.version) throw new ConflictException('Your application changed. Reload before saving.');
    // A field save cannot change photos or signatures, so one documents read serves the checks and the response.
    const documents = await applicantDocuments(em,app.id,this.storage.enabled);
-   const view = { ...await this.editable(em,app,documents), documents };
+   const view = { ...await this.editable(em,app,documents,inv.position), documents };
    const fields: ApplicationFields = {...app.fields};
    for (const key of CORRECTION_FIELDS) {
     if (input[key] === undefined) continue;
@@ -221,7 +231,7 @@ export class OnboardingService {
     if (view.editableFields.includes(key)) fields[key] = input[key];
    }
    if (submit) {
-    const missing = requiredApplicantFields(fields);
+    const missing = requiredApplicantFields(fields,inv.position);
     if (missing.length) throw new BadRequestException(`Complete required applicant fields: ${missing.join(', ')}.`);
     if (!('accurate' in input) || input.accurate !== true) throw new BadRequestException('Confirm the information is accurate before submission.');
     if (view.documents.missing.length) throw new BadRequestException('Upload both photos and sign every required document before submitting.');

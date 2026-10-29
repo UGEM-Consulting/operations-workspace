@@ -28,6 +28,10 @@ describe('Continue validates only the current step', () => {
     assert.deepEqual(stepIssues(personal, false, employmentFields).map(issue => issue.path[0]), ['mcName', 'teamLead']);
     assert.equal(stepIssues({ ...personal, mcName: 'Independent', teamLead: 'Independent' }, false, employmentFields).length, 0);
   });
+  it('asks a support for no employment, since it follows the dispatcher they assist', () => {
+    assert.equal(stepIssues({ ...personal, jobTitle: '' }, false, employmentFields, true).length, 0);
+    assert.equal(applicationSubmitSchema(false, true).safeParse({ ...personal, jobTitle: '', accurate: true }).success, true);
+  });
   it('skips locked fields, so a correction is never blocked by a value the applicant cannot change', () => {
     assert.equal(stepIssues(blank, true, ['mcName']).filter(issue => issue.path[0] === 'telegram').length, 0);
   });

@@ -33,7 +33,7 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
         { key: 'LEFT', label: 'Left', count: searched.filter(member => member.status === 'LEFT').length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption="Dispatchers" className="border-t border-border" rows={visible} rowKey={member => member.id} columns={[
-        { key: 'name', label: 'Dispatcher', primary: true, cell: member => <Link href={`/dispatch/dispatchers/${member.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={fullName(member)} secondary={member.lead ? 'Team lead' : member.position === 'SUPPORT' ? 'Support' : 'Dispatcher'} /></Link> },
+        { key: 'name', label: 'Dispatcher', primary: true, cell: member => <Link href={`/dispatch/dispatchers/${member.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={fullName(member)} secondary={member.lead ? 'Team lead' : member.position === 'SUPPORT' ? `Support for ${member.dispatcher ?? 'a dispatcher'}` : 'Dispatcher'} /></Link> },
         { key: 'mc', label: 'MC', cell: member => member.mc ?? <span className="text-muted-foreground">Independent</span> },
         { key: 'team', label: 'Team', hideBelow: 'md', cell: member => member.team ?? <span className="text-muted-foreground">No team</span> },
         { key: 'title', label: 'Job title', hideBelow: 'lg', muted: true, cell: member => member.jobTitle ?? 'Not set' },
