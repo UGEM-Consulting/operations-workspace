@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { jpeg, pdfText } from './documents.fixtures';
+import { jpeg, pdfText, png } from './documents.fixtures';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -95,7 +95,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     for (const key of ['manager', 'lead', 'staff'] as const) {
       const me = (await agents[key].get('/api/auth/me').set(headers).expect(200)).body;
       expect(me.landingPage).toBe('/safety/drivers');
-      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'security']);
+      // Every Safety role reads the consent forms; only the Safety manager publishes them.
+      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'consents', 'security']);
     }
     expect((await agents.admin.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toContain('drivers');
     await agents.dispatch.get('/api/safety/drivers').set(headers).expect(403);
@@ -450,9 +451,13 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     writeFileSync(report(uncommitted), pdf); writeFileSync(report(recorded), pdf);
     await db.query(`INSERT INTO driver_reports (id, "driverId", kind, "pulledOn", "pageCount", sha256, "byteSize", "createdAt", "replacedAt")
       VALUES ($1, $2, 'MVR', CURRENT_DATE, 1, repeat('0', 64), 1, now(), now())`, [recorded, id]);
+    // A consent form whose publish never committed is a leftover too.
+    mkdirSync(join(storage, 'driver-consents'), { recursive: true });
+    const unpublished = join(storage, 'driver-consents', `${randomUUID()}.pdf`); writeFileSync(unpublished, pdf);
     expect(await sweeper.sweep()).toBe(0);
-    expect([file(replaced), file(unreferenced), report(uncommitted)].every(path => existsSync(path))).toBe(true);
-    expect(await sweeper.sweep(later)).toBe(3);
+    expect([file(replaced), file(unreferenced), report(uncommitted), unpublished].every(path => existsSync(path))).toBe(true);
+    expect(await sweeper.sweep(later)).toBe(4);
+    expect(existsSync(unpublished)).toBe(false);
     expect([existsSync(file(replaced)), existsSync(file(unreferenced)), existsSync(file(current)), existsSync(foreign)]).toEqual([false, false, true, true]);
     expect([existsSync(report(uncommitted)), existsSync(report(recorded))]).toEqual([false, true]);
     // A replaced scan Safety verified (a reopened application) is the record of what was checked.
@@ -480,7 +485,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const one = await submitted();
     for (const document of one.documents) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
       .send({ version: 1, ...(document.kind === 'WORK_AUTHORIZATION' ? {} : { expiresOn: '2030-01-31' }) }).expect(201);
-    let { version } = (await agents.lead.post(`/api/safety/drivers/${one.id}/mvr`).set(headers).send({ version: one.version, file: await mvrPdf(), pulledOn: today() }).expect(201)).body;
+    let { version } = (await agents.lead.post(`/api/safety/drivers/${one.id}/mvr`).set(headers).send({ version: one.version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201)).body;
     for (const key of ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'MVR']) version = (await check(agents.lead, one.id, key, { version, result: 'PASS' }).expect(201)).body.version;
     return { ...one, version: version as number };
   }
@@ -500,7 +505,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const refused = (await agents.lead.post(`/api/safety/drivers/${id}/send-for-decision`).set(headers).send({ version }).expect(400)).body;
     expect(refused.missing).toEqual(['check:IDENTITY', 'check:PHONE_SCREEN', 'check:EXPERIENCE', 'check:MVR', 'mvr', 'document:LICENSE', 'document:MEDICAL_CARD', 'document:WORK_AUTHORIZATION']);
     // The MVR: a readable PDF pulled within the last year, replaced by a newer one while the earlier file is kept.
-    const upload = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: '', pulledOn: today(), ...body });
+    const upload = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: '', pulledOn: today(), paperAuthorization: true, ...body });
     await upload({ file: Buffer.from('not a pdf').toString('base64') }).expect(400);
     await upload({ file: Buffer.from('%PDF-1.7 broken').toString('base64') }).expect(400);
     expect((await upload({ file: await mvrPdf(), pulledOn: daysAgo(400) }).expect(400)).body.message).toMatch(/more than a year old/);
@@ -539,7 +544,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version: sent.version, file: await mvrPdf(), pulledOn: today() }).expect(409);
     const recorded = await events(id);
     expect(recorded.filter(row => row.event === 'SENT_FOR_DECISION').map(row => row.metadata)).toEqual([{ concerns: 1 }]);
-    expect(recorded.filter(row => row.event === 'MVR_UPLOADED').map(row => row.metadata)).toEqual([{ replaced: false }, { replaced: true }]);
+    expect(recorded.filter(row => row.event === 'MVR_UPLOADED').map(row => row.metadata)).toEqual([{ replaced: false, authorization: 'PAPER' }, { replaced: true, authorization: 'PAPER' }]);
     expect(recorded.filter(row => row.event === 'MVR_VIEWED')).toHaveLength(1);
     expect(recorded.filter(row => row.event === 'SCREENING_CHECKED')[2].metadata).toEqual({ check: 'EXPERIENCE', result: 'CONCERN' });
     expect(JSON.stringify(recorded)).not.toMatch(/Two years|otherwise fine|Clean/);
@@ -646,9 +651,114 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await driver(disputed.id)).status).toBe('APPROVED');
   });
 
+  /** Publishes a fictional consent form version and returns the response body after checking the status. */
+  const publish = async (agent: Agent, kind: string, status: number, title = 'Fictional form') =>
+    (await agent.post('/api/safety/consents').set(headers).send({ kind, title, file: await mvrPdf() }).expect(status)).body;
+  const signature = () => `data:image/png;base64,${png(600, 180).toString('base64')}`;
+  const sign = (agent: Agent, documentId: string, body: Record<string, unknown> = {}) => agent.post(`/api/driver/consents/${documentId}/sign`).set(headers)
+    .send({ typedName: 'Jordan Wheeler', consent: true, agreed: true, signature: signature(), signatureMethod: 'DRAWN', ...body });
+  const submit = (agent: Agent, version: number) => agent.post('/api/driver/application/submit').set(headers).send({ version, fields: complete, ssn: '123456789' });
+
+  it('lets only the Safety manager publish consent forms, as immutable versions every Safety role can read', async () => {
+    await publish(agents.lead, 'BACKGROUND_AUTHORIZATION', 403);
+    await publish(agents.staff, 'BACKGROUND_AUTHORIZATION', 403);
+    await agents.dispatch.get('/api/safety/consents').set(headers).expect(403);
+    await agents.manager.post('/api/safety/consents').set(headers).send({ kind: 'BACKGROUND_AUTHORIZATION', title: 'Form', file: Buffer.from('not a pdf').toString('base64') }).expect(400);
+    await publish(agents.manager, 'CREDIT_CHECK', 400);
+    const first = await publish(agents.manager, 'BACKGROUND_AUTHORIZATION', 201, 'Fictional authorization');
+    const second = await publish(agents.admin, 'BACKGROUND_AUTHORIZATION', 201, 'Fictional authorization');
+    expect([first.version, second.version]).toEqual([1, 2]);
+    const list = (await agents.lead.get('/api/safety/consents').set(headers).expect(200)).body;
+    expect(list).toMatchObject({ storageEnabled: true, canPublish: false });
+    expect(list.kinds.map((kind: { kind: string; signature: boolean; versions: unknown[] }) => [kind.kind, kind.signature, kind.versions.length]))
+      .toEqual([['BACKGROUND_DISCLOSURE', false, 0], ['BACKGROUND_AUTHORIZATION', true, 2], ['CLEARINGHOUSE_CONSENT', true, 0]]);
+    expect((await agents.manager.get('/api/safety/consents').set(headers).expect(200)).body.canPublish).toBe(true);
+    await agents.staff.get(`/api/safety/consents/${first.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    await expect(db.query(`UPDATE driver_consent_documents SET title = 'Changed' WHERE id = $1`, [first.id])).rejects.toThrow(/append-only/);
+  });
+
+  it('has drivers open and sign the current version of every published form before submitting, with signing evidence', async () => {
+    const disclosure = await publish(agents.manager, 'BACKGROUND_DISCLOSURE', 201, 'Fictional disclosure');
+    const authorization = await publish(agents.manager, 'BACKGROUND_AUTHORIZATION', 201, 'Fictional authorization');
+    const { id, agent } = await applying();
+    await scanAll(agent);
+    const view = (await agent.get('/api/driver/application').set(headers).expect(200)).body;
+    expect(view.consents.required).toBe(true);
+    expect(view.consents.items.map((item: { kind: string; requiresSignature: boolean; viewed: boolean; signed: unknown }) => [item.kind, item.requiresSignature, item.viewed, item.signed]))
+      .toEqual([['BACKGROUND_DISCLOSURE', false, false, null], ['BACKGROUND_AUTHORIZATION', true, false, null]]);
+    expect((await submit(agent, view.version).expect(400)).body.missing).toEqual(['consent:BACKGROUND_DISCLOSURE', 'consent:BACKGROUND_AUTHORIZATION']);
+    // Fetching the file records nothing; only the explicit view request does.
+    await agent.get(`/api/driver/consents/${authorization.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    expect((await sign(agent, authorization.id).expect(400)).body.message).toMatch(/Open and read the full form/);
+    await agent.post(`/api/driver/consents/${authorization.id}/view`).set(headers).send({}).expect(201);
+    await sign(agent, authorization.id, { consent: false }).expect(400);
+    await sign(agent, authorization.id, { signature: undefined, signatureMethod: undefined }).expect(400);
+    await sign(agent, authorization.id).expect(201);
+    await sign(agent, authorization.id).expect(409);
+    // The disclosure is acknowledged without a signature image.
+    await agent.post(`/api/driver/consents/${disclosure.id}/view`).set(headers).send({}).expect(201);
+    await sign(agent, disclosure.id, { signature: undefined, signatureMethod: undefined }).expect(201);
+    // A new version must be signed again; the earlier signature stays on record.
+    const newer = await publish(agents.manager, 'BACKGROUND_AUTHORIZATION', 201, 'Fictional authorization');
+    expect((await sign(agent, authorization.id).expect(409)).body.message).toMatch(/newer version/);
+    const again = (await agent.get('/api/driver/application').set(headers).expect(200)).body;
+    expect(again.consents.items[1]).toMatchObject({ id: newer.id, version: 2, current: false, signed: { documentId: authorization.id, version: 1 } });
+    expect((await submit(agent, again.version).expect(400)).body.missing).toEqual(['consent:BACKGROUND_AUTHORIZATION']);
+    await agent.post(`/api/driver/consents/${newer.id}/view`).set(headers).send({}).expect(201);
+    await sign(agent, newer.id, { signatureMethod: 'TYPED' }).expect(201);
+    await submit(agent, again.version).expect(201);
+    // A submitted application can't be signed any more, nor a view recorded (it would later read as opened before signing),
+    // but its signed copy can still be downloaded.
+    await sign(agent, newer.id).expect(409);
+    await agent.post(`/api/driver/consents/${newer.id}/view`).set(headers).send({}).expect(409);
+    await agent.get(`/api/driver/consents/${newer.id}/signed`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    // Every Safety role sees what was signed and opens the signed copy; nobody else.
+    const record = await driver(id, agents.staff);
+    expect(record.consents).toMatchObject({ missing: [], authorizationSigned: true });
+    expect(record.consents.signatures.map((row: { kind: string; version: number; typedName: string }) => [row.kind, row.version, row.typedName]))
+      .toEqual([['BACKGROUND_AUTHORIZATION', 2, 'Jordan Wheeler'], ['BACKGROUND_AUTHORIZATION', 1, 'Jordan Wheeler'], ['BACKGROUND_DISCLOSURE', 1, 'Jordan Wheeler']]);
+    const copy = await agents.staff.get(`/api/safety/drivers/${id}/consents/${newer.id}/signed`).set(headers).buffer(true).parse((res, done) => {
+      const chunks: Buffer[] = []; res.on('data', (chunk: Buffer) => chunks.push(chunk)); res.on('end', () => done(null, Buffer.concat(chunks)));
+    }).expect(200);
+    const text = await pdfText(copy.body as Buffer);
+    expect(text).toContain('Electronic Signature Certificate');
+    expect(text).toContain('Signature adopted from the typed name');
+    // The driver's internal record ID is never printed as an application reference.
+    expect(text).not.toContain(id);
+    expect(text).not.toContain('Application reference');
+    await agents.dispatch.get(`/api/safety/drivers/${id}/consents/${newer.id}/signed`).set(headers).expect(403);
+    const [stored] = await db.query(`SELECT consent, statement, "documentSha256", "ipAddress" FROM driver_consent_signatures WHERE "documentId" = $1`, [newer.id]);
+    expect(stored.statement).toBe('I have read the entire Fictional authorization (version 2) and I agree to it. I intend my typed name and my signature (drawn, or adopted from my typed name) to be my legally binding electronic signature.');
+    expect(stored.consent).toMatch(/sign these forms electronically/);
+    expect(stored.documentSha256).toBe(newer.sha256);
+    await expect(db.query(`UPDATE driver_consent_signatures SET "typedName" = 'Someone' WHERE "documentId" = $1`, [newer.id])).rejects.toThrow(/append-only/);
+    // A driver who signed can't be deleted while the signature evidence exists.
+    await expect(db.query('DELETE FROM drivers WHERE id = $1', [id])).rejects.toThrow(/foreign key/);
+    expect(record.consents.signatures.map((row: { kind: string; hasSignature: boolean }) => [row.kind, row.hasSignature]))
+      .toEqual([['BACKGROUND_AUTHORIZATION', true], ['BACKGROUND_AUTHORIZATION', true], ['BACKGROUND_DISCLOSURE', false]]);
+    expect((await events(id)).filter(row => row.event === 'CONSENT_SIGNED').map(row => row.metadata))
+      .toEqual([{ kind: 'BACKGROUND_AUTHORIZATION' }, { kind: 'BACKGROUND_DISCLOSURE' }, { kind: 'BACKGROUND_AUTHORIZATION' }]);
+    // With the authorization signed here, the MVR needs no paper confirmation.
+    await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version: record.version, file: await mvrPdf(), pulledOn: today() }).expect(201);
+    expect((await driver(id)).screening.mvr).toMatchObject({ authorization: 'SIGNED' });
+  });
+
+  it('uploads an MVR only with the driver’s signed authorization or a confirmed paper one', async () => {
+    const { id, version } = await submitted();
+    const refused = (await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today() }).expect(400)).body;
+    expect(refused).toMatchObject({ missing: ['authorization'] });
+    expect(refused.message).toMatch(/background check authorization/);
+    await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201);
+    expect((await driver(id)).screening.mvr).toMatchObject({ authorization: 'PAPER' });
+  });
+
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
+    await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver consent forms or signatures');
+    await db.query('TRUNCATE driver_consent_documents CASCADE');
+    await db.undoLastMigration(); // DriverConsents, with nothing recorded yet
     await db.query(`INSERT INTO driver_screening_checks ("driverId", key, result, "checkedAt") VALUES ($1, 'IDENTITY', 'PASS', now())`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver screening, reports or decisions');
     await db.query('TRUNCATE driver_screening_checks');
@@ -670,6 +780,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverScreening1792900000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverConsents1792910000000');
   });
 });

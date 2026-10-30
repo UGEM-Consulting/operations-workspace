@@ -17,11 +17,12 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { ApplicationCard } from './application-card';
+import { ConsentCard } from './consent-card';
 import { DecisionCard } from './decision-card';
 import { DriverDocuments } from './driver-documents';
 import { DriverForm, driverBody } from './driver-form';
 import { ScreeningCard } from './screening-card';
-import { CLOSED, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
+import { CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
   type SafetyPeople, type SafetyPerson } from './types';
 
 type Action = 'edit' | 'withdraw' | 'reopen' | 'owner';
@@ -30,16 +31,16 @@ const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'D
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
   DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
-  SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected' };
+  SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form' };
 const results: Record<string, string> = { PASS: 'passed', CONCERN: 'concern' };
 const who = (person: SafetyPerson | null) => person ? `${person.name}${person.active ? '' : ' (inactive)'}` : null;
 function eventMeta(row: DriverEventRow) {
   const fields = row.event === 'UPDATED' && row.metadata.fields?.length ? ` · ${row.metadata.fields.map(field => fieldLabels[field] ?? field).join(', ')}` : '';
   // Steps the driver takes have no staff actor.
-  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED'].includes(row.event) ? 'Driver' : 'Someone');
+  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED', 'CONSENT_SIGNED'].includes(row.event) ? 'Driver' : 'Someone');
   const check = row.metadata.check ? ` · ${screeningChecks.find(item => item.key === row.metadata.check)?.label ?? row.metadata.check}: ${row.metadata.result ? results[row.metadata.result] ?? statusLabel(row.metadata.result) : 'cleared'}` : '';
-  return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${documentLabels[row.metadata.kind as DocumentKind] ?? row.metadata.kind}` : ''}
-    {check}{row.metadata.replaced ? ' · replaced the earlier one' : ''}{row.metadata.conditional ? ' · with conditions' : ''}{row.metadata.concerns ? ` · ${row.metadata.concerns} ${row.metadata.concerns === 1 ? 'concern' : 'concerns'}` : ''}</>;
+  return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${documentLabels[row.metadata.kind as DocumentKind] ?? consentLabels[row.metadata.kind] ?? row.metadata.kind}` : ''}
+    {check}{row.metadata.replaced ? ' · replaced the earlier one' : ''}{row.metadata.authorization === 'PAPER' ? ' · paper authorization on file' : ''}{row.metadata.conditional ? ' · with conditions' : ''}{row.metadata.concerns ? ` · ${row.metadata.concerns} ${row.metadata.concerns === 1 ? 'concern' : 'concerns'}` : ''}</>;
 }
 
 /**
@@ -109,6 +110,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         {driver.screening && (driver.status === 'SCREENING' || driver.screening.checks.length > 0 || driver.screening.mvr || driver.application?.correctionNote) && <ScreeningCard driver={driver} screener={screener} />}
         {(driver.application !== undefined || driver.link !== undefined) && <ApplicationCard driver={driver} screener={screener} owns={owns} />}
         {driver.documents !== undefined && (driver.documents.length > 0 || driver.application) && <DriverDocuments driver={driver} canVerify={screener || owns} />}
+        {driver.consents && (driver.consents.signatures.length > 0 || (driver.application && driver.consents.missing.length > 0)) && <ConsentCard driver={driver} />}
         <Card>
           <CardHeader title="Activity" description="What changed and who did it." />
           <CardBody>{driver.activity.length ? <Timeline items={driver.activity.map(row => ({ id: row.id, title: events[row.event] ?? row.event, meta: eventMeta(row),

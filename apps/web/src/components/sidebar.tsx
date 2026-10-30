@@ -15,7 +15,7 @@ import { useToast } from './ui/toast';
 import { Tooltip } from './ui/tooltip';
 import { useGuardedLink, useShell } from './shell-context';
 
-const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, teams: UsersRound, myteam: UsersRound, dispatchers: Headset, promotions: TrendingUp, drivers: Truck, it: Monitor, lists: ListChecks, users: Users, settings: Settings, security: ShieldCheck };
+const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, teams: UsersRound, myteam: UsersRound, dispatchers: Headset, promotions: TrendingUp, drivers: Truck, consents: FileSignature, it: Monitor, lists: ListChecks, users: Users, settings: Settings, security: ShieldCheck };
 const wide = '(min-width: 1280px)';
 function useWide() {
   return useSyncExternalStore(change => { const media = window.matchMedia(wide); media.addEventListener('change', change); return () => media.removeEventListener('change', change); },

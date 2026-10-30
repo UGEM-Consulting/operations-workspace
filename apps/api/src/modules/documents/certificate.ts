@@ -29,7 +29,8 @@ function lines(text: string, font: PDFFont, size: number, width: number): string
  * signer's typed name, signature image, statement, consent, time, IP address, browser and the document fingerprint.
  * The applicant's copy leaves out the company countersigner's IP address and browser; staff copies include them.
  */
-export async function executedDocument(original: Buffer, doc: CertificateDocument, applicationId: string, signatures: CertificateSignature[], audience: 'applicant'|'staff' = 'staff'): Promise<Buffer> {
+/** `applicationId` names a dispatcher application on the certificate; driver forms pass null (their record ID is internal). */
+export async function executedDocument(original: Buffer, doc: CertificateDocument, applicationId: string | null, signatures: CertificateSignature[], audience: 'applicant'|'staff' = 'staff'): Promise<Buffer> {
  const pdf = await PDFDocument.load(original, { updateMetadata: false });
  const regular = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
  const margin = 54, width = 612 - margin * 2;
@@ -43,7 +44,7 @@ export async function executedDocument(original: Buffer, doc: CertificateDocumen
  write('Electronic Signature Certificate', { size: 16, font: bold, gap: 10 });
  write(`Document: ${doc.title} (version ${doc.version})`);
  write(`SHA-256 fingerprint of the signed document: ${doc.sha256}`);
- write(`Application reference: ${applicationId}`);
+ if (applicationId) write(`Application reference: ${applicationId}`);
  write('The pages before this certificate are the exact document that was signed. Its fingerprint above can be recomputed to confirm it has not changed.', { gap: 14 });
  for (const signature of signatures) {
   space(140);
