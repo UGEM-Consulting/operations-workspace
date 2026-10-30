@@ -10,6 +10,7 @@ import { DataSource } from 'typeorm';
 import { ApplicantSignatureDto, PhotoDto, PublishDocumentDto, SaveSignatureDto } from './documents.dto';
 import { deleteSignature, savedSignature, saveSignature } from './saved-signature';
 import { DocumentsService, FileResult, photoKindParam } from './documents.service';
+import { ApplicantSignedCopies } from './signed-copies';
 // Private files: never cached, never sniffed into another type.
 const FileResponse = () => applyDecorators(Header('Cache-Control', 'no-store, private'), Header('X-Content-Type-Options', 'nosniff'));
 const send = (file: FileResult) => new StreamableFile(file.body, { type: file.type, length: file.body.length, disposition: `inline; filename="${file.filename}"` });
@@ -64,5 +65,5 @@ class ApplicantDocumentsController {
  @Post('documents/:id/sign') sign(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApplicantSignatureDto) { return this.service.sign(req, id, dto, clientContext(req)); }
  @Get('documents/:id/signed') @FileResponse() async signed(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return send(await this.service.applicantSignedCopy(req, id)); }
 }
-@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService] })
+@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService, ApplicantSignedCopies] })
 export class DocumentsModule {}

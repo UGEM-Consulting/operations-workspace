@@ -8,7 +8,7 @@ import { approvedApplication } from '../it/it.service';
 import { DispatcherApplication, type DocumentItem } from '../onboarding/entities';
 import { OnboardingService } from '../onboarding/onboarding.service';
 import { onboardingLimit } from '../onboarding/rate-limit';
-import { documentKey, photoKey, StorageService } from '../storage/storage.service';
+import { CURRENT_LAYOUT, documentKey, photoKey, StorageService } from '../storage/storage.service';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { executedDocument, inspectPdf } from './certificate';
 import type { ClientContext } from './client-context';
@@ -39,21 +39,21 @@ export class DocumentsService {
   await onboardingLimit(this.db,'document-publish:'+user.id,10,3600);
   const file = decodePdf(input.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
-  const id = randomUUID();
-  await this.storage.put(documentKey(id),file,'application/pdf');
+  const id = randomUUID(), stored = {id,kind:input.kind,storageLayout:CURRENT_LAYOUT};
+  await this.storage.put(documentKey(stored),file,'application/pdf');
   try {
    return await this.db.transaction(async em => {
     // Serialize publishers per kind so version numbers stay sequential.
     await em.query('SELECT pg_advisory_xact_lock(42002028, $1)',[DOCUMENT_KINDS.indexOf(input.kind)]);
     const [{next}] = await em.query('SELECT COALESCE(MAX(version),0)+1 AS next FROM company_documents WHERE kind = $1',[input.kind]);
-    return em.getRepository(CompanyDocument).save({id,kind:input.kind,version:Number(next),title:input.title,sha256:sha256(file),byteSize:file.length,pageCount,uploadedBy:user.id});
+    return em.getRepository(CompanyDocument).save({id,kind:input.kind,version:Number(next),title:input.title,sha256:sha256(file),byteSize:file.length,pageCount,uploadedBy:user.id,storageLayout:CURRENT_LAYOUT});
    });
-  } catch (error) { await this.storage.remove(documentKey(id)); throw error; }
+  } catch (error) { await this.storage.remove(documentKey(stored)); throw error; }
  }
  async companyFile(user: User, id: string): Promise<FileResult> {
   this.staff(user);
   const doc = await this.db.getRepository(CompanyDocument).findOneBy({id}); if (!doc) throw new NotFoundException();
-  return { body: await this.storage.get(documentKey(doc.id)), type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}.pdf` };
+  return { body: await this.storage.get(documentKey(doc)), type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}.pdf` };
  }
 
  // Applicant uploads and signatures. Every write locks the invitation, like draft saves and submissions.
@@ -70,31 +70,31 @@ export class DocumentsService {
   await onboardingLimit(this.db,'photo:'+applicationId,20,900);
   // Re-encoded without metadata on the server. Nothing reaches storage before the session, record and open status are
   // checked; the full per-item editability check runs once, under the lock below, and a refusal removes the object.
-  const body = decodeJpeg(input.image), id = randomUUID();
+  const body = decodeJpeg(input.image), id = randomUUID(), stored = {id,applicationId,kind,storageLayout:CURRENT_LAYOUT};
   const { application } = await this.onboarding.applicant(this.db.manager,req);
   if (!['INVITED','DRAFT','CHANGES_REQUESTED'].includes(application.status)) throw new ConflictException('Photos cannot be changed now.');
-  await this.storage.put(photoKey(applicationId,id),body,'image/jpeg');
-  const discard: string[] = [];
+  await this.storage.put(photoKey(stored),body,'image/jpeg');
+  const discard: ApplicantPhoto[] = [];
   try {
    const view = await this.editableTransaction(req,PHOTO_ITEMS[kind],'Photos cannot be changed now.',async (em,application) => {
     const previous = await em.getRepository(ApplicantPhoto).findOneBy({applicationId,kind,replacedAt:IsNull()});
     if (previous) {
      await em.getRepository(ApplicantPhoto).update(previous.id,{replacedAt:new Date()});
      // Keep photos staff may have reviewed (created before the last submission); discard unsent replacements.
-     if (!application.submittedAt || previous.createdAt > application.submittedAt) discard.push(previous.id);
+     if (!application.submittedAt || previous.createdAt > application.submittedAt) discard.push(previous);
     }
     // createdAt comes from the API clock, like submittedAt, so "created at or before submission" compares one clock.
-    await em.getRepository(ApplicantPhoto).insert({id,applicationId,kind,sha256:sha256(body),byteSize:body.length,createdAt:new Date()});
+    await em.getRepository(ApplicantPhoto).insert({id,applicationId,kind,sha256:sha256(body),byteSize:body.length,createdAt:new Date(),storageLayout:CURRENT_LAYOUT});
     return 'PHOTO_UPLOADED';
    });
-   for (const old of discard) await this.storage.remove(photoKey(applicationId,old));
+   for (const old of discard) await this.storage.remove(photoKey(old));
    return view;
-  } catch (error) { await this.storage.remove(photoKey(applicationId,id)); throw error; }
+  } catch (error) { await this.storage.remove(photoKey(stored)); throw error; }
  }
  async applicantPhoto(req: Request, kind: PhotoKind): Promise<FileResult> {
   const { application } = await this.onboarding.applicant(this.db.manager,req);
   const photo = await photoFor(this.db.manager,application.id,kind); if (!photo) throw new NotFoundException();
-  return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
+  return { body: await this.storage.get(photoKey(photo)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
  }
  /** The applicant may open current documents and anything they signed. Fetching the file records nothing. */
  async applicantDocument(req: Request, documentId: string): Promise<FileResult> {
@@ -103,7 +103,7 @@ export class DocumentsService {
   const allowed = doc && ((await currentDocuments(this.db.manager)).some(current => current.id === doc.id)
    || await this.db.getRepository(DocumentSignature).existsBy({applicationId:application.id,documentId,signerRole:'APPLICANT'}));
   if (!doc || !allowed) throw new NotFoundException();
-  return { body: await this.storage.get(documentKey(doc.id)), type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}.pdf` };
+  return { body: await this.storage.get(documentKey(doc)), type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}.pdf` };
  }
  /**
   * Signing evidence: an explicit mutation sent when the applicant opens the full current document from the signing
@@ -150,7 +150,7 @@ export class DocumentsService {
  async staffPhoto(user: User, id: string, kind: PhotoKind): Promise<FileResult> {
   const application = await this.staffApplication(user,id);
   const photo = await photoFor(this.db.manager,application.id,kind,application.submittedAt); if (!photo) throw new NotFoundException();
-  return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
+  return { body: await this.storage.get(photoKey(photo)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
  }
  async staffSignedCopy(user: User, id: string, documentId: string) {
   const application = await this.staffApplication(user,id);
@@ -169,7 +169,7 @@ export class DocumentsService {
   const application = await this.memberApplication(memberId);
   if (kind === 'ID_SELFIE' && !canAccessAssignedApplication(user,application)) throw new NotFoundException();
   const photo = await photoFor(this.db.manager,application.id,kind,application.submittedAt); if (!photo) throw new NotFoundException();
-  return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
+  return { body: await this.storage.get(photoKey(photo)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
  }
  async memberSignedCopy(user: User, memberId: string, documentId: string) {
   const application = await this.memberApplication(memberId);
@@ -184,16 +184,16 @@ export class DocumentsService {
   const application = await approvedApplication(this.db.manager,request);
   const photo = await photoFor(this.db.manager,application.id,'SELFIE',application.submittedAt);
   if (!photo) throw new NotFoundException();
-  return { body: await this.storage.get(photoKey(application.id,photo.id)), type: 'image/jpeg', filename: 'profile-photo.jpg' };
+  return { body: await this.storage.get(photoKey(photo)), type: 'image/jpeg', filename: 'profile-photo.jpg' };
  }
- /** The executed copy: the exact signed version plus a certificate page, generated from immutable records. */
- private async signedCopy(em: EntityManager, applicationId: string, documentId: string, audience: 'applicant'|'staff'): Promise<FileResult> {
+ /** The executed copy: the exact signed version plus a certificate page, generated from immutable records. Also saved by SignedCopyArchive. */
+ async signedCopy(em: EntityManager, applicationId: string, documentId: string, audience: 'applicant'|'staff'): Promise<FileResult> {
   const doc = await em.getRepository(CompanyDocument).findOneBy({id:documentId});
   const signatures = await em.getRepository(DocumentSignature).createQueryBuilder('s').addSelect('s.signatureImage')
    .where('s.applicationId = :applicationId AND s.documentId = :documentId',{applicationId,documentId}).orderBy('s.signedAt','ASC').getMany();
   if (!doc || !signatures.some(signature => signature.signerRole === 'APPLICANT')) throw new NotFoundException();
   const view = await em.getRepository(DocumentView).findOneBy({applicationId,documentId});
-  const body = await executedDocument(await this.storage.get(documentKey(doc.id)),doc,applicationId,signatures.map(signature => ({...signature,
+  const body = await executedDocument(await this.storage.get(documentKey(doc)),doc,applicationId,signatures.map(signature => ({...signature,
    firstViewedAt:signature.signerRole === 'APPLICANT' ? view?.firstViewedAt ?? null : null})),audience);
   return { body, type: 'application/pdf', filename: `${doc.kind.toLowerCase()}-v${doc.version}-signed.pdf` };
  }

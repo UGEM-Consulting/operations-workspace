@@ -21,7 +21,7 @@ Photos and signatures are required to submit and to approve. The approving manag
   - the time, IP address and browser.
 - Rows are append-only: a database trigger refuses UPDATE and DELETE. Published document versions (`company_documents`) are immutable in the same way.
 - Signature images are checked before they are stored: a CRC-valid, non-animated 8-bit RGB/RGBA PNG of at most 2000 x 800 pixels whose image data inflates to exactly that size, followed by a trial embed into a PDF. The certificate never decodes an image that fails the structural check.
-- The **signed copy** is generated on demand from these immutable records. It is the original PDF, unchanged, followed by an electronic signature certificate that shows each signature's method. Applicants can download it after signing; managers and admins can download it from the application page. The applicant's copy omits the company countersigner's IP address and browser ("Recorded by UGEM"); staff copies and the database keep them. Signed-copy downloads are rate-limited.
+- The **signed copy** is generated on demand from these immutable records (a background job also saves a copy to the bucket; see "Bucket folders"). It is the original PDF, unchanged, followed by an electronic signature certificate that shows each signature's method. Applicants can download it after signing; managers and admins can download it from the application page. The applicant's copy omits the company countersigner's IP address and browser ("Recorded by UGEM"); staff copies and the database keep them. Signed-copy downloads are rate-limited.
 
 ## Saved signatures for approvers
 
@@ -57,6 +57,35 @@ Managers and administrators publish NDA, SOP and Quick Contact List versions on 
 - Applicants always sign the current version. A signature on an earlier version no longer satisfies submission or approval of an open application: the applicant is asked to sign the new version (in a correction round once submitted). Approved and rejected records are final and not re-evaluated. Signed copies keep the version that was signed.
 - A document kind is required only once a version of it has been published.
 - Never commit these PDFs to Git.
+
+## Bucket folders
+
+Each person's files are kept in one folder, named by their application ID (new hires) or driver ID. Names and other personal details are never used in paths. Blank company forms have their own folder.
+
+```
+applicants/<application id>/
+  selfie/<photo id>.jpg
+  id-selfie/<photo id>.jpg
+  signed/nda-v1.pdf, sop-v1.pdf, contact-list-v1.pdf
+drivers/<driver id>/
+  documents/license|medical-card|work-authorization/<scan id>.pdf
+  reports/mvr/<report id>.pdf
+  signed/background-disclosure-v1.pdf, background-authorization-v1.pdf, clearinghouse-consent-v1.pdf
+company-documents/
+  onboarding/nda|sop|contact-list/<document id>.pdf
+  driver-consents/background-disclosure|background-authorization|clearinghouse-consent/<document id>.pdf
+```
+
+- **Locating a person:** the application ID is on each new hire's application page, and the driver ID is in the driver's page address. Use either to find their folder in the Google Cloud console.
+- **Signed copies:** a background job saves each signed copy into the person's `signed/` folder once it is complete. It runs at startup, then every 2 minutes.
+  - The SOP, the Quick Contact List and drivers' consent forms are saved right after signing.
+  - The NDA is saved after the manager countersigns at approval. If an application ends without a countersignature (rejected, or approved before countersigning existed), the applicant-signed copy is saved instead.
+  - The job also saves copies for everyone who signed before it existed.
+  - A saved copy is never changed. A newer document version is saved next to it, for example `nda-v2.pdf`.
+  - Download buttons still generate copies from the signature records, so they keep working while a copy waits to be saved.
+  - A copy that can't be saved (for example, its blank form is missing from the bucket) waits 10 minutes before the next try, then 20, 40 and so on, up to 6 hours. Other copies are saved meanwhile. The log shows only how many copies failed in each run.
+  - Saved copies are the staff version, with the signer's IP address and browser. Copies signed in a draft that was never sent are saved too. They are kept like the signature records; deleting them waits for the retention job, which isn't authorized yet.
+- **Files from before this layout** (`photos/`, `documents/`, `drivers/<id>/<scan>.pdf`, `driver-reports/`, `driver-consents/`) stay where they are and remain readable. Each record notes which layout its file uses.
 
 ## Storage and limits
 

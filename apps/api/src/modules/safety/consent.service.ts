@@ -8,7 +8,7 @@ import type { ApplicantSignatureDto } from '../documents/documents.dto';
 import type { FileResult } from '../documents/documents.service';
 import { assertSignatureEmbeds, decodePdf, decodeSignature, sha256 } from '../documents/images';
 import { onboardingLimit } from '../onboarding/rate-limit';
-import { driverConsentKey, StorageService } from '../storage/storage.service';
+import { CURRENT_LAYOUT, driverConsentKey, StorageService } from '../storage/storage.service';
 import { User } from '../users/user.entity';
 import { PublishConsentDto } from './consent.dto';
 import { CONSENT_KINDS, CONSENT_RULES, consentStatement, DRIVER_ESIGN_CONSENT, DriverConsentDocument, DriverConsentSignature, DriverConsentView } from './consent.entity';
@@ -40,22 +40,22 @@ export class ConsentService {
   await onboardingLimit(this.db, `consent-publish:${user.id}`, 10, 3600);
   const file = decodePdf(dto.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
-  const id = randomUUID();
-  await this.storage.put(driverConsentKey(id), file, 'application/pdf');
+  const id = randomUUID(), stored = { id, kind: dto.kind, storageLayout: CURRENT_LAYOUT };
+  await this.storage.put(driverConsentKey(stored), file, 'application/pdf');
   try {
    return await this.db.transaction(async em => {
     // Publishers of one kind take turns, so version numbers stay sequential.
     await em.query('SELECT pg_advisory_xact_lock(42002032, $1)', [CONSENT_KINDS.indexOf(dto.kind)]);
     const [{ next }] = await em.query('SELECT COALESCE(MAX(version), 0) + 1 AS next FROM driver_consent_documents WHERE kind = $1', [dto.kind]);
-    return em.getRepository(DriverConsentDocument).save({ id, kind: dto.kind, version: Number(next), title: dto.title, sha256: sha256(file), byteSize: file.length, pageCount, uploadedBy: user.id });
+    return em.getRepository(DriverConsentDocument).save({ id, kind: dto.kind, version: Number(next), title: dto.title, sha256: sha256(file), byteSize: file.length, pageCount, uploadedBy: user.id, storageLayout: CURRENT_LAYOUT });
    });
-  } catch (error) { await this.storage.remove(driverConsentKey(id)); throw error; }
+  } catch (error) { await this.storage.remove(driverConsentKey(stored)); throw error; }
  }
 
  async staffFile(id: string): Promise<FileResult> {
   const document = await this.db.getRepository(DriverConsentDocument).findOneBy({ id });
   if (!document) throw new NotFoundException();
-  return { body: await this.storage.get(driverConsentKey(id)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}-v${document.version}.pdf` };
+  return { body: await this.storage.get(driverConsentKey(document)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}-v${document.version}.pdf` };
  }
 
  async staffSignedCopy(user: User, driverId: string, documentId: string) {
@@ -72,7 +72,7 @@ export class ConsentService {
   const allowed = document && ((await currentConsents(this.db.manager)).some(current => current.id === documentId)
    || await this.db.getRepository(DriverConsentSignature).existsBy({ driverId: driver.id, documentId }));
   if (!document || !allowed) throw new NotFoundException();
-  return { body: await this.storage.get(driverConsentKey(documentId)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}-v${document.version}.pdf` };
+  return { body: await this.storage.get(driverConsentKey(document)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}-v${document.version}.pdf` };
  }
 
  /** Signing evidence: sent when the driver opens the full current form from their application. Only the first time is kept. */
@@ -114,14 +114,14 @@ export class ConsentService {
   return this.signedCopy(driver.id, documentId, 'applicant');
  }
 
- /** The executed copy: the exact form version that was signed plus a certificate page, from the immutable records. */
- private async signedCopy(driverId: string, documentId: string, audience: 'applicant' | 'staff' = 'staff'): Promise<FileResult> {
+ /** The executed copy: the exact form version that was signed plus a certificate page, from the immutable records. Also saved by SignedCopyArchive. */
+ async signedCopy(driverId: string, documentId: string, audience: 'applicant' | 'staff' = 'staff'): Promise<FileResult> {
   const document = await this.db.getRepository(DriverConsentDocument).findOneBy({ id: documentId });
   const signature = await this.db.getRepository(DriverConsentSignature).createQueryBuilder('s').addSelect('s.signatureImage')
    .where('s."driverId" = :driverId AND s."documentId" = :documentId', { driverId, documentId }).getOne();
   if (!document || !signature) throw new NotFoundException();
   const view = await this.db.getRepository(DriverConsentView).findOneBy({ driverId, documentId });
-  const body = await executedDocument(await this.storage.get(driverConsentKey(documentId)), document, null,
+  const body = await executedDocument(await this.storage.get(driverConsentKey(document)), document, null,
    [{ ...signature, signerRole: 'APPLICANT', translatedStatement: null, firstViewedAt: view?.firstViewedAt ?? null }], audience);
   return { body, type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}-v${document.version}-signed.pdf` };
  }

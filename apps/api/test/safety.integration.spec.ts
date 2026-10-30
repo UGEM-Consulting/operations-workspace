@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jpeg, pdfText, png } from './documents.fixtures';
@@ -20,6 +20,8 @@ import { SafetyModule } from '../src/modules/safety/safety.module';
 import { EmailService } from '../src/modules/email/email.service';
 import { normalSsn, PiiService } from '../src/modules/safety/pii';
 import { LEFTOVER_SCAN_AGE_MS, ScanSweeper } from '../src/modules/safety/scan-sweeper';
+import { DriverSignedCopies } from '../src/modules/safety/signed-copies';
+import { RETRY_FIRST_MS } from '../src/modules/storage/signed-copies';
 import { earliestFinalRejection } from '../src/modules/safety/safety.entity';
 import { ScreeningService } from '../src/modules/safety/screening.service';
 import { addDays, usDay } from '../src/modules/safety/screening-rules';
@@ -75,6 +77,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, SafetyModule] })
       .overrideProvider(EmailService).useValue(email).compile();
     app = module.createNestApplication(); closeSessions = installSessions(app, env); configureApp(app, env.CORS_ORIGINS); await app.init();
+    app.get(DriverSignedCopies).archive.stop(); // Tests run the signed-copy job themselves.
   }, 30000);
   beforeEach(async () => {
     await settle(); sent.length = 0;
@@ -333,11 +336,11 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
     expect(pdf.toString('latin1')).not.toMatch(/FictionalCamera|GPS 41|fictional comment|TRAILING-FICTIONAL-DATA/);
     expect(pdfText(pdf)).toBe('');
-    expect(existsSync(join(storage, 'drivers', id, `${original}.pdf`))).toBe(true);
+    expect(existsSync(join(storage, 'drivers', id, 'documents', 'license', `${original}.pdf`))).toBe(true);
     // A new scan replaces the old one, whose file is removed (nobody reviews a draft).
     const second = (await scan(agent, 'license').expect(201)).body.documents[0];
     expect(second).toMatchObject({ kind: 'LICENSE', pageCount: 1 });
-    expect(existsSync(join(storage, 'drivers', id, `${original}.pdf`))).toBe(false);
+    expect(existsSync(join(storage, 'drivers', id, 'documents', 'license', `${original}.pdf`))).toBe(false);
     await agent.get(`/api/driver/documents/${original}/file`).set(headers).expect(404);
     expect((await db.query(`SELECT count(*)::integer AS n FROM driver_documents WHERE "driverId" = $1`, [id]))[0].n).toBe(2);
     expect((await events(id)).filter(row => row.event === 'DOCUMENT_UPLOADED').map(row => row.metadata)).toEqual([{ kind: 'LICENSE', pages: 2 }, { kind: 'LICENSE', pages: 1 }]);
@@ -396,7 +399,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(view).toMatchObject({ status: 'DRAFT', version: 3, ssnLast4: '6789', fields: { licenseNumber: 'D1234567' } });
     // Replacing a scan Safety already verified keeps its file as the record of what was checked.
     await scan(again, 'license').expect(201);
-    expect(existsSync(join(storage, 'drivers', id, `${license}.pdf`))).toBe(true);
+    expect(existsSync(join(storage, 'drivers', id, 'documents', 'license', `${license}.pdf`))).toBe(true);
     await again.post('/api/driver/application/submit').set(headers).send({ version: 3, fields: complete }).expect(201);
     expect(await driver(id)).toMatchObject({ status: 'SCREENING', application: { status: 'SUBMITTED' } });
   });
@@ -435,9 +438,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     // Earlier tests truncate drivers but leave their files; start from an empty folder so the counts are this test's.
     rmSync(join(storage, 'drivers'), { recursive: true, force: true });
     rmSync(join(storage, 'driver-reports'), { recursive: true, force: true });
+    rmSync(join(storage, 'driver-consents'), { recursive: true, force: true }); rmSync(join(storage, 'company-documents'), { recursive: true, force: true });
     const { id, agent } = await applying();
     const sweeper = app.get(ScanSweeper), later = Date.now() + LEFTOVER_SCAN_AGE_MS + 60_000;
-    const file = (documentId: string) => join(storage, 'drivers', id, `${documentId}.pdf`);
+    const file = (documentId: string) => join(storage, 'drivers', id, 'documents', 'license', `${documentId}.pdf`);
     const report = (reportId: string) => join(storage, 'driver-reports', id, `${reportId}.pdf`);
     const replaced = (await scan(agent, 'license').expect(201)).body.documents[0].id as string, pdf = readFileSync(file(replaced));
     const current = (await scan(agent, 'license').expect(201)).body.documents[0].id as string;
@@ -454,10 +458,16 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     // A consent form whose publish never committed is a leftover too.
     mkdirSync(join(storage, 'driver-consents'), { recursive: true });
     const unpublished = join(storage, 'driver-consents', `${randomUUID()}.pdf`); writeFileSync(unpublished, pdf);
+    // The per-person folders: an uncommitted MVR and an unpublished form are leftovers too; a saved signed copy never is.
+    mkdirSync(join(storage, 'drivers', id, 'reports', 'mvr'), { recursive: true }); mkdirSync(join(storage, 'drivers', id, 'signed'), { recursive: true });
+    mkdirSync(join(storage, 'company-documents', 'driver-consents', 'background-disclosure'), { recursive: true });
+    const foldered = join(storage, 'drivers', id, 'reports', 'mvr', `${randomUUID()}.pdf`); writeFileSync(foldered, pdf);
+    const formLeftover = join(storage, 'company-documents', 'driver-consents', 'background-disclosure', `${randomUUID()}.pdf`); writeFileSync(formLeftover, pdf);
+    const signedCopy = join(storage, 'drivers', id, 'signed', 'background-disclosure-v1.pdf'); writeFileSync(signedCopy, pdf);
     expect(await sweeper.sweep()).toBe(0);
-    expect([file(replaced), file(unreferenced), report(uncommitted), unpublished].every(path => existsSync(path))).toBe(true);
-    expect(await sweeper.sweep(later)).toBe(4);
-    expect(existsSync(unpublished)).toBe(false);
+    expect([file(replaced), file(unreferenced), report(uncommitted), unpublished, foldered, formLeftover].every(path => existsSync(path))).toBe(true);
+    expect(await sweeper.sweep(later)).toBe(6);
+    expect([existsSync(unpublished), existsSync(foldered), existsSync(formLeftover), existsSync(signedCopy)]).toEqual([false, false, false, true]);
     expect([existsSync(file(replaced)), existsSync(file(unreferenced)), existsSync(file(current)), existsSync(foreign)]).toEqual([false, false, true, true]);
     expect([existsSync(report(uncommitted)), existsSync(report(recorded))]).toEqual([false, true]);
     // A replaced scan Safety verified (a reopened application) is the record of what was checked.
@@ -516,7 +526,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await upload({ version: first.version, file: await mvrPdf() }).expect(201);
     const record = await driver(id);
     expect(record.screening.mvr).toMatchObject({ pulledOn: today(), pageCount: 1, uploadedBy: 'Fictional lead' });
-    expect(existsSync(join(storage, 'driver-reports', id, `${firstReport}.pdf`))).toBe(true);
+    expect(existsSync(join(storage, 'drivers', id, 'reports', 'mvr', `${firstReport}.pdf`))).toBe(true);
     // Every Safety role may open it, and each view is recorded; nobody else may.
     await agents.staff.get(`/api/safety/drivers/${id}/reports/${record.screening.mvr.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf').expect('cache-control', 'no-store, private');
     await agents.dispatch.get(`/api/safety/drivers/${id}/reports/${record.screening.mvr.id}/file`).set(headers).expect(403);
@@ -727,6 +737,20 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(text).not.toContain(id);
     expect(text).not.toContain('Application reference');
     await agents.dispatch.get(`/api/safety/drivers/${id}/consents/${newer.id}/signed`).set(headers).expect(403);
+    // Each signed form is also saved once into the driver's own folder.
+    // A copy that can't be built (here its blank form is missing) waits before its next try and never holds back the others.
+    const archive = app.get(DriverSignedCopies).archive, saved = (name: string) => existsSync(join(storage, 'drivers', id, 'signed', `${name}.pdf`));
+    const blank = join(storage, 'company-documents', 'driver-consents', 'background-authorization', `${authorization.id}.pdf`);
+    renameSync(blank, `${blank}.away`);
+    const start = Date.now();
+    expect(await archive.run(start)).toBeGreaterThanOrEqual(2);
+    expect(['background-authorization-v1', 'background-authorization-v2', 'background-disclosure-v1'].map(saved)).toEqual([false, true, true]);
+    renameSync(`${blank}.away`, blank);
+    expect(await archive.run(start + RETRY_FIRST_MS - 1000)).toBe(0);
+    expect(saved('background-authorization-v1')).toBe(false);
+    expect(await archive.run(start + RETRY_FIRST_MS + 1000)).toBe(1);
+    expect(saved('background-authorization-v1')).toBe(true);
+    expect(await archive.run()).toBe(0);
     const [stored] = await db.query(`SELECT consent, statement, "documentSha256", "ipAddress" FROM driver_consent_signatures WHERE "documentId" = $1`, [newer.id]);
     expect(stored.statement).toBe('I have read the entire Fictional authorization (version 2) and I agree to it. I intend my typed name and my signature (drawn, or adopted from my typed name) to be my legally binding electronic signature.');
     expect(stored.consent).toMatch(/sign these forms electronically/);
@@ -756,6 +780,12 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard files stored in the per-person folders');
+    // Mark this test's files as flat-layout to step past StorageFolders and reach the older refusals.
+    await db.query(`TRUNCATE signed_copies; UPDATE driver_documents SET "storageLayout" = 1; UPDATE driver_reports SET "storageLayout" = 1;
+      ALTER TABLE driver_consent_documents DISABLE TRIGGER driver_consent_documents_append_only; UPDATE driver_consent_documents SET "storageLayout" = 1;
+      ALTER TABLE driver_consent_documents ENABLE TRIGGER driver_consent_documents_append_only`);
+    await db.undoLastMigration(); // StorageFolders
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver consent forms or signatures');
     await db.query('TRUNCATE driver_consent_documents CASCADE');
     await db.undoLastMigration(); // DriverConsents, with nothing recorded yet
@@ -780,6 +810,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverConsents1792910000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('StorageFolders1792920000000');
   });
 });

@@ -7,7 +7,7 @@ import type {} from '../auth/session';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import type { FileResult } from '../documents/documents.service';
 import { sha256 } from '../documents/images';
-import { driverDocumentKey, StorageService } from '../storage/storage.service';
+import { CURRENT_LAYOUT, driverDocumentKey, StorageService } from '../storage/storage.service';
 import { EmailService } from '../email/email.service';
 import { clientBucket, countAttempt, onboardingLimit } from '../onboarding/rate-limit';
 import { digest, generateVerificationCode } from '../onboarding/verification-code';
@@ -162,8 +162,8 @@ export class DriverAccessService {
   const first = await this.session(this.db.manager, req, false);
   if (first.application.status !== 'DRAFT' || first.link.completedAt) throw new ConflictException('Your application was already sent to Safety.');
   await onboardingLimit(this.db, `driver-document:${first.link.id}`, 30);
-  const body = await scanPdf(dto.pages), id = randomUUID(), driverId = first.driver.id;
-  await this.storage.put(driverDocumentKey(driverId, id), body, 'application/pdf');
+  const body = await scanPdf(dto.pages), id = randomUUID(), driverId = first.driver.id, stored = { id, driverId, kind, storageLayout: CURRENT_LAYOUT };
+  await this.storage.put(driverDocumentKey(stored), body, 'application/pdf');
   let result;
   try {
    result = await this.db.transaction(async em => {
@@ -172,12 +172,12 @@ export class DriverAccessService {
     const documents = em.getRepository(DriverDocument);
     const previous = await documents.findOneBy({ driverId, kind, replacedAt: IsNull() });
     if (previous) await documents.update(previous.id, { replacedAt: new Date() });
-    await documents.insert({ id, driverId, kind, subtype: dto.subtype ?? null, pageCount: dto.pages.length, sha256: sha256(body), byteSize: body.length, createdAt: new Date() });
+    await documents.insert({ id, driverId, kind, subtype: dto.subtype ?? null, pageCount: dto.pages.length, sha256: sha256(body), byteSize: body.length, createdAt: new Date(), storageLayout: CURRENT_LAYOUT });
     await em.getRepository(DriverEvent).save({ driverId, actorId: null, event: 'DOCUMENT_UPLOADED', metadata: { kind, pages: dto.pages.length } });
     return { view: await this.view(em, link, application), previous };
    });
-  } catch (error) { await this.storage.remove(driverDocumentKey(driverId, id)); throw error; }
-  if (result.previous && !result.previous.verifiedAt) await this.storage.remove(driverDocumentKey(driverId, result.previous.id));
+  } catch (error) { await this.storage.remove(driverDocumentKey(stored)); throw error; }
+  if (result.previous && !result.previous.verifiedAt) await this.storage.remove(driverDocumentKey(result.previous));
   return result.view;
  }
 
@@ -186,7 +186,7 @@ export class DriverAccessService {
   const { driver } = await this.session(this.db.manager, req, false);
   const document = await this.db.getRepository(DriverDocument).findOneBy({ id, driverId: driver.id, replacedAt: IsNull() });
   if (!document) throw new NotFoundException();
-  return { body: await this.storage.get(driverDocumentKey(driver.id, id)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
+  return { body: await this.storage.get(driverDocumentKey(document)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
  }
 
  /**

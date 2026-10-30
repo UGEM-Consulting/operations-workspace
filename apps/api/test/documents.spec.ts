@@ -11,7 +11,7 @@ import { applicantStatement } from '../src/modules/documents/statements';
 import { ApplicantSignatureDto, MAX_SIGNATURE_BYTES } from '../src/modules/documents/documents.dto';
 import { assertSignatureEmbeds, cleanJpeg, decodeJpeg, decodeSignature, inspectSignaturePng, MAX_PHOTO_SIDE, MAX_SIGNATURE_WIDTH } from '../src/modules/documents/images';
 import { jpeg, pdfText, png, pngChunk, pngHeader, PNG_SIGNATURE } from './documents.fixtures';
-import { StorageService } from '../src/modules/storage/storage.service';
+import { documentKey, driverConsentKey, driverDocumentKey, driverReportKey, photoKey, signedCopyKey, StorageService } from '../src/modules/storage/storage.service';
 import { allowedEndpoint, bodyLimit, isFileEndpoint } from '../../web/src/lib/bff-policy';
 const base = { DATABASE_URL: 'postgresql://localhost/test', CORS_ORIGINS: 'https://workspace.example.test', WEB_ORIGIN: 'https://workspace.example.test', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex') };
 // A fictional, non-functional service-account shape; never a real key.
@@ -166,5 +166,19 @@ describe('signature certificate', () => {
     const bomb = Buffer.concat([PNG_SIGNATURE, pngHeader(16000, 16000), pngChunk('IDAT', deflateSync(Buffer.alloc(1000))), pngChunk('IEND', Buffer.alloc(0))]);
     const [applicant] = signatures();
     expect(pdfText(await executedDocument(await original(), doc, reference, [{ ...applicant, signatureImage: bomb }]))).toContain('cannot be shown in this copy');
+  });
+});
+describe('storage folders', () => {
+  const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222';
+  it('keeps each person\'s files in one folder and finds files stored under the original layout', () => {
+    expect(photoKey({ id: b, applicationId: a, kind: 'ID_SELFIE', storageLayout: 2 })).toBe(`applicants/${a}/id-selfie/${b}.jpg`);
+    expect(photoKey({ id: b, applicationId: a, kind: 'ID_SELFIE', storageLayout: 1 })).toBe(`photos/${a}/${b}.jpg`);
+    expect(documentKey({ id: b, kind: 'CONTACT_LIST', storageLayout: 2 })).toBe(`company-documents/onboarding/contact-list/${b}.pdf`);
+    expect(driverDocumentKey({ id: b, driverId: a, kind: 'MEDICAL_CARD', storageLayout: 2 })).toBe(`drivers/${a}/documents/medical-card/${b}.pdf`);
+    expect(driverReportKey({ id: b, driverId: a, kind: 'MVR', storageLayout: 2 })).toBe(`drivers/${a}/reports/mvr/${b}.pdf`);
+    expect(driverReportKey({ id: b, driverId: a, kind: 'MVR', storageLayout: 1 })).toBe(`driver-reports/${a}/${b}.pdf`);
+    expect(driverConsentKey({ id: b, kind: 'BACKGROUND_DISCLOSURE', storageLayout: 2 })).toBe(`company-documents/driver-consents/background-disclosure/${b}.pdf`);
+    expect(signedCopyKey({ applicationId: a }, { kind: 'NDA', version: 3 })).toBe(`applicants/${a}/signed/nda-v3.pdf`);
+    expect(signedCopyKey({ driverId: a }, { kind: 'CLEARINGHOUSE_CONSENT', version: 1 })).toBe(`drivers/${a}/signed/clearinghouse-consent-v1.pdf`);
   });
 });
