@@ -8,13 +8,17 @@ import { Input, Select } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { ApiError, errorMessage, mutate, readApi } from '@/lib/client-api';
-import { licenseTypes, US_STATES } from '@/features/safety/types';
+import { DOCUMENT_KINDS, documentLabels, licenseTypes, requiredDocuments, US_STATES, type DocumentKind } from '@/features/safety/types';
+import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
 
-export interface DriverApplicationView { email: string; expiresAt: string; status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; version: number; ssnLast4: string | null; submittedAt: string | null; ssnAvailable: boolean }
+export interface DriverApplicationView { email: string; expiresAt: string; status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; version: number; ssnLast4: string | null; submittedAt: string | null; ssnAvailable: boolean;
+  // From an API with document scanning; absent on an older one.
+  documentsEnabled?: boolean; requiredDocuments?: DocumentKind[]; documents?: { id: string; kind: DocumentKind; subtype: string | null; pageCount: number; createdAt: string }[] }
 const REQUIRED = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone',
   'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'];
 const FIELDS = [...REQUIRED, 'legalMiddleName', 'addressLine2'];
 const states = US_STATES.map(state => ({ value: state, label: state }));
+const names = (kinds: DocumentKind[]) => kinds.map(kind => documentLabels[kind].toLowerCase()).join(', ');
 
 // Links are /driver#<token>. Browsers never send the fragment to servers, so the token stays out of request logs and
 // Referer headers. The page holds it in memory and removes it from the address bar.
@@ -84,6 +88,13 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
   const [pending, setPending] = useState<'save' | 'submit' | null>(null);
   const [message, setMessage] = useState(''), [failed, setFailed] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // The class chosen on the page decides whether a medical card is needed, before it is saved.
+  const [licenseClass, setLicenseClass] = useState(view.fields.licenseClass ?? '');
+  // Pages each scanner holds unsaved, and whether one is uploading.
+  const [drafts, setDrafts] = useState<Partial<Record<DocumentKind, ScanDraft>>>({});
+  const [scanErrors, setScanErrors] = useState<Partial<Record<DocumentKind, string>>>({});
+  const onDraft = useCallback((kind: DocumentKind, draft: ScanDraft) => setDrafts(previous =>
+    previous[kind]?.pages === draft.pages && previous[kind]?.busy === draft.busy ? previous : { ...previous, [kind]: draft }), []);
   const value = (key: string) => view.fields[key] ?? '';
   if (view.status === 'SUBMITTED') return <Card className="space-y-4 p-6 sm:p-8">
     <CheckCircle2 aria-hidden="true" className="size-8 text-success" />
@@ -98,12 +109,21 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
   async function save(submit: boolean) {
     if (pending) return;
     const { fields, ssn } = read();
+    // Pages taken but not saved would be lost on submit; Save and finish later keeps answers only.
+    const unsaved = DOCUMENT_KINDS.filter(kind => drafts[kind]?.pages);
     if (submit) {
       const missing = Object.fromEntries([...REQUIRED.filter(key => !fields[key]), ...(!ssn && !view.ssnLast4 ? ['ssn'] : [])].map(key => [key, 'Required']));
       setErrors(missing);
-      if (Object.keys(missing).length) {
-        setFailed(true); setMessage('Answer every required question first.');
-        form.current?.querySelector<HTMLElement>(`[name="${Object.keys(missing)[0]}"]`)?.focus();
+      const unscanned = view.documentsEnabled ? requiredDocuments(fields.licenseClass).filter(kind => !unsaved.includes(kind) && !view.documents?.some(document => document.kind === kind)) : [];
+      const problems: Partial<Record<DocumentKind, string>> = Object.fromEntries([...unsaved.map(kind => [kind, 'Save these pages before you submit, or remove them.']),
+        ...unscanned.map(kind => [kind, 'Scan this document before you submit.'])]);
+      setScanErrors(problems);
+      if (Object.keys(missing).length || unsaved.length || unscanned.length) {
+        setFailed(true);
+        setMessage(Object.keys(missing).length ? 'Answer every required question first.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : `Scan these documents first: ${names(unscanned)}.`);
+        const answer = Object.keys(missing)[0], scan = DOCUMENT_KINDS.find(kind => problems[kind]);
+        if (answer) form.current?.querySelector<HTMLElement>(`[name="${answer}"]`)?.focus();
+        else if (scan) document.getElementById(scannerId(scan))?.focus();
         return;
       }
     }
@@ -113,13 +133,15 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
       const ssnInput = form.current?.querySelector<HTMLInputElement>('[name="ssn"]');
       if (ssnInput) ssnInput.value = '';
       onSaved(saved); setErrors({});
-      if (!submit) setMessage('Saved. You can come back to this link until you submit.');
+      if (!submit) setMessage(unsaved.length ? `Answers saved. The pages you took for ${names(unsaved)} aren’t saved yet: select Save under each one.`
+        : 'Saved. You can come back to this link until you submit.');
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error.message);
       setFailed(true); setMessage(errorMessage(error, 'Unable to save. Your answers are still on this page.'));
     } finally { setPending(null); }
   }
   const field = (key: string) => ({ name: key, defaultValue: value(key), error: errors[key], width: 'full' as const });
+  const uploading = Object.values(drafts).some(draft => draft?.busy);
   return <form ref={form} onSubmit={event => { event.preventDefault(); void save(true); }} className="space-y-6" noValidate>
     <div><h1 className="text-2xl font-normal">Your driver application</h1>
       <p className="mt-1 text-sm text-muted-foreground">Signed in as {view.email}. Answers save when you select Save; the link works until <LocalTime iso={view.expiresAt} format="date" />.</p></div>
@@ -130,7 +152,7 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
         <Input label="Last name" {...field('legalLastName')} maxLength={100} autoComplete="family-name" />
       </div>
     </Section>
-    <Section title="Date of birth and Social Security number" hint="Safety needs these to check your driving record. Your SSN is encrypted and only Safety can see it.">
+    <Section title="Date of birth and Social Security number" hint="Safety needs these to check your driving record. Your SSN is encrypted, and only UGEM Safety staff and administrators can see it.">
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Date of birth" type="date" {...field('dateOfBirth')} autoComplete="bday" />
         {view.ssnAvailable ? <Input label="Social Security number" name="ssn" error={errors.ssn} width="full" inputMode="numeric" autoComplete="off" maxLength={11} placeholder="123-45-6789"
@@ -162,14 +184,17 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="License number" {...field('licenseNumber')} maxLength={20} autoCapitalize="characters" spellCheck={false} />
         <Select label="Issuing state" {...field('licenseState')} placeholder="–" options={states} />
-        <Select label="Class" {...field('licenseClass')} placeholder="Choose a class" options={Object.entries(licenseTypes).map(([value, label]) => ({ value, label }))} />
+        <Select label="Class" {...field('licenseClass')} onChange={event => setLicenseClass(event.target.value)} placeholder="Choose a class" options={Object.entries(licenseTypes).map(([value, label]) => ({ value, label }))} />
         <Input label="Expiration date" type="date" {...field('licenseExpiresOn')} />
       </div>
-      <p className="text-sm text-muted-foreground">You’ll upload photos of your license and other documents in a later step.</p>
     </Section>
+    {view.documentsEnabled && <Section title="Documents" hint="Use your phone’s camera. We remove photo details such as location before saving, and only UGEM Safety staff and administrators can see your documents.">
+      {DOCUMENT_KINDS.map(kind => <DocumentScanner key={kind} kind={kind} view={view} onSaved={onSaved} onEnded={onEnded} onDraft={onDraft} error={scanErrors[kind]}
+        required={requiredDocuments(licenseClass).includes(kind)} />)}
+    </Section>}
     <Notice message={message} error={failed} />
     <div className="flex flex-wrap gap-3 border-t pt-5">
-      <Button type="submit" disabled={!!pending}>{pending === 'submit' ? 'Sending…' : 'Submit application'}</Button>
+      <Button type="submit" disabled={!!pending || uploading}>{pending === 'submit' ? 'Sending…' : uploading ? 'Saving scan…' : 'Submit application'}</Button>
       <Button type="button" variant="outline" disabled={!!pending} onClick={() => void save(false)}>{pending === 'save' ? 'Saving…' : 'Save and finish later'}</Button>
     </div>
     <PendingHint pending={!!pending} />

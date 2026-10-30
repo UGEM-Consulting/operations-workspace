@@ -1,4 +1,8 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { jpeg, pdfText } from './documents.fixtures';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -15,6 +19,7 @@ import { User, Role, UserStatus } from '../src/modules/users/user.entity';
 import { SafetyModule } from '../src/modules/safety/safety.module';
 import { EmailService } from '../src/modules/email/email.service';
 import { normalSsn, PiiService } from '../src/modules/safety/pii';
+import { LEFTOVER_SCAN_AGE_MS, ScanSweeper } from '../src/modules/safety/scan-sweeper';
 import { completeMfa, enrolForTest } from './mfa-helpers';
 type Agent = ReturnType<typeof request.agent>;
 type Key = 'admin' | 'manager' | 'lead' | 'staff' | 'staff2' | 'dispatch';
@@ -33,6 +38,15 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   const email = { enabled: true, onModuleInit: () => undefined, onApplicationShutdown: async () => undefined,
     sendVerificationCode: async (to: string, code: string) => { sent.push({ to, code }); return true; }, runInBackground: (task: () => Promise<void>) => { tasks.push(task()); } };
   const settle = async () => { await Promise.all(tasks.splice(0)); };
+  // Fictional scans: structurally valid JPEG pages carrying fictional camera metadata the API must strip.
+  const storage = mkdtempSync(join(tmpdir(), 'driver-documents-'));
+  const page = () => jpeg().toString('base64');
+  const scan = (agent: Agent, segment: string, body: Record<string, unknown> = { pages: [page()] }) => agent.post(`/api/driver/documents/${segment}`).set(headers).send(body);
+  async function scanAll(agent: Agent) {
+    await scan(agent, 'license', { pages: [page(), page()] }).expect(201);
+    await scan(agent, 'medical-card').expect(201);
+    return (await scan(agent, 'work-authorization', { pages: [page()], subtype: 'GREEN_CARD' }).expect(201)).body;
+  }
   const complete = { legalFirstName: 'Jordan', legalLastName: 'Wheeler', dateOfBirth: '1988-04-12', phone: '555 010 2000', addressLine1: '100 Fictional Way', city: 'Austin', state: 'tx',
     zip: '73301', emergencyName: 'Casey Wheeler', emergencyRelationship: 'Sibling', emergencyPhone: '555 010 3000', licenseNumber: 'd1234567', licenseState: 'TX', licenseClass: 'CDL_A', licenseExpiresOn: '2030-01-31' };
   /** A lead with a sent link, and a driver agent signed in through the emailed code. */
@@ -49,7 +63,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
 
   beforeAll(async () => {
     env = validateEnvironment({ NODE_ENV: 'test', DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://localhost/operations_m2_test', CORS_ORIGINS: 'http://localhost:3000',
-      WEB_ORIGIN: 'http://localhost:3000', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64'), PII_ENCRYPTION_KEY: randomBytes(32).toString('base64') });
+      WEB_ORIGIN: 'http://localhost:3000', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64'), PII_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
+      STORAGE_DRIVER: 'local', STORAGE_LOCAL_DIR: storage });
     headers = { 'x-workspace-key': env.BFF_SHARED_SECRET, origin: env.WEB_ORIGIN, 'x-csrf-protection': '1' };
     if (!new URL(env.DATABASE_URL).pathname.endsWith('_test')) throw new Error('Dedicated _test database required');
     db = await new DataSource(databaseOptions(env)).initialize(); await db.runMigrations();
@@ -70,7 +85,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       if (secret) expect((await completeMfa(agents[key], headers, db, users[key].id, secret)).status).toBe(200);
     }
   });
-  afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE drivers CASCADE'); await db.query(`DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.destroy(); } });
+  afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE drivers CASCADE'); await db.query(`DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.destroy(); } rmSync(storage, { recursive: true, force: true }); });
 
   it('shows Drivers to Safety roles and administrators only, landing Safety roles on it', async () => {
     for (const key of ['manager', 'lead', 'staff'] as const) {
@@ -223,7 +238,9 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   it('submits a complete application once: the link closes and the driver moves to Screening', async () => {
     const { id, token, agent } = await applying();
     const missing = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: {} }).expect(400)).body;
-    expect(missing.missing).toEqual(['dateOfBirth', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseExpiresOn', 'ssn']);
+    expect(missing.missing).toEqual(['dateOfBirth', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseExpiresOn', 'ssn',
+      'LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION']);
+    await scanAll(agent);
     expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, dateOfBirth: '2015-01-01' }, ssn: '123456789' }).expect(400)).body.missing).toEqual(['dateOfBirth']);
     expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, licenseExpiresOn: '2020-01-01' }, ssn: '123456789' }).expect(400)).body.message).toMatch(/expired/);
     const done = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201)).body;
@@ -291,8 +308,125 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(() => on.openSsn(sealed.ciphertext, 'driver-b')).toThrow();
   });
 
-  it('keeps the migrations from discarding driver applications, driver records or Safety accounts', async () => {
-    const { id } = await applying();
+  it('scans documents into one metadata-free PDF per kind, replacing the earlier scan', async () => {
+    const { id, agent } = await applying();
+    await scan(agent, 'passport').expect(404);
+    expect((await scan(agent, 'work-authorization').expect(400)).body.message).toMatch(/Choose which document/);
+    await scan(agent, 'license', { pages: [page()], subtype: 'US_PASSPORT' }).expect(400);
+    await scan(agent, 'license', { pages: [] }).expect(400);
+    await scan(agent, 'license', { pages: Array(5).fill(page()) }).expect(400);
+    await scan(agent, 'license', { pages: [Buffer.from('not a photo at all, fictional').toString('base64').padEnd(1400, 'A')] }).expect(400);
+    expect((await scan(agent, 'license', { pages: [jpeg({ width: 2000, height: 100 }).toString('base64')] }).expect(400)).body.message).toMatch(/too narrow/);
+    await request(app.getHttpServer()).post('/api/driver/documents/license').set(headers).send({ pages: [page()] }).expect(401);
+    const first = (await scan(agent, 'license', { pages: [page(), page()] }).expect(201)).body;
+    expect(first).toMatchObject({ documentsEnabled: true, requiredDocuments: ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'], documents: [{ kind: 'LICENSE', subtype: null, pageCount: 2 }] });
+    const original = first.documents[0].id;
+    const file = await agent.get(`/api/driver/documents/${original}/file`).set(headers).buffer(true).parse((res, done) => { const chunks: Buffer[] = []; res.on('data', (c: Buffer) => chunks.push(c)); res.on('end', () => done(null, Buffer.concat(chunks))); }).expect(200);
+    expect(file.headers['content-type']).toBe('application/pdf');
+    expect(file.headers['cache-control']).toBe('no-store, private');
+    const pdf = file.body as Buffer;
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(pdf.toString('latin1')).not.toMatch(/FictionalCamera|GPS 41|fictional comment|TRAILING-FICTIONAL-DATA/);
+    expect(pdfText(pdf)).toBe('');
+    expect(existsSync(join(storage, 'drivers', id, `${original}.pdf`))).toBe(true);
+    // A new scan replaces the old one, whose file is removed (nobody reviews a draft).
+    const second = (await scan(agent, 'license').expect(201)).body.documents[0];
+    expect(second).toMatchObject({ kind: 'LICENSE', pageCount: 1 });
+    expect(existsSync(join(storage, 'drivers', id, `${original}.pdf`))).toBe(false);
+    await agent.get(`/api/driver/documents/${original}/file`).set(headers).expect(404);
+    expect((await db.query(`SELECT count(*)::integer AS n FROM driver_documents WHERE "driverId" = $1`, [id]))[0].n).toBe(2);
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_UPLOADED').map(row => row.metadata)).toEqual([{ kind: 'LICENSE', pages: 2 }, { kind: 'LICENSE', pages: 1 }]);
+    // A regular license needs no medical card.
+    expect((await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { licenseClass: 'DL' } }).expect(200)).body.requiredDocuments).toEqual(['LICENSE', 'WORK_AUTHORIZATION']);
+  });
+
+  it('shows scans to Safety and lets screeners or the owner record what a submitted document shows', async () => {
+    const { id, agent } = await applying();
+    const documents = (await scanAll(agent)).documents as { id: string; kind: string }[];
+    const license = documents.find(row => row.kind === 'LICENSE')!.id;
+    expect((await driver(id, agents.staff)).documents.map((row: { kind: string; subtype: string | null; verifiedAt: string | null }) => [row.kind, row.subtype, row.verifiedAt]))
+      .toEqual([['LICENSE', null, null], ['MEDICAL_CARD', null, null], ['WORK_AUTHORIZATION', 'GREEN_CARD', null]]);
+    const workAuthorization = documents.find(row => row.kind === 'WORK_AUTHORIZATION')!.id;
+    const verify = (agent: Agent, documentId: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/documents/${documentId}/verify`).set(headers).send(body);
+    // Every staff view of an identity document is recorded, by kind only.
+    await agents.staff.get(`/api/safety/drivers/${id}/documents/${license}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    await agents.dispatch.get(`/api/safety/drivers/${id}/documents/${license}/file`).set(headers).expect(403);
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_VIEWED').map(row => row.metadata)).toEqual([{ kind: 'LICENSE' }]);
+    await verify(agents.lead, license, { version: 1, number: 'X1', expiresOn: '2030-01-31' }).expect(409);
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+    expect((await scan(agent, 'license').expect(409)).body.message).toMatch(/already sent/);
+    await verify(agents.staff, license, { version: 1, expiresOn: '2030-01-31' }).expect(403);
+    await verify(agents.lead, license, { expiresOn: '2030-01-31' }).expect(400);
+    await verify(agents.lead, license, { version: 1, expiresOn: '2030-13-01' }).expect(400);
+    // A license or medical card needs its expiry; work authorization takes no number (passport or A-numbers stay out).
+    expect((await verify(agents.lead, license, { version: 1, number: 'D1234567' }).expect(400)).body.message).toMatch(/expiration date/);
+    expect((await verify(agents.lead, workAuthorization, { version: 1, number: 'A123456789' }).expect(400)).body.message).toMatch(/number of a work authorization/);
+    expect((await verify(agents.lead, workAuthorization, { version: 1 }).expect(201)).body.version).toBe(2);
+    expect((await verify(agents.lead, license, { version: 1, number: ' D1234567 ', expiresOn: '2030-01-31' }).expect(201)).body.version).toBe(2);
+    // A second person working from the same version can't overwrite the first silently.
+    expect((await verify(agents.manager, license, { version: 1, number: 'D7654321', expiresOn: '2030-02-28' }).expect(409)).body.message).toMatch(/same time/);
+    await verify(agents.manager, license, { version: 2, number: 'D1234567', expiresOn: '2030-02-28' }).expect(201);
+    expect((await driver(id)).documents[0]).toMatchObject({ kind: 'LICENSE', number: 'D1234567', expiresOn: '2030-02-28', verifiedBy: 'Fictional manager', verifiedAt: expect.any(String), version: 3 });
+    await expect(db.query(`UPDATE driver_documents SET number = 'A123456789' WHERE id = $1`, [workAuthorization])).rejects.toThrow();
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_VERIFIED').map(row => row.metadata))
+      .toEqual([{ kind: 'WORK_AUTHORIZATION', again: false }, { kind: 'LICENSE', again: false }, { kind: 'LICENSE', again: true }]);
+    expect(JSON.stringify(await events(id))).not.toContain('D1234567');
+  });
+
+  it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
+    const { id, agent } = await applying();
+    const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+    await agents.lead.post(`/api/safety/drivers/${id}/documents/${license}/verify`).set(headers).send({ version: 1, expiresOn: '2030-01-31' }).expect(201);
+    const { version } = await driver(id);
+    const withdrawn = (await agents.lead.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version, reason: 'Paused hiring' }).expect(201)).body;
+    const reopened = (await agents.lead.post(`/api/safety/drivers/${id}/reopen`).set(headers).send({ version: withdrawn.version }).expect(201)).body;
+    const link = (await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: reopened.version }).expect(201)).body;
+    expect((await events(id)).filter(row => row.event === 'LINK_SENT').map(row => row.metadata)).toEqual([{ resent: false }, { resent: false, reopened: true }]);
+    const again = request.agent(app.getHttpServer());
+    const { challengeId } = (await again.post('/api/driver/begin').set(headers).send({ token: link.url.split('#').pop(), email: 'jordan.wheeler@example.test' }).expect(201)).body;
+    await settle();
+    await again.post('/api/driver/verify').set(headers).send({ challengeId, code: sent.at(-1)!.code }).expect(201);
+    const view = (await again.get('/api/driver/application').set(headers).expect(200)).body;
+    expect(view).toMatchObject({ status: 'DRAFT', version: 3, ssnLast4: '6789', fields: { licenseNumber: 'D1234567' } });
+    // Replacing a scan Safety already verified keeps its file as the record of what was checked.
+    await scan(again, 'license').expect(201);
+    expect(existsSync(join(storage, 'drivers', id, `${license}.pdf`))).toBe(true);
+    await again.post('/api/driver/application/submit').set(headers).send({ version: 3, fields: complete }).expect(201);
+    expect(await driver(id)).toMatchObject({ status: 'SCREENING', application: { status: 'SUBMITTED' } });
+  });
+
+  it('sweeps leftover scan files after a day, never current, verified or unrecognised ones', async () => {
+    // Earlier tests truncate drivers but leave their files; start from an empty folder so the counts are this test's.
+    rmSync(join(storage, 'drivers'), { recursive: true, force: true });
+    const { id, agent } = await applying();
+    const sweeper = app.get(ScanSweeper), later = Date.now() + LEFTOVER_SCAN_AGE_MS + 60_000;
+    const file = (documentId: string) => join(storage, 'drivers', id, `${documentId}.pdf`);
+    const replaced = (await scan(agent, 'license').expect(201)).body.documents[0].id as string, pdf = readFileSync(file(replaced));
+    const current = (await scan(agent, 'license').expect(201)).body.documents[0].id as string;
+    // A replaced scan whose removal failed, a file whose row never committed, and a file the API never names.
+    writeFileSync(file(replaced), pdf);
+    const unreferenced = randomUUID(); writeFileSync(file(unreferenced), pdf);
+    const foreign = join(storage, 'drivers', id, 'notes.txt'); writeFileSync(foreign, 'fictional');
+    expect(await sweeper.sweep()).toBe(0);
+    expect([file(replaced), file(unreferenced)].every(path => existsSync(path))).toBe(true);
+    expect(await sweeper.sweep(later)).toBe(2);
+    expect([existsSync(file(replaced)), existsSync(file(unreferenced)), existsSync(file(current)), existsSync(foreign)]).toEqual([false, false, true, true]);
+    // A replaced scan Safety verified (a reopened application) is the record of what was checked.
+    writeFileSync(file(replaced), pdf);
+    await db.query(`UPDATE driver_documents SET "verifiedAt" = now() WHERE id = $1`, [replaced]);
+    expect(await sweeper.sweep(later)).toBe(0);
+    expect(existsSync(file(replaced))).toBe(true);
+  });
+
+  it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
+    const { id, agent } = await applying();
+    await scan(agent, 'license').expect(201);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver documents or their history');
+    await db.query('TRUNCATE driver_documents');
+    await db.query(`DELETE FROM driver_events WHERE event = 'DOCUMENT_UPLOADED'`);
+    await db.undoLastMigration();
+    try {
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver application links, answers or their history');
     await db.query('TRUNCATE driver_sessions, driver_challenges, driver_links, driver_applications');
     await db.query(`DELETE FROM driver_events WHERE "driverId" = $1 AND event NOT IN ('CREATED')`, [id]);
@@ -303,6 +437,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver records or Safety accounts');
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverApplications1792870000000');
+    } finally { await db.runMigrations(); }
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverDocuments1792880000000');
   });
 });

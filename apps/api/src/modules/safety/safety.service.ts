@@ -5,11 +5,13 @@ import { DataSource, EntityManager, In, IsNull, QueryFailedError } from 'typeorm
 import { webOrigins } from '../../config/environment';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { digest } from '../onboarding/verification-code';
-import { DriverVersionDto } from './driver-application.dto';
+import type { FileResult } from '../documents/documents.service';
+import { driverDocumentKey, StorageService } from '../storage/storage.service';
+import { DriverVersionDto, VerifyDocumentDto } from './driver-application.dto';
 import { PiiService } from './pii';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { AssignOwnerDto, CreateDriverDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
-import { CLOSED_STATUSES, Driver, DriverApplication, DriverEvent, DriverEventType, DriverLink, DriverOwner, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
+import { CLOSED_STATUSES, Driver, DriverApplication, DriverDocument, DriverEvent, DriverEventType, DriverLink, DriverOwner, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
 
@@ -34,7 +36,7 @@ const blank = (value: string | null | undefined) => value === undefined ? undefi
  */
 @Injectable()
 export class SafetyService {
- constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly pii: PiiService) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly pii: PiiService, private readonly storage: StorageService) {}
 
  async drivers(status: 'OPEN' | 'CLOSED' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState",
@@ -51,7 +53,7 @@ export class SafetyService {
    d.source, d.notes, d.status, d."statusReason", d."closedAt", d.version, d."createdAt", d."updatedAt", ${person('l')} AS "safetyLead", ${person('c')} AS "addedBy"
    FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" WHERE d.id = $1`, [id]);
   if (!driver) throw new NotFoundException('This driver record no longer exists.');
-  const [owners, activity, [link], [application]] = await Promise.all([
+  const [owners, activity, [link], [application], documents] = await Promise.all([
    this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, CASE WHEN a.id IS NULL THEN NULL ELSE a."firstName" || ' ' || a."lastName" END AS "assignedBy"
     FROM driver_owners x LEFT JOIN users o ON o.id = x."ownerId" LEFT JOIN users a ON a.id = x."actorId" WHERE x."driverId" = $1 ORDER BY x."startedAt" DESC, x."createdAt" DESC`, [id]),
    this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
@@ -59,8 +61,12 @@ export class SafetyService {
    // The open link (never its token) and the driver's answers; the SSN only as its last four digits.
    this.db.query(`SELECT email, "createdAt", "expiresAt", "openedAt", "expiresAt" <= now() AS expired FROM driver_links WHERE "driverId" = $1 AND "revokedAt" IS NULL AND "completedAt" IS NULL`, [id]),
    this.db.query(`SELECT status, fields, "ssnLast4", version, "submittedAt", "updatedAt" FROM driver_applications WHERE "driverId" = $1`, [id]),
+   // Current scans and Safety's check of each.
+   this.db.query(`SELECT d.id, d.kind, d.subtype, d."pageCount", d."createdAt", d."verifiedAt", d.number, d.version, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn",
+     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "verifiedBy"
+    FROM driver_documents d LEFT JOIN users u ON u.id = d."verifiedBy" WHERE d."driverId" = $1 AND d."replacedAt" IS NULL ORDER BY d."createdAt"`, [id]),
   ]);
-  return { ...driver, owner: owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null, owners, activity, link: link ?? null, application: application ?? null };
+  return { ...driver, owner: owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null, owners, activity, link: link ?? null, application: application ?? null, documents };
  }
 
  /** Active people to pick: Safety leads (and managers, who can act as one) and safety staff owners. */
@@ -175,7 +181,11 @@ export class SafetyService {
    const token = randomBytes(32).toString('hex');
    const link = await em.getRepository(DriverLink).save({ driverId: id, tokenHash: digest(token), email: driver.email, createdBy: user.id, expiresAt: new Date(Date.now() + DRIVER_LINK_DAYS * 86400_000) });
    await em.getRepository(Driver).update(id, { status: 'APPLYING', version: driver.version + 1 });
-   await this.event(em, user, id, 'LINK_SENT', { resent });
+   // A driver withdrawn after submitting and reopened as a lead works on the same application again (answers, SSN and
+   // scans kept) and submits it anew; otherwise the link would open only "Application sent". A draft has no submittedAt
+   // (a CHECK); the earlier submission stays in the APPLICATION_SUBMITTED event.
+   const reopened = !!(await em.getRepository(DriverApplication).update({ driverId: id, status: 'SUBMITTED' }, { status: 'DRAFT', submittedAt: null, version: () => 'version + 1' })).affected;
+   await this.event(em, user, id, 'LINK_SENT', { resent, ...(reopened ? { reopened } : {}) });
    return { id, version: driver.version + 1, expiresAt: link.expiresAt, url: `${webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]}/driver#${token}` };
   });
  }
@@ -202,6 +212,44 @@ export class SafetyService {
   const ssn = this.pii.openSsn(application.ssnCiphertext, id);
   await this.event(this.db.manager, user, id, 'SSN_REVEALED', {});
   return { ssn };
+ }
+
+ /**
+  * A driver's current scan, for every Safety role. These are identity documents, so views are rate-limited and each
+  * one is recorded (DOCUMENT_VIEWED, kind only), like a revealed SSN.
+  */
+ async documentFile(user: User, id: string, documentId: string): Promise<FileResult> {
+  await onboardingLimit(this.db, `driver-document-view:${user.id}`, 60, 900);
+  const document = await this.db.getRepository(DriverDocument).findOneBy({ id: documentId, driverId: id, replacedAt: IsNull() });
+  if (!document) throw new NotFoundException('This document was replaced or no longer exists.');
+  const body = await this.storage.get(driverDocumentKey(id, documentId));
+  await this.event(this.db.manager, user, id, 'DOCUMENT_VIEWED', { kind: document.kind });
+  return { body, type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
+ }
+
+ /**
+  * Records what Safety read on a submitted scan (no OCR; a person types it): the expiry date, required for a license or
+  * medical card, and the number, never for work authorization (its expiry is enough, and passport or A-numbers stay out
+  * of the record). Screeners and the driver's owner may verify, and may correct an earlier entry against its version.
+  */
+ async verifyDocument(user: User, id: string, documentId: string, dto: VerifyDocumentDto) {
+  return this.write(async em => {
+   const driver = await em.getRepository(Driver).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+   if (!driver) throw new NotFoundException('This driver record no longer exists.');
+   // Checked under the driver lock, so an owner change can't land between the check and the write.
+   if (!SCREENERS.includes(user.role) && !await em.getRepository(DriverOwner).existsBy({ driverId: id, ownerId: user.id, endedAt: IsNull() }))
+    throw new ForbiddenException('Only Safety leads, managers and the driver’s owner can verify documents.');
+   if (CLOSED_STATUSES.includes(driver.status)) throw new ConflictException('This driver record is closed and can’t be changed.');
+   if (!await em.getRepository(DriverApplication).existsBy({ driverId: id, status: 'SUBMITTED' })) throw new ConflictException('Documents are verified once the driver submits their application.');
+   const document = await em.getRepository(DriverDocument).findOne({ where: { id: documentId, driverId: id, replacedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
+   if (!document) throw new NotFoundException('This document was replaced or no longer exists.');
+   if (document.version !== dto.version) throw new ConflictException('Someone else recorded this document at the same time. Reload and try again.');
+   if (document.kind === 'WORK_AUTHORIZATION' && dto.number) throw new BadRequestException('Don’t record the number of a work authorization document. Its expiration date is enough.');
+   if (document.kind !== 'WORK_AUTHORIZATION' && !dto.expiresOn) throw new BadRequestException('Enter the expiration date shown on the document.');
+   await em.getRepository(DriverDocument).update(documentId, { verifiedAt: new Date(), verifiedBy: user.id, number: dto.number || null, expiresOn: dto.expiresOn || null, version: document.version + 1 });
+   await this.event(em, user, id, 'DOCUMENT_VERIFIED', { kind: document.kind, again: document.verifiedAt !== null });
+   return { id: documentId, version: document.version + 1 };
+  });
  }
 
  /** Revokes the open link, if any; an applying driver goes back to LEAD on the entity passed in (the caller saves it). */

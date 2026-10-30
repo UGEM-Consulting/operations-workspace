@@ -1,8 +1,10 @@
 import { Transform, Type } from 'class-transformer';
-import { IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { MAX_PHOTO_BYTES } from '../documents/documents.dto';
+import { MAX_SCAN_PAGES } from './scan';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { VERIFICATION_CODE_PATTERN } from '../onboarding/verification-code';
-import { LICENSE_TYPES, type LicenseType, US_STATES } from './safety.entity';
+import { LICENSE_TYPES, type LicenseType, US_STATES, WORK_AUTHORIZATION_TYPES, type WorkAuthorizationType } from './safety.entity';
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : value);
 const upper = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toUpperCase() : value);
 // Drafts may leave any answer empty; a format is checked only once something is entered. Submission checks completeness.
@@ -23,7 +25,7 @@ export class DriverFieldsDto {
  @text() @IsOptional() @IsString() @MaxLength(100) legalFirstName?: string;
  @text() @IsOptional() @IsString() @MaxLength(100) legalMiddleName?: string;
  @text() @IsOptional() @IsString() @MaxLength(100) legalLastName?: string;
- @IsOptional() @IsString() @ValidateIf(filled) @Matches(DATE, { message: 'Enter the date of birth as a full date.' }) dateOfBirth?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the date of birth as a full date.' }) dateOfBirth?: string;
  @text() @IsOptional() @IsString() @MaxLength(40) @ValidateIf(filled) @Matches(INTERNATIONAL_PHONE_PATTERN, PHONE) phone?: string;
  @text() @IsOptional() @IsString() @MaxLength(200) addressLine1?: string;
  @text() @IsOptional() @IsString() @MaxLength(200) addressLine2?: string;
@@ -36,7 +38,7 @@ export class DriverFieldsDto {
  @upper() @IsOptional() @IsString() @ValidateIf(filled) @Matches(/^[A-Z0-9][A-Z0-9 -]{0,19}$/, { message: 'Enter the license number as printed (letters and digits).' }) licenseNumber?: string;
  @upper() @IsOptional() @IsString() @ValidateIf(filled) @IsIn(US_STATES, { message: 'Choose the state that issued the license.' }) licenseState?: string;
  @IsOptional() @IsString() @ValidateIf(filled) @IsIn(LICENSE_TYPES) licenseClass?: LicenseType | '';
- @IsOptional() @IsString() @ValidateIf(filled) @Matches(DATE, { message: 'Enter the license expiration as a full date.' }) licenseExpiresOn?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the license expiration as a full date.' }) licenseExpiresOn?: string;
 }
 /** Saves a draft or submits. `ssn` replaces the stored SSN when sent; omit it to keep the one already saved. */
 export class SaveDriverApplicationDto {
@@ -46,4 +48,19 @@ export class SaveDriverApplicationDto {
 }
 export class DriverVersionDto {
  @IsInt() @Min(1) version!: number;
+}
+/** One scanned document: 1 to 4 photographed pages (base64 JPEG). The work-authorization type is the driver's choice. */
+export class DriverDocumentDto {
+ @IsArray() @ArrayMinSize(1, { message: 'Take a photo of at least one page.' }) @ArrayMaxSize(MAX_SCAN_PAGES, { message: `Scan at most ${MAX_SCAN_PAGES} pages.` })
+ @IsString({ each: true }) @IsBase64({}, { each: true }) @MaxLength(Math.ceil(MAX_PHOTO_BYTES / 3) * 4, { each: true }) pages!: string[];
+ @IsOptional() @IsIn(WORK_AUTHORIZATION_TYPES) subtype?: WorkAuthorizationType;
+}
+/**
+ * Safety's record of what the document shows, against the version the person saw. Empty strings clear a value. The
+ * service requires the expiry of a license or medical card and refuses a number for work authorization.
+ */
+export class VerifyDocumentDto {
+ @IsInt() @Min(1) version!: number;
+ @text() @IsOptional() @IsString() @MaxLength(40) number?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the expiration as a full date.' }) expiresOn?: string;
 }
