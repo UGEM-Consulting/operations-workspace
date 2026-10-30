@@ -4,8 +4,8 @@ import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
 import { AddContactDto, CreateTeamDto, LeaveMemberDto, MoveMemberDto, ReassignSupportDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
-import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberContact, MemberSupportLink, Team } from './dispatch.entity';
-import { supportedDispatcher } from './create-member';
+import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberContact, MemberSupportLink, PromotionRequest, Team } from './dispatch.entity';
+import { lockTeam, supportedDispatcher } from './create-member';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 // A date picked in the form is stored at midday UTC, so it shows as the same calendar day in every US time zone.
@@ -56,6 +56,9 @@ export class DispatchService {
 
  async updateTeam(user: User, id: string, dto: UpdateTeamDto) {
   return this.write(async em => {
+   // A new lead's record is locked before the team (member, then team, like move and leave), so they can't move out or
+   // leave between this check and the commit.
+   const candidate = dto.leadMemberId ? await em.getRepository(DispatchMember).findOne({ where: { id: dto.leadMemberId }, lock: { mode: 'pessimistic_write' } }) : null;
    const team = await em.getRepository(Team).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
    if (!team) throw new NotFoundException('This team no longer exists.');
    if (team.version !== dto.version) throw new ConflictException(STALE);
@@ -67,7 +70,8 @@ export class DispatchService {
     await this.activeMc(em, dto.mcId); team.mcId = dto.mcId; fields.push('mcId');
    }
    if (dto.leadMemberId !== undefined && dto.leadMemberId !== team.leadMemberId) {
-    if (dto.leadMemberId && !members.some(member => member.id === dto.leadMemberId && member.position === 'DISPATCHER' && member.status === 'ACTIVE'))
+    const placed = candidate && await em.getRepository(MemberAssignment).existsBy({ memberId: candidate.id, teamId: id, endedAt: IsNull() });
+    if (dto.leadMemberId && !(placed && candidate.position === 'DISPATCHER' && candidate.status === 'ACTIVE'))
      throw new BadRequestException('The team lead must be an active dispatcher in this team.');
     team.leadMemberId = dto.leadMemberId; fields.push('leadMemberId');
    }
@@ -90,7 +94,7 @@ export class DispatchService {
     jt.name AS "jobTitle", coalesce(sl."startedAt", a."startedAt") AS since, m.name AS mc, t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
    FROM dispatch_members d LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
-   LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id ORDER BY l."startedAt" DESC, l."createdAt" DESC LIMIT 1) sl ON true
+   LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id AND l."endedAt" IS NULL AND d.position = 'SUPPORT' LIMIT 1) sl ON true
    LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = coalesce(sl."dispatcherId", d.id) ORDER BY x."startedAt" DESC, x."createdAt" DESC LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
@@ -191,9 +195,12 @@ export class DispatchService {
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
    if (dto.mcId) await this.activeMc(em, dto.mcId);
    const teamId = dto.mcId ? dto.teamId ?? null : null;
-   if (teamId) {
-    const team = await em.getRepository(Team).findOneBy({ id: teamId });
-    if (!team || team.archivedAt || team.mcId !== dto.mcId) throw new BadRequestException('Choose an active team of the selected MC.');
+   // Teams are locked after the member and in id order (the one they join, the one they lead and may leave), so two
+   // moves can't deadlock. Which team this member leads can't change meanwhile: setting a lead locks the member first.
+   const led = await em.getRepository(Team).findOneBy({ leadMemberId: id });
+   for (const lockId of [...new Set([teamId, led?.id].filter((value): value is string => !!value))].sort()) {
+    const team = lockId === teamId ? await lockTeam(em, lockId) : await em.getRepository(Team).findOne({ where: { id: lockId }, lock: { mode: 'pessimistic_write' } });
+    if (lockId === teamId && (!team || team.archivedAt || team.mcId !== dto.mcId)) throw new BadRequestException('Choose an active team of the selected MC.');
    }
    if (current && current.mcId === dto.mcId && current.teamId === teamId) throw new BadRequestException('The dispatcher already works for this MC and team.');
    if (current) startedAt = notBefore(startedAt, current.startedAt, 'The move can’t start before the current MC and team did.');
@@ -209,6 +216,9 @@ export class DispatchService {
  async leave(user: User, id: string, dto: LeaveMemberDto) {
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
+   // Their supports would be left assisting no one; a manager moves them to another dispatcher first.
+   if (member.position === 'DISPATCHER' && await em.getRepository(MemberSupportLink).existsBy({ dispatcherId: id, endedAt: IsNull() }))
+    throw new ConflictException('This dispatcher still has supports. Reassign their supports to another dispatcher first.');
    let leftAt = day(dto.leftAt);
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
    if (current) leftAt = notBefore(leftAt, current.startedAt, 'The leaving date can’t be before the current MC and team started.');
@@ -218,6 +228,13 @@ export class DispatchService {
    if (link) leftAt = notBefore(leftAt, link.startedAt, 'The leaving date can’t be before they started with their dispatcher.');
    if (link) { link.endedAt = leftAt; await em.save(link); }
    const leadCleared = await this.clearLead(em, id, null);
+   // A support's open promotion request ends with them (locked after the member, as decide does).
+   const pending = member.position === 'SUPPORT' ? await em.getRepository(PromotionRequest).findOne({ where: { supportId: id, status: 'PENDING' }, lock: { mode: 'pessimistic_write' } }) : null;
+   if (pending) {
+    Object.assign(pending, { status: 'CANCELLED', decidedBy: user.id, decidedAt: new Date(), version: pending.version + 1 });
+    await em.save(pending);
+    await this.event(em, user, 'PROMOTION_CANCELLED', { memberId: id }, { requestId: pending.id, memberLeft: true });
+   }
    member.status = 'LEFT'; member.leftAt = leftAt; member.version += 1; await em.save(member);
    await this.event(em, user, 'MEMBER_LEFT', { memberId: id }, { leadCleared, reasonGiven: true });
    return { id, version: member.version };

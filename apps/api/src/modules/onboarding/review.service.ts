@@ -180,7 +180,7 @@ export class ReviewService {
     await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
    }
    // A new IT checklist alerts the IT specialists; sent after the approval commits.
-   if(nextStatus==='APPROVED'&&!support)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation));
+   if(nextStatus==='APPROVED'&&!support)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation,user.id));
    // The approved dispatcher becomes a dispatch member record (no login), placed by the confirmed assignments.
    if(nextStatus==='APPROVED'&&!support&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
    // An approved support becomes an active support record linked to the dispatcher confirmed here (no IT setup).

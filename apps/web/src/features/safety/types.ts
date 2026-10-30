@@ -1,4 +1,4 @@
-import type { StatusTone } from '@/components/ui/status-badge';
+import { statusLabel, type StatusTone } from '@/components/ui/status-badge';
 
 export type DriverStatus = 'LEAD' | 'APPLYING' | 'SCREENING' | 'AWAITING_DECISION' | 'APPROVED' | 'CLEARED' | 'REJECTED' | 'WITHDRAWN' | 'LEFT';
 export type DriverType = 'COMPANY' | 'OWNER_OPERATOR';
@@ -27,6 +27,8 @@ export const driverStatus: Record<DriverStatus, { label: string; tone: StatusTon
   LEAD: { label: 'Lead', tone: 'neutral' }, APPLYING: { label: 'Applying', tone: 'info' }, SCREENING: { label: 'Screening', tone: 'info' },
   AWAITING_DECISION: { label: 'Awaiting decision', tone: 'warning' }, APPROVED: { label: 'Approved', tone: 'success' }, CLEARED: { label: 'Cleared', tone: 'success' },
   REJECTED: { label: 'Rejected', tone: 'danger' }, WITHDRAWN: { label: 'Withdrawn', tone: 'neutral' }, LEFT: { label: 'Left', tone: 'neutral' } };
+/** The badge for a driver status; a status from a newer API shows as a neutral badge instead of failing. */
+export const driverBadge = (status: string): { label: string; tone: StatusTone } => driverStatus[status as DriverStatus] ?? { label: statusLabel(status), tone: 'neutral' };
 export const driverTypes: Record<DriverType, string> = { COMPANY: 'Company driver', OWNER_OPERATOR: 'Owner-operator' };
 export const licenseTypes: Record<LicenseType, string> = { CDL_A: 'CDL Class A', CDL_B: 'CDL Class B', CDL_C: 'CDL Class C', DL: 'Regular license (DL)' };
 export const DOCUMENT_KINDS: DocumentKind[] = ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'];

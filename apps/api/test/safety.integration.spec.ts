@@ -396,6 +396,36 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(await driver(id)).toMatchObject({ status: 'SCREENING', application: { status: 'SUBMITTED' } });
   });
 
+  it('ends a submitted session when Safety withdraws the driver, changes their email or reopens the application', async () => {
+    async function submitted() {
+      const one = await applying();
+      const license = ((await scanAll(one.agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
+      await one.agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+      await one.agent.get('/api/driver/application').set(headers).expect(200);
+      await one.agent.get(`/api/driver/documents/${license}/file`).set(headers).expect(200);
+      return { ...one, license, version: (await driver(one.id)).version as number };
+    }
+    const withdrawn = await submitted();
+    await agents.lead.post(`/api/safety/drivers/${withdrawn.id}/withdraw`).set(headers).send({ version: withdrawn.version, reason: 'Took another job' }).expect(201);
+    await withdrawn.agent.get('/api/driver/application').set(headers).expect(401);
+    await withdrawn.agent.get(`/api/driver/documents/${withdrawn.license}/file`).set(headers).expect(401);
+    await db.query('TRUNCATE drivers CASCADE');
+    const moved = await submitted();
+    await agents.lead.patch(`/api/safety/drivers/${moved.id}`).set(headers).send({ version: moved.version, email: 'jordan.w@example.test' }).expect(200);
+    await moved.agent.get('/api/driver/application').set(headers).expect(401);
+    await db.query('TRUNCATE drivers CASCADE');
+    // Even a completed link left unrevoked (an older API withdrew the driver) stops answering once the application is a draft again.
+    const reopened = await submitted();
+    const out = (await agents.lead.post(`/api/safety/drivers/${reopened.id}/withdraw`).set(headers).send({ version: reopened.version, reason: 'Paused hiring' }).expect(201)).body;
+    await db.query(`UPDATE driver_links SET "revokedAt" = NULL WHERE "driverId" = $1 AND "completedAt" IS NOT NULL`, [reopened.id]);
+    const lead = (await agents.lead.post(`/api/safety/drivers/${reopened.id}/reopen`).set(headers).send({ version: out.version }).expect(201)).body;
+    await agents.lead.post(`/api/safety/drivers/${reopened.id}/link`).set(headers).send({ version: lead.version }).expect(201);
+    await reopened.agent.get('/api/driver/application').set(headers).expect(401);
+    expect(Number((await db.query(`SELECT count(*) FROM driver_links WHERE "driverId" = $1 AND "completedAt" IS NOT NULL AND "revokedAt" IS NULL`, [reopened.id]))[0].count)).toBe(0);
+    await db.query(`UPDATE driver_links SET "revokedAt" = NULL WHERE "driverId" = $1 AND "completedAt" IS NOT NULL`, [reopened.id]);
+    await reopened.agent.get('/api/driver/application').set(headers).expect(401);
+  });
+
   it('sweeps leftover scan files after a day, never current, verified or unrecognised ones', async () => {
     // Earlier tests truncate drivers but leave their files; start from an empty folder so the counts are this test's.
     rmSync(join(storage, 'drivers'), { recursive: true, force: true });
@@ -422,6 +452,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
+    await db.undoLastMigration(); // ClearInactiveTeamLeads: a data fix with nothing to undo
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver documents or their history');
     await db.query('TRUNCATE driver_documents');
     await db.query(`DELETE FROM driver_events WHERE event = 'DOCUMENT_UPLOADED'`);
@@ -438,6 +469,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverDocuments1792880000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('ClearInactiveTeamLeads1792890000000');
   });
 });

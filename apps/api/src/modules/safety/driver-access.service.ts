@@ -193,8 +193,9 @@ export class DriverAccessService {
   const driver = await em.getRepository(Driver).findOne({ where: { id: first.driverId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
   const link = lock ? await em.getRepository(DriverLink).findOneByOrFail({ id: linkId }) : first;
   const application = await em.getRepository(DriverApplication).findOne({ where: { driverId: first.driverId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
-  // A submitted application stays readable for the rest of the session; anything else needs an open link.
-  if (!driver || !application || link.revokedAt || (!link.completedAt && (!this.open(link) || driver.status !== 'APPLYING'))) throw new UnauthorizedException('This application link is no longer available. Please contact Safety.');
+  // A submitted application stays readable for the rest of the session while it is still the one sent (Safety reopening
+  // it as a draft ends that access); anything else needs an open link.
+  if (!driver || !application || link.revokedAt || (link.completedAt ? application.status !== 'SUBMITTED' : !this.open(link) || driver.status !== 'APPLYING')) throw new UnauthorizedException('This application link is no longer available. Please contact Safety.');
   return { link, driver, application };
  }
  private open(link: DriverLink) { return !link.revokedAt && !link.completedAt && link.expiresAt.getTime() > Date.now(); }

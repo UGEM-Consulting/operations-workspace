@@ -573,10 +573,19 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await manager.post(`/api/dispatch/promotions/${first.id}/decide`).set(headers).send({version:1,decision:'DECLINE'}).expect(400);
   await manager.post(`/api/dispatch/promotions/${first.id}/decide`).set(headers).send({version:1,decision:'DECLINE',note:'Needs another month.'}).expect(201);
   const second=(await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'A month later: ready.'}).expect(201)).body;
+  // Once the support assists a dispatcher outside the team, the team lead can neither see nor cancel the request.
+  const today=new Date().toISOString().slice(0,10);
+  const [{version:supportVersion}]=await db.query('SELECT version FROM dispatch_members WHERE id=$1',[support.id]);
+  await manager.post(`/api/dispatch/members/${support.id}/reassign`).set(headers).send({version:supportVersion,dispatcherId:outsider,startedAt:today,reason:'Covering elsewhere'}).expect(201);
+  expect((await teamLead.post(`/api/team/promotions/${second.id}/cancel`).set(headers).send({}).expect(404)).body.message).toBe('This support isn’t in your team.');
+  expect((await teamLead.get('/api/team').set(headers).expect(200)).body.requests).toEqual([]);
+  await manager.post(`/api/dispatch/members/${support.id}/reassign`).set(headers).send({version:supportVersion+1,dispatcherId:helper,startedAt:today,reason:'Back with Helper'}).expect(201);
+  expect((await teamLead.get('/api/team').set(headers).expect(200)).body.requests.map((row:{status:string})=>row.status)).toEqual(['PENDING','DECLINED']);
   const listed=(await manager.get('/api/dispatch/promotions?status=PENDING').set(headers).expect(200)).body.items;
   expect(listed).toMatchObject([{id:second.id,support:'Sky Support',dispatcher:'Helper Dispatcher',team:'Lead team',requestedBy:'Lead Dispatcher'}]);
   await manager.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:1,decision:'APPROVE',mcId:mc.id,teamId:team.id}).expect(400);
-  const approved=(await manager.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:1,decision:'APPROVE',mcId:mc.id,teamId:team.id,jobTitleId:title.id}).expect(201)).body;
+  // An administrator decides here, so the IT request is credited to them, not to the manager who approved the support.
+  const approved=(await admin.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:1,decision:'APPROVE',mcId:mc.id,teamId:team.id,jobTitleId:title.id}).expect(201)).body;
   await manager.post(`/api/dispatch/promotions/${second.id}/decide`).set(headers).send({version:2,decision:'APPROVE',mcId:mc.id,teamId:team.id,jobTitleId:title.id}).expect(409);
 
   // Approval: an onboarding dispatcher in the team, no support link, and an IT request with the confirmed employment.
@@ -584,10 +593,13 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(await db.query('SELECT count(*)::integer AS n FROM member_support_links WHERE "supportId"=$1 AND "endedAt" IS NULL',[support.id])).toEqual([{n:0}]);
   expect(await db.query('SELECT "teamId" FROM member_assignments WHERE "memberId"=$1 AND "endedAt" IS NULL',[support.id])).toEqual([{teamId:team.id}]);
   const it=(await itAgent.get(`/api/it/onboarding/${approved.itRequestId}`).set(headers).expect(200)).body;
+  const adminId=(await db.getRepository(User).findOneByOrFail({email:'staff2@example.test'})).id;
+  expect(await db.query(`SELECT "actorId" FROM it_onboarding_activity WHERE "requestId"=$1 AND event='IT_REQUEST_CREATED'`,[approved.itRequestId])).toEqual([{actorId:adminId}]);
+  expect(await db.query(`SELECT "actorId" FROM application_activity WHERE "invitationId"=$1 AND event='IT_REQUEST_CREATED'`,[created.body.id])).toEqual([{actorId:adminId}]);
   expect(it.request.profile).toMatchObject({mcName:'Northwind Freight',teamLead:'Lead Dispatcher',jobTitle:'Dispatcher',proposedDisplayName:'Sky Support'});
   expect((await teamLead.get('/api/team').set(headers).expect(200)).body.requests.map((row:{status:string})=>row.status)).toEqual(['APPROVED','DECLINED']);
   const events=await db.query(`SELECT event FROM dispatch_events WHERE "memberId"=$1 ORDER BY "createdAt"`,[support.id]);
-  expect(events.map((row:{event:string})=>row.event)).toEqual(['PROMOTION_REQUESTED','PROMOTION_DECLINED','PROMOTION_REQUESTED','PROMOTION_APPROVED']);
+  expect(events.map((row:{event:string})=>row.event)).toEqual(['PROMOTION_REQUESTED','PROMOTION_DECLINED','PROMOTION_REQUESTED','SUPPORT_REASSIGNED','SUPPORT_REASSIGNED','PROMOTION_APPROVED']);
 
   // Access follows the team: once Lead no longer leads it, the account sees no team and cannot request.
   await db.query('UPDATE teams SET "leadMemberId"=NULL WHERE id=$1',[team.id]);

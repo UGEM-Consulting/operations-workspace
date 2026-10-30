@@ -24,6 +24,9 @@ export function NotificationBell({ unread: initialUnread }: { unread: number }) 
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<Notifications | null>(null);
   const [error, setError] = useState('');
+  // A server re-render (router.refresh after reading elsewhere) brings a fresh count; it replaces the one loaded earlier.
+  const [serverUnread, setServerUnread] = useState(initialUnread);
+  if (serverUnread !== initialUnread) { setServerUnread(initialUnread); setData(current => current && { ...current, unread: initialUnread }); }
   const unread = data?.unread ?? initialUnread;
   async function load() {
     setError('');
@@ -34,7 +37,10 @@ export function NotificationBell({ unread: initialUnread }: { unread: number }) 
     if (guard.current && !guard.current(href)) return;
     setOpen(false);
     // Reading is best effort: the application opens even if marking it read fails.
-    if (!item.readAt) await mutate(`notifications/${item.id}/read`, 'POST').catch(() => undefined);
+    if (!item.readAt) {
+      const marked = await mutate(`notifications/${item.id}/read`, 'POST').then(() => true, () => false);
+      if (marked) setData(current => current && { ...current, unread: Math.max(0, current.unread - 1), items: current.items.map(entry => entry.id === item.id ? { ...entry, readAt: new Date().toISOString() } : entry) });
+    }
     router.push(href); router.refresh();
   }
   return <Popover.Root open={open} onOpenChange={next => { setOpen(next); if (next) void load(); }}>

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { Menu, X } from 'lucide-react';
 import type { Identity } from '@/lib/auth';
@@ -18,6 +18,7 @@ import { Button } from './ui/button';
 export function WorkspaceShell({ identity, counts, collapsed = false, children }: { identity: Identity; counts: WorkspaceCounts | null; collapsed?: boolean; children: ReactNode }) {
   return <ShellProvider><Shell identity={identity} counts={counts} initiallyCollapsed={collapsed}>{children}</Shell></ShellProvider>;
 }
+const subscribeNothing = () => () => undefined;
 function Shell({ identity, counts, initiallyCollapsed, children }: { identity: Identity; counts: WorkspaceCounts | null; initiallyCollapsed: boolean; children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(initiallyCollapsed);
   // Remembered per browser for a year; a display preference only, never read for access decisions.
@@ -32,7 +33,10 @@ function Shell({ identity, counts, initiallyCollapsed, children }: { identity: I
   const pathname = usePathname();
   const { pageLabel } = useShell();
   const guarded = useGuardedLink();
-  const crumbs = breadcrumbTrail(identity.navigation, pathname, pageLabel);
+  // The server cannot know a record page's name (its PageCrumb runs in the browser), so until hydration the record
+  // crumb is a blank placeholder (see Breadcrumbs) instead of announcing the generic "Details" first.
+  const hydrated = useSyncExternalStore(subscribeNothing, () => true, () => false);
+  const crumbs = breadcrumbTrail(identity.navigation, pathname, pageLabel ?? (hydrated ? null : ' '));
   useEffect(() => {
     const media = window.matchMedia('(min-width: 1024px)');
     const close = () => { if (media.matches) drawer.current?.close(); };

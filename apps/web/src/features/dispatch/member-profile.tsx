@@ -21,7 +21,7 @@ import { Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { Choice, fullName, MemberProfile, statusBadge, TeamRow } from './types';
+import { Choice, fullName, memberBadge, MemberProfile, TeamRow } from './types';
 
 type Action = 'move' | 'reassign' | 'leave' | 'title' | 'contact';
 const today = () => new Date().toLocaleDateString('en-CA');
@@ -39,7 +39,8 @@ function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; 
  * every way to reach them (company accounts, application contacts and ones staff added), signed documents, IT setup
  * progress, and where they work now and before. Moves and departures add history; nothing is overwritten.
  */
-export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers = [] }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[]; dispatchers?: { id: string; name: string; mc: string | null; team: string | null }[] }) {
+export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers = [], dispatchersFailed = false }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[];
+  dispatchers?: { id: string; name: string; mc: string | null; team: string | null }[]; dispatchersFailed?: boolean }) {
   const router = useRouter();
   const toast = useToast();
   const [action, setAction] = useState<Action | null>(null);
@@ -47,8 +48,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [error, setError] = useState('');
   const [mcId, setMcId] = useState(member.current?.mcId ?? '');
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
+  const [removing, setRemoving] = useState<{ id: string; value: string } | null>(null);
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts;
-  const badge = statusBadge[member.status];
+  const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
   const support = member.position === 'SUPPORT', supportOf = member.supportOf ?? null;
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
@@ -72,8 +74,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   async function removeContact(id: string) {
     if (pending) return;
     setPending(id);
-    try { await mutate(`dispatch/members/${member.id}/contacts/${id}/remove`, 'POST', {}); toast({ title: 'Contact removed' }); router.refresh(); }
-    catch (error) { toast({ tone: 'danger', title: 'Not removed', description: errorMessage(error, 'Reload the page and try again.') }); }
+    try { await mutate(`dispatch/members/${member.id}/contacts/${id}/remove`, 'POST', {}); setRemoving(null); toast({ title: 'Contact removed' }); router.refresh(); }
+    catch (error) { setRemoving(null); toast({ tone: 'danger', title: 'Not removed', description: errorMessage(error, 'Reload the page and try again.') }); }
     finally { setPending(null); }
   }
   const where = (row: { mc: string | null; team: string | null }) => row.mc ? `${row.mc}${row.team ? ` · ${row.team}` : ''}` : 'Independent';
@@ -117,7 +119,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
                 {details?.personalPhoneNumber && <ContactRow icon={Phone} value={details.personalPhoneNumber} source="Personal phone (application)" />}
                 {(member.contacts ?? []).map(contact => <ContactRow key={contact.id} icon={contact.kind === 'EMAIL' ? Mail : Phone} value={contact.value}
                   source={`${contact.label ?? (contact.kind === 'EMAIL' ? 'Email' : 'Phone')} · added${contact.addedBy ? ` by ${contact.addedBy}` : ''}`}
-                  action={open && <Button size="sm" variant="ghost" className="text-danger" disabled={!!pending} onClick={() => void removeContact(contact.id)}>{pending === contact.id ? 'Removing…' : 'Remove'}<span className="sr-only"> {contact.value}</span></Button>} />)}
+                  action={open && <Button size="sm" variant="ghost" className="text-danger" disabled={!!pending} onClick={() => setRemoving({ id: contact.id, value: contact.value })}>Remove<span className="sr-only"> {contact.value}</span></Button>} />)}
                 {!accounts?.companyEmail && !accounts?.workPhone && !details?.personalEmail && !details?.personalPhoneNumber && !member.contacts?.length &&
                   <li className="px-4 py-4 text-sm text-muted-foreground sm:px-5">No contacts yet.</li>}
               </ul>
@@ -203,6 +205,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       actions={<Button type="submit" form="member-action" variant={action === 'leave' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'reassign' ? 'Change dispatcher' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? 'Mark as left' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
         {action === 'reassign' && <>
+          {dispatchersFailed && <Alert tone="danger"><p>Couldn’t load dispatchers. Reload the page.</p></Alert>}
           <Select label="New dispatcher" name="dispatcherId" required placeholder="Choose a dispatcher" width="full"
             options={dispatchers.filter(option => option.id !== supportOf?.dispatcherId).map(option => ({ value: option.id, label: [option.name, option.mc ?? 'Independent', option.team].filter(Boolean).join(' · ') }))} />
           <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
@@ -231,6 +234,11 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         </>}
         <Notice message={error} error />
       </form>
+    </Dialog>}
+    {removing && <Dialog open size="sm" tone="danger" onClose={() => setRemoving(null)} busy={pending === removing.id} protectChanges={false} title="Remove this contact?"
+      description="It no longer shows on this record. Who added and removed it, and when, are kept."
+      actions={<Button variant="destructive" onClick={() => void removeContact(removing.id)}>{pending === removing.id ? 'Removing…' : 'Remove contact'}</Button>}>
+      <p className="break-all text-sm font-medium">{removing.value}</p>
     </Dialog>}
   </div>;
 }

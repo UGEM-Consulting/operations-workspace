@@ -6,7 +6,8 @@ import { ApplicationReview, ApplicationSubmission, DispatcherApplication, Invita
 import { createItRequest } from '../it/create-request';
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
-import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest, Team } from './dispatch.entity';
+import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
+import { lockTeam } from './create-member';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
 
@@ -38,19 +39,17 @@ export class PromotionsService {
     (SELECT json_build_object('id', p.id, 'createdAt', p."createdAt") FROM promotion_requests p WHERE p."supportId" = s.id AND p.status = 'PENDING') AS pending
    FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId"
    WHERE l."dispatcherId" = ANY($1) AND l."endedAt" IS NULL AND s.status <> 'LEFT' ORDER BY lower(s."firstName")`, [dispatchers.map((row: { id: string }) => row.id)]) : [];
-  const requests = await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p."createdAt", p."decidedAt", ${name('s')} AS support
-   FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId" WHERE p."requestedBy" = $1 ORDER BY p."createdAt" DESC LIMIT 50`, [user.id]);
+  // Only for people still in their teams: a support assisting one of their dispatchers, or a promoted support now one.
+  const requests = ids.length ? await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p."createdAt", p."decidedAt", ${name('s')} AS support
+   FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId" WHERE p."requestedBy" = $1 AND s.status <> 'LEFT' AND EXISTS (SELECT 1 FROM member_assignments a
+    LEFT JOIN member_support_links l ON l."dispatcherId" = a."memberId" AND l."endedAt" IS NULL AND l."supportId" = s.id
+    WHERE a."endedAt" IS NULL AND a."teamId" = ANY($2) AND (a."memberId" = s.id OR l.id IS NOT NULL)) ORDER BY p."createdAt" DESC LIMIT 50`, [user.id, ids]) : [];
   return { teams, dispatchers, supports, requests };
  }
 
  async request(user: User, dto: CreatePromotionDto) {
   return this.write(async em => {
-   const teams = (await this.scope(em, user)).map(team => team.id);
-   const [support] = await em.query(`SELECT s.id, s.position, s.status, a."teamId" FROM dispatch_members s
-    JOIN member_support_links l ON l."supportId" = s.id AND l."endedAt" IS NULL
-    LEFT JOIN member_assignments a ON a."memberId" = l."dispatcherId" AND a."endedAt" IS NULL WHERE s.id = $1 FOR UPDATE OF s`, [dto.supportId]);
-   // Outside the team lead's scope looks the same as not existing.
-   if (!support || !teams.includes(support.teamId)) throw new NotFoundException('This support isn’t in your team.');
+   const support = await this.supportInScope(em, user, dto.supportId);
    if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support can be promoted.');
    const request = await em.getRepository(PromotionRequest).save({ supportId: dto.supportId, requestedBy: user.id, reason: dto.reason });
    await this.event(em, user, 'PROMOTION_REQUESTED', dto.supportId, { requestId: request.id });
@@ -62,7 +61,10 @@ export class PromotionsService {
   return this.write(async em => {
    const request = await em.getRepository(PromotionRequest).findOne({ where: { id, requestedBy: user.id }, lock: { mode: 'pessimistic_write' } });
    if (!request) throw new NotFoundException('This request no longer exists.');
+   // A decided request says so even when the support has moved on (an approved one is no longer a support).
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
+   // Only while the support is still in a team they lead (they may have stopped leading it or the support moved on).
+   await this.supportInScope(em, user, request.supportId, false);
    Object.assign(request, { status: 'CANCELLED', decidedBy: user.id, decidedAt: new Date(), version: request.version + 1 });
    await em.save(request);
    await this.event(em, user, 'PROMOTION_CANCELLED', request.supportId, { requestId: id });
@@ -94,8 +96,11 @@ export class PromotionsService {
  async decide(user: User, id: string, dto: DecidePromotionDto) {
   let alerts: string[] = [];
   const result = await this.write(async em => {
-   const request = await em.getRepository(PromotionRequest).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
-   if (!request) throw new NotFoundException('This request no longer exists.');
+   // The support's record is locked before the request (member, then request, then team), the order leaving uses.
+   const found = await em.getRepository(PromotionRequest).findOneBy({ id });
+   if (!found) throw new NotFoundException('This request no longer exists.');
+   const support = await em.getRepository(DispatchMember).findOne({ where: { id: found.supportId }, lock: { mode: 'pessimistic_write' } });
+   const request = await em.getRepository(PromotionRequest).findOneOrFail({ where: { id }, lock: { mode: 'pessimistic_write' } });
    if (request.version !== dto.version) throw new ConflictException('Someone else changed this request. Reload and try again.');
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
    const now = new Date();
@@ -106,13 +111,12 @@ export class PromotionsService {
     await this.event(em, user, 'PROMOTION_DECLINED', request.supportId, { requestId: id });
     return { id, status: request.status };
    }
-   const support = await em.getRepository(DispatchMember).findOne({ where: { id: request.supportId }, lock: { mode: 'pessimistic_write' } });
    if (!support || support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('This person is no longer an active support.');
    if (!support.applicationId) throw new ConflictException('Promotion needs the support’s approved application for their IT setup.');
    // Where they will work: an active MC (or Independent, with no team), a team of that MC, and a job title.
    const mc = dto.mcId ? await em.getRepository(Mc).findOneBy({ id: dto.mcId }) : null;
    if (dto.mcId && (!mc || mc.archivedAt)) throw new BadRequestException('Choose an active MC.');
-   const team = dto.teamId ? await em.getRepository(Team).findOneBy({ id: dto.teamId }) : null;
+   const team = dto.teamId ? await lockTeam(em, dto.teamId) : null;
    if (dto.teamId && (!team || team.archivedAt || team.mcId !== dto.mcId)) throw new BadRequestException('Choose an active team of the selected MC.');
    const title = dto.jobTitleId ? await em.getRepository(JobTitle).findOneBy({ id: dto.jobTitleId }) : null;
    if (!title || title.archivedAt) throw new BadRequestException('Choose an active job title.');
@@ -130,7 +134,7 @@ export class PromotionsService {
    Object.assign(support, { position: 'DISPATCHER', status: 'ONBOARDING', jobTitleId: title.id, version: support.version + 1 });
    await em.save(support);
    await em.getRepository(MemberAssignment).save({ memberId: support.id, mcId: mc?.id ?? null, teamId: team?.id ?? null, startedAt: at, reason: 'Promoted from support to dispatcher.', actorId: user.id });
-   const itRequest = await createItRequest(em, application, approval, submitted?.fields ?? {}, invitation,
+   const itRequest = await createItRequest(em, application, approval, submitted?.fields ?? {}, invitation, user.id,
     { mcName: mc?.name ?? 'Independent', teamLead: team ? (lead ? `${lead.firstName} ${lead.lastName}`.trim() : team.name) : 'Independent', jobTitle: title.name });
    alerts = await this.notifications.queueItSetupWaiting(em, itRequest);
    Object.assign(request, { status: 'APPROVED', note: dto.note?.trim() || null, decidedBy: user.id, decidedAt: now, itRequestId: itRequest.id, version: request.version + 1 });
@@ -146,6 +150,16 @@ export class PromotionsService {
  /** Only a team lead may act through the team routes; their record must still lead a team. */
  async requireLead(user: User) {
   if (!(await this.scope(this.db, user)).length) throw new ForbiddenException('Your account isn’t linked to a team you lead.');
+ }
+
+ /** A support assisting a dispatcher in one of the team lead's teams; outside that scope looks the same as not existing. */
+ private async supportInScope(em: EntityManager, user: User, supportId: string, lock = true) {
+  const teams = (await this.scope(em, user)).map(team => team.id);
+  const [support] = await em.query(`SELECT s.id, s.position, s.status, a."teamId" FROM dispatch_members s
+   JOIN member_support_links l ON l."supportId" = s.id AND l."endedAt" IS NULL
+   LEFT JOIN member_assignments a ON a."memberId" = l."dispatcherId" AND a."endedAt" IS NULL WHERE s.id = $1${lock ? ' FOR UPDATE OF s' : ''}`, [supportId]);
+  if (!support || !teams.includes(support.teamId)) throw new NotFoundException('This support isn’t in your team.');
+  return support as { id: string; position: string; status: string; teamId: string };
  }
 
  private async write<T>(work: (em: EntityManager) => Promise<T>): Promise<T> {

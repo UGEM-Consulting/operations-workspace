@@ -17,7 +17,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { DRIVER_DEFAULTS } from '@/lib/navigation';
 import { DriverForm, driverBody } from './driver-form';
-import { CLOSED, driverStatus, driverTypes, license, type DriverRow, type SafetyPeople } from './types';
+import { CLOSED, driverBadge, driverTypes, license, type DriverRow, type SafetyPeople } from './types';
 
 const name = (driver: { firstName: string; lastName: string }) => `${driver.firstName} ${driver.lastName}`.trim();
 
@@ -62,7 +62,7 @@ export function Drivers({ items, filters, people, canAdd, currentUserId }: { ite
         { key: 'lead', label: 'Safety lead', hideBelow: 'lg', cell: row => row.safetyLead ? <>{row.safetyLead.name}{row.safetyLead.id === currentUserId && <span className="text-muted-foreground"> (you)</span>}</> : <span className="text-muted-foreground">Not set</span> },
         { key: 'owner', label: 'Owner', hideBelow: 'xl', cell: row => row.owner?.name ?? <span className="text-muted-foreground">None yet</span> },
         { key: 'added', label: 'Added', nowrap: true, muted: true, hideBelow: 'md', cell: row => <LocalTime iso={row.createdAt} format="date" /> },
-        { key: 'status', label: 'Status', cell: row => <Badge label={driverStatus[row.status].label} tone={driverStatus[row.status].tone} /> },
+        { key: 'status', label: 'Status', cell: row => <Badge {...driverBadge(row.status)} /> },
       ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />
         : <EmptyState compact title="No drivers yet" description={canAdd ? 'Add a lead when a driver gets in touch.' : 'Safety leads add drivers when they get in touch.'} />}
         footer={<p className="text-[13px] text-muted-foreground">{visible.length} of {items.length} driver records.</p>} />

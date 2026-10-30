@@ -1,3 +1,4 @@
+import { statusLabel } from '@/components/ui/status-badge';
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
@@ -18,5 +19,7 @@ export interface MemberProfile { id: string; firstName: string; lastName: string
 export interface SupportLink { id: string; startedAt: string; endedAt: string | null; reason: string | null; dispatcherId: string; dispatcher: string; dispatcherStatus: MemberStatus; mc: string | null; team: string | null; changedBy: string | null }
 export const statusBadge: Record<MemberStatus, { label: string; tone: 'info' | 'success' | 'neutral' }> = {
   ONBOARDING: { label: 'Onboarding', tone: 'info' }, ACTIVE: { label: 'Active', tone: 'success' }, LEFT: { label: 'Left', tone: 'neutral' } };
+/** The badge for a member status; a status from a newer API shows as a neutral badge instead of failing. */
+export const memberBadge = (status: string) => statusBadge[status as MemberStatus] ?? { label: statusLabel(status), tone: 'neutral' as const };
 export interface Choice { id: string; name: string; archived: boolean }
 export const fullName = (member: { firstName: string; lastName: string }) => `${member.firstName} ${member.lastName}`.trim();

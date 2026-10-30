@@ -79,11 +79,15 @@ export async function ItWork({ heading }: { heading: 'h1' | 'h2' }) {
   // Blocked first, then not started, then in progress: the order IT should pick them up.
   const attention = results.slice(0, 3).flatMap(result => result.status === 'fulfilled' ? result.value.items : []).slice(0, 6);
   const open = results.slice(0, 3).reduce((total, result) => total + (result.status === 'fulfilled' ? result.value.total : 0), 0);
+  // A failed count must never read as "all set up" or "nothing needs attention".
+  const openFailed = results.slice(0, 3).some(result => result.status === 'rejected');
+  const lead = openFailed ? `${open ? `At least ${open} approved dispatcher${open === 1 ? ' is' : 's are'} waiting for setup to finish. ` : ''}Some counts couldn’t be loaded.`
+    : open ? `${open} approved dispatcher${open === 1 ? ' is' : 's are'} waiting for setup to finish.` : 'Every approved dispatcher is set up.';
   const Heading = heading;
   return <section aria-labelledby="it-work-title" className="space-y-6">
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div className="min-w-0"><Heading id="it-work-title" className={heading === 'h1' ? 'font-sans text-[22px] font-semibold leading-[30px] tracking-[-0.01em]' : 'text-lg font-semibold'}>IT setup</Heading>
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">{open ? `${open} approved dispatcher${open === 1 ? ' is' : 's are'} waiting for setup to finish.` : 'Every approved dispatcher is set up.'}</p></div>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">{lead}</p></div>
       <Button asChild variant="outline"><Link href="/it/tasks">Open IT tasks</Link></Button>
     </div>
     <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">{results.map((result, index) => {
@@ -95,7 +99,8 @@ export async function ItWork({ heading }: { heading: 'h1' | 'h2' }) {
       {attention.length ? <ul className="mt-3 divide-y divide-border border-t border-border">{attention.map((request: ItRequest) => <li key={request.id}><Link href={`/it/tasks/${request.id}`} className="flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none sm:px-5">
         <Person name={request.profile.proposedDisplayName ?? 'Approved dispatcher'} secondary={`${request.profile.mcName} · ${request.profile.jobTitle}`} />
         <span className="shrink-0"><StatusBadge status={request.status} /></span>
-      </Link></li>)}</ul> : <EmptyState compact headingLevel={4} title="Nothing needs attention" description="New approvals create setup requests automatically." />}
+      </Link></li>)}</ul> : openFailed ? <div className="p-4 sm:p-5"><Unavailable title="Requests unavailable" /></div>
+        : <EmptyState compact headingLevel={4} title="Nothing needs attention" description="New approvals create setup requests automatically." />}
     </Card>
   </section>;
 }

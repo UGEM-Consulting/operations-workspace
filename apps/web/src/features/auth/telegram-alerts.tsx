@@ -1,9 +1,9 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
-import { Notice } from '@/components/ui/alert';
+import { Alert, Notice } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/status-badge';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { useToast } from '@/components/ui/toast';
@@ -11,6 +11,8 @@ import { errorMessage, mutate } from '@/lib/client-api';
 export interface StaffTelegram { available: boolean; connected: boolean; username: string | null; alerts: ('REVIEW_WAITING' | 'IT_SETUP_WAITING')[] }
 const alertText = { REVIEW_WAITING: 'an application assigned to you is waiting for review', IT_SETUP_WAITING: 'a new IT setup checklist is waiting' };
 type Pending = 'link' | 'check' | 'disconnect' | null;
+// The connect link works once, for 30 minutes; after that it is dropped from the page.
+const LINK_MS = 30 * 60_000;
 
 /** The staff member's own Telegram connection for workspace alerts, through the company bot. */
 export function TelegramAlerts({ initial }: { initial: StaffTelegram }) {
@@ -19,13 +21,25 @@ export function TelegramAlerts({ initial }: { initial: StaffTelegram }) {
   const [link, setLink] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState('');
+  useEffect(() => {
+    if (!link) return;
+    const timer = window.setTimeout(() => setLink(null), LINK_MS);
+    return () => window.clearTimeout(timer);
+  }, [link]);
   async function run(kind: Pending, action: () => Promise<StaffTelegram | null>, success: (updated: StaffTelegram | null) => string) {
     if (pending) return;
     setPending(kind); setError('');
-    try { const updated = await action(); if (updated) setData(updated); const title = success(updated); if (title) toast({ title }); }
+    try {
+      const updated = await action();
+      if (updated) setData(updated);
+      // A used (connected) or disconnected link is spent; a new one is needed to connect again.
+      if (kind === 'disconnect' || (kind === 'check' && updated?.connected)) setLink(null);
+      const title = success(updated); if (title) toast({ title });
+    }
     catch (failure) { setError(errorMessage(failure)); }
     finally { setPending(null); }
   }
+  const connect = () => void run('link', async () => { setLink((await mutate<{ url: string }>('staff/telegram/connect', 'POST')).url); return null; }, () => 'Your connect link is ready. It works once, for 30 minutes.');
   const what = data.alerts.length ? `when ${data.alerts.map(alert => alertText[alert]).join(', or when ')}` : 'about work waiting for you';
   return <Card>
     <CardHeader title="Telegram alerts" description={`A Telegram message ${what}. Alerts link to the workspace and never include names or personal details.`}
@@ -43,12 +57,23 @@ export function TelegramAlerts({ initial }: { initial: StaffTelegram }) {
             <li>Come back here and press <strong>Check connection</strong>.</li>
           </ol>
           <div className="flex flex-wrap gap-3">
-            {link ? <Button asChild><a href={link} target="_blank" rel="noopener noreferrer"><Send aria-hidden="true" className="size-4" />Open Telegram</a></Button>
-              : <Button type="button" disabled={!!pending} onClick={() => void run('link', async () => { setLink((await mutate<{ url: string }>('staff/telegram/connect', 'POST')).url); return null; }, () => 'Your connect link is ready. It works once, for 30 minutes.')}>{pending === 'link' ? 'Preparing…' : 'Connect Telegram'}</Button>}
+            {link ? <>
+              <Button asChild><a href={link} target="_blank" rel="noopener noreferrer"><Send aria-hidden="true" className="size-4" />Open Telegram</a></Button>
+              <Button type="button" variant="ghost" disabled={!!pending} onClick={connect}>{pending === 'link' ? 'Preparing…' : 'Get a new link'}</Button>
+            </> : <Button type="button" disabled={!!pending} onClick={connect}>{pending === 'link' ? 'Preparing…' : 'Connect Telegram'}</Button>}
             <Button type="button" variant="outline" disabled={!!pending} onClick={() => void run('check', () => mutate<StaffTelegram>('staff/telegram/check', 'POST'), updated => updated?.connected ? 'Telegram is connected.' : 'Not connected yet. Press Start in Telegram, then check again.')}>{pending === 'check' ? 'Checking…' : 'Check connection'}</Button>
           </div>
+          {link && <p className="text-[13px] text-muted-foreground">The link works once, for 30 minutes. If it stopped working, get a new one.</p>}
         </div>}
       <PendingHint pending={!!pending} /><Notice message={error} error />
     </CardBody>
+  </Card>;
+}
+
+/** Shown when the API has Telegram alerts but the connection couldn't be read. */
+export function TelegramAlertsUnavailable() {
+  return <Card>
+    <CardHeader title="Telegram alerts" />
+    <CardBody><Alert tone="danger"><p>Couldn’t load your Telegram connection. Reload the page.</p></Alert></CardBody>
   </Card>;
 }

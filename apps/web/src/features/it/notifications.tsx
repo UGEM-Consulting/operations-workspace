@@ -1,5 +1,6 @@
 'use client';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Bell, CircleCheck, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -14,9 +15,13 @@ import { Notifications } from './types';
 /** The manager's IT completion updates on the dashboard; the bell's "See all" lands here. */
 export function ManagerNotifications({initial}:{initial:Notifications}){
  const toast=useToast();
- const [data,setData]=useState(initial),[pending,setPending]=useState<string|null>(null);
- async function refresh(){setPending('refresh');try{setData(await readApi<Notifications>('notifications'));toast({title:'Updates refreshed'});}catch(error){toast({tone:'danger',title:'Updates not refreshed',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
- async function read(id:string){setPending(id);try{await mutate(`notifications/${id}/read`,'POST');setData(current=>({...current,unread:Math.max(0,current.unread-1),items:current.items.map(item=>item.id===id?{...item,readAt:new Date().toISOString()}:item)}));}catch(error){toast({tone:'danger',title:'Notification not updated',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
+ const router=useRouter();
+ const [data,setData]=useState(initial),[pending,setPending]=useState<string|null>(null),[server,setServer]=useState(initial);
+ // router.refresh() re-renders the dashboard with fresh updates; take them without an effect.
+ if(server!==initial){setServer(initial);setData(initial);}
+ // The bell and sidebar counts come from the server layout, so refresh it after anything changes the unread count.
+ async function refresh(){setPending('refresh');try{setData(await readApi<Notifications>('notifications'));router.refresh();toast({title:'Updates refreshed'});}catch(error){toast({tone:'danger',title:'Updates not refreshed',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
+ async function read(id:string){setPending(id);try{await mutate(`notifications/${id}/read`,'POST');setData(current=>({...current,unread:Math.max(0,current.unread-1),items:current.items.map(item=>item.id===id?{...item,readAt:new Date().toISOString()}:item)}));router.refresh();}catch(error){toast({tone:'danger',title:'Notification not updated',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
  return <Card id="updates" className="scroll-mt-20">
   <CardHeader title={<span className="flex items-center gap-2">Updates{data.unread>0&&<span className="rounded-full bg-brand-subtle px-2 text-xs font-semibold leading-5 text-brand-subtle-foreground tabular-nums">{data.unread}<span className="sr-only"> unread</span></span>}</span>}
    actions={<Button variant="ghost" size="sm" disabled={!!pending} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Copy, Plus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/status-badge';
 import { Person } from '@/components/ui/avatar';
 import { FilterBar } from '@/components/ui/filter-bar';
 import { PageHeader } from '@/components/workspace-ui';
+import { useLeaveGuard } from '@/components/shell-context';
 import { EmptyState } from '@/components/ui/feedback';
 import { Checkbox, Input, Select } from '@/components/ui/field';
 import { Table } from '@/components/ui/table';
@@ -43,6 +44,9 @@ export function Invitations({initial,filters,options=null,dispatchers=null}:{ini
  const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'>('DISPATCHER'),[supportsId,setSupportsId]=useState('');
  const [optionsOpen,setOptionsOpen]=useState(false),[employment,setEmployment]=useState<Employment>(NO_EMPLOYMENT),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
  useEffect(()=>{if(!url||copied)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[url,copied]);
+ // Sidebar, breadcrumb and notification links navigate inside the app, which beforeunload never sees: the shell asks this guard.
+ const leaveGuard=useCallback(()=>window.confirm('Leave without copying the invitation link? It can’t be shown again.'),[]);
+ useLeaveGuard(url&&!copied?leaveGuard:null);
  async function refreshRows(){try{setRows(await readApi<Invitation[]>('onboarding/invitations'));}catch{setError('Your change was saved, but the list could not refresh. Reload the page to see the latest invitations.');}}
  async function create(withOptions:boolean) {
   if(pending)return;
