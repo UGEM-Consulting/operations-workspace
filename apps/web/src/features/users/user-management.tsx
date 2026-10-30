@@ -17,7 +17,7 @@ import { mutate } from '@/lib/client-api';
 import { USER_DEFAULTS } from '@/lib/navigation';
 import type { StaffUser } from '@/lib/auth';
 import { PageHeader } from '@/components/workspace-ui';
-const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD'];
+const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD', 'SAFETY_MANAGER', 'SAFETY_LEAD', 'SAFETY_STAFF'];
 type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null };
 /** A dispatcher record a team lead account can link to; what the account sees follows the team it leads. */
 export interface LeadChoice { id: string; name: string; team: string | null }
