@@ -250,7 +250,7 @@ export class SafetyService {
   await onboardingLimit(this.db, `driver-document-view:${user.id}`, 60, 900);
   const document = await this.db.getRepository(DriverDocument).findOneBy({ id: documentId, driverId: id, replacedAt: IsNull() });
   if (!document) throw new NotFoundException('This document was replaced or no longer exists.');
-  const body = await this.storage.get(driverDocumentKey(id, documentId));
+  const body = await this.storage.get(driverDocumentKey(document));
   await driverEvent(this.db.manager, user.id, id, 'DOCUMENT_VIEWED', { kind: document.kind });
   return { body, type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
  }

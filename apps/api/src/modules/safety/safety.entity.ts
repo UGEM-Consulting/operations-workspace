@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import type { StorageLayout } from '../storage/storage.service';
 
 export const DRIVER_TYPES = ['COMPANY', 'OWNER_OPERATOR'] as const;
 export type DriverType = typeof DRIVER_TYPES[number];
@@ -153,6 +154,7 @@ export class DriverDocument {
  @Column('integer') byteSize!: number;
  @Column('timestamptz') createdAt!: Date;
  @Column('timestamptz', { nullable: true }) replacedAt!: Date | null;
+ @Column('smallint', { default: 1 }) storageLayout!: StorageLayout;
  @Column('timestamptz', { nullable: true }) verifiedAt!: Date | null;
  @Column('uuid', { nullable: true }) verifiedBy!: string | null;
  @Column('varchar', { length: 40, nullable: true }) number!: string | null;
@@ -192,6 +194,7 @@ export class DriverReport {
  @Column('uuid', { nullable: true }) uploadedBy!: string | null;
  @Column('timestamptz') createdAt!: Date;
  @Column('timestamptz', { nullable: true }) replacedAt!: Date | null;
+ @Column('smallint', { default: 1 }) storageLayout!: StorageLayout;
  // How the driver's authorization was on file: signed in the workspace, or on paper (confirmed by the uploader).
  @Column('varchar', { nullable: true }) authorization!: 'SIGNED' | 'PAPER' | null;
 }

@@ -58,6 +58,33 @@ Managers and administrators publish NDA, SOP and Quick Contact List versions on 
 - A document kind is required only once a version of it has been published.
 - Never commit these PDFs to Git.
 
+## Bucket folders
+
+Each person's files are kept in one folder, named by their application ID (new hires) or driver ID. Names and other personal details are never used in paths. Blank company forms have their own folder.
+
+```
+applicants/<application id>/
+  selfie/<photo id>.jpg
+  id-selfie/<photo id>.jpg
+  signed/nda-v1.pdf, sop-v1.pdf, contact-list-v1.pdf
+drivers/<driver id>/
+  documents/license|medical-card|work-authorization/<scan id>.pdf
+  reports/mvr/<report id>.pdf
+  signed/background-disclosure-v1.pdf, background-authorization-v1.pdf, clearinghouse-consent-v1.pdf
+company-documents/
+  onboarding/nda|sop|contact-list/<document id>.pdf
+  driver-consents/background-disclosure|background-authorization|clearinghouse-consent/<document id>.pdf
+```
+
+- **Locating a person:** the application ID is on each new hire's application page, and the driver ID is in the driver's page address. Use either to find their folder in the Google Cloud console.
+- **Signed copies:** a background job saves each signed copy into the person's `signed/` folder once it is complete. It runs at startup, then every 2 minutes.
+  - The SOP, the Quick Contact List and drivers' consent forms are saved right after signing.
+  - The NDA is saved after the manager countersigns at approval. If an application ends without a countersignature (rejected, or approved before countersigning existed), the applicant-signed copy is saved instead.
+  - The job also saves copies for everyone who signed before it existed.
+  - A saved copy is never changed. A newer document version is saved next to it, for example `nda-v2.pdf`.
+  - Download buttons still generate copies from the signature records, so they keep working while a copy waits to be saved.
+- **Files from before this layout** (`photos/`, `documents/`, `drivers/<id>/<scan>.pdf`, `driver-reports/`, `driver-consents/`) stay where they are and remain readable. Each record notes which layout its file uses.
+
 ## Storage and limits
 
 - **Production:** `STORAGE_DRIVER=gcs`, with a private Google Cloud Storage bucket. The production API refuses to start without it, but operator commands (migrations, admin bootstrap) do not need it.

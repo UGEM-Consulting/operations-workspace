@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn } from 'typeorm';
+import type { StorageLayout } from '../storage/storage.service';
 import type { SignatureMethod } from '../documents/documents.entity';
 
 /**
@@ -25,6 +26,7 @@ export class DriverConsentDocument {
  @Column('integer') byteSize!: number;
  @Column('integer') pageCount!: number;
  @Column('uuid') uploadedBy!: string;
+ @Column('smallint', { default: 1 }) storageLayout!: StorageLayout;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 

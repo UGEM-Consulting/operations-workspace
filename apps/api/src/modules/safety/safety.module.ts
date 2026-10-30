@@ -14,6 +14,7 @@ import { SafetyService } from './safety.service';
 import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 import { ScreeningService } from './screening.service';
 import { ScanSweeper } from './scan-sweeper';
+import { DriverSignedCopies } from './signed-copies';
 import { ApplicantSignatureDto } from '../documents/documents.dto';
 import { clientContext } from '../documents/client-context';
 import { PublishConsentDto } from './consent.dto';
@@ -78,5 +79,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, DriverAccessService, PiiService, ScanSweeper], exports: [ScreeningService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService] })
 export class SafetyModule {}

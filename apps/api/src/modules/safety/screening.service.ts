@@ -5,7 +5,7 @@ import { inspectPdf } from '../documents/certificate';
 import type { FileResult } from '../documents/documents.service';
 import { decodePdf, sha256 } from '../documents/images';
 import { onboardingLimit } from '../onboarding/rate-limit';
-import { driverReportKey, StorageService } from '../storage/storage.service';
+import { CURRENT_LAYOUT, driverReportKey, StorageService } from '../storage/storage.service';
 import { Role, User } from '../users/user.entity';
 import { DECIDERS, driverEvent, lockOpenDriver, requireScreener, writeDriver } from './driver-records';
 import { Driver, DriverApplication, DriverEventType, DriverLink, DriverReport, DriverReview, DriverReviewAction, DriverScreeningCheck, DriverStatus, earliestFinalRejection,
@@ -74,8 +74,8 @@ export class ScreeningService {
   await onboardingLimit(this.db, `driver-mvr:${user.id}`, 20, 3600);
   const file = decodePdf(dto.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
-  const reportId = randomUUID();
-  await this.storage.put(driverReportKey(id, reportId), file, 'application/pdf');
+  const reportId = randomUUID(), stored = { id: reportId, driverId: id, kind: 'MVR', storageLayout: CURRENT_LAYOUT };
+  await this.storage.put(driverReportKey(stored), file, 'application/pdf');
   try {
    return await writeDriver(this.db, async em => {
     const driver = await this.inScreening(em, id, dto.version);
@@ -85,12 +85,12 @@ export class ScreeningService {
     const reports = em.getRepository(DriverReport);
     const previous = await reports.findOneBy({ driverId: id, kind: 'MVR', replacedAt: IsNull() });
     if (previous) await reports.update(previous.id, { replacedAt: new Date() });
-    await reports.insert({ id: reportId, driverId: id, kind: 'MVR', pulledOn: dto.pulledOn, pageCount, sha256: sha256(file), byteSize: file.length, uploadedBy: user.id, createdAt: new Date(), authorization });
+    await reports.insert({ id: reportId, driverId: id, kind: 'MVR', pulledOn: dto.pulledOn, pageCount, sha256: sha256(file), byteSize: file.length, uploadedBy: user.id, createdAt: new Date(), authorization, storageLayout: CURRENT_LAYOUT });
     await em.getRepository(Driver).update(id, { version: driver.version + 1 });
     await driverEvent(em, user.id, id, 'MVR_UPLOADED', { replaced: !!previous, authorization });
     return { id, version: driver.version + 1 };
    });
-  } catch (error) { await this.storage.remove(driverReportKey(id, reportId)); throw error; }
+  } catch (error) { await this.storage.remove(driverReportKey(stored)); throw error; }
  }
 
  /** An MVR, current or replaced, for every Safety role; views are rate-limited and recorded like scans. */
@@ -98,7 +98,7 @@ export class ScreeningService {
   await onboardingLimit(this.db, `driver-report-view:${user.id}`, 60, 900);
   const report = await this.db.getRepository(DriverReport).findOneBy({ id: reportId, driverId: id });
   if (!report) throw new NotFoundException('This report no longer exists.');
-  const body = await this.storage.get(driverReportKey(id, reportId));
+  const body = await this.storage.get(driverReportKey(report));
   await driverEvent(this.db.manager, user.id, id, 'MVR_VIEWED', {});
   return { body, type: 'application/pdf', filename: `mvr-${report.pulledOn}.pdf` };
  }

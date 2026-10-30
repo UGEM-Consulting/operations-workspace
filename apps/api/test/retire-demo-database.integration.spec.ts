@@ -11,6 +11,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
  const count=async(table:string)=>Number((await db.query(`SELECT count(*)::integer AS n FROM ${table}`))[0].n);
  // Recreates the state of a starter database converted to the demo: real operator email, fictional staff and data.
  async function convertedStarter(extraUsers:string[]=[]){
+  if(await latest()==='StorageFolders1792920000000'){await db.query('TRUNCATE signed_copies, applicant_photos, company_documents, driver_documents, driver_reports, driver_consent_documents CASCADE');await db.undoLastMigration();}
   if(await latest()==='DriverConsents1792910000000'){await db.query('TRUNCATE driver_consent_documents CASCADE');await db.undoLastMigration();}
   if(await latest()==='DriverScreening1792900000000'){await db.query('TRUNCATE drivers CASCADE');await db.undoLastMigration();}
   if(await latest()==='ClearInactiveTeamLeads1792890000000')await db.undoLastMigration();
@@ -75,7 +76,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
   // Real addresses are accepted again once unmarked, and the deploy migration drops the demo schema.
   await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Real','Manager','manager@company.example','DISPATCHER_MANAGER','ACTIVE')`);
   await db.runMigrations();
-  expect(await latest()).toBe('DriverConsents1792910000000');
+  expect(await latest()).toBe('StorageFolders1792920000000');
   await expect(retireDemoDatabase(db,false)).rejects.toThrow('no demo marking');
  });
  it('refuses to delete a non-fictional staff account and changes nothing',async()=>{

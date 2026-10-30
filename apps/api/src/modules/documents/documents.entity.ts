@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import type { StorageLayout } from '../storage/storage.service';
 export const DOCUMENT_KINDS = ['NDA','SOP','CONTACT_LIST'] as const;
 export type DocumentKind = typeof DOCUMENT_KINDS[number];
 // NDA and SOP need a typed name plus a drawn or typed-name signature; the contact list only a read acknowledgement.
@@ -23,6 +24,7 @@ export class CompanyDocument {
  @Column('integer') byteSize!:number;
  @Column('integer') pageCount!:number;
  @Column('uuid') uploadedBy!:string;
+ @Column('smallint',{default:1}) storageLayout!:StorageLayout;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
 }
 // The plain selfie is the profile photo; the ID selfie is for manual manager verification only (no face matching).
@@ -38,6 +40,7 @@ export class ApplicantPhoto {
  // Set explicitly from the API clock, the same clock as submittedAt, which decides what staff see.
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) replacedAt!:Date|null;
+ @Column('smallint',{default:1}) storageLayout!:StorageLayout;
 }
 // Append-only signature evidence (a database trigger refuses UPDATE and DELETE).
 @Entity('document_signatures')
