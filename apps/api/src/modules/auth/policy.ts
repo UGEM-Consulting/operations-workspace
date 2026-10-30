@@ -22,6 +22,8 @@ const navigation = [
   { key: 'teams', href: '/dispatch/teams', label: 'Teams', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'dispatchers', href: '/dispatch/dispatchers', label: 'Dispatchers', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'promotions', href: '/dispatch/promotions', label: 'Promotions', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
+  // Safety onboards drivers; every Safety role reads all driver records, and the service decides who changes what.
+  { key: 'drivers', href: '/safety/drivers', label: 'Drivers', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', section: 'IT', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
   { key: 'lists', href: '/lists', label: 'Lists', section: 'Admin', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'users', href: '/staff-accounts', label: 'Staff accounts', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
@@ -30,7 +32,8 @@ const navigation = [
 ];
 export function accessFor(user: User) {
   return { navigation: navigation.filter(item => item.roles.includes(user.role)).map(({ key, href, label, section }) => ({ key, href, label, section })),
-    landingPage: user.role === Role.IT_SPECIALIST ? '/it/tasks' : user.role === Role.TEAM_LEAD ? '/team' : '/dashboard' };
+    landingPage: user.role === Role.IT_SPECIALIST ? '/it/tasks' : user.role === Role.TEAM_LEAD ? '/team'
+    : [Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF].includes(user.role) ? '/safety/drivers' : '/dashboard' };
 }
 export function requirePage(user: User, key: string): void {
   if (!accessFor(user).navigation.some(item => item.key === key)) throw new ForbiddenException();
