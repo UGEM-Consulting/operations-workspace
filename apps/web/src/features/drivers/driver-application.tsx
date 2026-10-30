@@ -9,13 +9,16 @@ import { LocalTime } from '@/components/ui/local-time';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { ApiError, errorMessage, mutate, readApi } from '@/lib/client-api';
 import { DOCUMENT_KINDS, documentLabels, licenseTypes, requiredDocuments, US_STATES, type DocumentKind } from '@/features/safety/types';
+import { ConsentSigning, consentSectionId, type ConsentItem } from './consent-signing';
 import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
 
 export interface DriverApplicationView { email: string; expiresAt: string; status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; version: number; ssnLast4: string | null; submittedAt: string | null; ssnAvailable: boolean;
   // From an API with document scanning; absent on an older one.
   documentsEnabled?: boolean; requiredDocuments?: DocumentKind[]; documents?: { id: string; kind: DocumentKind; subtype: string | null; pageCount: number; createdAt: string }[];
   // What Safety asked the driver to correct, from an API with screening.
-  correction?: { message: string; requestedAt: string } | null }
+  correction?: { message: string; requestedAt: string } | null;
+  // The consent forms Safety published, from an API with consent forms.
+  consents?: { required: boolean; consent: string; items: ConsentItem[] } }
 const REQUIRED = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone',
   'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'];
 const FIELDS = [...REQUIRED, 'legalMiddleName', 'addressLine2'];
@@ -159,15 +162,19 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
       const problems: Partial<Record<DocumentKind, string>> = Object.fromEntries([...unsaved.map(kind => [kind, 'Save these pages before you submit, or remove them.']),
         ...unscanned.map(kind => [kind, 'Scan this document before you submit.'])]);
       setScanErrors(problems);
-      if (Object.keys(missing).length || unsaved.length || unscanned.length) {
+      // Forms come last on the page, after the answers and scans.
+      const unsigned = view.consents?.required ? view.consents.items.filter(item => !item.current) : [];
+      if (Object.keys(missing).length || unsaved.length || unscanned.length || unsigned.length) {
         setFailed(true);
         // An unanswered question comes first; otherwise say what is wrong with the one answer (age, expired license).
         const issues = Object.values(missing);
-        setMessage(issues.includes('Required') ? 'Answer every required question first.' : issues.length === 1 ? issues[0] : issues.length ? 'Check the highlighted answers.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : `Scan these documents first: ${names(unscanned)}.`);
+        setMessage(issues.includes('Required') ? 'Answer every required question first.' : issues.length === 1 ? issues[0] : issues.length ? 'Check the highlighted answers.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : unscanned.length ? `Scan these documents first: ${names(unscanned)}.`
+          : `Sign these forms first: ${unsigned.map(item => item.label.toLowerCase()).join(', ')}.`);
         // Answers come before the documents on the page, so the first answer in page order is the first problem.
         const answer = firstOnPage(form.current, Object.keys(missing)), scan = DOCUMENT_KINDS.find(kind => problems[kind]);
         if (answer) answer.focus();
         else if (scan) document.getElementById(scannerId(scan))?.focus();
+        else document.getElementById(consentSectionId)?.focus();
         return;
       }
       if (ssnBlocked) {
@@ -251,6 +258,10 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
       {DOCUMENT_KINDS.map(kind => <DocumentScanner key={kind} kind={kind} view={view} onSaved={onSaved} onEnded={onEnded} onDraft={onDraft} error={scanErrors[kind]}
         required={requiredDocuments(licenseClass).includes(kind)} />)}
     </Section>}
+    {view.consents?.required && <div id={consentSectionId} tabIndex={-1} className="scroll-mt-20 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <Section title="Consent forms" hint="Safety needs your consent before checking your driving record and background. Open and read each form in full, then sign it. You can download a signed copy afterwards.">
+        <ConsentSigning view={view} onSaved={onSaved} onEnded={onEnded} editable={view.status === 'DRAFT'} />
+      </Section></div>}
     <Notice message={message} error={failed} />
     <div className="flex flex-wrap gap-3 border-t pt-5">
       <Button type="submit" disabled={!!pending || uploading}>{pending === 'submit' ? 'Sending…' : uploading ? 'Saving scan…' : 'Submit application'}</Button>

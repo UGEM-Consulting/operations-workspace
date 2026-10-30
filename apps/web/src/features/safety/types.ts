@@ -8,7 +8,7 @@ export interface DriverRow { id: string; firstName: string; lastName: string; ph
   status: DriverStatus; version: number; createdAt: string; closedAt: string | null; safetyLead: SafetyPerson | null; owner: SafetyPerson | null }
 export interface DriverOwnerRow { id: string; startedAt: string; endedAt: string | null; reason: string | null; owner: SafetyPerson | null; assignedBy: string | null }
 export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean; resent?: boolean; emailChanged?: boolean; kind?: string; reopened?: boolean;
-  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean }; createdAt: string; actor: string | null }
+  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string }; createdAt: string; actor: string | null }
 export interface DriverProfile extends DriverRow { experienceYears: number | null; source: string | null; notes: string | null; statusReason: string | null; updatedAt: string;
   addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[];
   // From an API with driver applications; absent on an older one.
@@ -17,12 +17,16 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
     correctionNote?: string | null; correctionRequestedAt?: string | null } | null;
   documents?: DriverDocumentRow[];
   // From an API with screening and decisions; absent on an older one.
-  screening?: Screening }
+  screening?: Screening;
+  // From an API with consent forms.
+  consents?: { signatures: ConsentSignature[]; missing: string[]; authorizationSigned: boolean } }
+export interface ConsentSignature { documentId: string; kind: string; title: string; version: number; typedName: string; signedAt: string; hasSignature?: boolean }
+export const consentLabels: Record<string, string> = { BACKGROUND_DISCLOSURE: 'Background check disclosure', BACKGROUND_AUTHORIZATION: 'Background check authorization', CLEARINGHOUSE_CONSENT: 'Clearinghouse consent' };
 export type ScreeningCheckKey = 'IDENTITY' | 'PHONE_SCREEN' | 'EXPERIENCE' | 'MVR';
 export interface ScreeningCheck { key: ScreeningCheckKey; result: 'PASS' | 'CONCERN'; note: string | null; checkedAt: string; checkedBy: string | null }
 export interface DriverReviewRow { id: string; action: string; note: string | null; conditions: string | null; noticeSentOn: string | null; previousStatus: string; newStatus: string;
   createdAt: string; actor: string | null }
-export interface Screening { checks: ScreeningCheck[]; mvr: { id: string; pulledOn: string; pageCount: number; createdAt: string; uploadedBy: string | null } | null;
+export interface Screening { checks: ScreeningCheck[]; mvr: { id: string; pulledOn: string; pageCount: number; createdAt: string; uploadedBy: string | null; authorization?: 'SIGNED' | 'PAPER' | null } | null;
   reviews: DriverReviewRow[]; missing: string[]; finalRejectionFrom: string | null }
 export type DocumentKind = 'LICENSE' | 'MEDICAL_CARD' | 'WORK_AUTHORIZATION';
 export interface DriverDocumentRow { id: string; kind: DocumentKind; subtype: string | null; pageCount: number; createdAt: string;

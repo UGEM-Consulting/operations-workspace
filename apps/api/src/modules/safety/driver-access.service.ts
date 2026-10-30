@@ -12,6 +12,7 @@ import { EmailService } from '../email/email.service';
 import { clientBucket, countAttempt, onboardingLimit } from '../onboarding/rate-limit';
 import { digest, generateVerificationCode } from '../onboarding/verification-code';
 import { BeginDriverDto, DriverDocumentDto, SaveDriverApplicationDto, VerifyDriverDto } from './driver-application.dto';
+import { consentStatus } from './consent-rules';
 import { scanPdf } from './scan';
 import { PiiService } from './pii';
 import { DOCUMENT_SEGMENTS, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
@@ -26,7 +27,8 @@ const INVALID = 'Verification is invalid or expired.';
 const labels: Record<string, string> = { legalFirstName: 'first name', legalLastName: 'last name', dateOfBirth: 'date of birth', phone: 'phone', addressLine1: 'street address',
  city: 'city', state: 'state', zip: 'ZIP code', emergencyName: 'emergency contact name', emergencyRelationship: 'emergency contact relationship',
  emergencyPhone: 'emergency contact phone', licenseNumber: 'license number', licenseState: 'license state', licenseClass: 'license class', licenseExpiresOn: 'license expiration', ssn: 'Social Security number',
- LICENSE: 'license scan', MEDICAL_CARD: 'medical card scan', WORK_AUTHORIZATION: 'work authorization scan' };
+ LICENSE: 'license scan', MEDICAL_CARD: 'medical card scan', WORK_AUTHORIZATION: 'work authorization scan',
+ 'consent:BACKGROUND_DISCLOSURE': 'background check disclosure', 'consent:BACKGROUND_AUTHORIZATION': 'background check authorization', 'consent:CLEARINGHOUSE_CONSENT': 'Clearinghouse consent' };
 const years = (from: string, to = new Date()) => {
  const date = new Date(`${from}T12:00:00Z`);
  let age = to.getUTCFullYear() - date.getUTCFullYear();
@@ -127,6 +129,8 @@ export class DriverAccessService {
     if (this.storage.enabled) {
      const present = (await em.getRepository(DriverDocument).findBy({ driverId: driver.id, replacedAt: IsNull() })).map(document => document.kind);
      missing.push(...requiredDriverDocuments(fields).filter(kind => !present.includes(kind)));
+     // Every published consent form, signed in its current version.
+     missing.push(...(await consentStatus(em, driver.id, true)).missing);
     }
     if (missing.length) throw new BadRequestException({ message: `Answer every required question first: ${missing.map(field => labels[field]).join(', ')}.`, missing });
     const age = years(fields.dateOfBirth!);
@@ -185,8 +189,11 @@ export class DriverAccessService {
   return { body: await this.storage.get(driverDocumentKey(driver.id, id)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
  }
 
- /** The verified link, its driver and application. With lock, takes the driver row first, like every staff write. */
- private async session(em: EntityManager, req: Request, lock: boolean) {
+ /**
+  * The verified link, its driver and application. With lock, takes the driver row first, like every staff write. Also used
+  * by ConsentService for the driver's consent forms.
+  */
+ async session(em: EntityManager, req: Request, lock: boolean) {
   const linkId = req.session?.driverLinkId;
   if (!linkId || !req.session.expiresAt || req.session.expiresAt <= Date.now()) throw new UnauthorizedException('Please verify your email again.');
   const first = await em.getRepository(DriverLink).findOneBy({ id: linkId });
@@ -203,13 +210,16 @@ export class DriverAccessService {
  private clean(fields: DriverApplicationFields): DriverApplicationFields {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => typeof value === 'string' && value !== '')) as DriverApplicationFields;
  }
- private async view(em: EntityManager, link: DriverLink, application: DriverApplication) {
+ /** What the driver's page shows; ConsentService returns it after a signature. */
+ async view(em: EntityManager, link: DriverLink, application: DriverApplication) {
   const documents = await em.getRepository(DriverDocument).find({ where: { driverId: application.driverId, replacedAt: IsNull() }, order: { createdAt: 'ASC' } });
+  const consents = await consentStatus(em, application.driverId, this.storage.enabled);
   return { email: link.email, expiresAt: link.expiresAt, status: application.status, fields: application.fields, version: application.version,
    ssnLast4: application.ssnLast4, submittedAt: application.submittedAt, ssnAvailable: this.pii.enabled,
    // What Safety asked the driver to correct, while the application is back with them.
    correction: application.status === 'DRAFT' && application.correctionNote ? { message: application.correctionNote, requestedAt: application.correctionRequestedAt } : null,
    documentsEnabled: this.storage.enabled, requiredDocuments: this.storage.enabled ? requiredDriverDocuments(application.fields) : [],
-   documents: documents.map(document => ({ id: document.id, kind: document.kind, subtype: document.subtype, pageCount: document.pageCount, createdAt: document.createdAt })) };
+   documents: documents.map(document => ({ id: document.id, kind: document.kind, subtype: document.subtype, pageCount: document.pageCount, createdAt: document.createdAt })),
+   consents: { required: consents.required, consent: consents.consent, items: consents.items } };
  }
 }

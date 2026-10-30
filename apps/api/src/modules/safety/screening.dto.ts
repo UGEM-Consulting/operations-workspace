@@ -17,6 +17,9 @@ export class UploadMvrDto {
  @IsInt() @Min(1) version!: number;
  @IsString() @IsBase64() @MaxLength(Math.ceil(MAX_PDF_BYTES / 3) * 4) file!: string;
  @IsString() @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the date the MVR was pulled.' }) pulledOn!: string;
+ // Needed when the driver hasn't signed the background check authorization in the workspace: the uploader confirms a
+ // signed paper authorization is on file.
+ @IsOptional() @IsBoolean() paperAuthorization?: boolean;
 }
 /** Sends the application back to the driver; the message is shown to the driver. */
 export class RequestCorrectionsDto {

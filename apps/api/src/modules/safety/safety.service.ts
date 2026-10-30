@@ -13,6 +13,7 @@ import { Role, User, UserStatus } from '../users/user.entity';
 import { AssignOwnerDto, CreateDriverDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
 import { driverEvent, lockOpenDriver, ownsDriver, requireScreener, SCREENERS, STALE, writeDriver } from './driver-records';
 import { CLOSED_STATUSES, Driver, DriverApplication, DriverDocument, DriverLink, DriverOwner, earliestFinalRejection, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
+import { currentConsents, missingConsents } from './consent-rules';
 import { missingForDecision } from './screening-rules';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
@@ -45,7 +46,7 @@ export class SafetyService {
    d.source, d.notes, d.status, d."statusReason", d."closedAt", d.version, d."createdAt", d."updatedAt", ${person('l')} AS "safetyLead", ${person('c')} AS "addedBy"
    FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" WHERE d.id = $1`, [id]);
   if (!driver) throw new NotFoundException('This driver record no longer exists.');
-  const [owners, activity, [link], [application], documents, checks, [mvr], reviews] = await Promise.all([
+  const [owners, activity, [link], [application], documents, checks, [mvr], reviews, consents, currentForms] = await Promise.all([
    this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, CASE WHEN a.id IS NULL THEN NULL ELSE a."firstName" || ' ' || a."lastName" END AS "assignedBy"
     FROM driver_owners x LEFT JOIN users o ON o.id = x."ownerId" LEFT JOIN users a ON a.id = x."actorId" WHERE x."driverId" = $1 ORDER BY x."startedAt" DESC, x."createdAt" DESC`, [id]),
    this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
@@ -60,18 +61,25 @@ export class SafetyService {
    // Screening: the Safety lead's checks, the current MVR (never its file here) and the decisions so far, newest first.
    this.db.query(`SELECT c.key, c.result, c.note, c."checkedAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "checkedBy"
     FROM driver_screening_checks c LEFT JOIN users u ON u.id = c."checkedBy" WHERE c."driverId" = $1`, [id]),
-   this.db.query(`SELECT r.id, to_char(r."pulledOn", 'YYYY-MM-DD') AS "pulledOn", r."pageCount", r."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "uploadedBy"
+   this.db.query(`SELECT r.id, to_char(r."pulledOn", 'YYYY-MM-DD') AS "pulledOn", r."pageCount", r."createdAt", r."authorization", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "uploadedBy"
     FROM driver_reports r LEFT JOIN users u ON u.id = r."uploadedBy" WHERE r."driverId" = $1 AND r.kind = 'MVR' AND r."replacedAt" IS NULL`, [id]),
    this.db.query(`SELECT r.id, r.action, r.note, r.conditions, to_char(r."noticeSentOn", 'YYYY-MM-DD') AS "noticeSentOn", r."previousStatus", r."newStatus", r."createdAt",
      CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
     FROM driver_reviews r LEFT JOIN users u ON u.id = r."actorId" WHERE r."driverId" = $1 ORDER BY r."createdAt" DESC`, [id]),
+   // Consent forms the driver signed (newest version first per form) and the published ones still to sign.
+   // hasSignature is false for a form that is only acknowledged (the background check disclosure).
+   this.db.query(`SELECT s."documentId", d.kind, d.title, d.version, s."typedName", s."signedAt", s."signatureImage" IS NOT NULL AS "hasSignature" FROM driver_consent_signatures s
+    JOIN driver_consent_documents d ON d.id = s."documentId" WHERE s."driverId" = $1 ORDER BY d.kind, d.version DESC`, [id]),
+   this.storage.enabled ? currentConsents(this.db.manager) : [],
   ]);
+  const consentsMissing = missingConsents(currentForms, consents.map((row: { documentId: string }) => row.documentId));
   const gaps = missingForDecision({ application, checkKeys: checks.map((row: { key: string }) => row.key), hasMvr: !!mvr,
    verifiedKinds: documents.filter((row: { verifiedAt: Date | null }) => row.verifiedAt).map((row: { kind: string }) => row.kind) }, this.storage.enabled);
   // While a pre-adverse notice is out, the first day the rejection can be final.
   const notice = driver.status === 'PRE_ADVERSE' ? reviews.find((row: { action: string }) => row.action === 'PRE_ADVERSE') : null;
   return { ...driver, owner: owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null, owners, activity, link: link ?? null, application: application ?? null, documents,
-   screening: { checks, mvr: mvr ?? null, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null } };
+   screening: { checks, mvr: mvr ?? null, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null },
+   consents: { signatures: consents, missing: consentsMissing, authorizationSigned: consents.some((row: { kind: string }) => row.kind === 'BACKGROUND_AUTHORIZATION') } };
  }
 
  /** Active people to pick: Safety leads (and managers, who can act as one) and safety staff owners. */

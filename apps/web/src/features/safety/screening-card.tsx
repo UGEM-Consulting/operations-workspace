@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Alert, Notice } from '@/components/ui/alert';
-import { Field, Input, RadioGroup, Textarea } from '@/components/ui/field';
+import { Checkbox, Field, Input, RadioGroup, Textarea } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { Badge } from '@/components/ui/status-badge';
@@ -69,7 +69,8 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
         await mutate(`safety/drivers/${driver.id}/checks/${action.key}`, 'POST', { version: driver.version, result, ...(text('note') ? { note: text('note') } : {}) });
         toast({ title: 'Check recorded' });
       } else if (action.kind === 'mvr') {
-        await mutate(`safety/drivers/${driver.id}/mvr`, 'POST', { version: driver.version, file: await fileToBase64(form.get('file') as File), pulledOn: text('pulledOn') });
+        await mutate(`safety/drivers/${driver.id}/mvr`, 'POST', { version: driver.version, file: await fileToBase64(form.get('file') as File), pulledOn: text('pulledOn'),
+          ...(form.get('paperAuthorization') === 'on' ? { paperAuthorization: true } : {}) });
         toast({ title: 'MVR uploaded' });
       } else if (action.kind === 'corrections') {
         setLink(await mutate<{ url: string; expiresAt: string }>(`safety/drivers/${driver.id}/corrections`, 'POST', { version: driver.version, message: text('message') }));
@@ -156,6 +157,11 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
             aria-invalid={fileError ? true : undefined} aria-describedby={fileError ? 'mvr-file-hint mvr-file-error' : 'mvr-file-hint'} onChange={() => setFileError('')}
             className="block w-full text-sm file:mr-3 file:min-h-9 file:cursor-pointer file:rounded-sm file:border file:border-input file:bg-card file:px-3 file:text-sm file:font-medium file:shadow-xs hover:file:bg-accent" /></Field>
           <Input label="Date pulled" name="pulledOn" type="date" required defaultValue={today ?? ''} max={today ?? undefined} width="md" hint="As shown on the report." />
+          {/* The driver's written authorization comes first: signed in the application, or on paper and confirmed here. */}
+          {driver.consents && (driver.consents.authorizationSigned
+            ? <p className="text-sm text-muted-foreground">The driver signed the background check authorization in their application.</p>
+            : <Checkbox name="paperAuthorization" required label="The driver signed a paper background check authorization, and it’s on file."
+              description="They haven’t signed it in their application. Without a signed authorization, don’t pull or upload an MVR." />)}
         </>}
         {action.kind === 'corrections' && <Textarea label="Message to the driver" name="message" required maxLength={1000} rows={4}
           hint="The driver sees this when they open the new link, for example: “Your ZIP code doesn’t match your city.” Don’t mention MVR or background report details." />}

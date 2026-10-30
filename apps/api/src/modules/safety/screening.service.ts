@@ -11,6 +11,7 @@ import { DECIDERS, driverEvent, lockOpenDriver, requireScreener, writeDriver } f
 import { Driver, DriverApplication, DriverEventType, DriverLink, DriverReport, DriverReview, DriverReviewAction, DriverScreeningCheck, DriverStatus, earliestFinalRejection,
  SCREENING_CHECKS, type ScreeningCheckKey } from './safety.entity';
 import { SafetyService } from './safety.service';
+import { authorizationSigned } from './consent-rules';
 import { addDays, screeningGaps, usDay } from './screening-rules';
 import { Decision, DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 
@@ -25,6 +26,7 @@ const WRONG_STAGE: Record<Decision, string> = {
  APPROVE: 'Only a driver waiting for a decision can be approved.', MORE_INFO: 'Only a driver waiting for a decision can be sent back to screening.',
  PRE_ADVERSE: 'Only a driver waiting for a decision can get a pre-adverse notice.', REJECT: 'Record the pre-adverse notice first; the rejection is final only after the waiting period.',
 };
+const NO_AUTHORIZATION = { message: 'The driver hasn’t signed the background check authorization. Ask them to sign it, or confirm that a signed paper authorization is on file.', missing: ['authorization'] };
 // How far back a notice date may be entered: a notice is recorded when it is sent, not weeks later.
 const NOTICE_MAX_AGE_DAYS = 30;
 
@@ -64,6 +66,11 @@ export class ScreeningService {
   if (!this.storage.enabled) throw new ServiceUnavailableException('Uploads aren’t available right now.');
   if (dto.pulledOn > usDay('latest')) throw new BadRequestException('The MVR date can’t be in the future.');
   if (dto.pulledOn < addDays(usDay('earliest'), -365)) throw new BadRequestException('This MVR is more than a year old. Pull a current one.');
+  // Refused before anything is counted or stored; both are checked again under the driver lock below.
+  const current = await this.db.getRepository(Driver).findOneBy({ id });
+  if (!current) throw new NotFoundException('This driver record no longer exists.');
+  if (current.status !== 'SCREENING') throw new ConflictException('This driver isn’t in screening.');
+  if (dto.paperAuthorization !== true && !await authorizationSigned(this.db.manager, id)) throw new BadRequestException(NO_AUTHORIZATION);
   await onboardingLimit(this.db, `driver-mvr:${user.id}`, 20, 3600);
   const file = decodePdf(dto.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
@@ -72,12 +79,15 @@ export class ScreeningService {
   try {
    return await writeDriver(this.db, async em => {
     const driver = await this.inScreening(em, id, dto.version);
+    // An MVR is pulled only with the driver's written authorization: signed here, or on paper and confirmed by the uploader.
+    const authorization = await authorizationSigned(em, id) ? 'SIGNED' : dto.paperAuthorization === true ? 'PAPER' : null;
+    if (!authorization) throw new BadRequestException(NO_AUTHORIZATION);
     const reports = em.getRepository(DriverReport);
     const previous = await reports.findOneBy({ driverId: id, kind: 'MVR', replacedAt: IsNull() });
     if (previous) await reports.update(previous.id, { replacedAt: new Date() });
-    await reports.insert({ id: reportId, driverId: id, kind: 'MVR', pulledOn: dto.pulledOn, pageCount, sha256: sha256(file), byteSize: file.length, uploadedBy: user.id, createdAt: new Date() });
+    await reports.insert({ id: reportId, driverId: id, kind: 'MVR', pulledOn: dto.pulledOn, pageCount, sha256: sha256(file), byteSize: file.length, uploadedBy: user.id, createdAt: new Date(), authorization });
     await em.getRepository(Driver).update(id, { version: driver.version + 1 });
-    await driverEvent(em, user.id, id, 'MVR_UPLOADED', { replaced: !!previous });
+    await driverEvent(em, user.id, id, 'MVR_UPLOADED', { replaced: !!previous, authorization });
     return { id, version: driver.version + 1 };
    });
   } catch (error) { await this.storage.remove(driverReportKey(id, reportId)); throw error; }

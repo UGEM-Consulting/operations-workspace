@@ -14,6 +14,10 @@ import { SafetyService } from './safety.service';
 import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 import { ScreeningService } from './screening.service';
 import { ScanSweeper } from './scan-sweeper';
+import { ApplicantSignatureDto } from '../documents/documents.dto';
+import { clientContext } from '../documents/client-context';
+import { PublishConsentDto } from './consent.dto';
+import { ConsentService } from './consent.service';
 // Private files: never cached, never sniffed into another type.
 const FileResponse = () => applyDecorators(Header('Cache-Control', 'no-store, private'), Header('X-Content-Type-Options', 'nosniff'));
 const send = (file: FileResult) => new StreamableFile(file.body, { type: file.type, length: file.body.length, disposition: `inline; filename="${file.filename}"` });
@@ -22,7 +26,12 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService) {}
+ // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
+ @Get('consents') consentList(@Req() req: AuthRequest) { return this.consents.list(req.currentUser); }
+ @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
+ @Get('consents/:id/file') @FileResponse() async consentFile(@Param('id', ParseUUIDPipe) id: string) { return send(await this.consents.staffFile(id)); }
+ @Get('drivers/:id/consents/:documentId/signed') @FileResponse() async signedConsent(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.consents.staffSignedCopy(req.currentUser, id, documentId)); }
  @Get('people') people() { return this.safety.people(); }
  @Get('drivers') drivers(@Query() query: DriverQueryDto) { return this.safety.drivers(query.status); }
  @Post('drivers') create(@Req() req: AuthRequest, @Body() dto: CreateDriverDto) { return this.safety.create(req.currentUser, dto); }
@@ -51,7 +60,12 @@ class SafetyController {
 @Controller('driver')
 @Public()
 class DriverController {
- constructor(private readonly access: DriverAccessService) {}
+ constructor(private readonly access: DriverAccessService, private readonly consents: ConsentService) {}
+ // Consent forms: open (recorded only by the explicit view request), sign, and download the signed copy.
+ @Get('consents/:id/file') @FileResponse() async consentFile(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) { return send(await this.consents.driverFile(req, id)); }
+ @Post('consents/:id/view') consentView(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) { return this.consents.recordView(req, id); }
+ @Post('consents/:id/sign') consentSign(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ApplicantSignatureDto, @Req() req: Request) { return this.consents.sign(req, id, dto, clientContext(req)); }
+ @Get('consents/:id/signed') @FileResponse() async consentSigned(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) { return send(await this.consents.driverSignedCopy(req, id)); }
  @Post('begin') begin(@Body() dto: BeginDriverDto, @Req() req: Request) { return this.access.begin(dto, req); }
  @Post('verify') verify(@Body() dto: VerifyDriverDto, @Req() req: Request) { return this.access.verify(dto, req); }
  @Get('application') current(@Req() req: Request) { return this.access.current(req); }
@@ -64,5 +78,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, DriverAccessService, PiiService, ScanSweeper], exports: [ScreeningService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, DriverAccessService, PiiService, ScanSweeper], exports: [ScreeningService] })
 export class SafetyModule {}

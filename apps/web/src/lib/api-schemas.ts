@@ -125,7 +125,14 @@ export const driverProfileSchema = driverRow.extend({
     reviews: z.array(z.looseObject({ id: text, action: text, note: nullableText, conditions: nullableText, noticeSentOn: nullableText, createdAt: text, actor: nullableText })),
     missing: z.array(text), finalRejectionFrom: nullableText,
   }).optional().catch(undefined),
+  // From an API with consent forms.
+  consents: z.looseObject({ signatures: z.array(z.looseObject({ documentId: text, kind: text, title: text, version: z.number(), signedAt: text, hasSignature: z.boolean().optional().catch(undefined) })), missing: z.array(text), authorizationSigned: z.boolean() })
+    .optional().catch(undefined),
 });
+
+/** GET /safety/consents: the consent forms drivers sign. */
+export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), canPublish: z.boolean(),
+  kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
 
 /** GET /it/onboarding/:id */
 export const itDetailSchema = z.looseObject({

@@ -13,13 +13,15 @@ const SWEPT = [
  { prefix: 'drivers/', kept: `SELECT id FROM driver_documents WHERE id = ANY($1::uuid[]) AND NOT ("replacedAt" IS NOT NULL AND "verifiedAt" IS NULL)` },
  // Every MVR row is kept, replaced ones included; only a file no row names (an upload that never committed) is a leftover.
  { prefix: 'driver-reports/', kept: `SELECT id FROM driver_reports WHERE id = ANY($1::uuid[])` },
+ // A consent form whose publish never committed; every published version is kept.
+ { prefix: 'driver-consents/', kept: `SELECT id FROM driver_consent_documents WHERE id = ANY($1::uuid[])` },
 ] as const;
 
 /**
  * Removes driver scan files nothing should keep: a file with no driver_documents row (the API stopped between storing it
  * and committing, or its driver was deleted) and a replaced scan Safety never verified whose best-effort removal failed.
  * Current scans and verified ones (kept when a reopened application replaces them) are never touched, and neither is any
- * MVR under driver-reports/ that a driver_reports row names. Runs at startup
+ * MVR under driver-reports/ or consent form under driver-consents/ that a row names. Runs at startup
  * and every 6 hours; overlapping instances are harmless because removal is idempotent. Each file is checked against its
  * own row, and any failure stops the sweep, so a failed query never reads as "nothing is referenced".
  */
