@@ -39,7 +39,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null}:{ini
  if(server!==initial){setServer(initial);setRows(initial);}
  const toast=useToast();
  const [pending,setPending]=useState<'create'|'revoke'|null>(null),[error,setError]=useState('');
- const [url,setUrl]=useState(''),[linkOpen,setLinkOpen]=useState(false),[copied,setCopied]=useState(false),[copyMessage,setCopyMessage]=useState('');
+ const [url,setUrl]=useState(''),[linkId,setLinkId]=useState(''),[linkOpen,setLinkOpen]=useState(false),[copied,setCopied]=useState(false),[copyMessage,setCopyMessage]=useState('');
  const [revoking,setRevoking]=useState<Invitation|null>(null),[revokeError,setRevokeError]=useState('');
  const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'>('DISPATCHER'),[supportsId,setSupportsId]=useState('');
  const [optionsOpen,setOptionsOpen]=useState(false),[employment,setEmployment]=useState<Employment>(NO_EMPLOYMENT),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
@@ -59,12 +59,15 @@ export function Invitations({initial,filters,options=null,dispatchers=null}:{ini
    const support=withOptions&&position==='SUPPORT';
    if(support&&!supportsId){toast({tone:'danger',title:'Choose a dispatcher',description:'Pick the dispatcher this support will assist.'});setPending(null);return;}
    const assignments=support?{position:'SUPPORT',supportsMemberId:supportsId}:withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
-   const result=await mutate<{url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,expirationDays:expiry});
-   setUrl(result.url);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setPosition('DISPATCHER');setSupportsId('');setLinkOpen(true);
+   const result=await mutate<{id:string;url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,expirationDays:expiry});
+   setUrl(result.url);setLinkId(result.id);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setPosition('DISPATCHER');setSupportsId('');setLinkOpen(true);
    await refreshRows();
   }catch(error){toast({tone:'danger',title:'Invitation not created',description:errorMessage(error,'Unable to create invitation.')});}finally{setPending(null);}
  }
- async function revoke(){if(!revoking||pending)return;setPending('revoke');setRevokeError('');try{await mutate(`onboarding/invitations/${revoking.id}/revoke`,'POST');setRevoking(null);toast({title:'Invitation revoked',description:'Its link can no longer be used.'});await refreshRows();}catch(error){setRevokeError(errorMessage(error,'Unable to revoke invitation.'));}finally{setPending(null);}}
+ async function revoke(){if(!revoking||pending)return;setPending('revoke');setRevokeError('');try{await mutate(`onboarding/invitations/${revoking.id}/revoke`,'POST');
+  // A revoked link is useless: drop it, so leaving no longer warns about copying it.
+  if(revoking.id===linkId){setUrl('');setLinkId('');setLinkOpen(false);}
+  setRevoking(null);toast({title:'Invitation revoked',description:'Its link can no longer be used.'});await refreshRows();}catch(error){setRevokeError(errorMessage(error,'Unable to revoke invitation.'));}finally{setPending(null);}}
  const search=filters.search.toLowerCase();
  const matches=(row:Invitation)=>`${row.email??''} ${row.expectedEmail??''} ${row.mcName??''} ${row.teamLead??''}`.toLowerCase().includes(search);
  const searched=rows.filter(matches),visible=searched.filter(row=>filters.status==='ALL'||row.status===filters.status);
