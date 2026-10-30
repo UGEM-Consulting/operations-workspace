@@ -13,6 +13,8 @@ import { installSessions } from '../src/modules/auth/session';
 import { hashPassword } from '../src/modules/auth/password';
 import { User, Role, UserStatus } from '../src/modules/users/user.entity';
 import { SafetyModule } from '../src/modules/safety/safety.module';
+import { EmailService } from '../src/modules/email/email.service';
+import { normalSsn, PiiService } from '../src/modules/safety/pii';
 import { completeMfa, enrolForTest } from './mfa-helpers';
 type Agent = ReturnType<typeof request.agent>;
 type Key = 'admin' | 'manager' | 'lead' | 'staff' | 'staff2' | 'dispatch';
@@ -26,19 +28,38 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   const lead = { firstName: ' Jordan ', lastName: 'Wheeler', phone: '+1 (555) 010-2000', email: 'Jordan.Wheeler@Example.test', driverType: 'OWNER_OPERATOR', licenseType: 'CDL_A', licenseState: 'tx', experienceYears: 6, source: 'Referral' };
   const add = (agent: Agent, body: Record<string, unknown> = lead) => agent.post('/api/safety/drivers').set(headers).send(body);
   const driver = async (id: string, agent = agents.lead) => (await agent.get(`/api/safety/drivers/${id}`).set(headers).expect(200)).body;
+  // Captures code emails instead of opening an SMTP connection; background work is awaited by settle().
+  const sent: { to: string; code: string }[] = [], tasks: Promise<void>[] = [];
+  const email = { enabled: true, onModuleInit: () => undefined, onApplicationShutdown: async () => undefined,
+    sendVerificationCode: async (to: string, code: string) => { sent.push({ to, code }); return true; }, runInBackground: (task: () => Promise<void>) => { tasks.push(task()); } };
+  const settle = async () => { await Promise.all(tasks.splice(0)); };
+  const complete = { legalFirstName: 'Jordan', legalLastName: 'Wheeler', dateOfBirth: '1988-04-12', phone: '555 010 2000', addressLine1: '100 Fictional Way', city: 'Austin', state: 'tx',
+    zip: '73301', emergencyName: 'Casey Wheeler', emergencyRelationship: 'Sibling', emergencyPhone: '555 010 3000', licenseNumber: 'd1234567', licenseState: 'TX', licenseClass: 'CDL_A', licenseExpiresOn: '2030-01-31' };
+  /** A lead with a sent link, and a driver agent signed in through the emailed code. */
+  async function applying() {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const link = (await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 1 }).expect(201)).body;
+    const token = link.url.split('#').pop() as string, agent = request.agent(app.getHttpServer());
+    const { challengeId } = (await agent.post('/api/driver/begin').set(headers).send({ token, email: 'jordan.wheeler@example.test' }).expect(201)).body;
+    await settle();
+    await agent.post('/api/driver/verify').set(headers).send({ challengeId, code: sent.at(-1)!.code }).expect(201);
+    return { id, token, agent, version: link.version as number };
+  }
   const events = async (id: string) => (await db.query(`SELECT event, metadata FROM driver_events WHERE "driverId" = $1 ORDER BY "createdAt"`, [id])) as { event: string; metadata: Record<string, unknown> }[];
 
   beforeAll(async () => {
     env = validateEnvironment({ NODE_ENV: 'test', DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://localhost/operations_m2_test', CORS_ORIGINS: 'http://localhost:3000',
-      WEB_ORIGIN: 'http://localhost:3000', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64') });
+      WEB_ORIGIN: 'http://localhost:3000', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64'), PII_ENCRYPTION_KEY: randomBytes(32).toString('base64') });
     headers = { 'x-workspace-key': env.BFF_SHARED_SECRET, origin: env.WEB_ORIGIN, 'x-csrf-protection': '1' };
     if (!new URL(env.DATABASE_URL).pathname.endsWith('_test')) throw new Error('Dedicated _test database required');
     db = await new DataSource(databaseOptions(env)).initialize(); await db.runMigrations();
-    const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, SafetyModule] }).compile();
+    const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, SafetyModule] })
+      .overrideProvider(EmailService).useValue(email).compile();
     app = module.createNestApplication(); closeSessions = installSessions(app, env); configureApp(app, env.CORS_ORIGINS); await app.init();
   }, 30000);
   beforeEach(async () => {
-    await db.query('TRUNCATE users, staff_sessions, login_attempts, staff_mfa, drivers CASCADE');
+    await settle(); sent.length = 0;
+    await db.query('TRUNCATE users, staff_sessions, driver_sessions, driver_challenges, login_attempts, staff_mfa, drivers CASCADE');
     const passwordHash = await hashPassword(password);
     for (const key of Object.keys(ROLES) as Key[]) {
       users[key] = await db.getRepository(User).save({ firstName: 'Fictional', lastName: key, email: `safety.${key}@example.test`, role: ROLES[key], status: UserStatus.ACTIVE, passwordHash });
@@ -148,11 +169,140 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await events(id)).map(row => row.event)).toEqual(['CREATED', 'WITHDRAWN', 'REOPENED']);
   });
 
-  it('keeps the migration from discarding driver records or Safety accounts', async () => {
-    await add(agents.lead).expect(201);
-    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver records or Safety accounts');
+  it('sends a link bound to the driver’s email, replaces it on resend and keeps the token out of every response but the first', async () => {
+    const { id } = (await add(agents.lead, { ...lead, email: null }).expect(201)).body;
+    expect((await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 1 }).expect(400)).body.message).toMatch(/Add the driver’s email first/);
+    await agents.lead.patch(`/api/safety/drivers/${id}`).set(headers).send({ version: 1, email: 'jordan.wheeler@example.test' }).expect(200);
+    await agents.staff.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 2 }).expect(403);
+    const first = (await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 2 }).expect(201)).body;
+    expect(first.url).toMatch(/^http:\/\/localhost:3000\/driver#[a-f0-9]{64}$/);
+    const record = await driver(id);
+    expect(record).toMatchObject({ status: 'APPLYING', link: { email: 'jordan.wheeler@example.test', expired: false, openedAt: null }, application: null });
+    expect(JSON.stringify(record)).not.toContain(first.url.split('#').pop());
+    const second = (await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 3 }).expect(201)).body;
+    // The first link is dead: same response, no email.
+    const begin = (token: string, address = 'jordan.wheeler@example.test') => request(app.getHttpServer()).post('/api/driver/begin').set(headers).send({ token, email: address });
+    const dead = (await begin(first.url.split('#').pop()).expect(201)).body, wrong = (await begin(second.url.split('#').pop(), 'someone.else@example.test').expect(201)).body;
+    const live = (await begin(second.url.split('#').pop()).expect(201)).body;
+    await settle();
+    expect([dead.message, wrong.message]).toEqual([live.message, live.message]);
+    expect(sent).toEqual([{ to: 'jordan.wheeler@example.test', code: expect.stringMatching(/^\d{8}$/) }]);
+    expect((await events(id)).filter(row => row.event === 'LINK_SENT').map(row => row.metadata)).toEqual([{ resent: false }, { resent: true }]);
+    await begin(second.url.split('#').pop(), 'real.person@gmail.com').expect(400);
+  });
+
+  it('lets only a verified driver read and save their application, with drafts version-checked and the SSN encrypted', async () => {
+    const { id, agent } = await applying();
+    await request(app.getHttpServer()).get('/api/driver/application').set(headers).expect(401);
+    // A driver session is not a staff session, and a staff session is not a driver session.
+    await agent.get('/api/safety/drivers').set(headers).expect(401);
+    await agents.lead.get('/api/driver/application').set(headers).expect(401);
+    const start = (await agent.get('/api/driver/application').set(headers).expect(200)).body;
+    expect(start).toMatchObject({ email: 'jordan.wheeler@example.test', status: 'DRAFT', version: 1, ssnLast4: null, ssnAvailable: true,
+      fields: { legalFirstName: 'Jordan', legalLastName: 'Wheeler', phone: '+1 (555) 010-2000', licenseState: 'TX', licenseClass: 'CDL_A' } });
+    await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { zip: '123' } }).expect(400);
+    await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { unknown: 'x' } }).expect(400);
+    await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: {}, ssn: '666-12-3456' }).expect(400);
+    const saved = (await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { city: ' Austin ', zip: '' }, ssn: '123-45-6789' }).expect(200)).body;
+    expect(saved).toMatchObject({ version: 2, ssnLast4: '6789', fields: { city: 'Austin' } });
+    expect(saved.fields).not.toHaveProperty('zip');
+    await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { city: 'Dallas' } }).expect(409);
+    const [row] = await db.query(`SELECT "ssnCiphertext" FROM driver_applications WHERE "driverId" = $1`, [id]);
+    expect(row.ssnCiphertext).toMatch(/^v1:/);
+    expect(row.ssnCiphertext).not.toContain('6789');
+    // Staff see the last four digits only, until someone allowed asks for the number; every view is recorded.
+    const record = await driver(id, agents.staff);
+    expect(record.application).toMatchObject({ status: 'DRAFT', ssnLast4: '6789', fields: { city: 'Austin' } });
+    expect(JSON.stringify(record)).not.toContain('123-45');
+    await agents.staff.post(`/api/safety/drivers/${id}/ssn`).set(headers).send({}).expect(403);
+    expect((await agents.lead.post(`/api/safety/drivers/${id}/ssn`).set(headers).send({}).expect(201)).body).toEqual({ ssn: '123-45-6789' });
+    expect((await events(id)).map(row => row.event)).toEqual(['CREATED', 'LINK_SENT', 'APPLICATION_VERIFIED', 'SSN_REVEALED']);
+    expect(JSON.stringify(await events(id))).not.toContain('6789');
+  });
+
+  it('submits a complete application once: the link closes and the driver moves to Screening', async () => {
+    const { id, token, agent } = await applying();
+    const missing = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: {} }).expect(400)).body;
+    expect(missing.missing).toEqual(['dateOfBirth', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseExpiresOn', 'ssn']);
+    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, dateOfBirth: '2015-01-01' }, ssn: '123456789' }).expect(400)).body.missing).toEqual(['dateOfBirth']);
+    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, licenseExpiresOn: '2020-01-01' }, ssn: '123456789' }).expect(400)).body.message).toMatch(/expired/);
+    const done = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201)).body;
+    expect(done).toMatchObject({ status: 'SUBMITTED', ssnLast4: '6789', fields: { state: 'TX', licenseNumber: 'D1234567' }, submittedAt: expect.any(String) });
+    expect(await driver(id)).toMatchObject({ status: 'SCREENING', link: null, application: { status: 'SUBMITTED' } });
+    // Still readable in this session; no further changes; the link can't start a new session.
+    await agent.get('/api/driver/application').set(headers).expect(200);
+    await agent.patch('/api/driver/application').set(headers).send({ version: 2, fields: { city: 'Dallas' } }).expect(409);
+    await request(app.getHttpServer()).post('/api/driver/begin').set(headers).send({ token, email: 'jordan.wheeler@example.test' }).expect(201);
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect((await events(id)).at(-1)?.event).toBe('APPLICATION_SUBMITTED');
+    await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 3 }).expect(409);
+  });
+
+  it('ends the driver’s access when Safety cancels the link, changes the email or withdraws them, keeping saved answers', async () => {
+    const one = await applying();
+    await one.agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { city: 'Austin' } }).expect(200);
+    expect((await agents.lead.post(`/api/safety/drivers/${one.id}/link/cancel`).set(headers).send({ version: one.version }).expect(201)).body.version).toBe(one.version + 1);
+    await one.agent.get('/api/driver/application').set(headers).expect(401);
+    expect(await driver(one.id)).toMatchObject({ status: 'LEAD', link: null, application: { fields: { city: 'Austin' } } });
+    await agents.lead.post(`/api/safety/drivers/${one.id}/link/cancel`).set(headers).send({ version: one.version + 1 }).expect(409);
+    // A new link opens the same saved answers.
+    const again = (await agents.lead.post(`/api/safety/drivers/${one.id}/link`).set(headers).send({ version: one.version + 1 }).expect(201)).body;
+    const agent = request.agent(app.getHttpServer());
+    const { challengeId } = (await agent.post('/api/driver/begin').set(headers).send({ token: again.url.split('#').pop(), email: 'jordan.wheeler@example.test' }).expect(201)).body;
+    await settle();
+    await agent.post('/api/driver/verify').set(headers).send({ challengeId, code: sent.at(-1)!.code }).expect(201);
+    expect((await agent.get('/api/driver/application').set(headers).expect(200)).body.fields.city).toBe('Austin');
+    await agents.lead.patch(`/api/safety/drivers/${one.id}`).set(headers).send({ version: again.version, email: 'jordan.w@example.test' }).expect(200);
+    await agent.get('/api/driver/application').set(headers).expect(401);
+    expect((await driver(one.id))).toMatchObject({ status: 'LEAD', link: null });
+    expect((await events(one.id)).filter(row => row.event === 'LINK_CANCELLED').map(row => row.metadata)).toEqual([{}, { emailChanged: true }]);
     await db.query('TRUNCATE drivers CASCADE');
-    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver records or Safety accounts');
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
+    const two = await applying();
+    await agents.lead.post(`/api/safety/drivers/${two.id}/withdraw`).set(headers).send({ version: two.version, reason: 'Took another job' }).expect(201);
+    await two.agent.get('/api/driver/application').set(headers).expect(401);
+  });
+
+  it('refuses wrong, reused and expired codes', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const token = (await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: 1 }).expect(201)).body.url.split('#').pop();
+    const agent = request.agent(app.getHttpServer());
+    const { challengeId } = (await agent.post('/api/driver/begin').set(headers).send({ token, email: 'jordan.wheeler@example.test' }).expect(201)).body;
+    await settle();
+    const code = sent.at(-1)!.code, other = code === '00000000' ? '11111111' : '00000000';
+    await agent.post('/api/driver/verify').set(headers).send({ challengeId, code: other }).expect(401);
+    await agent.post('/api/driver/verify').set(headers).send({ challengeId, code }).expect(201);
+    await request(app.getHttpServer()).post('/api/driver/verify').set(headers).send({ challengeId, code }).expect(401);
+    const next = (await agent.post('/api/driver/begin').set(headers).send({ token, email: 'jordan.wheeler@example.test' }).expect(201)).body.challengeId;
+    await settle();
+    await db.query(`UPDATE driver_challenges SET "expiresAt" = now() - interval '1 second' WHERE id = $1`, [next]);
+    await agent.post('/api/driver/verify').set(headers).send({ challengeId: next, code: sent.at(-1)!.code }).expect(401);
+  });
+
+  it('accepts only structurally valid SSNs and fails closed without an encryption key', () => {
+    expect(['123-45-6789', '123 45 6789', '123456789'].map(normalSsn)).toEqual(['123456789', '123456789', '123456789']);
+    expect(['000-12-3456', '666-12-3456', '912-34-5678', '123-00-4567', '123-45-0000', '12345678', 'abc'].map(normalSsn)).toEqual(Array(7).fill(null));
+    const off = new PiiService({ get: () => undefined } as never);
+    expect(off.enabled).toBe(false);
+    expect(() => off.sealSsn('123-45-6789', 'x')).toThrow(/encryption is configured/);
+    const on = new PiiService({ get: () => env.PII_ENCRYPTION_KEY } as never), sealed = on.sealSsn('123-45-6789', 'driver-a');
+    expect(on.openSsn(sealed.ciphertext, 'driver-a')).toBe('123-45-6789');
+    // Bound to the driver: the same ciphertext can't be read as another driver's.
+    expect(() => on.openSsn(sealed.ciphertext, 'driver-b')).toThrow();
+  });
+
+  it('keeps the migrations from discarding driver applications, driver records or Safety accounts', async () => {
+    const { id } = await applying();
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver application links, answers or their history');
+    await db.query('TRUNCATE driver_sessions, driver_challenges, driver_links, driver_applications');
+    await db.query(`DELETE FROM driver_events WHERE "driverId" = $1 AND event NOT IN ('CREATED')`, [id]);
+    await db.undoLastMigration();
+    try {
+      await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver records or Safety accounts');
+      await db.query('TRUNCATE drivers CASCADE');
+      await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver records or Safety accounts');
+      expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
+    } finally { await db.runMigrations(); }
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverApplications1792870000000');
   });
 });

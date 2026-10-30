@@ -41,7 +41,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Promotions: a team lead's request or cancellation, and a manager's decision.
     (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path))) ||
     // Safety drivers: add and edit a driver, withdraw or reopen them, assign their safety staff owner.
-    (method === 'POST' && (path === 'safety/drivers' || match(`safety/drivers/${ID}/(withdraw|reopen|owner)`, path))) || (method === 'PATCH' && match(`safety/drivers/${ID}`, path)) ||
+    (method === 'POST' && (path === 'safety/drivers' || match(`safety/drivers/${ID}/(withdraw|reopen|owner|link|link/cancel|ssn)`, path))) ||
+    // A driver filling in their application (driver session cookie; no staff account).
+    (method === 'POST' && ['driver/begin', 'driver/verify', 'driver/application/submit', 'driver/logout'].includes(path)) ||
+    ((method === 'GET' || method === 'PATCH') && path === 'driver/application') || (method === 'PATCH' && match(`safety/drivers/${ID}`, path)) ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));
 }

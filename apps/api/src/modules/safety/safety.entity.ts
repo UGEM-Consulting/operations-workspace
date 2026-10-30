@@ -13,7 +13,8 @@ export const CLOSED_STATUSES: readonly DriverStatus[] = ['REJECTED', 'WITHDRAWN'
 export const WITHDRAWABLE: readonly DriverStatus[] = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION'];
 /** A safety staff owner is assigned once the Safety manager has approved the driver. */
 export const OWNABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
-export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED'] as const;
+export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED',
+ 'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -71,4 +72,55 @@ export class DriverEvent {
  @Column('varchar') event!: DriverEventType;
  @Column('jsonb', { default: {} }) metadata!: Record<string, unknown>;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** The driver's own answers (never the SSN, which is encrypted separately). Drafts may be incomplete. */
+export interface DriverApplicationFields {
+ legalFirstName?: string; legalMiddleName?: string; legalLastName?: string; dateOfBirth?: string; phone?: string;
+ addressLine1?: string; addressLine2?: string; city?: string; state?: string; zip?: string;
+ emergencyName?: string; emergencyRelationship?: string; emergencyPhone?: string;
+ licenseNumber?: string; licenseState?: string; licenseClass?: LicenseType; licenseExpiresOn?: string;
+}
+export const REQUIRED_DRIVER_FIELDS = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip',
+ 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'] as const;
+
+/** An application link. Only the token's hash is stored; the link is bound to one email and closes on submission. */
+@Entity('driver_links')
+export class DriverLink {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('varchar', { length: 64, select: false }) tokenHash!: string;
+ @Column('varchar', { length: 254 }) email!: string;
+ @Column('uuid', { nullable: true }) createdBy!: string | null;
+ @Column('timestamptz') expiresAt!: Date;
+ @Column('timestamptz', { nullable: true }) openedAt!: Date | null;
+ @Column('timestamptz', { nullable: true }) revokedAt!: Date | null;
+ @Column('timestamptz', { nullable: true }) completedAt!: Date | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** One emailed code request. Unmatched requests are stored too (no link, no code) so every request writes the same. */
+@Entity('driver_challenges')
+export class DriverChallenge {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid', { nullable: true }) linkId!: string | null;
+ @Column('varchar', { length: 254, nullable: true }) email!: string | null;
+ @Column('varchar', { length: 64, nullable: true, select: false }) codeHash!: string | null;
+ @Column('timestamptz') expiresAt!: Date;
+ @Column('timestamptz', { nullable: true }) consumedAt!: Date | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+@Entity('driver_applications')
+export class DriverApplication {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('varchar', { default: 'DRAFT' }) status!: 'DRAFT' | 'SUBMITTED';
+ @Column('jsonb', { default: {} }) fields!: DriverApplicationFields;
+ @Column('text', { nullable: true, select: false }) ssnCiphertext!: string | null;
+ @Column('varchar', { length: 4, nullable: true }) ssnLast4!: string | null;
+ @Column('integer', { default: 1 }) version!: number;
+ @Column('timestamptz', { nullable: true }) submittedAt!: Date | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }

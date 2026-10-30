@@ -11,6 +11,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
  const count=async(table:string)=>Number((await db.query(`SELECT count(*)::integer AS n FROM ${table}`))[0].n);
  // Recreates the state of a starter database converted to the demo: real operator email, fictional staff and data.
  async function convertedStarter(extraUsers:string[]=[]){
+  if(await latest()==='DriverApplications1792870000000'){await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`);await db.undoLastMigration();}
   if(await latest()==='SafetyDrivers1792860000000'){await db.query(`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`);await db.undoLastMigration();}
   if(await latest()==='TeamLeads1792850000000'){await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`);await db.undoLastMigration();}
   if(await latest()==='SupportMembers1792840000000'){await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`);await db.undoLastMigration();}
@@ -70,7 +71,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
   // Real addresses are accepted again once unmarked, and the deploy migration drops the demo schema.
   await db.query(`INSERT INTO users ("firstName","lastName",email,role,status) VALUES ('Real','Manager','manager@company.example','DISPATCHER_MANAGER','ACTIVE')`);
   await db.runMigrations();
-  expect(await latest()).toBe('SafetyDrivers1792860000000');
+  expect(await latest()).toBe('DriverApplications1792870000000');
   await expect(retireDemoDatabase(db,false)).rejects.toThrow('no demo marking');
  });
  it('refuses to delete a non-fictional staff account and changes nothing',async()=>{

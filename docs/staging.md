@@ -36,6 +36,7 @@ Same build and start commands as production (`render.yaml`):
 | `EMAIL_DELIVERY`, `SMTP_*`, `EMAIL_FROM`, `STAFF_EMAIL_FROM` | Same rules as production ([email delivery](email-delivery.md)). A separate mailbox or app password is preferred so staging can be switched off on its own. |
 | `STORAGE_DRIVER` | `none`, or `gcs` with a staging-only `GCS_BUCKET` and `GCS_CREDENTIALS_BASE64` |
 | `MFA_ENCRYPTION_KEY` | New value (once two-step verification is deployed); never the production key |
+| `PII_ENCRYPTION_KEY` | New value (once driver applications are deployed); never the production key |
 | `TELEGRAM_*` | Once applicant Telegram updates are deployed: a **separate test bot** (for example *UGEM Hiring Staging*). Staging and production must not share one bot, because each reads the bot's pending messages and would take the other's. |
 
 Generate a random secret locally with:

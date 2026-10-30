@@ -5,7 +5,7 @@ export interface Environment {
   DEPLOYMENT_PURPOSE: 'local' | 'staging' | 'production';
   EMAIL_DELIVERY: 'none' | 'smtp'; SMTP_HOST?: string; SMTP_PORT: number; SMTP_USER?: string; SMTP_PASSWORD?: string; EMAIL_FROM?: string; STAFF_EMAIL_FROM?: string;
   STORAGE_DRIVER: 'none' | 'local' | 'gcs'; STORAGE_LOCAL_DIR?: string; GCS_BUCKET?: string; GCS_CREDENTIALS_BASE64?: string;
-  MFA_ENCRYPTION_KEY?: string;
+  MFA_ENCRYPTION_KEY?: string; PII_ENCRYPTION_KEY?: string;
   TELEGRAM_DELIVERY: 'none' | 'bot'; TELEGRAM_BOT_TOKEN?: string; TELEGRAM_BOT_USERNAME?: string; TELEGRAM_API_BASE: string;
 }
 /** Decodes the base64 service-account key; null when it is not a usable service-account JSON. Never logs it. */
@@ -68,6 +68,8 @@ const schema = Joi.object({
   GCS_CREDENTIALS_BASE64: Joi.string().base64().max(20000).empty(''),
   // 32 random bytes, base64. Encrypts staff TOTP secrets at rest; MfaService requires it in production.
   MFA_ENCRYPTION_KEY: Joi.string().base64().empty(''),
+  // 32 random bytes, base64. Encrypts driver SSNs at rest; without it, SSN entry and viewing fail closed (the API still starts).
+  PII_ENCRYPTION_KEY: Joi.string().base64().empty(''),
   // Applicant status updates by Telegram through the company bot (polled on demand; no webhook).
   TELEGRAM_DELIVERY: Joi.string().valid('none', 'bot').default('none'),
   TELEGRAM_BOT_TOKEN: Joi.string().pattern(/^\d{5,15}:[A-Za-z0-9_-]{30,64}$/).empty(''),
@@ -124,6 +126,8 @@ export function validateEnvironment(input: Record<string, unknown>): Environment
   }
   if (env.MFA_ENCRYPTION_KEY && Buffer.from(env.MFA_ENCRYPTION_KEY, 'base64').length !== 32) throw new EnvironmentError('MFA_ENCRYPTION_KEY must be 32 random bytes encoded as base64');
   if (env.MFA_ENCRYPTION_KEY && [env.SESSION_SECRET, env.BFF_SHARED_SECRET].includes(env.MFA_ENCRYPTION_KEY)) throw new EnvironmentError('MFA_ENCRYPTION_KEY must differ from the session and BFF secrets');
+  if (env.PII_ENCRYPTION_KEY && Buffer.from(env.PII_ENCRYPTION_KEY, 'base64').length !== 32) throw new EnvironmentError('PII_ENCRYPTION_KEY must be 32 random bytes encoded as base64');
+  if (env.PII_ENCRYPTION_KEY && [env.SESSION_SECRET, env.BFF_SHARED_SECRET, env.MFA_ENCRYPTION_KEY].includes(env.PII_ENCRYPTION_KEY)) throw new EnvironmentError('PII_ENCRYPTION_KEY must differ from the session, BFF and MFA secrets');
   if (env.STORAGE_DRIVER === 'local' && !env.STORAGE_LOCAL_DIR) throw new EnvironmentError('STORAGE_DRIVER=local requires STORAGE_LOCAL_DIR');
   if (env.TELEGRAM_DELIVERY === 'bot') {
     if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_BOT_USERNAME) throw new EnvironmentError('TELEGRAM_DELIVERY=bot requires TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME');

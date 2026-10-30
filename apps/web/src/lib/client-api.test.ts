@@ -71,6 +71,19 @@ describe('401 handling', () => {
     assert.equal(closed.kind, 'request');
     assert.equal(closed.message, 'Application access has expired. Contact your manager.');
   });
+  it('never treats a driver 401 as an ended staff session', () => {
+    let ended = false;
+    const listener = () => { ended = true; };
+    globalThis.addEventListener?.('workspace:session-ended', listener);
+    const expired = responseError('driver/application', 401, { message: 'Unauthorized' }, true);
+    assert.equal(expired.kind, 'applicant-session');
+    assert.equal(expired.message, apiMessages.driverSession);
+    const closed = responseError('driver/application', 401, { message: 'This application link is no longer available. Please contact Safety.' }, true);
+    assert.equal(closed.message, 'This application link is no longer available. Please contact Safety.');
+    assert.equal(responseError('driver/verify', 401, { message: 'Verification is invalid or expired.' }, true).message, 'Verification is invalid or expired.');
+    globalThis.removeEventListener?.('workspace:session-ended', listener);
+    assert.equal(ended, false);
+  });
   it('treats 401 on credential endpoints as a wrong password or code', () => {
     const login = responseError('auth/login', 401, { message: 'Invalid email or password' }, true);
     assert.equal(login.kind, 'request');
