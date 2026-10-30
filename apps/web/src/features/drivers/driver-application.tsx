@@ -115,8 +115,8 @@ function VerifyDriver({ token, onVerified }: { token: string; onVerified: () => 
 function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverApplicationView; focusHeading: boolean; onSaved: (view: DriverApplicationView) => void; onEnded: (message: string) => void }) {
   const form = useRef<HTMLFormElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  // Straight after verification, screen readers land on the form rather than at the top of the page.
-  useEffect(() => { if (focusHeading) heading.current?.focus(); }, [focusHeading]);
+  // Straight after verification, and on the confirmation after submitting, screen readers land on the heading rather than at the top of the page.
+  useEffect(() => { if (focusHeading || view.status === 'SUBMITTED') heading.current?.focus(); }, [focusHeading, view.status]);
   const today = useToday();
   const adult = useSyncExternalStore(noSubscription, () => localDate(18), () => undefined);
   // Without SSN entry (no encryption key yet) the API refuses submission; say so instead of asking for a number.
@@ -159,7 +159,9 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
       setScanErrors(problems);
       if (Object.keys(missing).length || unsaved.length || unscanned.length) {
         setFailed(true);
-        setMessage(Object.keys(missing).length ? 'Answer every required question first.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : `Scan these documents first: ${names(unscanned)}.`);
+        // An unanswered question comes first; otherwise say what is wrong with the one answer (age, expired license).
+        const issues = Object.values(missing);
+        setMessage(issues.includes('Required') ? 'Answer every required question first.' : issues.length === 1 ? issues[0] : issues.length ? 'Check the highlighted answers.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : `Scan these documents first: ${names(unscanned)}.`);
         // Answers come before the documents on the page, so the first answer in page order is the first problem.
         const answer = firstOnPage(form.current, Object.keys(missing)), scan = DOCUMENT_KINDS.find(kind => problems[kind]);
         if (answer) answer.focus();
