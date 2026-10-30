@@ -1,3 +1,4 @@
+import { fileToBase64 } from '@/lib/files';
 // Photos are re-encoded in the browser before upload: a bounded JPEG that fits the upload limit and carries no
 // camera metadata such as location. The API strips metadata segments again on its side. Returns base64 without the
 // data-URL prefix.
@@ -29,12 +30,7 @@ export async function imageForUpload(file: File, { maxSide = MAX_SIDE, maxBytes 
  if ('close' in image) image.close();
  for (const quality of [0.85, 0.7, 0.55, 0.45]) {
   const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
-  if (blob && blob.size <= maxBytes) {
-   const bytes = new Uint8Array(await blob.arrayBuffer());
-   let binary = '';
-   for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-   return btoa(binary);
-  }
+  if (blob && blob.size <= maxBytes) return fileToBase64(blob);
  }
  throw new PhotoError('This photo is too large. Take a new photo with a lower resolution.');
 }

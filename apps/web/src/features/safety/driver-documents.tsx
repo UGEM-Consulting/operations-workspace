@@ -18,7 +18,7 @@ const date = (value: string | null) => value ? <LocalTime iso={`${value}T12:00:0
 // Today in the viewer's time zone, read only in the browser: the server renders no Expired badge, so the first render
 // matches it whatever its clock says.
 const noSubscription = () => () => undefined;
-const useToday = () => useSyncExternalStore(noSubscription, () => new Date().toLocaleDateString('en-CA'), () => null);
+export const useToday = () => useSyncExternalStore(noSubscription, () => new Date().toLocaleDateString('en-CA'), () => null);
 
 /**
  * The driver's scanned documents (each one PDF, opened in a new tab) and Safety's check of each: a person reads the
@@ -46,7 +46,7 @@ export function DriverDocuments({ driver, canVerify }: { driver: DriverProfile; 
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
-  return <Card>
+  return <Card id="documents" className="scroll-mt-20">
     <CardHeader title="Documents" description={submitted ? 'Scanned by the driver with their phone. Open each one and record what it shows.' : 'Scanned by the driver with their phone. You can verify them once the driver submits.'} />
     {documents.length ? <ul className="mt-3 divide-y divide-border border-t border-border">{documents.map(document => {
       const expired = !!(today && document.expiresOn && document.expiresOn < today);

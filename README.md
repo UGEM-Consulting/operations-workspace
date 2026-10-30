@@ -130,6 +130,7 @@ The root `.env.example` is a reference only. NestJS loads `apps/api/.env`; Next.
 | DEMO_ADMIN_EMAIL/PASSWORD | Seed only | Fictional admin credentials |
 | DEMO_MANAGER_EMAIL/PASSWORD | Seed only | Fictional manager credentials |
 | DEMO_IT_EMAIL/PASSWORD | Seed only | Fictional IT credentials |
+| DEMO_SAFETY_MANAGER_EMAIL/PASSWORD, DEMO_SAFETY_LEAD_EMAIL/PASSWORD, DEMO_SAFETY_STAFF_EMAIL/PASSWORD | Seed only | Fictional Safety manager, Safety lead and safety staff credentials |
 | TEST_DATABASE_URL | Integration tests only | Dedicated disposable database whose name ends in `_test` |
 | EMAIL_DELIVERY | API | `none` (default; local CLI codes, production verification fails closed) or `smtp` (real applicant emails). See [email delivery](docs/email-delivery.md) |
 | SMTP_HOST / SMTP_PORT | API | `smtp.gmail.com` / `465` for Google Workspace; `localhost` / `1025` for local Mailpit |

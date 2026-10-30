@@ -9,7 +9,10 @@ import { BeginDriverDto, DriverDocumentDto, DriverVersionDto, SaveDriverApplicat
 import { DriverAccessService } from './driver-access.service';
 import { PiiService } from './pii';
 import { AssignOwnerDto, CreateDriverDto, DriverQueryDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
-import { SAFETY_ROLES, SafetyService } from './safety.service';
+import { SAFETY_ROLES } from './driver-records';
+import { SafetyService } from './safety.service';
+import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
+import { ScreeningService } from './screening.service';
 import { ScanSweeper } from './scan-sweeper';
 // Private files: never cached, never sniffed into another type.
 const FileResponse = () => applyDecorators(Header('Cache-Control', 'no-store, private'), Header('X-Content-Type-Options', 'nosniff'));
@@ -19,7 +22,7 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService) {}
  @Get('people') people() { return this.safety.people(); }
  @Get('drivers') drivers(@Query() query: DriverQueryDto) { return this.safety.drivers(query.status); }
  @Post('drivers') create(@Req() req: AuthRequest, @Body() dto: CreateDriverDto) { return this.safety.create(req.currentUser, dto); }
@@ -35,6 +38,13 @@ class SafetyController {
  @Post('drivers/:id/documents/:documentId/verify') verify(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string, @Body() dto: VerifyDocumentDto) { return this.safety.verifyDocument(req.currentUser, id, documentId, dto); }
  // A POST so the full number never sits in a cacheable GET; every view is recorded.
  @Post('drivers/:id/ssn') ssn(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.safety.revealSsn(req.currentUser, id); }
+ // Screening and the Safety manager's decision. The MVR is a no-store file; every view is recorded.
+ @Post('drivers/:id/checks/:key') check(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: ScreeningCheckDto) { return this.screening.setCheck(req.currentUser, id, key, dto); }
+ @Post('drivers/:id/mvr') mvr(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UploadMvrDto) { return this.screening.uploadMvr(req.currentUser, id, dto); }
+ @Get('drivers/:id/reports/:reportId/file') @FileResponse() async report(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('reportId', ParseUUIDPipe) reportId: string) { return send(await this.screening.reportFile(req.currentUser, id, reportId)); }
+ @Post('drivers/:id/corrections') corrections(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RequestCorrectionsDto) { return this.screening.requestCorrections(req.currentUser, id, dto); }
+ @Post('drivers/:id/send-for-decision') sendForDecision(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SendForDecisionDto) { return this.screening.sendForDecision(req.currentUser, id, dto); }
+ @Post('drivers/:id/decision') decide(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DecisionDto) { return this.screening.decide(req.currentUser, id, dto); }
 }
 // Public to the STAFF guard only: the driver has no account. Each record operation checks the driver session (bound to an
 // open link) in the service, and the shared BFF and CSRF boundary applies to every route, including verification.
@@ -54,5 +64,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, DriverAccessService, PiiService, ScanSweeper] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, DriverAccessService, PiiService, ScanSweeper], exports: [ScreeningService] })
 export class SafetyModule {}

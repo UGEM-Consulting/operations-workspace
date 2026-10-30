@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jpeg, pdfText } from './documents.fixtures';
@@ -20,6 +20,10 @@ import { SafetyModule } from '../src/modules/safety/safety.module';
 import { EmailService } from '../src/modules/email/email.service';
 import { normalSsn, PiiService } from '../src/modules/safety/pii';
 import { LEFTOVER_SCAN_AGE_MS, ScanSweeper } from '../src/modules/safety/scan-sweeper';
+import { earliestFinalRejection } from '../src/modules/safety/safety.entity';
+import { ScreeningService } from '../src/modules/safety/screening.service';
+import { addDays, usDay } from '../src/modules/safety/screening-rules';
+import { PDFDocument } from 'pdf-lib';
 import { completeMfa, enrolForTest } from './mfa-helpers';
 type Agent = ReturnType<typeof request.agent>;
 type Key = 'admin' | 'manager' | 'lead' | 'staff' | 'staff2' | 'dispatch';
@@ -429,19 +433,28 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   it('sweeps leftover scan files after a day, never current, verified or unrecognised ones', async () => {
     // Earlier tests truncate drivers but leave their files; start from an empty folder so the counts are this test's.
     rmSync(join(storage, 'drivers'), { recursive: true, force: true });
+    rmSync(join(storage, 'driver-reports'), { recursive: true, force: true });
     const { id, agent } = await applying();
     const sweeper = app.get(ScanSweeper), later = Date.now() + LEFTOVER_SCAN_AGE_MS + 60_000;
     const file = (documentId: string) => join(storage, 'drivers', id, `${documentId}.pdf`);
+    const report = (reportId: string) => join(storage, 'driver-reports', id, `${reportId}.pdf`);
     const replaced = (await scan(agent, 'license').expect(201)).body.documents[0].id as string, pdf = readFileSync(file(replaced));
     const current = (await scan(agent, 'license').expect(201)).body.documents[0].id as string;
     // A replaced scan whose removal failed, a file whose row never committed, and a file the API never names.
     writeFileSync(file(replaced), pdf);
     const unreferenced = randomUUID(); writeFileSync(file(unreferenced), pdf);
     const foreign = join(storage, 'drivers', id, 'notes.txt'); writeFileSync(foreign, 'fictional');
+    // An MVR upload that never committed is a leftover; a recorded MVR (current or replaced) is kept.
+    mkdirSync(join(storage, 'driver-reports', id), { recursive: true });
+    const uncommitted = randomUUID(), recorded = randomUUID();
+    writeFileSync(report(uncommitted), pdf); writeFileSync(report(recorded), pdf);
+    await db.query(`INSERT INTO driver_reports (id, "driverId", kind, "pulledOn", "pageCount", sha256, "byteSize", "createdAt", "replacedAt")
+      VALUES ($1, $2, 'MVR', CURRENT_DATE, 1, repeat('0', 64), 1, now(), now())`, [recorded, id]);
     expect(await sweeper.sweep()).toBe(0);
-    expect([file(replaced), file(unreferenced)].every(path => existsSync(path))).toBe(true);
-    expect(await sweeper.sweep(later)).toBe(2);
+    expect([file(replaced), file(unreferenced), report(uncommitted)].every(path => existsSync(path))).toBe(true);
+    expect(await sweeper.sweep(later)).toBe(3);
     expect([existsSync(file(replaced)), existsSync(file(unreferenced)), existsSync(file(current)), existsSync(foreign)]).toEqual([false, false, true, true]);
+    expect([existsSync(report(uncommitted)), existsSync(report(recorded))]).toEqual([false, true]);
     // A replaced scan Safety verified (a reopened application) is the record of what was checked.
     writeFileSync(file(replaced), pdf);
     await db.query(`UPDATE driver_documents SET "verifiedAt" = now() WHERE id = $1`, [replaced]);
@@ -449,9 +462,197 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(existsSync(file(replaced))).toBe(true);
   });
 
+  /** A driver who submitted a complete application with every scan, now in Screening. */
+  async function submitted() {
+    const one = await applying();
+    const documents = (await scanAll(one.agent)).documents as { id: string; kind: string }[];
+    await one.agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+    return { ...one, documents, version: (await driver(one.id)).version as number };
+  }
+  const mvrPdf = async () => { const pdf = await PDFDocument.create(); pdf.addPage(); return Buffer.from(await pdf.save()).toString('base64'); };
+  // Dates as the API sees them (the earliest US date), so no test date is "in the future" late in a UTC day.
+  const today = () => usDay('earliest');
+  const daysAgo = (days: number) => addDays(today(), -days);
+  const check = (agent: Agent, id: string, key: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/checks/${key}`).set(headers).send(body);
+  const decide = (agent: Agent, id: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/decision`).set(headers).send(body);
+  /** A submitted driver with every scan verified, the MVR uploaded and every check passed, still in Screening. */
+  async function screened() {
+    const one = await submitted();
+    for (const document of one.documents) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
+      .send({ version: 1, ...(document.kind === 'WORK_AUTHORIZATION' ? {} : { expiresOn: '2030-01-31' }) }).expect(201);
+    let { version } = (await agents.lead.post(`/api/safety/drivers/${one.id}/mvr`).set(headers).send({ version: one.version, file: await mvrPdf(), pulledOn: today() }).expect(201)).body;
+    for (const key of ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'MVR']) version = (await check(agents.lead, one.id, key, { version, result: 'PASS' }).expect(201)).body.version;
+    return { ...one, version: version as number };
+  }
+  /** A screened driver handed to the Safety manager. */
+  async function awaiting() {
+    const one = await screened();
+    const { version } = (await agents.lead.post(`/api/safety/drivers/${one.id}/send-for-decision`).set(headers).send({ version: one.version }).expect(201)).body;
+    return { ...one, version: version as number };
+  }
+
+  it('screens a submitted driver: the checklist, the MVR and verified scans all come before the hand-off', async () => {
+    const { id, documents, version } = await submitted();
+    await check(agents.staff, id, 'IDENTITY', { version, result: 'PASS' }).expect(403);
+    await check(agents.lead, id, 'CREDIT', { version, result: 'PASS' }).expect(404);
+    expect((await check(agents.lead, id, 'EXPERIENCE', { version, result: 'CONCERN' }).expect(400)).body.message).toMatch(/Describe the concern/);
+    expect((await check(agents.lead, id, 'MVR', { version, result: 'PASS' }).expect(400)).body.message).toBe('Upload the MVR first.');
+    const refused = (await agents.lead.post(`/api/safety/drivers/${id}/send-for-decision`).set(headers).send({ version }).expect(400)).body;
+    expect(refused.missing).toEqual(['check:IDENTITY', 'check:PHONE_SCREEN', 'check:EXPERIENCE', 'check:MVR', 'mvr', 'document:LICENSE', 'document:MEDICAL_CARD', 'document:WORK_AUTHORIZATION']);
+    // The MVR: a readable PDF pulled within the last year, replaced by a newer one while the earlier file is kept.
+    const upload = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: '', pulledOn: today(), ...body });
+    await upload({ file: Buffer.from('not a pdf').toString('base64') }).expect(400);
+    await upload({ file: Buffer.from('%PDF-1.7 broken').toString('base64') }).expect(400);
+    expect((await upload({ file: await mvrPdf(), pulledOn: daysAgo(400) }).expect(400)).body.message).toMatch(/more than a year old/);
+    await upload({ file: await mvrPdf(), pulledOn: daysAgo(-5) }).expect(400);
+    await agents.staff.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today() }).expect(403);
+    const first = (await upload({ file: await mvrPdf(), pulledOn: daysAgo(2) }).expect(201)).body;
+    const firstReport = (await driver(id)).screening.mvr.id as string;
+    await upload({ version: first.version, file: await mvrPdf() }).expect(201);
+    const record = await driver(id);
+    expect(record.screening.mvr).toMatchObject({ pulledOn: today(), pageCount: 1, uploadedBy: 'Fictional lead' });
+    expect(existsSync(join(storage, 'driver-reports', id, `${firstReport}.pdf`))).toBe(true);
+    // Every Safety role may open it, and each view is recorded; nobody else may.
+    await agents.staff.get(`/api/safety/drivers/${id}/reports/${record.screening.mvr.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf').expect('cache-control', 'no-store, private');
+    await agents.dispatch.get(`/api/safety/drivers/${id}/reports/${record.screening.mvr.id}/file`).set(headers).expect(403);
+    let current = record.version as number;
+    current = (await check(agents.lead, id, 'IDENTITY', { version: current, result: 'PASS' }).expect(201)).body.version;
+    await check(agents.lead, id, 'PHONE_SCREEN', { version: current - 1, result: 'PASS' }).expect(409);
+    current = (await check(agents.lead, id, 'PHONE_SCREEN', { version: current, result: 'PASS' }).expect(201)).body.version;
+    current = (await check(agents.lead, id, 'EXPERIENCE', { version: current, result: 'CONCERN', note: 'Two years, not five as stated.' }).expect(201)).body.version;
+    current = (await check(agents.manager, id, 'MVR', { version: current, result: 'PASS' }).expect(201)).body.version;
+    // A check can be cleared and done again.
+    current = (await check(agents.lead, id, 'MVR', { version: current, result: null }).expect(201)).body.version;
+    expect((await agents.lead.post(`/api/safety/drivers/${id}/send-for-decision`).set(headers).send({ version: current }).expect(400)).body.missing)
+      .toEqual(['check:MVR', 'document:LICENSE', 'document:MEDICAL_CARD', 'document:WORK_AUTHORIZATION']);
+    current = (await check(agents.lead, id, 'MVR', { version: current, result: 'PASS', note: 'Clean' }).expect(201)).body.version;
+    for (const document of documents) await agents.lead.post(`/api/safety/drivers/${id}/documents/${document.id}/verify`).set(headers)
+      .send({ version: 1, ...(document.kind === 'WORK_AUTHORIZATION' ? {} : { expiresOn: '2030-01-31' }) }).expect(201);
+    await agents.staff.post(`/api/safety/drivers/${id}/send-for-decision`).set(headers).send({ version: current }).expect(403);
+    const sent = (await agents.lead.post(`/api/safety/drivers/${id}/send-for-decision`).set(headers).send({ version: current, note: 'Experience shorter than stated; otherwise fine.' }).expect(201)).body;
+    const after = await driver(id, agents.staff);
+    expect(after).toMatchObject({ status: 'AWAITING_DECISION', version: sent.version, screening: { missing: [], finalRejectionFrom: null } });
+    expect(after.screening.checks.find((row: { key: string }) => row.key === 'EXPERIENCE')).toMatchObject({ result: 'CONCERN', note: 'Two years, not five as stated.', checkedBy: 'Fictional lead' });
+    expect(after.screening.reviews).toEqual([expect.objectContaining({ action: 'SENT_FOR_DECISION', note: 'Experience shorter than stated; otherwise fine.', previousStatus: 'SCREENING', newStatus: 'AWAITING_DECISION', actor: 'Fictional lead' })]);
+    // Screening is closed while the Safety manager decides.
+    await check(agents.lead, id, 'MVR', { version: sent.version, result: null }).expect(409);
+    await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version: sent.version, file: await mvrPdf(), pulledOn: today() }).expect(409);
+    const recorded = await events(id);
+    expect(recorded.filter(row => row.event === 'SENT_FOR_DECISION').map(row => row.metadata)).toEqual([{ concerns: 1 }]);
+    expect(recorded.filter(row => row.event === 'MVR_UPLOADED').map(row => row.metadata)).toEqual([{ replaced: false }, { replaced: true }]);
+    expect(recorded.filter(row => row.event === 'MVR_VIEWED')).toHaveLength(1);
+    expect(recorded.filter(row => row.event === 'SCREENING_CHECKED')[2].metadata).toEqual({ check: 'EXPERIENCE', result: 'CONCERN' });
+    expect(JSON.stringify(recorded)).not.toMatch(/Two years|otherwise fine|Clean/);
+    expect(await app.get(ScreeningService).waitingCount(users.manager)).toBe(1);
+    expect(await app.get(ScreeningService).waitingCount(users.lead)).toBe(0);
+    expect(await app.get(ScreeningService).waitingCount(users.staff)).toBeNull();
+  });
+
+  it('sends the application back to the driver with a message and a new link, and returns them to screening on resubmission', async () => {
+    const { id, agent, version } = await submitted();
+    await agents.staff.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version, message: 'Fix the ZIP code.' }).expect(403);
+    await agents.lead.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version, message: '  ' }).expect(400);
+    const returned = (await agents.lead.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version, message: 'Your ZIP code doesn’t match your city. Check it and send again.' }).expect(201)).body;
+    expect(returned.url).toMatch(/\/driver#[a-f0-9]{64}$/);
+    expect(await driver(id)).toMatchObject({ status: 'APPLYING', link: { email: 'jordan.wheeler@example.test' },
+      application: { status: 'DRAFT', submittedAt: null, correctionNote: 'Your ZIP code doesn’t match your city. Check it and send again.' } });
+    // The session that submitted can't read the application any more; the new link verifies afresh.
+    await agent.get('/api/driver/application').set(headers).expect(401);
+    const again = request.agent(app.getHttpServer());
+    const { challengeId } = (await again.post('/api/driver/begin').set(headers).send({ token: returned.url.split('#').pop(), email: 'jordan.wheeler@example.test' }).expect(201)).body;
+    await settle();
+    await again.post('/api/driver/verify').set(headers).send({ challengeId, code: sent.at(-1)!.code }).expect(201);
+    const view = (await again.get('/api/driver/application').set(headers).expect(200)).body;
+    expect(view).toMatchObject({ status: 'DRAFT', ssnLast4: '6789', correction: { message: 'Your ZIP code doesn’t match your city. Check it and send again.', requestedAt: expect.any(String) } });
+    await again.post('/api/driver/application/submit').set(headers).send({ version: view.version, fields: { zip: '78701' } }).expect(201);
+    const back = await driver(id);
+    expect(back).toMatchObject({ status: 'SCREENING', application: { status: 'SUBMITTED', correctionNote: null, correctionRequestedAt: null, fields: { zip: '78701' } } });
+    expect((await again.get('/api/driver/application').set(headers).expect(200)).body.correction).toBeNull();
+    expect((await events(id)).filter(row => row.event === 'CORRECTIONS_REQUESTED').map(row => row.metadata)).toEqual([{}]);
+    // Only a driver in screening can be sent back.
+    await agents.lead.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version: back.version - 1, message: 'Again' }).expect(409);
+    // A withdrawal ends a round of corrections: reopened and sent a new link, the driver never sees the old message.
+    const again2 = (await agents.lead.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version: back.version, message: 'Check your license number.' }).expect(201)).body;
+    const out = (await agents.lead.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version: again2.version, reason: 'Stopped replying' }).expect(201)).body;
+    expect((await driver(id)).application).toMatchObject({ correctionNote: null, correctionRequestedAt: null });
+    const lead = (await agents.lead.post(`/api/safety/drivers/${id}/reopen`).set(headers).send({ version: out.version }).expect(201)).body;
+    await agents.lead.post(`/api/safety/drivers/${id}/link`).set(headers).send({ version: lead.version }).expect(201);
+    expect((await driver(id)).application).toMatchObject({ status: 'DRAFT', correctionNote: null });
+  });
+
+  it('lets only the Safety manager decide: approval with conditions, more information, and a rejection in two recorded steps', async () => {
+    const approved = await awaiting();
+    await decide(agents.lead, approved.id, { version: approved.version, decision: 'APPROVE' }).expect(403);
+    await decide(agents.staff, approved.id, { version: approved.version, decision: 'APPROVE' }).expect(403);
+    await decide(agents.manager, approved.id, { version: approved.version, decision: 'MORE_INFO', conditions: 'x', note: 'x' }).expect(400);
+    expect((await decide(agents.manager, approved.id, { version: approved.version, decision: 'MORE_INFO' }).expect(400)).body.message).toBe('Give the reason.');
+    // More information sends the driver back to screening, and the lead sends them again.
+    const back = (await decide(agents.manager, approved.id, { version: approved.version, decision: 'MORE_INFO', note: 'Call the last employer about the gap.' }).expect(201)).body;
+    expect((await driver(approved.id)).status).toBe('SCREENING');
+    const resent = (await agents.lead.post(`/api/safety/drivers/${approved.id}/send-for-decision`).set(headers).send({ version: back.version }).expect(201)).body;
+    const done = (await decide(agents.manager, approved.id, { version: resent.version, decision: 'APPROVE', conditions: 'Road test before the first load.' }).expect(201)).body;
+    const record = await driver(approved.id);
+    expect(record).toMatchObject({ status: 'APPROVED', closedAt: null, version: done.version });
+    expect(record.screening.reviews.map((row: { action: string }) => row.action)).toEqual(['APPROVED', 'SENT_FOR_DECISION', 'MORE_INFO', 'SENT_FOR_DECISION']);
+    expect(record.screening.reviews[0]).toMatchObject({ conditions: 'Road test before the first load.', actor: 'Fictional manager', previousStatus: 'AWAITING_DECISION' });
+    expect((await events(approved.id)).filter(row => ['APPROVED', 'MORE_INFO_REQUESTED'].includes(row.event)).map(row => [row.event, row.metadata]))
+      .toEqual([['MORE_INFO_REQUESTED', {}], ['APPROVED', { conditional: true }]]);
+    // The approved driver gets a safety staff owner; decisions are append-only.
+    await agents.lead.post(`/api/safety/drivers/${approved.id}/owner`).set(headers).send({ version: done.version, ownerId: users.staff.id }).expect(201);
+    await decide(agents.manager, approved.id, { version: done.version + 1, decision: 'APPROVE' }).expect(409);
+    await expect(db.query(`UPDATE driver_reviews SET note = 'changed' WHERE "driverId" = $1`, [approved.id])).rejects.toThrow(/append-only/);
+    await expect(db.query(`DELETE FROM driver_reviews WHERE "driverId" = $1`, [approved.id])).rejects.toThrow(/append-only/);
+    await db.query('TRUNCATE drivers CASCADE');
+
+    // A rejection: the pre-adverse notice first, then the final notice once the waiting period is over.
+    const rejected = await awaiting();
+    expect((await decide(agents.manager, rejected.id, { version: rejected.version, decision: 'REJECT', note: 'MVR', noticeSent: true, noticeSentOn: today() }).expect(409)).body.message).toMatch(/pre-adverse notice first/);
+    const notice = { decision: 'PRE_ADVERSE', note: 'Two speeding violations in the last year on the MVR.' };
+    expect((await decide(agents.manager, rejected.id, { version: rejected.version, ...notice, noticeSentOn: today() }).expect(400)).body.message).toMatch(/confirm/);
+    await decide(agents.manager, rejected.id, { version: rejected.version, ...notice, noticeSent: true, noticeSentOn: daysAgo(-3) }).expect(400);
+    await decide(agents.manager, rejected.id, { version: rejected.version, ...notice, noticeSent: true, noticeSentOn: daysAgo(45) }).expect(400);
+    await decide(agents.manager, rejected.id, { version: rejected.version, decision: 'APPROVE', noticeSentOn: today() }).expect(400);
+    // A notice can't be dated before the driver reached the Safety manager: a backdated one would end the wait at once.
+    expect((await decide(agents.manager, rejected.id, { version: rejected.version, ...notice, noticeSent: true, noticeSentOn: daysAgo(20) }).expect(400)).body.message).toMatch(/before the driver was sent/);
+    // As if the driver had been sent for a decision 25 days ago (the table is append-only, so the trigger is lifted here only).
+    await db.query('ALTER TABLE driver_reviews DISABLE TRIGGER driver_reviews_append_only');
+    await db.query(`UPDATE driver_reviews SET "createdAt" = now() - interval '25 days' WHERE "driverId" = $1 AND action = 'SENT_FOR_DECISION'`, [rejected.id]);
+    await db.query('ALTER TABLE driver_reviews ENABLE TRIGGER driver_reviews_append_only');
+    const pre = (await decide(agents.manager, rejected.id, { version: rejected.version, ...notice, noticeSent: true, noticeSentOn: daysAgo(20) }).expect(201)).body;
+    const waiting = await driver(rejected.id);
+    expect(waiting).toMatchObject({ status: 'PRE_ADVERSE', closedAt: null, screening: { finalRejectionFrom: earliestFinalRejection(daysAgo(20)) } });
+    // The waiting period is over, so the final notice is waiting on the Safety manager.
+    expect(await app.get(ScreeningService).waitingCount(users.manager)).toBe(1);
+    await decide(agents.manager, rejected.id, { version: pre.version, ...notice, noticeSent: true, noticeSentOn: today() }).expect(409);
+    // The final notice is dated on or after the end of the waiting period.
+    expect((await decide(agents.manager, rejected.id, { version: pre.version, decision: 'REJECT', note: 'No response to the notice.', noticeSent: true, noticeSentOn: daysAgo(19) }).expect(409)).body.message).toMatch(/waiting period/);
+    const final = (await decide(agents.manager, rejected.id, { version: pre.version, decision: 'REJECT', note: 'No response to the notice.', noticeSent: true, noticeSentOn: today() }).expect(201)).body;
+    const closed = await driver(rejected.id);
+    expect(closed).toMatchObject({ status: 'REJECTED', closedAt: expect.any(String), version: final.version, screening: { finalRejectionFrom: null } });
+    expect(closed.screening.reviews.slice(0, 2).map((row: { action: string; noticeSentOn: string }) => [row.action, row.noticeSentOn])).toEqual([['REJECTED', today()], ['PRE_ADVERSE', daysAgo(20)]]);
+    expect(JSON.stringify(await events(rejected.id))).not.toMatch(/speeding|No response/);
+    // A closed record frees the phone and email for a new lead.
+    await add(agents.lead).expect(201);
+    await db.query('TRUNCATE drivers CASCADE');
+
+    // During the waiting period the rejection can't be final; the manager can still approve or withdraw the driver.
+    const disputed = await awaiting();
+    const out = (await decide(agents.manager, disputed.id, { version: disputed.version, ...notice, noticeSent: true, noticeSentOn: today() }).expect(201)).body;
+    expect((await decide(agents.manager, disputed.id, { version: out.version, decision: 'REJECT', note: 'x', noticeSent: true, noticeSentOn: today() }).expect(409)).body.message)
+      .toContain(earliestFinalRejection(today()));
+    // Still within the waiting period: nothing is waiting on the Safety manager yet.
+    expect(await app.get(ScreeningService).waitingCount(users.manager)).toBe(0);
+    await decide(agents.admin, disputed.id, { version: out.version, decision: 'APPROVE' }).expect(201);
+    expect((await driver(disputed.id)).status).toBe('APPROVED');
+  });
+
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
+    await db.query(`INSERT INTO driver_screening_checks ("driverId", key, result, "checkedAt") VALUES ($1, 'IDENTITY', 'PASS', now())`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver screening, reports or decisions');
+    await db.query('TRUNCATE driver_screening_checks');
+    await db.undoLastMigration(); // DriverScreening, with nothing recorded yet
     await db.undoLastMigration(); // ClearInactiveTeamLeads: a data fix with nothing to undo
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver documents or their history');
     await db.query('TRUNCATE driver_documents');
@@ -469,6 +670,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('ClearInactiveTeamLeads1792890000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverScreening1792900000000');
   });
 });

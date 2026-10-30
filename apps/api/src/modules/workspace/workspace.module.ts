@@ -8,6 +8,8 @@ import { ReviewService } from '../onboarding/review.service';
 import { Role } from '../users/user.entity';
 import { DispatchModule } from '../dispatch/dispatch.module';
 import { PromotionsService } from '../dispatch/promotions.service';
+import { SafetyModule } from '../safety/safety.module';
+import { ScreeningService } from '../safety/screening.service';
 
 /**
  * Work waiting for the signed-in person, for the sidebar and the notification bell. Each count reuses its feature's own
@@ -16,19 +18,20 @@ import { PromotionsService } from '../dispatch/promotions.service';
 @Controller('workspace')
 @Roles(...STAFF)
 class WorkspaceController {
-  constructor(private readonly reviews: ReviewService, private readonly it: ItService, private readonly promotions: PromotionsService) {}
+  constructor(private readonly reviews: ReviewService, private readonly it: ItService, private readonly promotions: PromotionsService, private readonly screening: ScreeningService) {}
   @Get('counts')
   async counts(@Req() req: AuthRequest) {
     const user = req.currentUser;
     const reviewer = [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER].includes(user.role);
     const itStaff = [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST].includes(user.role);
-    const [summary, openIt, unread, promotions] = await Promise.all([reviewer ? this.reviews.summary(user) : null, itStaff ? this.it.openCount(user) : null, reviewer ? this.it.unreadCount(user) : null, reviewer ? this.promotions.pendingCount() : null]);
+    const [summary, openIt, unread, promotions, drivers] = await Promise.all([reviewer ? this.reviews.summary(user) : null, itStaff ? this.it.openCount(user) : null, reviewer ? this.it.unreadCount(user) : null, reviewer ? this.promotions.pendingCount() : null, this.screening.waitingCount(user)]);
     const navigation: Record<string, number> = {};
     if (summary) navigation.applications = summary.awaitingReview;
     if (openIt !== null) navigation.it = openIt;
     if (promotions !== null) navigation.promotions = promotions;
+    if (drivers !== null) navigation.drivers = drivers;
     return { navigation, unreadNotifications: unread };
   }
 }
-@Module({ imports: [OnboardingModule, ItModule, DispatchModule], controllers: [WorkspaceController] })
+@Module({ imports: [OnboardingModule, ItModule, DispatchModule, SafetyModule], controllers: [WorkspaceController] })
 export class WorkspaceModule {}

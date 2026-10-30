@@ -5,16 +5,17 @@ export type DriverType = typeof DRIVER_TYPES[number];
 export const LICENSE_TYPES = ['CDL_A', 'CDL_B', 'CDL_C', 'DL'] as const;
 export type LicenseType = typeof LICENSE_TYPES[number];
 // LEAD → APPLYING → SCREENING → AWAITING_DECISION → APPROVED → CLEARED; REJECTED, WITHDRAWN and LEFT close the record.
-// Statuses after LEAD are reached by later slices (application link, screening, decision, clearance).
-export const DRIVER_STATUSES = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION', 'APPROVED', 'CLEARED', 'REJECTED', 'WITHDRAWN', 'LEFT'] as const;
+// A rejection always passes through PRE_ADVERSE (the pre-adverse notice and its waiting period). CLEARED and LEFT come later.
+export const DRIVER_STATUSES = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION', 'PRE_ADVERSE', 'APPROVED', 'CLEARED', 'REJECTED', 'WITHDRAWN', 'LEFT'] as const;
 export type DriverStatus = typeof DRIVER_STATUSES[number];
 export const CLOSED_STATUSES: readonly DriverStatus[] = ['REJECTED', 'WITHDRAWN', 'LEFT'];
 /** Statuses a driver can be withdrawn from: anything before the Safety manager's approval. */
-export const WITHDRAWABLE: readonly DriverStatus[] = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION'];
+export const WITHDRAWABLE: readonly DriverStatus[] = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION', 'PRE_ADVERSE'];
 /** A safety staff owner is assigned once the Safety manager has approved the driver. */
 export const OWNABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
 export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED',
- 'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED'] as const;
+ 'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED',
+ 'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -121,6 +122,9 @@ export class DriverApplication {
  @Column('varchar', { length: 4, nullable: true }) ssnLast4!: string | null;
  @Column('integer', { default: 1 }) version!: number;
  @Column('timestamptz', { nullable: true }) submittedAt!: Date | null;
+ // What Safety asked the driver to correct (shown to the driver); cleared when they send the application again.
+ @Column('varchar', { length: 1000, nullable: true }) correctionNote!: string | null;
+ @Column('timestamptz', { nullable: true }) correctionRequestedAt!: Date | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }
@@ -155,4 +159,69 @@ export class DriverDocument {
  @Column('date', { nullable: true }) expiresOn!: string | null;
  // Bumped by each verification, so two people recording the same document can't silently overwrite each other.
  @Column('integer', { default: 1 }) version!: number;
+}
+
+/**
+ * The Safety lead's screening checklist. Each check is passed, or noted as a concern for the Safety manager (a concern
+ * needs a note). Notes never hold SSNs, medical or drug test details.
+ */
+export const SCREENING_CHECKS = ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'MVR'] as const;
+export type ScreeningCheckKey = typeof SCREENING_CHECKS[number];
+export const SCREENING_RESULTS = ['PASS', 'CONCERN'] as const;
+export type ScreeningResult = typeof SCREENING_RESULTS[number];
+@Entity('driver_screening_checks')
+export class DriverScreeningCheck {
+ @PrimaryColumn('uuid') driverId!: string;
+ @PrimaryColumn('varchar') key!: ScreeningCheckKey;
+ @Column('varchar') result!: ScreeningResult;
+ @Column('varchar', { length: 1000, nullable: true }) note!: string | null;
+ @Column('uuid', { nullable: true }) checkedBy!: string | null;
+ @Column('timestamptz') checkedAt!: Date;
+}
+
+/** A report Safety pulled about the driver (the MVR), uploaded as a PDF. Replaced reports are kept with replacedAt. */
+@Entity('driver_reports')
+export class DriverReport {
+ @PrimaryColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('varchar') kind!: 'MVR';
+ @Column('date') pulledOn!: string;
+ @Column('smallint') pageCount!: number;
+ @Column('varchar', { length: 64 }) sha256!: string;
+ @Column('integer') byteSize!: number;
+ @Column('uuid', { nullable: true }) uploadedBy!: string | null;
+ @Column('timestamptz') createdAt!: Date;
+ @Column('timestamptz', { nullable: true }) replacedAt!: Date | null;
+}
+
+/**
+ * Screening hand-offs and the Safety manager's decisions, append-only (a database trigger refuses changes). A rejection is
+ * two rows: PRE_ADVERSE (the notice Safety sent with a copy of the report) and, after the waiting period, REJECTED.
+ */
+export const REVIEW_ACTIONS = ['SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO', 'PRE_ADVERSE', 'REJECTED'] as const;
+export type DriverReviewAction = typeof REVIEW_ACTIONS[number];
+@Entity('driver_reviews')
+export class DriverReview {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('varchar') action!: DriverReviewAction;
+ @Column('varchar', { length: 2000, nullable: true }) note!: string | null;
+ @Column('varchar', { length: 1000, nullable: true }) conditions!: string | null;
+ @Column('date', { nullable: true }) noticeSentOn!: string | null;
+ @Column('varchar') previousStatus!: DriverStatus;
+ @Column('varchar') newStatus!: DriverStatus;
+ @Column('uuid', { nullable: true }) actorId!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** Business days the driver has to respond to a pre-adverse notice before the rejection can be final. */
+export const ADVERSE_WAIT_BUSINESS_DAYS = 5;
+/** The first date (YYYY-MM-DD) a rejection can be final: the notice date plus the waiting period, skipping weekends. */
+export function earliestFinalRejection(noticeSentOn: string): string {
+ const date = new Date(`${noticeSentOn}T12:00:00Z`);
+ for (let added = 0; added < ADVERSE_WAIT_BUSINESS_DAYS;) {
+  date.setUTCDate(date.getUTCDate() + 1);
+  if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) added++;
+ }
+ return date.toISOString().slice(0, 10);
 }

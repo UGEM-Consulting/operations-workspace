@@ -12,6 +12,9 @@ export async function seedDemo(db: DataSource, input: NodeJS.ProcessEnv): Promis
     { prefix: 'ADMIN', firstName: 'Avery', lastName: 'Demo', role: Role.SYSTEM_ADMIN },
     { prefix: 'MANAGER', firstName: 'Morgan', lastName: 'Demo', role: Role.DISPATCHER_MANAGER },
     { prefix: 'IT', firstName: 'Taylor', lastName: 'Demo', role: Role.IT_SPECIALIST },
+    { prefix: 'SAFETY_MANAGER', firstName: 'Sloane', lastName: 'Safety', role: Role.SAFETY_MANAGER },
+    { prefix: 'SAFETY_LEAD', firstName: 'Lena', lastName: 'Lead', role: Role.SAFETY_LEAD },
+    { prefix: 'SAFETY_STAFF', firstName: 'Owen', lastName: 'Staff', role: Role.SAFETY_STAFF },
   ];
   const accounts = specs.map(spec => {
     const email = input[`DEMO_${spec.prefix}_EMAIL`]?.trim().toLowerCase();
@@ -19,7 +22,7 @@ export async function seedDemo(db: DataSource, input: NodeJS.ProcessEnv): Promis
     if (!email || !isEmail(email) || !email.endsWith('@example.test') || !password || password.length < 12 || password.length > 128) throw new Error('Demo accounts require unique example.test emails and 12–128 character passwords supplied through environment variables');
     return { ...spec, email, password };
   });
-  if (new Set(accounts.map(account => account.email)).size !== 3) throw new Error('Demo emails must be distinct');
+  if (new Set(accounts.map(account => account.email)).size !== accounts.length) throw new Error('Demo emails must be distinct');
   return db.transaction(async manager => {
     await manager.query('SELECT pg_advisory_xact_lock(42002026)');
     let created = 0;

@@ -13,7 +13,9 @@ import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
 
 export interface DriverApplicationView { email: string; expiresAt: string; status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; version: number; ssnLast4: string | null; submittedAt: string | null; ssnAvailable: boolean;
   // From an API with document scanning; absent on an older one.
-  documentsEnabled?: boolean; requiredDocuments?: DocumentKind[]; documents?: { id: string; kind: DocumentKind; subtype: string | null; pageCount: number; createdAt: string }[] }
+  documentsEnabled?: boolean; requiredDocuments?: DocumentKind[]; documents?: { id: string; kind: DocumentKind; subtype: string | null; pageCount: number; createdAt: string }[];
+  // What Safety asked the driver to correct, from an API with screening.
+  correction?: { message: string; requestedAt: string } | null }
 const REQUIRED = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone',
   'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'];
 const FIELDS = [...REQUIRED, 'legalMiddleName', 'addressLine2'];
@@ -199,6 +201,9 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
   return <form ref={form} onSubmit={event => { event.preventDefault(); void save(true); }} className="space-y-6" noValidate>
     <div><h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Your driver application</h1>
       <p className="mt-1 text-sm text-muted-foreground">Signed in as {view.email}. Answers save when you select Save; the link works until <LocalTime iso={view.expiresAt} format="date" />.</p></div>
+    {view.correction && <Alert tone="warning" title="Safety asked you to correct your application">
+      <p className="whitespace-pre-wrap break-words">{view.correction.message}</p>
+      <p className="mt-1">Make the changes, then select Submit application to send it again.</p></Alert>}
     <Section title="Your legal name" hint="As it appears on your license.">
       <div className="grid gap-4 sm:grid-cols-3">
         <Input label="First name" {...field('legalFirstName')} maxLength={100} autoComplete="given-name" />

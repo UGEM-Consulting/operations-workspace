@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Eye, EyeOff, Link2, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
-import { CopyButton } from '@/components/ui/copy-button';
+import { OneTimeLinkDialog } from './one-time-link-dialog';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/alert';
 import { DescriptionList } from '@/components/ui/description-list';
@@ -106,13 +106,7 @@ export function ApplicationCard({ driver, screener, owns }: { driver: DriverProf
       actions={<Button onClick={() => void sendLink()}>{pending === 'send' ? 'Creating…' : 'Create new link'}</Button>}>
       <Notice message={error} error />
     </Dialog>}
-    {sent && <Dialog open onClose={() => setSent(null)} title="Application link created" description="Send it to the driver by text or email. It’s shown only now: if it’s lost, create a new one."
-      closeLabel="Done" protectChanges={false}>
-      <div className="space-y-3">
-        <p className="break-all rounded-md bg-muted p-3 font-mono text-[13px]">{sent.url}</p>
-        <CopyButton text={sent.url} label="Copy link" />
-        <p className="text-sm text-muted-foreground">It works until <LocalTime iso={sent.expiresAt} format="date" /> and only with {driver.email}; the driver gets a code by email each time they open it.</p>
-      </div>
-    </Dialog>}
+    {sent && <OneTimeLinkDialog link={sent} email={driver.email} onClose={() => setSent(null)} title="Application link created"
+      description="Send it to the driver by text or email. It’s shown only now: if it’s lost, create a new one." />}
   </Card>;
 }

@@ -133,7 +133,8 @@ export class DriverAccessService {
     if (age < 18 || age > 100) throw new BadRequestException({ message: 'Check your date of birth.', missing: ['dateOfBirth'] });
     if (fields.licenseExpiresOn! < new Date().toISOString().slice(0, 10)) throw new BadRequestException({ message: 'Your license has expired. Contact Safety before you continue.', missing: ['licenseExpiresOn'] });
     const now = new Date();
-    Object.assign(changes, { status: 'SUBMITTED', submittedAt: now });
+    // A resubmission after corrections clears Safety's message.
+    Object.assign(changes, { status: 'SUBMITTED', submittedAt: now, correctionNote: null, correctionRequestedAt: null });
     await em.getRepository(DriverLink).update(link.id, { completedAt: now });
     await em.getRepository(Driver).update(driver.id, { status: 'SCREENING', version: driver.version + 1 });
     await em.getRepository(DriverEvent).save({ driverId: driver.id, actorId: null, event: 'APPLICATION_SUBMITTED', metadata: {} });
@@ -206,6 +207,8 @@ export class DriverAccessService {
   const documents = await em.getRepository(DriverDocument).find({ where: { driverId: application.driverId, replacedAt: IsNull() }, order: { createdAt: 'ASC' } });
   return { email: link.email, expiresAt: link.expiresAt, status: application.status, fields: application.fields, version: application.version,
    ssnLast4: application.ssnLast4, submittedAt: application.submittedAt, ssnAvailable: this.pii.enabled,
+   // What Safety asked the driver to correct, while the application is back with them.
+   correction: application.status === 'DRAFT' && application.correctionNote ? { message: application.correctionNote, requestedAt: application.correctionRequestedAt } : null,
    documentsEnabled: this.storage.enabled, requiredDocuments: this.storage.enabled ? requiredDriverDocuments(application.fields) : [],
    documents: documents.map(document => ({ id: document.id, kind: document.kind, subtype: document.subtype, pageCount: document.pageCount, createdAt: document.createdAt })) };
  }

@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { driverProfileSchema, readResponse, safetyPeopleSchema } from '@/lib/api-schemas';
 import { DriverProfileView } from '@/features/safety/driver-profile';
-import { SCREENER_ROLES, type DriverProfile, type SafetyPeople } from '@/features/safety/types';
+import { DECIDER_ROLES, SCREENER_ROLES, type DriverProfile, type SafetyPeople } from '@/features/safety/types';
 export const metadata = { title: 'Driver' };
 export default async function DriverPage({ params }: { params: Promise<{ id: string }> }) {
   const identity = await requirePage('drivers');
@@ -14,5 +14,5 @@ export default async function DriverPage({ params }: { params: Promise<{ id: str
   const [profile, peopleList] = await Promise.all([readResponse<DriverProfile>(driver, 'driver', driverProfileSchema), readResponse<SafetyPeople>(people, 'Safety people', safetyPeopleSchema)]);
   // The API decides; these only choose which actions to offer.
   const owns = profile.owners.some(row => row.endedAt === null && row.owner?.id === identity.user.id);
-  return <DriverProfileView driver={profile} people={peopleList} screener={SCREENER_ROLES.includes(identity.user.role)} owns={owns} />;
+  return <DriverProfileView driver={profile} people={peopleList} screener={SCREENER_ROLES.includes(identity.user.role)} decider={DECIDER_ROLES.includes(identity.user.role)} owns={owns} />;
 }
