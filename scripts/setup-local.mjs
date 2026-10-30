@@ -19,7 +19,8 @@ api = ensure(api, 'PII_ENCRYPTION_KEY', randomBytes(32).toString('base64'));
 web = ensure(web, 'BFF_SHARED_SECRET', bff);
 web = ensure(web, 'WEB_ORIGIN', value(api, 'WEB_ORIGIN'));
 api = ensure(api, 'ALLOW_DEMO_SEED', 'true');
-for (const [role, email] of [['ADMIN', 'admin@example.test'], ['MANAGER', 'manager@example.test'], ['IT', 'it@example.test']]) {
+for (const [role, email] of [['ADMIN', 'admin@example.test'], ['MANAGER', 'manager@example.test'], ['IT', 'it@example.test'],
+  ['SAFETY_MANAGER', 'safety.manager@example.test'], ['SAFETY_LEAD', 'safety.lead@example.test'], ['SAFETY_STAFF', 'safety.staff@example.test']]) {
   api = ensure(api, `DEMO_${role}_EMAIL`, email);
   api = ensure(api, `DEMO_${role}_PASSWORD`, randomBytes(24).toString('base64url'));
 }

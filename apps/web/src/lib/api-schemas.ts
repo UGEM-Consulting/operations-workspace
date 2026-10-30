@@ -118,6 +118,13 @@ export const driverProfileSchema = driverRow.extend({
   link: z.looseObject({ email: text, createdAt: text, expiresAt: text, openedAt: nullableText, expired: z.boolean() }).nullable().optional(),
   application: z.looseObject({ status: text, fields, ssnLast4: nullableText, version: z.number(), submittedAt: nullableText }).nullable().optional(),
   documents: z.array(z.looseObject({ id: text, kind: text, pageCount: z.number(), createdAt: text, verifiedAt: nullableText })).optional(),
+  // From an API with screening and decisions. A malformed value is dropped, so the profile still loads without it.
+  screening: z.looseObject({
+    checks: z.array(z.looseObject({ key: text, result: z.enum(['PASS', 'CONCERN']), note: nullableText, checkedAt: text, checkedBy: nullableText })),
+    mvr: z.looseObject({ id: text, pulledOn: text, pageCount: z.number(), createdAt: text }).nullable(),
+    reviews: z.array(z.looseObject({ id: text, action: text, note: nullableText, conditions: nullableText, noticeSentOn: nullableText, createdAt: text, actor: nullableText })),
+    missing: z.array(text), finalRejectionFrom: nullableText,
+  }).optional().catch(undefined),
 });
 
 /** GET /it/onboarding/:id */

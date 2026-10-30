@@ -17,7 +17,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { DRIVER_DEFAULTS } from '@/lib/navigation';
 import { DriverForm, driverBody } from './driver-form';
-import { CLOSED, driverBadge, driverTypes, license, type DriverRow, type SafetyPeople } from './types';
+import { CLOSED, DECIDING, driverBadge, driverTypes, license, type DriverRow, type SafetyPeople } from './types';
 
 const name = (driver: { firstName: string; lastName: string }) => `${driver.firstName} ${driver.lastName}`.trim();
 
@@ -34,7 +34,10 @@ export function Drivers({ items, filters, people, canAdd, currentUserId }: { ite
   const query = filters.search.toLowerCase();
   const searched = items.filter(row => `${name(row)} ${row.phone} ${row.email ?? ''} ${row.safetyLead?.name ?? ''} ${row.owner?.name ?? ''}`.toLowerCase().includes(query));
   const open = (row: DriverRow) => !CLOSED.includes(row.status);
-  const visible = searched.filter(row => filters.status === 'ALL' || (filters.status === 'OPEN' ? open(row) : filters.status === 'CLOSED' ? !open(row) : row.status === filters.status));
+  // DECISION: waiting for the Safety manager (a decision, or a pre-adverse notice's waiting period).
+  const deciding = (row: DriverRow) => DECIDING.includes(row.status);
+  const visible = searched.filter(row => filters.status === 'ALL' || (filters.status === 'OPEN' ? open(row) : filters.status === 'CLOSED' ? !open(row)
+    : filters.status === 'DECISION' ? deciding(row) : row.status === filters.status));
   const filtered = filters.search !== '' || filters.status !== DRIVER_DEFAULTS.status;
   async function add(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -54,6 +57,8 @@ export function Drivers({ items, filters, people, canAdd, currentUserId }: { ite
       <FilterBar path="/safety/drivers" filters={filters} defaults={DRIVER_DEFAULTS} searchLabel="Search name, phone, email or Safety person" statuses={[
         { key: 'OPEN', label: 'Open', count: searched.filter(open).length },
         { key: 'LEAD', label: 'Leads', count: searched.filter(row => row.status === 'LEAD').length },
+        { key: 'SCREENING', label: 'Screening', count: searched.filter(row => row.status === 'SCREENING').length },
+        { key: 'DECISION', label: 'Awaiting decision', count: searched.filter(deciding).length },
         { key: 'CLOSED', label: 'Closed', count: searched.filter(row => !open(row)).length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption="Drivers" className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[

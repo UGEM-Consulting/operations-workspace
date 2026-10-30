@@ -328,8 +328,10 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await admin.patch(`/api/users/${accounts.get(Role.IT_SPECIALIST)!.id}`).set(headers).send({ authVersion: 0, passwordHash: 'fake' }).expect(400);
   });
   it('seeds fictional accounts idempotently without resetting their credentials', async () => {
-    const input = { ALLOW_DEMO_SEED: 'true', NODE_ENV: 'test', DEMO_ADMIN_EMAIL: 'seed.admin@example.test', DEMO_MANAGER_EMAIL: 'seed.manager@example.test', DEMO_IT_EMAIL: 'seed.it@example.test', DEMO_ADMIN_PASSWORD: password, DEMO_MANAGER_PASSWORD: password, DEMO_IT_PASSWORD: password };
-    expect(await seedDemo(db, input)).toBe(3);
+    const input = { ALLOW_DEMO_SEED: 'true', NODE_ENV: 'test', DEMO_ADMIN_EMAIL: 'seed.admin@example.test', DEMO_MANAGER_EMAIL: 'seed.manager@example.test', DEMO_IT_EMAIL: 'seed.it@example.test', DEMO_ADMIN_PASSWORD: password, DEMO_MANAGER_PASSWORD: password, DEMO_IT_PASSWORD: password,
+      DEMO_SAFETY_MANAGER_EMAIL: 'seed.safety.manager@example.test', DEMO_SAFETY_LEAD_EMAIL: 'seed.safety.lead@example.test', DEMO_SAFETY_STAFF_EMAIL: 'seed.safety.staff@example.test',
+      DEMO_SAFETY_MANAGER_PASSWORD: password, DEMO_SAFETY_LEAD_PASSWORD: password, DEMO_SAFETY_STAFF_PASSWORD: password };
+    expect(await seedDemo(db, input)).toBe(6);
     expect(await seedDemo(db, input)).toBe(0);
     await expect(seedDemo(db, { ...input, NODE_ENV: 'production' })).rejects.toThrow();
   });

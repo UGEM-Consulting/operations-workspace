@@ -11,11 +11,11 @@ import { PendingHint } from '@/components/ui/pending-hint';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
+import { fileToBase64, MAX_PDF_BYTES as MAX_BYTES } from '@/lib/files';
 import { readApi } from './types';
 type Kind = 'NDA'|'SOP'|'CONTACT_LIST';
 interface Version { id:string;kind:Kind;version:number;title:string;sha256:string;byteSize:number;pageCount:number;createdAt:string;uploadedBy:{firstName:string;lastName:string}; }
 interface DocumentList { storageEnabled:boolean;kinds:{kind:Kind;label:string;signature:boolean;countersign:boolean;versions:Version[]}[]; }
-const MAX_BYTES = 3_000_000;
 const requirement = (signature: boolean, countersign: boolean) => signature ? `Typed name and a drawn or typed signature${countersign ? '; the approving manager countersigns' : ''}` : 'Read acknowledgement';
 /** Company-wide onboarding documents. Each upload publishes a new version; earlier signatures keep the version that was signed. */
 export function CompanyDocuments({ initial }: { initial: DocumentList }) {
@@ -28,10 +28,7 @@ export function CompanyDocuments({ initial }: { initial: DocumentList }) {
   if (file.size > MAX_BYTES) { setError('The PDF must be 3 MB or smaller. Compress it and try again.'); return; }
   setBusy(true); setError('');
   try {
-   const bytes = new Uint8Array(await file.arrayBuffer());
-   let binary = '';
-   for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-   const published = await mutate<Version>('documents', 'POST', { kind: publishing, title: String(form.get('title') ?? ''), file: btoa(binary) });
+   const published = await mutate<Version>('documents', 'POST', { kind: publishing, title: String(form.get('title') ?? ''), file: await fileToBase64(file) });
    setPublishing(null); toast({ title: 'Document published', description: `${published.title} is now version ${published.version}.` });
    // The publish succeeded even if the list cannot refresh; the page can be reloaded.
    try { setData(await readApi<DocumentList>('documents')); } catch { toast({ tone: 'danger', title: 'List not refreshed', description: 'Reload the page to see the new version.' }); }
