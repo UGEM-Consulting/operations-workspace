@@ -19,6 +19,7 @@ export const apiMessages = {
   unavailable: 'The service is taking too long to respond. It may be starting up. Please wait a minute and try again.',
   session: 'Your session ended. Sign in again.',
   applicantSession: 'Your session expired. Verify your email again to continue.',
+  driverSession: 'Your session expired. Open the link from Safety again and verify your email.',
   generic: 'Something went wrong. Please try again.',
 } as const;
 
@@ -27,7 +28,7 @@ export const SESSION_ENDED_EVENT = 'workspace:session-ended';
 export const APPLICANT_SESSION_EXPIRED_EVENT = 'applicant:session-expired';
 
 // On these endpoints 401 means a wrong password or code, not an ended session; their own message is shown.
-const credentialPaths = new Set(['auth/login', 'auth/password', 'auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable', 'auth/logout', 'applicant/begin', 'applicant/verify', 'applicant/logout']);
+const credentialPaths = new Set(['auth/login', 'auth/password', 'auth/mfa/verify', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/recovery-codes', 'auth/mfa/disable', 'auth/logout', 'applicant/begin', 'applicant/verify', 'applicant/logout', 'driver/begin', 'driver/verify', 'driver/logout']);
 // API messages for a lost applicant session; other applicant 401 messages (access window closed, application withdrawn) are final.
 const applicantSessionMessages = new Set(['Please verify your access again.', 'Unauthorized']);
 
@@ -57,6 +58,10 @@ export function responseError(path: string, status: number, data: unknown, json:
   if (status === 401 && credentialPaths.has(path)) {
     const known = message && message !== 'Unauthorized' ? message : undefined;
     return new ApiError(known ?? (path.startsWith('applicant/') ? apiMessages.applicantSession : apiMessages.session), 'request', status);
+  }
+  if (status === 401 && path.startsWith('driver/')) {
+    // A driver has no staff session to end: their link or session closed. A final message (link cancelled) is shown as is.
+    return new ApiError(message && message !== 'Unauthorized' ? message : apiMessages.driverSession, 'applicant-session', status);
   }
   if (status === 401) {
     if (path.startsWith('applicant/')) {

@@ -7,9 +7,12 @@ export interface SafetyPerson { id: string; name: string; active: boolean }
 export interface DriverRow { id: string; firstName: string; lastName: string; phone: string; email: string | null; driverType: DriverType; licenseType: LicenseType | null; licenseState: string | null;
   status: DriverStatus; version: number; createdAt: string; closedAt: string | null; safetyLead: SafetyPerson | null; owner: SafetyPerson | null }
 export interface DriverOwnerRow { id: string; startedAt: string; endedAt: string | null; reason: string | null; owner: SafetyPerson | null; assignedBy: string | null }
-export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean }; createdAt: string; actor: string | null }
+export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean; resent?: boolean; emailChanged?: boolean }; createdAt: string; actor: string | null }
 export interface DriverProfile extends DriverRow { experienceYears: number | null; source: string | null; notes: string | null; statusReason: string | null; updatedAt: string;
-  addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[] }
+  addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[];
+  // From an API with driver applications; absent on an older one.
+  link?: { email: string; createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean } | null;
+  application?: { status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; ssnLast4: string | null; version: number; submittedAt: string | null; updatedAt: string } | null }
 export interface SafetyPeople { leads: { id: string; name: string; role: string }[]; staff: { id: string; name: string; role: string }[] }
 
 export const SCREENER_ROLES = ['SYSTEM_ADMIN', 'SAFETY_MANAGER', 'SAFETY_LEAD'];

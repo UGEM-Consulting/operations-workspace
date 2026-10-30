@@ -27,6 +27,12 @@ const config: NextConfig = {
    { key: 'Cache-Control', value: 'no-store, private' },
    { key: 'X-Robots-Tag', value: 'noindex, nofollow' },
   ] },
+  // Driver application pages: the same rules (the link token lives in the fragment; answers include an SSN).
+  { source: '/driver/:path*', headers: [
+   { key: 'Referrer-Policy', value: 'no-referrer' },
+   { key: 'Cache-Control', value: 'no-store, private' },
+   { key: 'X-Robots-Tag', value: 'noindex, nofollow' },
+  ] },
  ]; },
 };
 export default config;

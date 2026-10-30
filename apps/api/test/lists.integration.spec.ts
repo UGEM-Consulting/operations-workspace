@@ -50,10 +50,10 @@ integration('Managed lists (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, list_events, mcs, job_titles CASCADE'); await db.destroy(); } });
 
   it('starts the lists from manager-confirmed assignments, one entry per name however it was typed, without Independent', async () => {
-    await db.query('TRUNCATE list_events, dispatch_events, member_contacts'); await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`); await db.query(`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.undoLastMigration(); await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('Notifications1792800000000');
+    await db.query('TRUNCATE list_events, dispatch_events, member_contacts'); await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`); await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`); await db.undoLastMigration(); await db.query(`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.undoLastMigration(); await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('Notifications1792800000000');
     await approved('Northwind Freight', 'Dispatcher'); await approved('  northwind   FREIGHT ', 'dispatcher'); await approved('Independent', 'Senior dispatcher');
     await approved('Lakeside Carriers', 'Dispatcher', 'SUBMITTED');
-    await db.runMigrations(); expect(await latest()).toBe('SafetyDrivers1792860000000');
+    await db.runMigrations(); expect(await latest()).toBe('DriverApplications1792870000000');
     const body = (await mcs().expect(200)).body;
     expect(body.items.map((item: { name: string; usage: number }) => [item.name, item.usage])).toEqual([['Lakeside Carriers', 0], ['Northwind Freight', 2]]);
     expect(body.counts).toEqual({ active: 2, archived: 0 });
@@ -100,7 +100,7 @@ integration('Managed lists (disposable PostgreSQL)', () => {
 
   it('refuses to roll back once someone has changed a list, so manual entries are never lost', async () => {
     await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'Kept Carrier', mcNumber: '765432' }).expect(201);
-    await db.query('TRUNCATE dispatch_events, member_contacts, member_support_links'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration();
+    await db.query('TRUNCATE dispatch_events, member_contacts, member_support_links'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration();
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard managed list changes');
     expect(await latest()).toBe('ManagedLists1792810000000');
     await db.runMigrations();

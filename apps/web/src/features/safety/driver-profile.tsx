@@ -16,16 +16,20 @@ import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
+import { ApplicationCard } from './application-card';
 import { DriverForm, driverBody } from './driver-form';
 import { CLOSED, driverStatus, driverTypes, fieldLabels, license, OWNABLE, WITHDRAWABLE, type DriverEventRow, type DriverProfile, type SafetyPeople, type SafetyPerson } from './types';
 
 type Action = 'edit' | 'withdraw' | 'reopen' | 'owner';
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', REOPENED: 'Reopened as a lead',
-  SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Owner assigned' };
+  SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Owner assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
+  APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed' };
 const who = (person: SafetyPerson | null) => person ? `${person.name}${person.active ? '' : ' (inactive)'}` : null;
 function eventMeta(row: DriverEventRow) {
   const fields = row.event === 'UPDATED' && row.metadata.fields?.length ? ` · ${row.metadata.fields.map(field => fieldLabels[field] ?? field).join(', ')}` : '';
-  return <>{row.actor ?? 'Someone'} · <LocalTime iso={row.createdAt} />{fields}</>;
+  // Steps the driver takes have no staff actor.
+  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED'].includes(row.event) ? 'Driver' : 'Someone');
+  return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}</>;
 }
 
 /**
@@ -81,6 +85,7 @@ export function DriverProfileView({ driver, people, screener, owns }: { driver: 
             { label: 'Where they came from', value: driver.source },
             { label: 'Notes', value: driver.notes ? <span className="whitespace-pre-wrap font-normal">{driver.notes}</span> : null, span: true, emptyLabel: 'No notes' }]} /></CardBody>
         </Card>
+        {(driver.application !== undefined || driver.link !== undefined) && <ApplicationCard driver={driver} screener={screener} owns={owns} />}
         <Card>
           <CardHeader title="Activity" description="What changed and who did it." />
           <CardBody>{driver.activity.length ? <Timeline items={driver.activity.map(row => ({ id: row.id, title: events[row.event] ?? row.event, meta: eventMeta(row),

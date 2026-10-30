@@ -1,8 +1,17 @@
+import { randomBytes } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager, In, IsNull, QueryFailedError } from 'typeorm';
+import { webOrigins } from '../../config/environment';
+import { onboardingLimit } from '../onboarding/rate-limit';
+import { digest } from '../onboarding/verification-code';
+import { DriverVersionDto } from './driver-application.dto';
+import { PiiService } from './pii';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { AssignOwnerDto, CreateDriverDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
-import { CLOSED_STATUSES, Driver, DriverEvent, DriverEventType, DriverOwner, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
+import { CLOSED_STATUSES, Driver, DriverApplication, DriverEvent, DriverEventType, DriverLink, DriverOwner, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
+/** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
+export const DRIVER_LINK_DAYS = 14;
 
 export const SAFETY_ROLES = [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF];
 /** Who may add leads, change any driver, withdraw and assign owners. Safety staff change only drivers they own. */
@@ -25,7 +34,7 @@ const blank = (value: string | null | undefined) => value === undefined ? undefi
  */
 @Injectable()
 export class SafetyService {
- constructor(private readonly db: DataSource) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly pii: PiiService) {}
 
  async drivers(status: 'OPEN' | 'CLOSED' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState",
@@ -42,13 +51,16 @@ export class SafetyService {
    d.source, d.notes, d.status, d."statusReason", d."closedAt", d.version, d."createdAt", d."updatedAt", ${person('l')} AS "safetyLead", ${person('c')} AS "addedBy"
    FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" WHERE d.id = $1`, [id]);
   if (!driver) throw new NotFoundException('This driver record no longer exists.');
-  const [owners, activity] = await Promise.all([
+  const [owners, activity, [link], [application]] = await Promise.all([
    this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, CASE WHEN a.id IS NULL THEN NULL ELSE a."firstName" || ' ' || a."lastName" END AS "assignedBy"
     FROM driver_owners x LEFT JOIN users o ON o.id = x."ownerId" LEFT JOIN users a ON a.id = x."actorId" WHERE x."driverId" = $1 ORDER BY x."startedAt" DESC, x."createdAt" DESC`, [id]),
    this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
     FROM driver_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."driverId" = $1 ORDER BY e."createdAt" DESC LIMIT 200`, [id]),
+   // The open link (never its token) and the driver's answers; the SSN only as its last four digits.
+   this.db.query(`SELECT email, "createdAt", "expiresAt", "openedAt", "expiresAt" <= now() AS expired FROM driver_links WHERE "driverId" = $1 AND "revokedAt" IS NULL AND "completedAt" IS NULL`, [id]),
+   this.db.query(`SELECT status, fields, "ssnLast4", version, "submittedAt", "updatedAt" FROM driver_applications WHERE "driverId" = $1`, [id]),
   ]);
-  return { ...driver, owner: owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null, owners, activity };
+  return { ...driver, owner: owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null, owners, activity, link: link ?? null, application: application ?? null };
  }
 
  /** Active people to pick: Safety leads (and managers, who can act as one) and safety staff owners. */
@@ -83,6 +95,8 @@ export class SafetyService {
     if (value !== undefined && value !== driver[field]) { (driver as unknown as Record<string, unknown>)[field] = value; fields.push(field); }
    }
    if (fields.includes('phone')) driver.phoneKey = phoneKey(driver.phone);
+   // The open link was bound to the old address, so an email change cancels it.
+   const linkCancelled = fields.includes('email') && await this.cancelOpenLink(em, driver);
    let leadChanged = false;
    if (dto.safetyLeadId !== undefined && dto.safetyLeadId !== driver.safetyLeadId) {
     this.requireScreener(user);
@@ -94,6 +108,7 @@ export class SafetyService {
    await em.getRepository(Driver).save(driver);
    if (fields.length) await this.event(em, user, id, 'UPDATED', { fields });
    if (leadChanged) await this.event(em, user, id, 'SAFETY_LEAD_CHANGED', {});
+   if (linkCancelled) await this.event(em, user, id, 'LINK_CANCELLED', { emailChanged: true });
    return { id, version: driver.version };
   });
  }
@@ -103,6 +118,7 @@ export class SafetyService {
   return this.write(async em => {
    const driver = await this.lockOpen(em, id, dto.version);
    if (!WITHDRAWABLE.includes(driver.status)) throw new ConflictException('Only a driver who isn’t approved yet can be withdrawn.');
+   await em.getRepository(DriverLink).update({ driverId: id, revokedAt: IsNull(), completedAt: IsNull() }, { revokedAt: new Date() });
    await em.getRepository(Driver).update(id, { status: 'WITHDRAWN', statusReason: dto.reason, closedAt: new Date(), version: driver.version + 1 });
    await this.event(em, user, id, 'WITHDRAWN', { from: driver.status });
    return { id, version: driver.version + 1 };
@@ -143,6 +159,58 @@ export class SafetyService {
   });
  }
 
+ /**
+  * Sends (or resends) the driver's application link, bound to the email on their record; any earlier open link stops
+  * working. The token is returned once and travels in the URL fragment, so it never reaches server logs.
+  */
+ async sendLink(user: User, id: string, dto: DriverVersionDto) {
+  this.requireScreener(user);
+  return this.write(async em => {
+   const driver = await this.lockOpen(em, id, dto.version);
+   if (!['LEAD', 'APPLYING'].includes(driver.status)) throw new ConflictException('This driver has already sent their application.');
+   if (!driver.email) throw new BadRequestException('Add the driver’s email first. The link works only with that address.');
+   const production = this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production';
+   if (!production && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
+   const resent = await this.cancelOpenLink(em, driver);
+   const token = randomBytes(32).toString('hex');
+   const link = await em.getRepository(DriverLink).save({ driverId: id, tokenHash: digest(token), email: driver.email, createdBy: user.id, expiresAt: new Date(Date.now() + DRIVER_LINK_DAYS * 86400_000) });
+   await em.getRepository(Driver).update(id, { status: 'APPLYING', version: driver.version + 1 });
+   await this.event(em, user, id, 'LINK_SENT', { resent });
+   return { id, version: driver.version + 1, expiresAt: link.expiresAt, url: `${webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]}/driver#${token}` };
+  });
+ }
+
+ /** Stops the open link; a driver who hasn't submitted goes back to being a lead. Their saved answers are kept. */
+ async cancelLink(user: User, id: string, dto: DriverVersionDto) {
+  this.requireScreener(user);
+  return this.write(async em => {
+   const driver = await this.lockOpen(em, id, dto.version);
+   if (!await this.cancelOpenLink(em, driver)) throw new ConflictException('This driver has no open application link.');
+   await em.getRepository(Driver).update(id, { status: driver.status, version: driver.version + 1 });
+   await this.event(em, user, id, 'LINK_CANCELLED', {});
+   return { id, version: driver.version + 1 };
+  });
+ }
+
+ /** The full SSN, for Safety leads, managers, administrators and the driver's owner. Every view is recorded. */
+ async revealSsn(user: User, id: string) {
+  if (!SCREENERS.includes(user.role) && !await this.db.getRepository(DriverOwner).existsBy({ driverId: id, ownerId: user.id, endedAt: IsNull() }))
+   throw new ForbiddenException('Only Safety leads, managers and the driver’s owner can view the full number.');
+  await onboardingLimit(this.db, `ssn-reveal:${user.id}`, 30, 3600);
+  const application = await this.db.getRepository(DriverApplication).createQueryBuilder('a').addSelect('a.ssnCiphertext').where('a."driverId" = :id', { id }).getOne();
+  if (!application?.ssnCiphertext) throw new NotFoundException('No Social Security number on file.');
+  const ssn = this.pii.openSsn(application.ssnCiphertext, id);
+  await this.event(this.db.manager, user, id, 'SSN_REVEALED', {});
+  return { ssn };
+ }
+
+ /** Revokes the open link, if any; an applying driver goes back to LEAD on the entity passed in (the caller saves it). */
+ private async cancelOpenLink(em: EntityManager, driver: Driver) {
+  const result = await em.getRepository(DriverLink).update({ driverId: driver.id, revokedAt: IsNull(), completedAt: IsNull() }, { revokedAt: new Date() });
+  if (!result.affected) return false;
+  if (driver.status === 'APPLYING') driver.status = 'LEAD';
+  return true;
+ }
  private requireScreener(user: User) {
   if (!SCREENERS.includes(user.role)) throw new ForbiddenException('Only Safety leads and managers can do this.');
  }
