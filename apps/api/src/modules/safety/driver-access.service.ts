@@ -1,15 +1,20 @@
-import { BadRequestException, ConflictException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
 // Standalone ts-node commands must load our express-session type augmentation too.
 import type {} from '../auth/session';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, IsNull } from 'typeorm';
+import type { FileResult } from '../documents/documents.service';
+import { sha256 } from '../documents/images';
+import { driverDocumentKey, StorageService } from '../storage/storage.service';
 import { EmailService } from '../email/email.service';
 import { clientBucket, countAttempt, onboardingLimit } from '../onboarding/rate-limit';
 import { digest, generateVerificationCode } from '../onboarding/verification-code';
-import { BeginDriverDto, SaveDriverApplicationDto, VerifyDriverDto } from './driver-application.dto';
+import { BeginDriverDto, DriverDocumentDto, SaveDriverApplicationDto, VerifyDriverDto } from './driver-application.dto';
+import { scanPdf } from './scan';
 import { PiiService } from './pii';
-import { Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverEvent, DriverLink, REQUIRED_DRIVER_FIELDS } from './safety.entity';
+import { DOCUMENT_SEGMENTS, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
 
 /** Code requests per window, like applicant verification: a circuit breaker plus per-address buckets, no per-link cap. */
 export const DRIVER_BEGIN_LIMITS = { global: 1000, ip: 20, emailIp: 5, linkIp: 10 } as const;
@@ -20,7 +25,8 @@ const SESSION_MS = 3600_000;
 const INVALID = 'Verification is invalid or expired.';
 const labels: Record<string, string> = { legalFirstName: 'first name', legalLastName: 'last name', dateOfBirth: 'date of birth', phone: 'phone', addressLine1: 'street address',
  city: 'city', state: 'state', zip: 'ZIP code', emergencyName: 'emergency contact name', emergencyRelationship: 'emergency contact relationship',
- emergencyPhone: 'emergency contact phone', licenseNumber: 'license number', licenseState: 'license state', licenseClass: 'license class', licenseExpiresOn: 'license expiration', ssn: 'Social Security number' };
+ emergencyPhone: 'emergency contact phone', licenseNumber: 'license number', licenseState: 'license state', licenseClass: 'license class', licenseExpiresOn: 'license expiration', ssn: 'Social Security number',
+ LICENSE: 'license scan', MEDICAL_CARD: 'medical card scan', WORK_AUTHORIZATION: 'work authorization scan' };
 const years = (from: string, to = new Date()) => {
  const date = new Date(`${from}T12:00:00Z`);
  let age = to.getUTCFullYear() - date.getUTCFullYear();
@@ -36,7 +42,8 @@ const years = (from: string, to = new Date()) => {
 @Injectable()
 export class DriverAccessService {
  private readonly logger = new Logger('DriverVerification');
- constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly pii: PiiService) {}
+ constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly pii: PiiService,
+  private readonly storage: StorageService) {}
  private get production() { return this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'; }
 
  async begin(dto: BeginDriverDto, req: Request) {
@@ -98,7 +105,7 @@ export class DriverAccessService {
 
  async current(req: Request) {
   const { link, application } = await this.session(this.db.manager, req, false);
-  return this.view(link, application);
+  return this.view(this.db.manager, link, application);
  }
 
  /** Saves a draft, or submits it: the link closes and the driver moves to Screening in the same transaction. */
@@ -116,6 +123,11 @@ export class DriverAccessService {
    if (submit) {
     const missing: string[] = REQUIRED_DRIVER_FIELDS.filter(field => !fields[field]);
     if (!changes.ssnLast4 && !application.ssnLast4) missing.push('ssn');
+    // Scans are required whenever private storage is configured (always in production).
+    if (this.storage.enabled) {
+     const present = (await em.getRepository(DriverDocument).findBy({ driverId: driver.id, replacedAt: IsNull() })).map(document => document.kind);
+     missing.push(...requiredDriverDocuments(fields).filter(kind => !present.includes(kind)));
+    }
     if (missing.length) throw new BadRequestException({ message: `Answer every required question first: ${missing.map(field => labels[field]).join(', ')}.`, missing });
     const age = years(fields.dateOfBirth!);
     if (age < 18 || age > 100) throw new BadRequestException({ message: 'Check your date of birth.', missing: ['dateOfBirth'] });
@@ -128,8 +140,48 @@ export class DriverAccessService {
    }
    await repo.update(application.id, changes);
    const saved = await repo.findOneByOrFail({ id: application.id });
-   return this.view({ ...link, completedAt: submit ? saved.submittedAt : link.completedAt }, saved);
+   return this.view(em, { ...link, completedAt: submit ? saved.submittedAt : link.completedAt }, saved);
   });
+ }
+
+ /**
+  * Stores one scanned document: the photographed pages, cleaned and combined into a PDF. It replaces the driver's
+  * previous scan of that kind, whose file is removed unless Safety verified it (a reopened application): an unverified
+  * draft scan was never reviewed. Allowed only before submission.
+  */
+ async uploadDocument(req: Request, segment: string, dto: DriverDocumentDto) {
+  const kind = DOCUMENT_SEGMENTS[segment];
+  if (!kind) throw new NotFoundException();
+  if (!this.storage.enabled) throw new ServiceUnavailableException('Document uploads aren’t available right now. Please contact Safety.');
+  if ((kind === 'WORK_AUTHORIZATION') !== !!dto.subtype) throw new BadRequestException(kind === 'WORK_AUTHORIZATION' ? 'Choose which document you’re scanning.' : 'Only work authorization takes a document type.');
+  const first = await this.session(this.db.manager, req, false);
+  if (first.application.status !== 'DRAFT' || first.link.completedAt) throw new ConflictException('Your application was already sent to Safety.');
+  await onboardingLimit(this.db, `driver-document:${first.link.id}`, 30);
+  const body = await scanPdf(dto.pages), id = randomUUID(), driverId = first.driver.id;
+  await this.storage.put(driverDocumentKey(driverId, id), body, 'application/pdf');
+  let result;
+  try {
+   result = await this.db.transaction(async em => {
+    const { link, application } = await this.session(em, req, true);
+    if (application.status !== 'DRAFT' || link.completedAt) throw new ConflictException('Your application was already sent to Safety.');
+    const documents = em.getRepository(DriverDocument);
+    const previous = await documents.findOneBy({ driverId, kind, replacedAt: IsNull() });
+    if (previous) await documents.update(previous.id, { replacedAt: new Date() });
+    await documents.insert({ id, driverId, kind, subtype: dto.subtype ?? null, pageCount: dto.pages.length, sha256: sha256(body), byteSize: body.length, createdAt: new Date() });
+    await em.getRepository(DriverEvent).save({ driverId, actorId: null, event: 'DOCUMENT_UPLOADED', metadata: { kind, pages: dto.pages.length } });
+    return { view: await this.view(em, link, application), previous };
+   });
+  } catch (error) { await this.storage.remove(driverDocumentKey(driverId, id)); throw error; }
+  if (result.previous && !result.previous.verifiedAt) await this.storage.remove(driverDocumentKey(driverId, result.previous.id));
+  return result.view;
+ }
+
+ /** The driver's own current scan, as a PDF. */
+ async documentFile(req: Request, id: string): Promise<FileResult> {
+  const { driver } = await this.session(this.db.manager, req, false);
+  const document = await this.db.getRepository(DriverDocument).findOneBy({ id, driverId: driver.id, replacedAt: IsNull() });
+  if (!document) throw new NotFoundException();
+  return { body: await this.storage.get(driverDocumentKey(driver.id, id)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
  }
 
  /** The verified link, its driver and application. With lock, takes the driver row first, like every staff write. */
@@ -149,8 +201,11 @@ export class DriverAccessService {
  private clean(fields: DriverApplicationFields): DriverApplicationFields {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => typeof value === 'string' && value !== '')) as DriverApplicationFields;
  }
- private view(link: DriverLink, application: DriverApplication) {
+ private async view(em: EntityManager, link: DriverLink, application: DriverApplication) {
+  const documents = await em.getRepository(DriverDocument).find({ where: { driverId: application.driverId, replacedAt: IsNull() }, order: { createdAt: 'ASC' } });
   return { email: link.email, expiresAt: link.expiresAt, status: application.status, fields: application.fields, version: application.version,
-   ssnLast4: application.ssnLast4, submittedAt: application.submittedAt, ssnAvailable: this.pii.enabled };
+   ssnLast4: application.ssnLast4, submittedAt: application.submittedAt, ssnAvailable: this.pii.enabled,
+   documentsEnabled: this.storage.enabled, requiredDocuments: this.storage.enabled ? requiredDriverDocuments(application.fields) : [],
+   documents: documents.map(document => ({ id: document.id, kind: document.kind, subtype: document.subtype, pageCount: document.pageCount, createdAt: document.createdAt })) };
  }
 }
