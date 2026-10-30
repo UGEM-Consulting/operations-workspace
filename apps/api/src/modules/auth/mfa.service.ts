@@ -35,13 +35,17 @@ export const mfaRequired = (role: Role, policy: MfaPolicy) => role === Role.SYST
 /** Administrators keep an authenticator app: their account can change everyone else's. */
 export const emailCodesAllowed = (role: Role) => role !== Role.SYSTEM_ADMIN;
 type CodeKind = 'totp' | 'email' | 'recovery';
-/** Removes an email-code enrolment when the user becomes an administrator; they set up an authenticator at the next sign-in. */
-export async function removeEmailEnrolment(manager: EntityManager, userId: string, actorId: string) {
+/**
+ * Removes an email-code enrolment when the user becomes an administrator; they set up an authenticator at the next
+ * sign-in. Also run at sign-in (no actor) for an administrator an older API or a manual role change left on email codes.
+ */
+export async function removeEmailEnrolment(manager: EntityManager, userId: string, actorId: string | null, reason = 'administrator-role') {
   const removed = await manager.delete(StaffMfa, { userId, method: MfaMethod.EMAIL });
-  if (!removed.affected) return;
+  if (!removed.affected) return false;
   await manager.delete(StaffRecoveryCode, { userId });
   await manager.query('DELETE FROM staff_mfa_email_codes WHERE "userId" = $1', [userId]);
-  await manager.insert(StaffSecurityEvent, { userId, actorId, type: SecurityEventType.MFA_RESET_BY_ADMIN, metadata: { reason: 'administrator-role', method: MfaMethod.EMAIL } });
+  await manager.insert(StaffSecurityEvent, { userId, actorId, type: SecurityEventType.MFA_RESET_BY_ADMIN, metadata: { reason, method: MfaMethod.EMAIL } });
+  return true;
 }
 
 @Injectable()
@@ -71,7 +75,12 @@ export class MfaService {
       await this.pend(req, user, 'password');
       return { stage: 'password' as const, landingPage: PENDING_PAGES.password };
     }
-    const { enrolled, required } = await this.state(user);
+    let { enrolled, method, required } = await this.state(user);
+    // An administrator never signs in with emailed codes: the enrolment goes and they set up an authenticator now.
+    if (method === MfaMethod.EMAIL && !emailCodesAllowed(user.role)) {
+      user = await this.dropAdministratorEmailCodes(user);
+      ({ enrolled, method, required } = await this.state(user));
+    }
     if (!enrolled && !required) return this.establish(req, user, 'not-required');
     const stage: MfaStage = enrolled ? 'verify' : 'enrol';
     await this.pend(req, user, stage);
@@ -122,6 +131,8 @@ export class MfaService {
     const user = this.pendingUser(req, 'verify');
     const { method } = await this.state(user);
     if (method !== MfaMethod.EMAIL) return { method: MfaMethod.TOTP };
+    // Signing in again replaces an administrator's email codes with an authenticator (see startSession).
+    if (!emailCodesAllowed(user.role)) throw new UnauthorizedException('Administrators must use an authenticator app. Sign in again to set one up.');
     if (resend || !await hasEmailCode(this.db, user.id, 'login')) await this.sendEmailCode(user, 'login');
     return { method, sentTo: maskEmail(user.email), resendAfter: await resendAfter(this.db, user.id, 'login') };
   }
@@ -311,7 +322,8 @@ export class MfaService {
       .where('mfa.userId = :id AND mfa.confirmedAt IS NOT NULL', { id: user.id }).getOne();
     if (!row) throw new UnauthorizedException('Invalid verification code');
     const token = code.trim();
-    if (row.method === MfaMethod.EMAIL && await consumeEmailCode(this.db, user.id, purpose, token)) return this.accepted(user, 'email');
+    // Never an emailed code for an administrator (recovery codes still work), even if an email enrolment survived.
+    if (row.method === MfaMethod.EMAIL && emailCodesAllowed(user.role) && await consumeEmailCode(this.db, user.id, purpose, token)) return this.accepted(user, 'email');
     const step = row.method === MfaMethod.TOTP ? matchTotp(this.requireBox().open(row.secretCiphertext!, user.id), token) : null;
     if (step !== null) {
       // Each time step is accepted once, even across concurrent requests.
@@ -355,6 +367,19 @@ export class MfaService {
     const user = await manager.getRepository(User).createQueryBuilder('user').addSelect('user.authVersion').setLock('pessimistic_write').where('user.id = :id', { id }).getOne();
     if (!user) throw new NotFoundException();
     return user;
+  }
+
+  /**
+   * Removes an administrator's email-code enrolment (with its recovery and outstanding codes) after a correct password
+   * and ends their sessions, like any enrolment change. Returns the user as stored now, so the pending sign-in carries
+   * the current authVersion even when a concurrent sign-in already removed it or the role changed meanwhile.
+   */
+  private async dropAdministratorEmailCodes(user: User): Promise<User> {
+    return this.db.transaction(async manager => {
+      const current = await this.lockUser(manager, user.id);
+      if (!emailCodesAllowed(current.role) && await removeEmailEnrolment(manager, current.id, null, 'administrator-sign-in')) await revokeUserSessions(manager, current);
+      return current;
+    });
   }
 
   private async removeEnrolment(manager: EntityManager, user: User) {

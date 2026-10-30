@@ -25,7 +25,7 @@ import { fieldLabels, FieldName, itemLabels, ReviewDetail } from '@/features/onb
 export const metadata = { title: 'Application' };
 /**
  * Application review: the record in tabs on the left (overview, documents, what changed, history) and the decision
- * rail on the right, sticky from 1280px; below that the rail follows the content.
+ * rail on the right, sticky from 1280px (scrolling on its own when taller than the screen); below that the rail follows the content.
  */
 export default async function Page({params}:{params:Promise<{id:string}>}) {
  await requirePage('applications');const {id}=await params;if(!/^[0-9a-f-]{36}$/.test(id))notFound();
@@ -92,7 +92,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
    <Tabs label="Application sections" items={[{key:'overview',label:'Overview'},{key:'documents',label:'Documents',count:data.documents.required?data.documents.items.length:undefined},
     ...(changes>0?[{key:'changes',label:'What changed',count:changes}]:[]),{key:'history',label:'History'}]}
     panels={{overview,documents,changes:whatChanged,history}}/>
-   <aside aria-label="Decision" className="space-y-4 xl:sticky xl:top-20">
+   <aside aria-label="Decision" className="space-y-4 xl:sticky xl:top-20 xl:-mx-1 xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1">
     {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">

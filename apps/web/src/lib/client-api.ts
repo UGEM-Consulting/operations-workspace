@@ -9,7 +9,9 @@ export type ApiErrorKind = 'network' | 'session' | 'applicant-session' | 'confli
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
-  constructor(message: string, kind: ApiErrorKind, status?: number) { super(message); this.name = 'ApiError'; this.kind = kind; this.status = status; }
+  /** Fields or items a refused request named (the API's `missing` list), for highlighting them on the form. */
+  readonly missing: string[];
+  constructor(message: string, kind: ApiErrorKind, status?: number, missing: string[] = []) { super(message); this.name = 'ApiError'; this.kind = kind; this.status = status; this.missing = missing; }
 }
 
 export const apiMessages = {
@@ -73,7 +75,12 @@ export function responseError(path: string, status: number, data: unknown, json:
   }
   if (status === 409) return new ApiError(message ?? 'This record changed. Reload and try again.', 'conflict', status);
   if (status === 503) return new ApiError(message ?? apiMessages.unavailable, 'unavailable', status);
-  return new ApiError(message ?? apiMessages.generic, 'request', status);
+  return new ApiError(message ?? apiMessages.generic, 'request', status, json ? serverMissing(data) : []);
+}
+
+function serverMissing(data: unknown): string[] {
+  const missing = data && typeof data === 'object' && 'missing' in data ? (data as { missing: unknown }).missing : undefined;
+  return Array.isArray(missing) ? missing.filter((item): item is string => typeof item === 'string').slice(0, 50) : [];
 }
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {

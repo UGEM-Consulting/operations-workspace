@@ -14,7 +14,7 @@ import { Badge, StatusBadge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { statusBadge, type MemberStatus } from './types';
+import { memberBadge, type MemberStatus } from './types';
 
 export interface TeamView {
   teams: { id: string; name: string; mc: string }[];
@@ -63,7 +63,7 @@ export function MyTeam({ data }: { data: TeamView }) {
             {data.dispatchers.filter(row => row.teamId === team.id).map(dispatcher => <li key={dispatcher.id} className="px-4 py-3 sm:px-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Person name={dispatcher.name} secondary={dispatcher.lead ? 'Team lead' : dispatcher.jobTitle ?? 'Dispatcher'} />
-                <Badge label={statusBadge[dispatcher.status].label} tone={statusBadge[dispatcher.status].tone} />
+                <Badge {...memberBadge(dispatcher.status)} />
               </div>
               {data.supports.filter(support => support.dispatcherId === dispatcher.id).map(support => <div key={support.id} className="ml-11 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted px-3 py-2">
                 <span className="min-w-0 text-sm"><span className="font-medium">{support.name}</span><span className="block text-[13px] text-muted-foreground">Support since <LocalTime iso={support.since} format="date" /></span></span>

@@ -25,7 +25,7 @@ export function Tabs({ items, value, defaultValue, onValueChange, label, panels,
         {item.label}<Count value={item.count} active={false} segmented={false} />
       </RadixTabs.Trigger>)}
     </RadixTabs.List>
-    {items.map(item => <RadixTabs.Content key={item.key} value={item.key} className="pt-5 focus-visible:outline-none">{panels[item.key]}</RadixTabs.Content>)}
+    {items.map(item => <RadixTabs.Content key={item.key} value={item.key} className="mt-5 rounded-xs focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">{panels[item.key]}</RadixTabs.Content>)}
   </RadixTabs.Root>;
 }
 

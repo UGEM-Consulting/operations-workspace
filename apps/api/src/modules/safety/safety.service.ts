@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager, In, IsNull, QueryFailedError } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Not, QueryFailedError } from 'typeorm';
 import { webOrigins } from '../../config/environment';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { digest } from '../onboarding/verification-code';
@@ -103,6 +103,7 @@ export class SafetyService {
    if (fields.includes('phone')) driver.phoneKey = phoneKey(driver.phone);
    // The open link was bound to the old address, so an email change cancels it.
    const linkCancelled = fields.includes('email') && await this.cancelOpenLink(em, driver);
+   if (fields.includes('email')) await this.endSubmittedAccess(em, id);
    let leadChanged = false;
    if (dto.safetyLeadId !== undefined && dto.safetyLeadId !== driver.safetyLeadId) {
     this.requireScreener(user);
@@ -125,6 +126,7 @@ export class SafetyService {
    const driver = await this.lockOpen(em, id, dto.version);
    if (!WITHDRAWABLE.includes(driver.status)) throw new ConflictException('Only a driver who isn’t approved yet can be withdrawn.');
    await em.getRepository(DriverLink).update({ driverId: id, revokedAt: IsNull(), completedAt: IsNull() }, { revokedAt: new Date() });
+   await this.endSubmittedAccess(em, id);
    await em.getRepository(Driver).update(id, { status: 'WITHDRAWN', statusReason: dto.reason, closedAt: new Date(), version: driver.version + 1 });
    await this.event(em, user, id, 'WITHDRAWN', { from: driver.status });
    return { id, version: driver.version + 1 };
@@ -178,6 +180,7 @@ export class SafetyService {
    const production = this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production';
    if (!production && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
    const resent = await this.cancelOpenLink(em, driver);
+   await this.endSubmittedAccess(em, id);
    const token = randomBytes(32).toString('hex');
    const link = await em.getRepository(DriverLink).save({ driverId: id, tokenHash: digest(token), email: driver.email, createdBy: user.id, expiresAt: new Date(Date.now() + DRIVER_LINK_DAYS * 86400_000) });
    await em.getRepository(Driver).update(id, { status: 'APPLYING', version: driver.version + 1 });
@@ -258,6 +261,13 @@ export class SafetyService {
   if (!result.affected) return false;
   if (driver.status === 'APPLYING') driver.status = 'LEAD';
   return true;
+ }
+ /**
+  * Revokes the links the driver already submitted through: that browser session can still read the sent application for
+  * up to an hour, which must stop once Safety withdraws the driver, changes the bound email or reopens the application.
+  */
+ private async endSubmittedAccess(em: EntityManager, driverId: string) {
+  await em.getRepository(DriverLink).update({ driverId, revokedAt: IsNull(), completedAt: Not(IsNull()) }, { revokedAt: new Date() });
  }
  private requireScreener(user: User) {
   if (!SCREENERS.includes(user.role)) throw new ForbiddenException('Only Safety leads and managers can do this.');

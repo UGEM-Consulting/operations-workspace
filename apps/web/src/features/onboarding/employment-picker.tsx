@@ -14,7 +14,8 @@ function initial(options: EmploymentOptions, value: Employment) {
   // A team matches by its lead, by its own name, or by the name the lists gave it ("Lee Lead team", with the MC added
   // as "Lee Lead team (Northwind)" when the same lead text appears under two MCs).
   const named = (name: string) => [lead, `${lead} team`].includes(key(name)) || key(name).startsWith(`${lead} team (`);
-  const team = lead === 'independent' ? INDEPENDENT : options.teams.find(item => item.mcId === mc && (key(item.lead ?? '') === lead || named(item.name)))?.id ?? '';
+  // Blank lead text matches no team: otherwise it would pick the MC's first team without a lead.
+  const team = lead === 'independent' ? INDEPENDENT : !lead ? '' : options.teams.find(item => item.mcId === mc && (key(item.lead ?? '') === lead || named(item.name)))?.id ?? '';
   const title = options.jobTitles.find(item => key(item.name) === key(value.jobTitle))?.id ?? '';
   return { mc, team: mc === INDEPENDENT ? INDEPENDENT : team, title };
 }

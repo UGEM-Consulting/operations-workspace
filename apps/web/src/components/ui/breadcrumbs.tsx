@@ -4,7 +4,7 @@ import type { Crumb } from '@/lib/navigation';
 
 /**
  * Where the page sits; the last item is the current page. On phones only a link to the parent shows.
- * `onLinkClick` lets the shell ask before leaving a page with unsaved changes.
+ * `onLinkClick` lets the shell ask before leaving a page with unsaved changes. A blank last label renders a silent placeholder.
  */
 export function Breadcrumbs({ items, onLinkClick }: { items: Crumb[]; onLinkClick?: (href: string) => (event: React.MouseEvent) => void }) {
   const parent = items.length > 1 ? items.at(-2) : undefined;
@@ -15,7 +15,9 @@ export function Breadcrumbs({ items, onLinkClick }: { items: Crumb[]; onLinkClic
       {items.map((item, index) => {
         const last = index === items.length - 1;
         return <li key={`${index}-${item.label}`} className="flex min-w-0 items-center gap-1">
-          {last || !item.href ? <span aria-current={last ? 'page' : undefined} className={last ? 'truncate font-medium text-foreground' : 'text-muted-foreground'}>{item.label}</span>
+          {/* A blank label is a record name not known yet: hold its place without announcing anything. */}
+          {last && !item.label.trim() ? <span aria-hidden="true" className="inline-block h-5 w-24" />
+            : last || !item.href ? <span aria-current={last ? 'page' : undefined} className={last ? 'truncate font-medium text-foreground' : 'text-muted-foreground'}>{item.label}</span>
             : <Link href={item.href} onClick={onLinkClick?.(item.href)} className="text-muted-foreground hover:text-foreground hover:underline">{item.label}</Link>}
           {!last && <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-subtle-foreground" />}
         </li>;

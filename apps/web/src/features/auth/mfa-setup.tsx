@@ -64,12 +64,18 @@ export function MfaSetup({ onComplete, onCancel, doneLabel = 'Continue to worksp
   const [pending, setPending] = useState(false);
   const [resending, setResending] = useState(false);
   const loaded = useRef(false);
+  // Each start replaces the unconfirmed key, so a second start while one is in flight could leave a QR code for a
+  // replaced secret. The ref stops re-entry at once; the state shows it.
+  const startingRef = useRef(false);
+  const [starting, setStarting] = useState(false);
   async function begin(method: Method, resend = false) {
+    if (startingRef.current) return;
+    startingRef.current = true; setStarting(true);
     setError(''); setResending(resend);
     // Older clients sent no body, which the API still treats as an authenticator app.
     try { setStarted(await mutate<Started>('auth/mfa/enrolment', 'POST', method === 'EMAIL' ? { method } : {})); setSentAt(Date.now()); }
     catch (error) { setError(signInExpired(error instanceof Error ? error.message : 'Unable to start setup')); }
-    finally { setResending(false); }
+    finally { startingRef.current = false; setStarting(false); setResending(false); }
   }
   useEffect(() => {
     if (loaded.current) return;
@@ -115,7 +121,7 @@ export function MfaSetup({ onComplete, onCancel, doneLabel = 'Continue to worksp
         { value: 'EMAIL', label: 'Email codes', description: `We email a 6-digit code to ${options.email} each time you sign in.` },
       ]} />
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-      <div className="flex flex-wrap gap-3"><Button type="button" size={signIn ? 'lg' : 'default'} className={signIn ? 'w-full' : undefined} onClick={() => void begin(choice)}>Continue</Button>{cancel}</div>
+      <div className="flex flex-wrap gap-3"><Button type="button" size={signIn ? 'lg' : 'default'} className={signIn ? 'w-full' : undefined} disabled={starting} onClick={() => void begin(choice)}>{starting ? 'Starting…' : 'Continue'}</Button>{cancel}</div>
     </div>
     {back}
   </div>;

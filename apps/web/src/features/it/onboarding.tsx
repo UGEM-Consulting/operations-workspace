@@ -27,6 +27,8 @@ const RINGCENTRAL=['RINGCENTRAL','SMS','CALL_RECORDING'];
 const ACCOUNTS:Record<string,{label:string;prompt:string;type:'email'|'tel';max:number;placeholder:string;hint?:string}>={
  GOOGLE_WORKSPACE:{label:'Company email',prompt:'company email',type:'email',max:254,placeholder:'name@ugemconsulting.com'},
  RINGCENTRAL:{label:'Assigned RingCentral number',prompt:'RingCentral number',type:'tel',max:40,placeholder:'+1 202 555 0190',hint:'Include the country code, such as +1 202 555 0190.'}};
+// Only completing the task needs its account; IT can start it, or record what blocks it (often the account itself), before.
+const WITHOUT_ACCOUNT:readonly TaskOutcome[]=['PENDING','IN_PROGRESS','BLOCKED'];
 /**
  * An IT request: the setup checklist with progress and the profile in a side rail. The Google Workspace and RingCentral
  * dialogs ask for the company email or number first; the status can change once it is filled in.
@@ -40,6 +42,8 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
  const field=editing?ACCOUNTS[editing.key]:undefined;
+ // An account task without its account offers only the statuses that don't need it (and keeps the one it has).
+ const locked=!!field&&!account.trim(),allowed=(status:TaskOutcome)=>WITHOUT_ACCOUNT.includes(status)||status===editing?.status;
  const recorded=(key:string)=>key==='GOOGLE_WORKSPACE'?request.companyEmail??'':key==='RINGCENTRAL'?request.assignedRingCentralPhoneNumber??'':'';
  const legacyPhone=!!profile.workPhoneNumber?.trim();
  async function refresh(){setPending('refresh');try{setData(await readApi<ItDetail>(`it/onboarding/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh.')});}finally{setPending(null);}}
@@ -47,7 +51,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  async function update(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(!editing||busy)return;
   const values=new FormData(event.currentTarget),notes=String(values.get('notes')??'');
-  if(field&&!account.trim()){setTaskError(`Enter the ${field.prompt} first.`);return;}
+  if(field&&locked&&(!allowed(taskStatus)||recorded(editing.key))){setTaskError(`Enter the ${field.prompt} first.`);return;}
   if(taskStatus==='BLOCKED'&&!notes.trim()){setTaskError('Describe what is blocking this task.');return;}
   setPending('task');setTaskError('');
   try{
@@ -90,7 +94,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
    </Card>
    <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(event=>({id:event.id,tone:activityTone(event),title:`${statusLabel(event.event)}${event.metadata.key?` · ${statusLabel(String(event.metadata.key))}`:''}`,meta:<LocalTime iso={event.createdAt}/>}))}/></CardBody></Card>
   </div>
-  <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
+  <div className="min-w-0 space-y-6 xl:sticky xl:top-20 xl:-mx-1 xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1">
    <Card><CardHeader title="Profile"/><CardBody className="space-y-4">
     <div className="flex items-center gap-3">{request.profilePhoto?<PrivateImage src={`/api/backend/it/onboarding/${request.id}/photo`} alt="Profile photo" className="size-14 shrink-0 rounded-full border object-cover"/>:<Avatar name={name} size="lg"/>}
      <div className="min-w-0"><p className="truncate font-medium">{name}</p><p className="text-[13px] text-muted-foreground">Proposed display name</p></div></div>
@@ -109,10 +113,12 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  </div>
  {editing&&<Dialog open onClose={()=>setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual setup work." busy={pending==='task'} actions={<Button form="it-task-editor" type="submit">{pending==='task'?'Saving…':completing?'Complete onboarding':'Save task'}</Button>}>
  <form id="it-task-editor" onSubmit={update} className="space-y-4">
- {field&&<Input label={field.label} name="account" type={field.type} required maxLength={field.max} value={account} onChange={event=>setAccount(event.target.value)} placeholder={field.placeholder} autoComplete="off" width="md"
-  hint={field.hint??'The manager sees it on the employee details.'}/>}
+ {field&&<Input label={field.label} name="account" type={field.type} required={!allowed(taskStatus)||!!recorded(editing.key)} optional={allowed(taskStatus)&&!recorded(editing.key)} maxLength={field.max} value={account}
+  onChange={event=>{setAccount(event.target.value);if(!event.target.value.trim()&&!allowed(taskStatus))setTaskStatus(allowed(editing.status)?editing.status:'IN_PROGRESS');}}
+  placeholder={field.placeholder} autoComplete="off" width="md" hint={field.hint??'The manager sees it on the employee details.'}/>}
  {editing.key==='RINGCENTRAL'&&legacyPhone&&<Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label={`I verified the older application work phone (${profile.workPhoneNumber}).`}/>}
- <Select label="Status" name="status" value={taskStatus} disabled={!!field&&!account.trim()} hint={field&&!account.trim()?`Enter the ${field.prompt} first.`:undefined} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm" options={taskOutcomes.filter(status=>status!=='NOT_NEEDED'||editing.optional).map(status=>({value:status,label:statusLabel(status)}))}/><Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
+ <Select label="Status" name="status" value={taskStatus} hint={field&&locked?`Enter the ${field.prompt} to mark it completed.`:undefined} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm"
+  options={taskOutcomes.filter(status=>(status!=='NOT_NEEDED'||editing.optional)&&(!locked||allowed(status))).map(status=>({value:status,label:statusLabel(status)}))}/><Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
  {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager receives a portal notification. It needs the company email and RingCentral number recorded in their tasks.</p><Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
  <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>{taskError&&<p className="text-sm text-muted-foreground">If someone else updated this request, close this dialog and refresh its status before trying again.</p>}</form>
  </Dialog>}

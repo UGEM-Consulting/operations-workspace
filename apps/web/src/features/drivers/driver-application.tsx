@@ -27,27 +27,56 @@ function readFragment() { if (window.location.hash) captured = window.location.h
 // A link pasted into an open /driver tab changes only the fragment, so listen for that too.
 const subscribe = (changed: () => void) => { window.addEventListener('hashchange', changed); return () => window.removeEventListener('hashchange', changed); };
 
+// Today's local date (YYYY-MM-DD) for date-field limits. Read only in the browser: the server snapshot is undefined, so the
+// server render and hydration never disagree about the date.
+const noSubscription = () => () => {};
+const localDate = (shiftYears = 0) => { const now = new Date(); now.setFullYear(now.getFullYear() - shiftYears);
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; };
+const useToday = () => useSyncExternalStore(noSubscription, () => localDate(), () => undefined);
+
 /** The driver's application page: verify the email Safety has on file, then fill in and submit the application. */
 export function DriverApplicationPage() {
   const token = useSyncExternalStore(subscribe, readFragment, () => null);
   const [view, setView] = useState<DriverApplicationView | null>(null);
   const [state, setState] = useState<'loading' | 'form' | 'closed'>('loading');
   const [closedMessage, setClosedMessage] = useState('');
-  const [verified, setVerified] = useState(false);
+  // The link verified in this tab. Each new link (a fragment pasted into this tab, on a shared phone perhaps) needs its
+  // own verification, so the previous driver's session never answers for it.
+  const [verifiedToken, setVerifiedToken] = useState<string | null>(null);
+  const [shownToken, setShownToken] = useState(token);
+  if (shownToken !== token) { setShownToken(token); setView(null); setState('loading'); setClosedMessage(''); }
   useEffect(() => { if (window.location.hash) window.history.replaceState(null, '', window.location.pathname); }, [token]);
   // Opening a link always verifies for that link, so an earlier session in this browser (another driver's, or a submitted
   // application) never answers for it. Without a link, the current session (a reload) opens the form, if there is one.
   const linked = token !== null && /^[a-f0-9]{64}$/.test(token);
-  const load = useCallback(() => readApi<DriverApplicationView>('driver/application').then(result => { setView(result); setState('form'); }, (error: unknown) => {
-    setClosedMessage(error instanceof ApiError && error.status === 401 ? 'Open the application link from Safety to continue. You’ll get a code by email.' : errorMessage(error, 'Unable to load your application.'));
-    setState('closed');
-  }), []);
-  useEffect(() => { if (token !== null && (!linked || verified)) void load(); }, [token, linked, verified, load]);
+  const malformed = token !== null && token !== '' && !linked;
+  const verified = linked && verifiedToken === token;
+  useEffect(() => {
+    if (token === null || malformed || (linked && !verified)) return;
+    let current = true;
+    readApi<DriverApplicationView>('driver/application').then(result => { if (current) { setView(result); setState('form'); } }, (error: unknown) => {
+      if (!current) return;
+      setClosedMessage(error instanceof ApiError && error.status === 401 ? 'Open the application link from Safety to continue. You’ll get a code by email.' : errorMessage(error, 'Unable to load your application.'));
+      setState('closed');
+    });
+    return () => { current = false; };
+  }, [token, malformed, linked, verified]);
   if (token === null) return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
-  if (linked && !verified) return <VerifyDriver token={token} onVerified={() => setVerified(true)} />;
+  if (malformed) return <Closed message="This link looks incomplete. Open the full link from Safety’s message." />;
+  if (linked && !verified) return <VerifyDriver key={token} token={token} onVerified={() => setVerifiedToken(token)} />;
   if (state === 'loading') return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
-  if (state === 'closed' || !view) return <Card className="space-y-3 p-6 sm:p-8"><h1 className="text-2xl font-normal">Driver application</h1><p className="text-sm text-muted-foreground">{closedMessage}</p></Card>;
-  return <DriverForm view={view} onSaved={setView} onEnded={message => { setClosedMessage(message); setState('closed'); }} />;
+  if (state === 'closed' || !view) return <Closed message={closedMessage} />;
+  return <DriverForm view={view} focusHeading={verified} onSaved={setView} onEnded={message => { setClosedMessage(message); setState('closed'); }} />;
+}
+
+function Closed({ message }: { message: string }) {
+  return <Card className="space-y-3 p-6 sm:p-8"><h1 className="text-2xl font-normal">Driver application</h1><p className="text-sm text-muted-foreground">{message}</p></Card>;
+}
+
+/** The first of these fields as they appear on the page, so focus moves top to bottom. */
+function firstOnPage(form: HTMLFormElement | null, keys: string[]) {
+  const elements = keys.map(key => form?.querySelector<HTMLElement>(`[name="${key}"]`)).filter((element): element is HTMLElement => !!element);
+  return elements.sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)[0];
 }
 
 function VerifyDriver({ token, onVerified }: { token: string; onVerified: () => void }) {
@@ -83,8 +112,15 @@ function VerifyDriver({ token, onVerified }: { token: string; onVerified: () => 
   </Card>;
 }
 
-function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; onSaved: (view: DriverApplicationView) => void; onEnded: (message: string) => void }) {
+function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverApplicationView; focusHeading: boolean; onSaved: (view: DriverApplicationView) => void; onEnded: (message: string) => void }) {
   const form = useRef<HTMLFormElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Straight after verification, screen readers land on the form rather than at the top of the page.
+  useEffect(() => { if (focusHeading) heading.current?.focus(); }, [focusHeading]);
+  const today = useToday();
+  const adult = useSyncExternalStore(noSubscription, () => localDate(18), () => undefined);
+  // Without SSN entry (no encryption key yet) the API refuses submission; say so instead of asking for a number.
+  const ssnBlocked = !view.ssnAvailable && !view.ssnLast4;
   const [pending, setPending] = useState<'save' | 'submit' | null>(null);
   const [message, setMessage] = useState(''), [failed, setFailed] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -98,7 +134,7 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
   const value = (key: string) => view.fields[key] ?? '';
   if (view.status === 'SUBMITTED') return <Card className="space-y-4 p-6 sm:p-8">
     <CheckCircle2 aria-hidden="true" className="size-8 text-success" />
-    <h1 className="text-2xl font-normal">Application sent</h1>
+    <h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Application sent</h1>
     <p className="text-sm text-muted-foreground">Thank you. Safety received your application{view.submittedAt ? <> on <LocalTime iso={view.submittedAt} format="date" /></> : null} and will contact you about the next steps. You can close this page.</p>
   </Card>;
   function read() {
@@ -112,7 +148,10 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
     // Pages taken but not saved would be lost on submit; Save and finish later keeps answers only.
     const unsaved = DOCUMENT_KINDS.filter(kind => drafts[kind]?.pages);
     if (submit) {
-      const missing = Object.fromEntries([...REQUIRED.filter(key => !fields[key]), ...(!ssn && !view.ssnLast4 ? ['ssn'] : [])].map(key => [key, 'Required']));
+      const missing: Record<string, string> = Object.fromEntries([...REQUIRED.filter(key => !fields[key]), ...(!ssn && !view.ssnLast4 && view.ssnAvailable ? ['ssn'] : [])].map(key => [key, 'Required']));
+      // Guidance only; the API decides (age 18 to 100, license not expired).
+      if (fields.dateOfBirth && adult && fields.dateOfBirth > adult) missing.dateOfBirth = 'You must be at least 18.';
+      if (fields.licenseExpiresOn && today && fields.licenseExpiresOn < today) missing.licenseExpiresOn = 'Your license has expired.';
       setErrors(missing);
       const unscanned = view.documentsEnabled ? requiredDocuments(fields.licenseClass).filter(kind => !unsaved.includes(kind) && !view.documents?.some(document => document.kind === kind)) : [];
       const problems: Partial<Record<DocumentKind, string>> = Object.fromEntries([...unsaved.map(kind => [kind, 'Save these pages before you submit, or remove them.']),
@@ -121,9 +160,15 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
       if (Object.keys(missing).length || unsaved.length || unscanned.length) {
         setFailed(true);
         setMessage(Object.keys(missing).length ? 'Answer every required question first.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : `Scan these documents first: ${names(unscanned)}.`);
-        const answer = Object.keys(missing)[0], scan = DOCUMENT_KINDS.find(kind => problems[kind]);
-        if (answer) form.current?.querySelector<HTMLElement>(`[name="${answer}"]`)?.focus();
+        // Answers come before the documents on the page, so the first answer in page order is the first problem.
+        const answer = firstOnPage(form.current, Object.keys(missing)), scan = DOCUMENT_KINDS.find(kind => problems[kind]);
+        if (answer) answer.focus();
         else if (scan) document.getElementById(scannerId(scan))?.focus();
+        return;
+      }
+      if (ssnBlocked) {
+        setFailed(true);
+        setMessage('Your application can’t be sent until Safety turns on SSN entry. Select Save and finish later; Safety will tell you when to come back.');
         return;
       }
     }
@@ -138,12 +183,19 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error.message);
       setFailed(true); setMessage(errorMessage(error, 'Unable to save. Your answers are still on this page.'));
+      // A refused submission names the answers it needs (an age outside 18 to 100, an expired license, a missing answer):
+      // mark them, with the API's explanation when it is about one answer, and move to the first.
+      const refused = submit && error instanceof ApiError && error.status === 400 ? error : null, missing = refused?.missing ?? [];
+      if (refused && missing.length) {
+        setErrors(Object.fromEntries(missing.map(key => [key, missing.length === 1 ? refused.message : 'Required'])));
+        firstOnPage(form.current, missing)?.focus();
+      }
     } finally { setPending(null); }
   }
   const field = (key: string) => ({ name: key, defaultValue: value(key), error: errors[key], width: 'full' as const });
   const uploading = Object.values(drafts).some(draft => draft?.busy);
   return <form ref={form} onSubmit={event => { event.preventDefault(); void save(true); }} className="space-y-6" noValidate>
-    <div><h1 className="text-2xl font-normal">Your driver application</h1>
+    <div><h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Your driver application</h1>
       <p className="mt-1 text-sm text-muted-foreground">Signed in as {view.email}. Answers save when you select Save; the link works until <LocalTime iso={view.expiresAt} format="date" />.</p></div>
     <Section title="Your legal name" hint="As it appears on your license.">
       <div className="grid gap-4 sm:grid-cols-3">
@@ -154,10 +206,10 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
     </Section>
     <Section title="Date of birth and Social Security number" hint="Safety needs these to check your driving record. Your SSN is encrypted, and only UGEM Safety staff and administrators can see it.">
       <div className="grid gap-4 sm:grid-cols-2">
-        <Input label="Date of birth" type="date" {...field('dateOfBirth')} autoComplete="bday" />
+        <Input label="Date of birth" type="date" {...field('dateOfBirth')} max={adult} autoComplete="bday" />
         {view.ssnAvailable ? <Input label="Social Security number" name="ssn" error={errors.ssn} width="full" inputMode="numeric" autoComplete="off" maxLength={11} placeholder="123-45-6789"
           hint={view.ssnLast4 ? `On file, ending in ${view.ssnLast4}. Enter it again only to change it.` : undefined} />
-          : <Alert tone="warning" title="SSN entry isn’t available yet"><p>Save the rest; Safety will tell you when to add it.</p></Alert>}
+          : <Alert tone="warning" title="SSN entry isn’t available yet"><p>{ssnBlocked ? 'Your application can’t be sent until Safety turns on SSN entry. Save the rest; Safety will tell you when to add it.' : `Your number ending in ${view.ssnLast4} is on file.`}</p></Alert>}
       </div>
     </Section>
     <Section title="Contact and home address">
@@ -185,7 +237,7 @@ function DriverForm({ view, onSaved, onEnded }: { view: DriverApplicationView; o
         <Input label="License number" {...field('licenseNumber')} maxLength={20} autoCapitalize="characters" spellCheck={false} />
         <Select label="Issuing state" {...field('licenseState')} placeholder="–" options={states} />
         <Select label="Class" {...field('licenseClass')} onChange={event => setLicenseClass(event.target.value)} placeholder="Choose a class" options={Object.entries(licenseTypes).map(([value, label]) => ({ value, label }))} />
-        <Input label="Expiration date" type="date" {...field('licenseExpiresOn')} />
+        <Input label="Expiration date" type="date" {...field('licenseExpiresOn')} min={today} />
       </div>
     </Section>
     {view.documentsEnabled && <Section title="Documents" hint="Use your phone’s camera. We remove photo details such as location before saving, and only UGEM Safety staff and administrators can see your documents.">

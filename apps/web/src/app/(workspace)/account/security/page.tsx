@@ -1,6 +1,6 @@
 import { apiRequest, requirePage } from '@/lib/auth';
 import { mfaStatusSchema, readResponse, savedSignatureSchema, staffTelegramSchema } from '@/lib/api-schemas';
-import { TelegramAlerts, type StaffTelegram } from '@/features/auth/telegram-alerts';
+import { TelegramAlerts, TelegramAlertsUnavailable, type StaffTelegram } from '@/features/auth/telegram-alerts';
 import { PageHeader } from '@/components/workspace-ui';
 import { AccountSecurity, PasswordSettings, type MfaStatus } from '@/features/auth/account-security';
 import { SavedSignatureSettings, type SavedSignature } from '@/features/auth/saved-signature';
@@ -14,8 +14,9 @@ export default async function AccountSecurityPage() {
   if (!response.ok || (signatureResponse && !signatureResponse.ok)) throw new Error('Unable to load account security');
   const status = await readResponse<MfaStatus>(response, 'MFA status', mfaStatusSchema);
   const signature = signatureResponse ? await readResponse<{ saved: SavedSignature | null }>(signatureResponse, 'saved signature', savedSignatureSchema) : null;
-  // An API older than staff alerts has no such route; the card is then left out.
+  // An API older than staff alerts has no such route (404): the card is then left out. Any other failure shows an error in the card.
   const telegram = telegramResponse.ok ? await readResponse<StaffTelegram>(telegramResponse, 'Telegram alerts', staffTelegramSchema) : null;
+  const telegramFailed = !telegramResponse.ok && telegramResponse.status !== 404;
   return <div className="space-y-6"><PageHeader eyebrow="Your account" title="Account security" description="How you sign in to the workspace, and your saved signature for approvals." />
-    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} />{telegram && <TelegramAlerts initial={telegram} />}{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
+    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} />{telegram && <TelegramAlerts initial={telegram} />}{telegramFailed && <TelegramAlertsUnavailable />}{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
 }

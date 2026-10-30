@@ -15,6 +15,7 @@ import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 import { EmailService } from '../src/modules/email/email.service';
 import { EmailMfa1792790000000 } from '../src/database/migrations/1792790000000-EmailMfa';
 import { enrolForTest, totpCode } from './mfa-helpers';
+import { hasEmailCode, storeEmailCode } from '../src/modules/auth/mfa-email';
 
 type Agent = ReturnType<typeof request.agent>;
 const integration = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -132,6 +133,33 @@ integration('Staff two-step verification with email codes (isolated PostgreSQL d
     expect((await login(promoted, users.it).expect(200)).body).toEqual({ mfa: 'enrol', landingPage: '/login/mfa-setup' });
     const reset = await db.query(`SELECT "actorId", metadata FROM staff_security_events WHERE "userId" = $1 AND type = 'MFA_RESET_BY_ADMIN'`, [users.it.id]);
     expect(reset).toEqual([{ actorId: users.admin.id, metadata: { reason: 'administrator-role', method: 'EMAIL' } }]);
+  });
+
+  it('never lets an administrator left on email codes (older API, manual role change) sign in with an emailed code', async () => {
+    const { client: earlier, recoveryCodes } = await enrolByEmail(users.it);
+    // A pending sign-in from before the role changed, then the role changes outside user administration.
+    const pending = agent();
+    await login(pending, users.it).expect(200);
+    await db.query(`UPDATE users SET role = 'SYSTEM_ADMIN' WHERE id = $1`, [users.it.id]);
+    expect((await pending.post('/api/auth/mfa/challenge').set(headers).send({}).expect(401)).body.message).toMatch(/authenticator app/);
+    expect(sent.filter(item => item.purpose === 'login')).toHaveLength(0);
+    // Even a valid emailed code is refused (and left unused); a recovery code still works.
+    expect(await storeEmailCode(db, users.it.id, 'login', '123456')).toBe(true);
+    await pending.post('/api/auth/mfa/verify').set(headers).send({ code: '123456' }).expect(401);
+    expect(await hasEmailCode(db, users.it.id, 'login')).toBe(true);
+    await pending.post('/api/auth/mfa/verify').set(headers).send({ code: recoveryCodes[0] }).expect(200);
+    // A correct password removes the email enrolment, its codes and every session, and moves on to authenticator setup.
+    const { authVersion } = (await db.query('SELECT "authVersion" FROM users WHERE id = $1', [users.it.id]))[0];
+    const next = agent();
+    expect((await login(next, users.it).expect(200)).body).toEqual({ mfa: 'enrol', landingPage: '/login/mfa-setup' });
+    expect(await db.query(`SELECT 1 FROM staff_mfa WHERE "userId" = $1 UNION ALL SELECT 1 FROM staff_mfa_recovery_codes WHERE "userId" = $1
+      UNION ALL SELECT 1 FROM staff_mfa_email_codes WHERE "userId" = $1`, [users.it.id])).toHaveLength(0);
+    expect((await db.query('SELECT "authVersion" FROM users WHERE id = $1', [users.it.id]))[0].authVersion).toBe(authVersion + 1);
+    await earlier.get('/api/auth/me').set(headers).expect(401);
+    await pending.get('/api/auth/me').set(headers).expect(401);
+    expect((await next.get('/api/auth/mfa/methods').set(headers).expect(200)).body.methods).toEqual(['TOTP']);
+    const reset = await db.query(`SELECT "actorId", metadata FROM staff_security_events WHERE "userId" = $1 AND type = 'MFA_RESET_BY_ADMIN'`, [users.it.id]);
+    expect(reset).toEqual([{ actorId: null, metadata: { reason: 'administrator-sign-in', method: 'EMAIL' } }]);
   });
 
   it('caps sends, reports delivery failures without keeping the code, and never mixes methods', async () => {

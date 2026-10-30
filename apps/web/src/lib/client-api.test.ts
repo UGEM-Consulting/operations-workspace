@@ -57,6 +57,15 @@ describe('mutate error mapping', () => {
   });
 });
 
+describe('refused requests', () => {
+  it('keeps the fields the API names in missing, and only strings', () => {
+    const refused = responseError('driver/application/submit', 400, { message: 'Check your date of birth.', missing: ['dateOfBirth', 7] }, true);
+    assert.equal(refused.message, 'Check your date of birth.');
+    assert.deepEqual(refused.missing, ['dateOfBirth']);
+    assert.deepEqual(responseError('driver/application/submit', 400, { message: 'Invalid request body' }, true).missing, []);
+  });
+});
+
 describe('401 handling', () => {
   it('distinguishes an ended staff session from an expired applicant session', () => {
     const staff = responseError('it/onboarding/x/contact', 401, { message: 'Unauthorized' }, true);

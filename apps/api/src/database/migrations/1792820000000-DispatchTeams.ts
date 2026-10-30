@@ -42,15 +42,17 @@ export class DispatchTeams1792820000000 implements MigrationInterface {
    LEFT JOIN job_titles jt ON jt."nameKey" = ${KEY('i."jobTitle"')}
    WHERE a.status = 'APPROVED'`);
   // Each member's confirmed MC and team lead, matched to the lists. Teams: one per MC and team lead; the MC name is
-  // added only when the same lead text appears under two MCs, so names stay unique.
+  // added only when the same lead text appears under two MCs, so names stay unique. A long lead is shortened before the
+  // suffix, never the suffix itself, so two MCs' teams of the same long lead can't collide on UQ_teams_nameKey.
   await q.query(`CREATE TEMP TABLE dispatch_source ON COMMIT DROP AS
    SELECT d.id AS "memberId", m.id AS "mcId", m.name AS "mcName", regexp_replace(btrim(i."teamLead"), '\\s+', ' ', 'g') AS lead, ${KEY('i."teamLead"')} AS "leadKey"
    FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" JOIN invitations i ON i.id = a."invitationId"
    LEFT JOIN mcs m ON m."nameKey" = ${KEY('i."mcName"')}`);
   await q.query(`CREATE TEMP TABLE team_source ON COMMIT DROP AS
-   SELECT "mcId", "leadKey", left(lead || ' team' || CASE WHEN count(*) OVER (PARTITION BY "leadKey") > 1 THEN ' (' || "mcName" || ')' ELSE '' END, 100) AS name
-   FROM (SELECT DISTINCT ON ("mcId", "leadKey") "mcId", "leadKey", lead, "mcName" FROM dispatch_source
-    WHERE "mcId" IS NOT NULL AND "leadKey" IS NOT NULL AND "leadKey" NOT IN ('', 'independent') ORDER BY "mcId", "leadKey") pairs`);
+   SELECT "mcId", "leadKey", left(left(lead, greatest(1, 100 - length(suffix))) || suffix, 100) AS name
+   FROM (SELECT "mcId", "leadKey", lead, ' team' || CASE WHEN count(*) OVER (PARTITION BY "leadKey") > 1 THEN ' (' || "mcName" || ')' ELSE '' END AS suffix
+    FROM (SELECT DISTINCT ON ("mcId", "leadKey") "mcId", "leadKey", lead, "mcName" FROM dispatch_source
+     WHERE "mcId" IS NOT NULL AND "leadKey" IS NOT NULL AND "leadKey" NOT IN ('', 'independent') ORDER BY "mcId", "leadKey") pairs) named`);
   await q.query(`INSERT INTO teams (name, "nameKey", "mcId") SELECT name, lower(name), "mcId" FROM team_source`);
   // Where each member works now, starting when they were approved.
   await q.query(`INSERT INTO member_assignments ("memberId","mcId","teamId","startedAt",reason)

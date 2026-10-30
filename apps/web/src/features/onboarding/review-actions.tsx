@@ -76,8 +76,8 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
         options={supports.options.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')+(option.status==='ONBOARDING'?' (onboarding)':'')}))}
         hint="Supports work where their dispatcher works; they have no MC, team or job title of their own."/>
        <Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label="This is the dispatcher they will assist."/>
-      </>:options?<EmploymentPicker options={options} original={initial} onChange={setEmployment} disabled={blocked}/>
-       :employmentFields.map(field=><Input key={field} label={fieldLabels[field]} name={field} value={employment[field]} onChange={event=>setEmployment(current=>({...current,[field]:event.target.value}))} required maxLength={field==='jobTitle'?100:150} width="full"/>)}
+      </>:options?<EmploymentPicker options={options} original={initial} onChange={next=>{setEmployment(next);setEmploymentConfirmed(false);}} disabled={blocked}/>
+       :employmentFields.map(field=><Input key={field} label={fieldLabels[field]} name={field} value={employment[field]} onChange={event=>{const value=event.target.value;setEmployment(current=>({...current,[field]:value}));setEmploymentConfirmed(false);}} required maxLength={field==='jobTitle'?100:150} width="full"/>)}
       {!supports&&<Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label={options?'The MC, team and job title are correct.':'The MC, team lead and job title are correct.'}/>}
      </fieldset>
      {blocked&&<p className="text-[13px] leading-5 text-warning">Approval needs complete applicant information, photos and signatures. Request corrections for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}

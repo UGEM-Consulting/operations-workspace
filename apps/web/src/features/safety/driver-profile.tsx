@@ -19,7 +19,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { ApplicationCard } from './application-card';
 import { DriverDocuments } from './driver-documents';
 import { DriverForm, driverBody } from './driver-form';
-import { CLOSED, documentLabels, driverStatus, driverTypes, fieldLabels, license, OWNABLE, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile, type SafetyPeople, type SafetyPerson } from './types';
+import { CLOSED, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile, type SafetyPeople, type SafetyPerson } from './types';
 
 type Action = 'edit' | 'withdraw' | 'reopen' | 'owner';
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', REOPENED: 'Reopened as a lead',
@@ -45,7 +45,7 @@ export function DriverProfileView({ driver, people, screener, owns }: { driver: 
   const [action, setAction] = useState<Action | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
-  const name = `${driver.firstName} ${driver.lastName}`.trim(), badge = driverStatus[driver.status], closed = CLOSED.includes(driver.status);
+  const name = `${driver.firstName} ${driver.lastName}`.trim(), badge = driverBadge(driver.status), closed = CLOSED.includes(driver.status);
   const canEdit = !closed && (screener || owns), owner = driver.owners.find(row => row.endedAt === null) ?? null;
   function start(next: Action) { setAction(next); setError(''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {

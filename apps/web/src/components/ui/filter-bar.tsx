@@ -21,6 +21,9 @@ export function FilterBar({ path, filters, statuses, statusKey = 'status', searc
 }) {
   const router = useRouter();
   const [query, setQuery] = useState(filters.search ?? '');
+  // Back/forward (or Clear) changes the search in the URL: show it. Typing alone never changes the URL, so it is kept.
+  const [urlSearch, setUrlSearch] = useState(filters.search ?? '');
+  if (urlSearch !== (filters.search ?? '')) { setUrlSearch(filters.search ?? ''); setQuery(filters.search ?? ''); }
   const sortValue = `${filters.sort}:${filters.direction}`;
   const filtered = (filters.search ?? '') !== '' || filters[statusKey] !== defaults[statusKey] || filters.sort !== defaults.sort || filters.direction !== defaults.direction;
   // Tabs and controls share a row only on very wide screens; otherwise the controls sit below the tabs, which scroll sideways if needed.
