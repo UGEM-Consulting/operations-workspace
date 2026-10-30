@@ -21,7 +21,7 @@ Photos and signatures are required to submit and to approve. The approving manag
   - the time, IP address and browser.
 - Rows are append-only: a database trigger refuses UPDATE and DELETE. Published document versions (`company_documents`) are immutable in the same way.
 - Signature images are checked before they are stored: a CRC-valid, non-animated 8-bit RGB/RGBA PNG of at most 2000 x 800 pixels whose image data inflates to exactly that size, followed by a trial embed into a PDF. The certificate never decodes an image that fails the structural check.
-- The **signed copy** is generated on demand from these immutable records. It is the original PDF, unchanged, followed by an electronic signature certificate that shows each signature's method. Applicants can download it after signing; managers and admins can download it from the application page. The applicant's copy omits the company countersigner's IP address and browser ("Recorded by UGEM"); staff copies and the database keep them. Signed-copy downloads are rate-limited.
+- The **signed copy** is generated on demand from these immutable records (a background job also saves a copy to the bucket; see "Bucket folders"). It is the original PDF, unchanged, followed by an electronic signature certificate that shows each signature's method. Applicants can download it after signing; managers and admins can download it from the application page. The applicant's copy omits the company countersigner's IP address and browser ("Recorded by UGEM"); staff copies and the database keep them. Signed-copy downloads are rate-limited.
 
 ## Saved signatures for approvers
 
@@ -83,6 +83,8 @@ company-documents/
   - The job also saves copies for everyone who signed before it existed.
   - A saved copy is never changed. A newer document version is saved next to it, for example `nda-v2.pdf`.
   - Download buttons still generate copies from the signature records, so they keep working while a copy waits to be saved.
+  - A copy that can't be saved (for example, its blank form is missing from the bucket) waits 10 minutes before the next try, then 20, 40 and so on, up to 6 hours. Other copies are saved meanwhile. The log shows only how many copies failed in each run.
+  - Saved copies are the staff version, with the signer's IP address and browser. Copies signed in a draft that was never sent are saved too. They are kept like the signature records; deleting them waits for the retention job, which isn't authorized yet.
 - **Files from before this layout** (`photos/`, `documents/`, `drivers/<id>/<scan>.pdf`, `driver-reports/`, `driver-consents/`) stay where they are and remain readable. Each record notes which layout its file uses.
 
 ## Storage and limits

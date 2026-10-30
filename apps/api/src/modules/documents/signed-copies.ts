@@ -13,12 +13,13 @@ const COUNTERSIGNED = DOCUMENT_KINDS.filter(kind => DOCUMENT_RULES[kind].counter
 export class ApplicantSignedCopies implements OnApplicationBootstrap, BeforeApplicationShutdown {
  readonly archive: SignedCopyArchive;
  constructor(db: DataSource, storage: StorageService, documents: DocumentsService) {
-  this.archive = new SignedCopyArchive('ApplicantSignedCopies', db, storage, 42002034, async () => {
+  this.archive = new SignedCopyArchive('ApplicantSignedCopies', db, storage, 42002034, async waiting => {
    const rows: { applicationId: string; documentId: string; kind: string; version: number }[] = await db.query(`SELECT s."applicationId", s."documentId", d.kind, d.version
     FROM document_signatures s JOIN company_documents d ON d.id = s."documentId" JOIN dispatcher_applications a ON a.id = s."applicationId"
     WHERE s."signerRole" = 'APPLICANT' AND (d.kind <> ALL($1::varchar[]) OR a.status IN ('APPROVED', 'REJECTED'))
      AND NOT EXISTS (SELECT 1 FROM signed_copies c WHERE c."applicationId" = s."applicationId" AND c."companyDocumentId" = s."documentId")
-    ORDER BY s."signedAt" LIMIT 25`, [COUNTERSIGNED]);
+     AND s."applicationId"::text || ':' || s."documentId"::text <> ALL($2::text[])
+    ORDER BY s."signedAt" LIMIT 25`, [COUNTERSIGNED, waiting]);
    return rows.map(row => ({ key: signedCopyKey({ applicationId: row.applicationId }, row), owner: { applicationId: row.applicationId, companyDocumentId: row.documentId } }));
   }, async copy => {
    if (!('applicationId' in copy.owner)) throw new Error('Not an applicant copy');

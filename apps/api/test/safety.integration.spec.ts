@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jpeg, pdfText, png } from './documents.fixtures';
@@ -21,6 +21,7 @@ import { EmailService } from '../src/modules/email/email.service';
 import { normalSsn, PiiService } from '../src/modules/safety/pii';
 import { LEFTOVER_SCAN_AGE_MS, ScanSweeper } from '../src/modules/safety/scan-sweeper';
 import { DriverSignedCopies } from '../src/modules/safety/signed-copies';
+import { RETRY_FIRST_MS } from '../src/modules/storage/signed-copies';
 import { earliestFinalRejection } from '../src/modules/safety/safety.entity';
 import { ScreeningService } from '../src/modules/safety/screening.service';
 import { addDays, usDay } from '../src/modules/safety/screening-rules';
@@ -737,9 +738,18 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(text).not.toContain('Application reference');
     await agents.dispatch.get(`/api/safety/drivers/${id}/consents/${newer.id}/signed`).set(headers).expect(403);
     // Each signed form is also saved once into the driver's own folder.
-    const archive = app.get(DriverSignedCopies).archive;
-    expect(await archive.run()).toBeGreaterThanOrEqual(3);
-    expect(['background-authorization-v1', 'background-authorization-v2', 'background-disclosure-v1'].map(name => existsSync(join(storage, 'drivers', id, 'signed', `${name}.pdf`)))).toEqual([true, true, true]);
+    // A copy that can't be built (here its blank form is missing) waits before its next try and never holds back the others.
+    const archive = app.get(DriverSignedCopies).archive, saved = (name: string) => existsSync(join(storage, 'drivers', id, 'signed', `${name}.pdf`));
+    const blank = join(storage, 'company-documents', 'driver-consents', 'background-authorization', `${authorization.id}.pdf`);
+    renameSync(blank, `${blank}.away`);
+    const start = Date.now();
+    expect(await archive.run(start)).toBeGreaterThanOrEqual(2);
+    expect(['background-authorization-v1', 'background-authorization-v2', 'background-disclosure-v1'].map(saved)).toEqual([false, true, true]);
+    renameSync(`${blank}.away`, blank);
+    expect(await archive.run(start + RETRY_FIRST_MS - 1000)).toBe(0);
+    expect(saved('background-authorization-v1')).toBe(false);
+    expect(await archive.run(start + RETRY_FIRST_MS + 1000)).toBe(1);
+    expect(saved('background-authorization-v1')).toBe(true);
     expect(await archive.run()).toBe(0);
     const [stored] = await db.query(`SELECT consent, statement, "documentSha256", "ipAddress" FROM driver_consent_signatures WHERE "documentId" = $1`, [newer.id]);
     expect(stored.statement).toBe('I have read the entire Fictional authorization (version 2) and I agree to it. I intend my typed name and my signature (drawn, or adopted from my typed name) to be my legally binding electronic signature.');
