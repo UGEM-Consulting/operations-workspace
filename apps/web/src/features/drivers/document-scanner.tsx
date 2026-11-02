@@ -78,7 +78,7 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
       Scanned {current.pageCount} {current.pageCount === 1 ? 'page' : 'pages'}{current.subtype ? ` · ${workAuthorizationTypes[current.subtype]}` : ''} · <LocalTime iso={current.createdAt} format="date" />
       <a className="text-primary underline" href={`/api/backend/driver/documents/${current.id}/file`} target="_blank" rel="noopener">View<span className="sr-only"> {documentLabels[kind].toLowerCase()}</span></a></p>}
     {scanning && <>
-      {kind === 'WORK_AUTHORIZATION' && <Select label="Document" value={subtype} onChange={event => setSubtype(event.target.value)} placeholder="Choose a document" width="full"
+      {kind === 'WORK_AUTHORIZATION' && <Select id="work-authorization-document" label="Document" value={subtype} onChange={event => setSubtype(event.target.value)} placeholder="Choose a document" width="full"
         options={Object.entries(workAuthorizationTypes).map(([value, label]) => ({ value, label }))} />}
       {pages.length > 0 && <ol className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label={`${documentLabels[kind]} pages`}>
         {pages.map((page, index) => <li key={page.id} className="space-y-2">

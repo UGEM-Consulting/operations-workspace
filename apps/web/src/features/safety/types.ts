@@ -1,4 +1,5 @@
 import { statusLabel, type StatusTone } from '@/components/ui/status-badge';
+import type { DriverHistory } from '@/features/drivers/history-rules';
 
 export type DriverStatus = 'LEAD' | 'APPLYING' | 'SCREENING' | 'AWAITING_DECISION' | 'PRE_ADVERSE' | 'APPROVED' | 'CLEARED' | 'REJECTED' | 'WITHDRAWN' | 'LEFT';
 export type DriverType = 'COMPANY' | 'OWNER_OPERATOR';
@@ -14,7 +15,7 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with driver applications; absent on an older one.
   link?: { email: string; createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean } | null;
   application?: { status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; ssnLast4: string | null; version: number; submittedAt: string | null; updatedAt: string;
-    correctionNote?: string | null; correctionRequestedAt?: string | null } | null;
+    correctionNote?: string | null; correctionRequestedAt?: string | null; history?: DriverHistory | null } | null;
   documents?: DriverDocumentRow[];
   // From an API with screening and decisions; absent on an older one.
   screening?: Screening;
@@ -25,11 +26,13 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   clearance?: { items: ClearanceItemRow[]; employers: EmployerRow[]; missing: string[] }; assignments?: DriverAssignmentRow[] }
 export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST';
 export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null }
-export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null }
+export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null;
+  // From an API with address and work history: where the employer came from, and how to reach them.
+  source?: 'SAFETY' | 'APPLICATION'; location?: string | null; phone?: string | null }
 export interface DriverAssignmentRow { id: string; startedAt: string; endedAt: string | null; truck: string | null; mc: string; team: string | null; dispatcher: string }
 export interface ConsentSignature { documentId: string; kind: string; title: string; version: number; typedName: string; signedAt: string; hasSignature?: boolean }
 export const consentLabels: Record<string, string> = { BACKGROUND_DISCLOSURE: 'Background check disclosure', BACKGROUND_AUTHORIZATION: 'Background check authorization', CLEARINGHOUSE_CONSENT: 'Clearinghouse consent' };
-export type ScreeningCheckKey = 'IDENTITY' | 'PHONE_SCREEN' | 'EXPERIENCE' | 'MVR';
+export type ScreeningCheckKey = 'IDENTITY' | 'PHONE_SCREEN' | 'EXPERIENCE' | 'HISTORY' | 'MVR';
 export interface ScreeningCheck { key: ScreeningCheckKey; result: 'PASS' | 'CONCERN'; note: string | null; checkedAt: string; checkedBy: string | null }
 export interface DriverReviewRow { id: string; action: string; note: string | null; conditions: string | null; noticeSentOn: string | null; previousStatus: string; newStatus: string;
   createdAt: string; actor: string | null }
@@ -76,6 +79,7 @@ export const screeningChecks: { key: ScreeningCheckKey; label: string; hint: str
   { key: 'IDENTITY', label: 'Identity and answers', hint: 'Legal name, date of birth and address match the license and the other scans.', todo: 'Check the identity and answers' },
   { key: 'PHONE_SCREEN', label: 'Phone screen', hint: 'You spoke with the driver about the job, home time and pay.', todo: 'Do the phone screen' },
   { key: 'EXPERIENCE', label: 'Driving experience', hint: 'Years and type of driving match what the driver told you.', todo: 'Confirm the driving experience' },
+  { key: 'HISTORY', label: 'Address and work history', hint: 'Addresses and jobs cover their years, gaps are explained, and accidents and tickets match the MVR.', todo: 'Review the address and work history' },
   { key: 'MVR', label: 'MVR reviewed', hint: 'Violations, accidents and suspensions on the motor vehicle record.', todo: 'Review the MVR' },
 ];
 /**

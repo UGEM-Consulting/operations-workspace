@@ -8,11 +8,12 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { CURRENT_LAYOUT, driverReportKey, StorageService } from '../storage/storage.service';
 import { Role, User } from '../users/user.entity';
 import { DECIDERS, driverEvent, lockOpenDriver, requireScreener, writeDriver } from './driver-records';
-import { Driver, DriverApplication, DriverEventType, DriverLink, DriverReport, DriverReview, DriverReviewAction, DriverScreeningCheck, DriverStatus, earliestFinalRejection,
+import { Driver, DriverApplication, DriverPreviousEmployer, DriverEventType, DriverLink, DriverReport, DriverReview, DriverReviewAction, DriverScreeningCheck, DriverStatus, earliestFinalRejection,
  SCREENING_CHECKS, type ScreeningCheckKey } from './safety.entity';
 import { SafetyService } from './safety.service';
 import { authorizationSigned } from './consent-rules';
 import { addDays, screeningGaps, usDay } from './screening-rules';
+import { regulatedEmployers } from './history-rules';
 import { Decision, DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 
 /** Each decision: the statuses it applies to, the status it leads to, and what is recorded. */
@@ -59,6 +60,21 @@ export class ScreeningService {
    await driverEvent(em, user.id, id, 'SCREENING_CHECKED', { check: key, result: dto.result });
    return { id, version: driver.version + 1 };
   });
+ }
+
+ /**
+  * At approval, the DOT-regulated jobs of the last 3 years in the driver's history become the previous employers Safety
+  * asks during clearance, marked as coming from the application. Only once: an approval after a pre-adverse notice keeps
+  * the list Safety already works on.
+  */
+ private async employersFromApplication(em: EntityManager, user: User, id: string) {
+  const employers = em.getRepository(DriverPreviousEmployer);
+  if (await employers.existsBy({ driverId: id, source: 'APPLICATION' })) return;
+  const application = await em.getRepository(DriverApplication).findOneBy({ driverId: id });
+  const now = usDay('latest').slice(0, 7), jobs = regulatedEmployers(application?.history, now);
+  for (const job of jobs) await employers.save({ driverId: id, name: job.company, fromMonth: job.fromMonth, toMonth: job.toMonth ?? now, source: 'APPLICATION',
+   location: `${job.city}, ${job.state}`.slice(0, 120), phone: job.phone, createdBy: user.id });
+  if (jobs.length) await driverEvent(em, user.id, id, 'EMPLOYER_RECORDED', { action: 'from-application', count: jobs.length });
  }
 
  /** Stores the MVR (a readable, unencrypted PDF) and replaces the current one; earlier reports are kept. */
@@ -174,6 +190,7 @@ export class ScreeningService {
    if (closed) await em.getRepository(DriverLink).update({ driverId: id, revokedAt: IsNull() }, { revokedAt: now });
    await em.getRepository(Driver).update(id, { status: rule.to, version: driver.version + 1, ...(closed ? { closedAt: now, statusReason: null } : {}) });
    await driverEvent(em, user.id, id, rule.event, dto.decision === 'APPROVE' ? { conditional: !!conditions } : {});
+   if (dto.decision === 'APPROVE') await this.employersFromApplication(em, user, id);
    return { id, version: driver.version + 1 };
   });
  }

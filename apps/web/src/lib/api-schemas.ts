@@ -116,7 +116,9 @@ export const driverProfileSchema = driverRow.extend({
   activity: z.array(z.looseObject({ id: text, event: text, createdAt: text, metadata: z.looseObject({}) })),
   // From an API with driver applications and document scans; absent on an older one.
   link: z.looseObject({ email: text, createdAt: text, expiresAt: text, openedAt: nullableText, expired: z.boolean() }).nullable().optional(),
-  application: z.looseObject({ status: text, fields, ssnLast4: nullableText, version: z.number(), submittedAt: nullableText }).nullable().optional(),
+  application: z.looseObject({ status: text, fields, ssnLast4: nullableText, version: z.number(), submittedAt: nullableText,
+    // From an API with address and work history; a malformed value is dropped.
+    history: z.looseObject({ jobs: z.array(z.looseObject({ id: text, company: text, fromMonth: text })).optional() }).nullable().optional().catch(undefined) }).nullable().optional(),
   documents: z.array(z.looseObject({ id: text, kind: text, pageCount: z.number(), createdAt: text, verifiedAt: nullableText })).optional(),
   // From an API with screening and decisions. A malformed value is dropped, so the profile still loads without it.
   screening: z.looseObject({

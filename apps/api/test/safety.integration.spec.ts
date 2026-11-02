@@ -25,6 +25,7 @@ import { RETRY_FIRST_MS } from '../src/modules/storage/signed-copies';
 import { earliestFinalRejection } from '../src/modules/safety/safety.entity';
 import { ScreeningService } from '../src/modules/safety/screening.service';
 import { addDays, usDay } from '../src/modules/safety/screening-rules';
+import { addMonths } from '../src/modules/safety/history-rules';
 import { PDFDocument } from 'pdf-lib';
 import { completeMfa, enrolForTest } from './mfa-helpers';
 type Agent = ReturnType<typeof request.agent>;
@@ -55,6 +56,12 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   }
   const complete = { legalFirstName: 'Jordan', legalLastName: 'Wheeler', dateOfBirth: '1988-04-12', phone: '555 010 2000', addressLine1: '100 Fictional Way', city: 'Austin', state: 'tx',
     zip: '73301', emergencyName: 'Casey Wheeler', emergencyRelationship: 'Sibling', emergencyPhone: '555 010 3000', licenseNumber: 'd1234567', licenseState: 'TX', licenseClass: 'CDL_A', licenseExpiresOn: '2030-01-31' };
+  // A complete address and work history, in months relative to now: addresses and jobs reach back far enough, no gaps.
+  const now = () => usDay('latest').slice(0, 7);
+  const history = () => ({ currentSince: addMonths(now(), -20), addresses: [{ id: randomUUID(), line1: '12 Example Rd', city: 'Tulsa', state: 'OK', zip: '74103', fromMonth: addMonths(now(), -60), toMonth: addMonths(now(), -21) }],
+    jobs: [{ id: randomUUID(), company: 'Prairie Haulers', city: 'Tulsa', state: 'OK', phone: '555-010-9100', position: 'Company driver', fromMonth: addMonths(now(), -30), toMonth: null, drove: 'YES', fmcsr: 'YES', dotTesting: 'YES', reasonLeft: '' },
+      { id: randomUUID(), company: 'Hill Country Grocers', city: 'Austin', state: 'TX', phone: '555-010-9300', position: 'Warehouse associate', fromMonth: addMonths(now(), -130), toMonth: addMonths(now(), -31), drove: 'NO', fmcsr: 'NO', dotTesting: 'NO', reasonLeft: 'Started driving' }],
+    accidents: 'NO', tickets: 'NO', otherLicenses: 'NO', licenseTrouble: 'NO' });
   /** A lead with a sent link, and a driver agent signed in through the emailed code. */
   async function applying() {
     const { id } = (await add(agents.lead).expect(201)).body;
@@ -247,11 +254,12 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, token, agent } = await applying();
     const missing = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: {} }).expect(400)).body;
     expect(missing.missing).toEqual(['dateOfBirth', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseExpiresOn', 'ssn',
-      'LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION']);
+      'LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION', 'history:currentSince', `history:gap:${addMonths(now(), -35)}_${now()}`, 'history:driving', 'history:accidents', 'history:tickets',
+      'history:licenses', 'history:licenseTrouble']);
     await scanAll(agent);
-    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, dateOfBirth: '2015-01-01' }, ssn: '123456789' }).expect(400)).body.missing).toEqual(['dateOfBirth']);
-    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, licenseExpiresOn: '2020-01-01' }, ssn: '123456789' }).expect(400)).body.message).toMatch(/expired/);
-    const done = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201)).body;
+    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, dateOfBirth: '2015-01-01' }, history: history(), ssn: '123456789' }).expect(400)).body.missing).toEqual(['dateOfBirth']);
+    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: { ...complete, licenseExpiresOn: '2020-01-01' }, history: history(), ssn: '123456789' }).expect(400)).body.message).toMatch(/expired/);
+    const done = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201)).body;
     expect(done).toMatchObject({ status: 'SUBMITTED', ssnLast4: '6789', fields: { state: 'TX', licenseNumber: 'D1234567' }, submittedAt: expect.any(String) });
     expect(await driver(id)).toMatchObject({ status: 'SCREENING', link: null, application: { status: 'SUBMITTED' } });
     // Still readable in this session; no further changes; the link can't start a new session.
@@ -361,7 +369,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await agents.dispatch.get(`/api/safety/drivers/${id}/documents/${license}/file`).set(headers).expect(403);
     expect((await events(id)).filter(row => row.event === 'DOCUMENT_VIEWED').map(row => row.metadata)).toEqual([{ kind: 'LICENSE' }]);
     await verify(agents.lead, license, { version: 1, number: 'X1', expiresOn: '2030-01-31' }).expect(409);
-    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201);
     expect((await scan(agent, 'license').expect(409)).body.message).toMatch(/already sent/);
     await verify(agents.staff, license, { version: 1, expiresOn: '2030-01-31' }).expect(403);
     await verify(agents.lead, license, { expiresOn: '2030-01-31' }).expect(400);
@@ -384,7 +392,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
-    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201);
     await agents.lead.post(`/api/safety/drivers/${id}/documents/${license}/verify`).set(headers).send({ version: 1, expiresOn: '2030-01-31' }).expect(201);
     const { version } = await driver(id);
     const withdrawn = (await agents.lead.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version, reason: 'Paused hiring' }).expect(201)).body;
@@ -400,7 +408,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     // Replacing a scan Safety already verified keeps its file as the record of what was checked.
     await scan(again, 'license').expect(201);
     expect(existsSync(join(storage, 'drivers', id, 'documents', 'license', `${license}.pdf`))).toBe(true);
-    await again.post('/api/driver/application/submit').set(headers).send({ version: 3, fields: complete }).expect(201);
+    await again.post('/api/driver/application/submit').set(headers).send({ version: 3, fields: complete, history: history() }).expect(201);
     expect(await driver(id)).toMatchObject({ status: 'SCREENING', application: { status: 'SUBMITTED' } });
   });
 
@@ -408,7 +416,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     async function submitted() {
       const one = await applying();
       const license = ((await scanAll(one.agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
-      await one.agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+      await one.agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201);
       await one.agent.get('/api/driver/application').set(headers).expect(200);
       await one.agent.get(`/api/driver/documents/${license}/file`).set(headers).expect(200);
       return { ...one, license, version: (await driver(one.id)).version as number };
@@ -481,7 +489,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   async function submitted() {
     const one = await applying();
     const documents = (await scanAll(one.agent)).documents as { id: string; kind: string }[];
-    await one.agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, ssn: '123456789' }).expect(201);
+    await one.agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201);
     return { ...one, documents, version: (await driver(one.id)).version as number };
   }
   const mvrPdf = async () => { const pdf = await PDFDocument.create(); pdf.addPage(); return Buffer.from(await pdf.save()).toString('base64'); };
@@ -496,7 +504,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     for (const document of one.documents) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
       .send({ version: 1, ...(document.kind === 'WORK_AUTHORIZATION' ? {} : { expiresOn: '2030-01-31' }) }).expect(201);
     let { version } = (await agents.lead.post(`/api/safety/drivers/${one.id}/mvr`).set(headers).send({ version: one.version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201)).body;
-    for (const key of ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'MVR']) version = (await check(agents.lead, one.id, key, { version, result: 'PASS' }).expect(201)).body.version;
+    for (const key of ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'HISTORY', 'MVR']) version = (await check(agents.lead, one.id, key, { version, result: 'PASS' }).expect(201)).body.version;
     return { ...one, version: version as number };
   }
   /** A screened driver handed to the Safety manager. */
@@ -513,7 +521,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await check(agents.lead, id, 'EXPERIENCE', { version, result: 'CONCERN' }).expect(400)).body.message).toMatch(/Describe the concern/);
     expect((await check(agents.lead, id, 'MVR', { version, result: 'PASS' }).expect(400)).body.message).toBe('Upload the MVR first.');
     const refused = (await agents.lead.post(`/api/safety/drivers/${id}/send-for-decision`).set(headers).send({ version }).expect(400)).body;
-    expect(refused.missing).toEqual(['check:IDENTITY', 'check:PHONE_SCREEN', 'check:EXPERIENCE', 'check:MVR', 'mvr', 'document:LICENSE', 'document:MEDICAL_CARD', 'document:WORK_AUTHORIZATION']);
+    expect(refused.missing).toEqual(['check:IDENTITY', 'check:PHONE_SCREEN', 'check:EXPERIENCE', 'check:HISTORY', 'check:MVR', 'mvr', 'document:LICENSE', 'document:MEDICAL_CARD', 'document:WORK_AUTHORIZATION']);
     // The MVR: a readable PDF pulled within the last year, replaced by a newer one while the earlier file is kept.
     const upload = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: '', pulledOn: today(), paperAuthorization: true, ...body });
     await upload({ file: Buffer.from('not a pdf').toString('base64') }).expect(400);
@@ -535,6 +543,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await check(agents.lead, id, 'PHONE_SCREEN', { version: current - 1, result: 'PASS' }).expect(409);
     current = (await check(agents.lead, id, 'PHONE_SCREEN', { version: current, result: 'PASS' }).expect(201)).body.version;
     current = (await check(agents.lead, id, 'EXPERIENCE', { version: current, result: 'CONCERN', note: 'Two years, not five as stated.' }).expect(201)).body.version;
+    current = (await check(agents.lead, id, 'HISTORY', { version: current, result: 'PASS' }).expect(201)).body.version;
     current = (await check(agents.manager, id, 'MVR', { version: current, result: 'PASS' }).expect(201)).body.version;
     // A check can be cleared and done again.
     current = (await check(agents.lead, id, 'MVR', { version: current, result: null }).expect(201)).body.version;
@@ -667,7 +676,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   const signature = () => `data:image/png;base64,${png(600, 180).toString('base64')}`;
   const sign = (agent: Agent, documentId: string, body: Record<string, unknown> = {}) => agent.post(`/api/driver/consents/${documentId}/sign`).set(headers)
     .send({ typedName: 'Jordan Wheeler', consent: true, agreed: true, signature: signature(), signatureMethod: 'DRAWN', ...body });
-  const submit = (agent: Agent, version: number) => agent.post('/api/driver/application/submit').set(headers).send({ version, fields: complete, ssn: '123456789' });
+  const submit = (agent: Agent, version: number) => agent.post('/api/driver/application/submit').set(headers).send({ version, fields: complete, history: history(), ssn: '123456789' });
 
   it('lets only the Safety manager publish consent forms, as immutable versions every Safety role can read', async () => {
     await publish(agents.lead, 'BACKGROUND_AUTHORIZATION', 403);
@@ -774,6 +783,43 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(refused.message).toMatch(/background check authorization/);
     await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201);
     expect((await driver(id)).screening.mvr).toMatchObject({ authorization: 'PAPER' });
+  });
+
+  it('keeps the address and work history with the draft and sends it only once it covers its years, with gaps explained', async () => {
+    const { id, agent } = await applying();
+    await scanAll(agent);
+    const save = (version: number, body: Record<string, unknown>) => agent.patch('/api/driver/application').set(headers).send({ version, fields: complete, ...body });
+    // Entries are checked when saved; coverage only at submission.
+    const bad = history();
+    bad.jobs[0] = { ...bad.jobs[0], state: 'ZZ' };
+    await save(1, { history: bad }).expect(400);
+    // The older job ends two months before the current one starts: a gap; and only the current address is given.
+    const partial = history();
+    partial.jobs[1] = { ...partial.jobs[1], toMonth: addMonths(now(), -33) };
+    partial.addresses = [];
+    let view = (await save(1, { history: partial, ssn: '123456789' }).expect(200)).body;
+    expect(view.history.jobs).toHaveLength(2);
+    const gap = `${addMonths(now(), -32)}_${addMonths(now(), -31)}`;
+    expect((await agent.post('/api/driver/application/submit').set(headers).send({ version: view.version, fields: complete }).expect(400)).body.missing)
+      .toEqual(['history:addresses', `history:gap:${gap}`]);
+    // Sending no history keeps the saved one; explaining the gap and adding the address completes it.
+    view = (await save(view.version, {}).expect(200)).body;
+    expect(view.history.jobs).toHaveLength(2);
+    const complete2 = { ...partial, addresses: history().addresses, gaps: [{ from: addMonths(now(), -32), to: addMonths(now(), -31), explanation: 'Looking for work.' }] };
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: view.version, fields: complete, history: complete2 }).expect(201);
+    const record = await driver(id);
+    expect(record.application.history.gaps).toEqual([{ from: addMonths(now(), -32), to: addMonths(now(), -31), explanation: 'Looking for work.' }]);
+    expect(JSON.stringify(await events(id))).not.toContain('Prairie');
+  });
+
+  it('turns the DOT-regulated jobs of the last 3 years into previous employers at approval', async () => {
+    const one = await awaiting();
+    await decide(agents.manager, one.id, { version: one.version, decision: 'APPROVE' }).expect(201);
+    const record = await driver(one.id);
+    // Prairie Haulers (driving, DOT testing) is asked; the warehouse job isn't regulated.
+    expect(record.clearance.employers.map((row: Record<string, unknown>) => [row.name, row.source, row.location, row.phone, row.toMonth, row.requestedOn]))
+      .toEqual([['Prairie Haulers', 'APPLICATION', 'Tulsa, OK', '555-010-9100', now(), null]]);
+    expect((await events(one.id)).filter(row => row.event === 'EMPLOYER_RECORDED').map(row => row.metadata)).toEqual([{ action: 'from-application', count: 1 }]);
   });
 
   it('clears an approved driver: the owner records results only, the previous employers, then Cleared', async () => {
@@ -930,6 +976,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query("UPDATE driver_applications SET history = '{}'");
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver address and work history');
+    await db.query('UPDATE driver_applications SET history = NULL');
+    await db.undoLastMigration(); // DriverHistory, with no history left
     await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
     await db.query(`INSERT INTO driver_clearance_items ("driverId", key, status, "updatedAt") VALUES ($1, 'ROAD_TEST', 'IN_PROGRESS', now())`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver clearance or dispatch assignments');
@@ -966,6 +1016,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverClearance1792930000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverHistory1792940000000');
   });
 });
