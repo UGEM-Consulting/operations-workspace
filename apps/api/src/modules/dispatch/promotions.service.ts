@@ -7,7 +7,7 @@ import { createItRequest } from '../it/create-request';
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
-import { lockTeam } from './create-member';
+import { ledTeams, lockTeam } from './create-member';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
 
@@ -24,9 +24,7 @@ export class PromotionsService {
 
  /** The active teams the signed-in team lead's dispatcher record leads; empty when it leads none. */
  private async scope(em: EntityManager | DataSource, user: User) {
-  const teams: { id: string; name: string; mc: string }[] = await em.query(`SELECT t.id, t.name, m.name AS mc FROM teams t JOIN mcs m ON m.id = t."mcId"
-   JOIN dispatch_members d ON d.id = t."leadMemberId" WHERE d."accountUserId" = $1 AND d.status <> 'LEFT' AND t."archivedAt" IS NULL ORDER BY t."nameKey"`, [user.id]);
-  return teams;
+  return (await ledTeams(em instanceof DataSource ? em.manager : em, user.id)).map(({ id, name, mc }) => ({ id, name, mc }));
  }
 
  async team(user: User) {

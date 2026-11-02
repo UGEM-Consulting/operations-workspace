@@ -14,6 +14,8 @@ import { SafetyService } from './safety.service';
 import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 import { ScreeningService } from './screening.service';
 import { ScanSweeper } from './scan-sweeper';
+import { AddEmployerDto, ClearanceItemDto, UpdateEmployerDto } from './clearance.dto';
+import { ClearanceService } from './clearance.service';
 import { DriverSignedCopies } from './signed-copies';
 import { ApplicantSignatureDto } from '../documents/documents.dto';
 import { clientContext } from '../documents/client-context';
@@ -27,7 +29,7 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService) {}
  // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
  @Get('consents') consentList(@Req() req: AuthRequest) { return this.consents.list(req.currentUser); }
  @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
@@ -55,6 +57,12 @@ class SafetyController {
  @Post('drivers/:id/corrections') corrections(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RequestCorrectionsDto) { return this.screening.requestCorrections(req.currentUser, id, dto); }
  @Post('drivers/:id/send-for-decision') sendForDecision(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SendForDecisionDto) { return this.screening.sendForDecision(req.currentUser, id, dto); }
  @Post('drivers/:id/decision') decide(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DecisionDto) { return this.screening.decide(req.currentUser, id, dto); }
+ // Clearance of an approved driver: the owner, the Safety manager and administrators (checked in the service).
+ @Post('drivers/:id/clearance/:key') clearanceItem(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: ClearanceItemDto) { return this.clearance.setItem(req.currentUser, id, key, dto); }
+ @Post('drivers/:id/employers') addEmployer(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AddEmployerDto) { return this.clearance.addEmployer(req.currentUser, id, dto); }
+ @Post('drivers/:id/employers/:employerId') updateEmployer(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('employerId', ParseUUIDPipe) employerId: string, @Body() dto: UpdateEmployerDto) { return this.clearance.updateEmployer(req.currentUser, id, employerId, dto); }
+ @Post('drivers/:id/employers/:employerId/remove') removeEmployer(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('employerId', ParseUUIDPipe) employerId: string, @Body() dto: DriverVersionDto) { return this.clearance.removeEmployer(req.currentUser, id, employerId, dto); }
+ @Post('drivers/:id/clear') clear(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DriverVersionDto) { return this.clearance.clear(req.currentUser, id, dto); }
 }
 // Public to the STAFF guard only: the driver has no account. Each record operation checks the driver session (bound to an
 // open link) in the service, and the shared BFF and CSRF boundary applies to every route, including verification.
@@ -79,5 +87,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService] })
 export class SafetyModule {}

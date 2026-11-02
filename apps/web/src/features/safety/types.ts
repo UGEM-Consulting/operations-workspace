@@ -8,7 +8,7 @@ export interface DriverRow { id: string; firstName: string; lastName: string; ph
   status: DriverStatus; version: number; createdAt: string; closedAt: string | null; safetyLead: SafetyPerson | null; owner: SafetyPerson | null }
 export interface DriverOwnerRow { id: string; startedAt: string; endedAt: string | null; reason: string | null; owner: SafetyPerson | null; assignedBy: string | null }
 export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean; resent?: boolean; emailChanged?: boolean; kind?: string; reopened?: boolean;
-  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string }; createdAt: string; actor: string | null }
+  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string; item?: string; status?: string; action?: string; truck?: boolean }; createdAt: string; actor: string | null }
 export interface DriverProfile extends DriverRow { experienceYears: number | null; source: string | null; notes: string | null; statusReason: string | null; updatedAt: string;
   addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[];
   // From an API with driver applications; absent on an older one.
@@ -19,7 +19,14 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with screening and decisions; absent on an older one.
   screening?: Screening;
   // From an API with consent forms.
-  consents?: { signatures: ConsentSignature[]; missing: string[]; authorizationSigned: boolean } }
+  consents?: { signatures: ConsentSignature[]; missing: string[]; authorizationSigned: boolean };
+  // From an API with clearance and dispatch assignments.
+  clearedAt?: string | null; clearedBy?: SafetyPerson | null;
+  clearance?: { items: ClearanceItemRow[]; employers: EmployerRow[]; missing: string[] }; assignments?: DriverAssignmentRow[] }
+export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST';
+export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null }
+export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null }
+export interface DriverAssignmentRow { id: string; startedAt: string; endedAt: string | null; truck: string | null; mc: string; team: string | null; dispatcher: string }
 export interface ConsentSignature { documentId: string; kind: string; title: string; version: number; typedName: string; signedAt: string; hasSignature?: boolean }
 export const consentLabels: Record<string, string> = { BACKGROUND_DISCLOSURE: 'Background check disclosure', BACKGROUND_AUTHORIZATION: 'Background check authorization', CLEARINGHOUSE_CONSENT: 'Clearinghouse consent' };
 export type ScreeningCheckKey = 'IDENTITY' | 'PHONE_SCREEN' | 'EXPERIENCE' | 'MVR';
@@ -71,6 +78,33 @@ export const screeningChecks: { key: ScreeningCheckKey; label: string; hint: str
   { key: 'EXPERIENCE', label: 'Driving experience', hint: 'Years and type of driving match what the driver told you.', todo: 'Confirm the driving experience' },
   { key: 'MVR', label: 'MVR reviewed', hint: 'Violations, accidents and suspensions on the motor vehicle record.', todo: 'Review the MVR' },
 ];
+/**
+ * The clearance checklist in the order the owner works through it. Result-based items (the drug test and the Clearinghouse
+ * query) take a result that sets the status; `optional` explains when an item can be not needed.
+ */
+export const CLEARANCE_ITEMS: { key: ClearanceKey; label: string; hint: string; dialog: string; todo: string; optional?: string; results?: Record<string, { label: string; description?: string }> }[] = [
+  { key: 'DRUG_TEST', label: 'Pre-employment drug test', hint: 'Result and date from the lab’s report. Only a negative result clears.', todo: 'Record the drug test result',
+    dialog: 'Record the result from the lab’s report. Keep the report itself in the drug testing program’s records, not here.',
+    results: { NEGATIVE: { label: 'Negative' }, NOT_NEGATIVE: { label: 'Not negative', description: 'The driver can’t be cleared. The Safety manager decides what happens next.' }, CANCELLED: { label: 'Cancelled', description: 'The test needs to be taken again.' } } },
+  { key: 'CLEARINGHOUSE', label: 'Clearinghouse full query', hint: 'The driver consents in the Clearinghouse; you run the full query there and record the result.', todo: 'Record the Clearinghouse query',
+    dialog: 'Record what the full query returned and when. Keep the query record in the Clearinghouse.',
+    results: { NO_VIOLATIONS: { label: 'No violations' }, VIOLATIONS: { label: 'Violations found', description: 'The driver can’t be cleared until the return-to-duty process is complete. The Safety manager decides what happens next.' } } },
+  { key: 'PREVIOUS_EMPLOYERS', label: 'Previous employers (3 years)', hint: 'Safety performance history from each DOT-regulated employer, requested within 30 days of hire.', todo: 'Finish the previous employers',
+    dialog: 'Complete this once every employer below has answered or has your good-faith effort recorded.', optional: 'The driver had no DOT-regulated employer in the last 3 years, and none are listed below.' },
+  { key: 'MEDICAL_REGISTRY', label: 'Medical examiner registry check', hint: 'The examiner on the medical card is on the National Registry.', todo: 'Check the medical examiner registry',
+    dialog: 'Check that the examiner who signed the medical card is listed on the National Registry of Certified Medical Examiners.' },
+  { key: 'ROAD_TEST', label: 'Road test or equivalent', hint: 'A road test certificate, or a CDL accepted in its place.', todo: 'Finish the road test',
+    dialog: 'Record the road test, or a CDL you accept in its place.', optional: 'No road test is needed for this driver’s license.' },
+];
+export const clearanceResults: Record<string, string> = { NEGATIVE: 'Negative', NOT_NEGATIVE: 'Not negative', CANCELLED: 'Cancelled', NO_VIOLATIONS: 'No violations', VIOLATIONS: 'Violations found' };
+/** What still stands before Cleared (codes from the API), in words. */
+export function clearanceGapLabel(code: string): string {
+  if (code === 'owner') return 'Assign an active safety staff owner';
+  if (code === 'employers') return 'Get an answer or record a good-faith effort for every previous employer';
+  if (code.startsWith('clearance:')) return CLEARANCE_ITEMS.find(item => item.key === code.slice(10))?.todo ?? code;
+  if (code.startsWith('expired:')) return `Redo: ${CLEARANCE_ITEMS.find(item => item.key === code.slice(8))?.label ?? code} (more than a year old)`;
+  return code;
+}
 /** What still stands before the hand-off (codes from the API), in words. */
 export function gapLabel(code: string): string {
   if (code === 'application') return 'The driver hasn’t sent their application';

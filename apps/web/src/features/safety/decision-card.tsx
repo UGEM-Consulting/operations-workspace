@@ -15,7 +15,7 @@ import { Timeline } from '@/components/ui/timeline';
 import { useToast } from '@/components/ui/toast';
 import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { useToday } from './driver-documents';
-import type { DriverProfile, DriverReviewRow } from './types';
+import { CLEARANCE_ITEMS, type DriverProfile, type DriverReviewRow } from './types';
 
 type Decision = 'APPROVE' | 'MORE_INFO' | 'PRE_ADVERSE' | 'REJECT';
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
@@ -44,7 +44,8 @@ function details(row: DriverReviewRow) {
 /**
  * The Safety manager's decision on a screened driver and every decision so far. Deciders (the Safety manager and
  * administrators) approve, optionally with conditions, send the driver back to screening, or reject in two recorded steps:
- * the pre-adverse notice and, once the waiting period is over, the final notice. Safety sends both notices itself.
+ * the pre-adverse notice and, once the waiting period is over, the final notice. Safety sends both notices itself. An
+ * approved driver can still get the pre-adverse notice while clearance is open, for example after a failed result.
  */
 export function DecisionCard({ driver, decider }: { driver: DriverProfile; decider: boolean }) {
   const router = useRouter();
@@ -61,6 +62,8 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
   // The browser's date decides only whether the button is offered; the API checks the waiting period again.
   const canReject = !!(finalFrom && today && today >= finalFrom);
   const concerns = screening.checks.filter(check => check.result === 'CONCERN').length;
+  const clearing = driver.status === 'APPROVED';
+  const failed = clearing ? (driver.clearance?.items ?? []).filter(item => item.status === 'BLOCKED' && item.result) : [];
   function start(next: Decision) { setDecision(next); setError(''); setConflict(false); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -84,6 +87,12 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
       {noticeOut && notice?.noticeSentOn && finalFrom && <Alert tone="warning" title="Pre-adverse notice out">
         <p>Sent {day(notice.noticeSentOn)}. Final rejection opens on {day(finalFrom)} (5 weekdays after the notice). If the driver disputes the report and it changes your view, approve them or send them back to screening instead.</p>
       </Alert>}
+      {failed.length > 0 && <Alert tone="warning" title="A clearance result needs a decision">
+        <p>{failed.map(item => CLEARANCE_ITEMS.find(row => row.key === item.key)?.label ?? item.key).join(', ')}: the driver can’t be cleared with this result. {decider ? 'If you’ll reject them, send the pre-adverse notice. Otherwise the owner records the new result once it’s resolved.' : 'The Safety manager decides what happens next.'}</p>
+      </Alert>}
+      {decider && clearing && <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" className="text-danger" onClick={() => start('PRE_ADVERSE')}><FileWarning aria-hidden="true" className="size-4" />Pre-adverse notice</Button>
+      </div>}
       {decider && (awaiting || noticeOut) && <div className="flex flex-wrap items-center gap-2">
         <Button onClick={() => start('APPROVE')}><CircleCheck aria-hidden="true" className="size-4" />Approve</Button>
         <Button variant="outline" onClick={() => start('MORE_INFO')}><CornerUpLeft aria-hidden="true" className="size-4" />Back to screening</Button>
@@ -104,7 +113,7 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
       <form id="driver-decision" onSubmit={submit} className="space-y-4">
         {decision === 'APPROVE' && <>
           <Textarea label="Conditions" name="conditions" optional maxLength={1000} rows={3} hint="For example: road test before the first load. Leave empty for a plain approval." />
-          <Checkbox name="confirmed" required label="I confirm this approval. It can’t be undone." />
+          <Checkbox name="confirmed" required label="I confirm this approval." />
         </>}
         {decision === 'MORE_INFO' && <Textarea label="What the Safety lead should look into" name="note" required maxLength={2000} rows={4} />}
         {(decision === 'PRE_ADVERSE' || decision === 'REJECT') && <>

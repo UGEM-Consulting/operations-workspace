@@ -15,6 +15,7 @@ import { driverEvent, lockOpenDriver, ownsDriver, requireScreener, SCREENERS, ST
 import { CLOSED_STATUSES, Driver, DriverApplication, DriverDocument, DriverLink, DriverOwner, earliestFinalRejection, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
 import { currentConsents, missingConsents } from './consent-rules';
 import { missingForDecision } from './screening-rules';
+import { clearanceGaps, hasActiveOwner } from './clearance.service';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
 
@@ -43,10 +44,11 @@ export class SafetyService {
 
  async driver(id: string) {
   const [driver] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState", d."experienceYears",
-   d.source, d.notes, d.status, d."statusReason", d."closedAt", d.version, d."createdAt", d."updatedAt", ${person('l')} AS "safetyLead", ${person('c')} AS "addedBy"
-   FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" WHERE d.id = $1`, [id]);
+   d.source, d.notes, d.status, d."statusReason", d."closedAt", d.version, d."createdAt", d."updatedAt", ${person('l')} AS "safetyLead", ${person('c')} AS "addedBy",
+   d."clearedAt", ${person('k')} AS "clearedBy"
+   FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" LEFT JOIN users k ON k.id = d."clearedBy" WHERE d.id = $1`, [id]);
   if (!driver) throw new NotFoundException('This driver record no longer exists.');
-  const [owners, activity, [link], [application], documents, checks, [mvr], reviews, consents, currentForms] = await Promise.all([
+  const [owners, activity, [link], [application], documents, checks, [mvr], reviews, consents, currentForms, clearanceItems, employers, assignments, activeOwner] = await Promise.all([
    this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, CASE WHEN a.id IS NULL THEN NULL ELSE a."firstName" || ' ' || a."lastName" END AS "assignedBy"
     FROM driver_owners x LEFT JOIN users o ON o.id = x."ownerId" LEFT JOIN users a ON a.id = x."actorId" WHERE x."driverId" = $1 ORDER BY x."startedAt" DESC, x."createdAt" DESC`, [id]),
    this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
@@ -71,13 +73,26 @@ export class SafetyService {
    this.db.query(`SELECT s."documentId", d.kind, d.title, d.version, s."typedName", s."signedAt", s."signatureImage" IS NOT NULL AS "hasSignature" FROM driver_consent_signatures s
     JOIN driver_consent_documents d ON d.id = s."documentId" WHERE s."driverId" = $1 ORDER BY d.kind, d.version DESC`, [id]),
    this.storage.enabled ? currentConsents(this.db.manager) : [],
+   // Clearance: results only (no drug test or medical details are entered), the employers asked, and where Dispatch placed the driver.
+   this.db.query(`SELECT c.key, c.status, c.result, to_char(c."doneOn", 'YYYY-MM-DD') AS "doneOn", c.note, c."updatedAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "updatedBy"
+    FROM driver_clearance_items c LEFT JOIN users u ON u.id = c."updatedBy" WHERE c."driverId" = $1`, [id]),
+   this.db.query(`SELECT id, name, "fromMonth", "toMonth", to_char("requestedOn", 'YYYY-MM-DD') AS "requestedOn", to_char("answeredOn", 'YYYY-MM-DD') AS "answeredOn",
+     to_char("goodFaithOn", 'YYYY-MM-DD') AS "goodFaithOn", "goodFaithNote"
+    FROM driver_previous_employers WHERE "driverId" = $1 ORDER BY "toMonth" DESC, "createdAt"`, [id]),
+   this.db.query(`SELECT a.id, a."startedAt", a."endedAt", a.truck, m.name AS mc, t.name AS team, x."firstName" || ' ' || x."lastName" AS dispatcher
+    FROM driver_assignments a JOIN mcs m ON m.id = a."mcId" JOIN dispatch_members x ON x.id = a."memberId"
+    LEFT JOIN member_assignments ma ON ma."memberId" = x.id AND ma."endedAt" IS NULL LEFT JOIN teams t ON t.id = ma."teamId"
+    WHERE a."driverId" = $1 ORDER BY a."startedAt" DESC, a."createdAt" DESC`, [id]),
+   hasActiveOwner(this.db.manager, id),
   ]);
   const consentsMissing = missingConsents(currentForms, consents.map((row: { documentId: string }) => row.documentId));
   const gaps = missingForDecision({ application, checkKeys: checks.map((row: { key: string }) => row.key), hasMvr: !!mvr,
    verifiedKinds: documents.filter((row: { verifiedAt: Date | null }) => row.verifiedAt).map((row: { kind: string }) => row.kind) }, this.storage.enabled);
   // While a pre-adverse notice is out, the first day the rejection can be final.
   const notice = driver.status === 'PRE_ADVERSE' ? reviews.find((row: { action: string }) => row.action === 'PRE_ADVERSE') : null;
-  return { ...driver, owner: owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null, owners, activity, link: link ?? null, application: application ?? null, documents,
+  const owner = owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null;
+  return { ...driver, owner, owners, activity, link: link ?? null, application: application ?? null, documents,
+   clearance: { items: clearanceItems, employers, missing: clearanceGaps(clearanceItems, activeOwner, employers) }, assignments,
    screening: { checks, mvr: mvr ?? null, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null },
    consents: { signatures: consents, missing: consentsMissing, authorizationSigned: consents.some((row: { kind: string }) => row.kind === 'BACKGROUND_AUTHORIZATION') } };
  }

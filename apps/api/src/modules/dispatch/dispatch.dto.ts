@@ -69,3 +69,15 @@ export class DecidePromotionDto {
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
  @IsOptional() @IsUUID() jobTitleId?: string;
 }
+/**
+ * A cleared driver's MC and dispatcher from a date (YYYY-MM-DD), with an optional truck. A change closes the current
+ * assignment on that date and needs a reason.
+ */
+export class AssignDriverDto {
+ @IsInt() @Min(1) version!: number;
+ @IsUUID() mcId!: string;
+ @IsUUID() memberId!: string;
+ @IsDateString({ strict: true }) startsOn!: string;
+ @text() @IsOptional() @IsString() @MaxLength(40) truck?: string;
+ @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}

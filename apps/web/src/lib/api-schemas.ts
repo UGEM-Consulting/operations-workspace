@@ -128,6 +128,11 @@ export const driverProfileSchema = driverRow.extend({
   // From an API with consent forms.
   consents: z.looseObject({ signatures: z.array(z.looseObject({ documentId: text, kind: text, title: text, version: z.number(), signedAt: text, hasSignature: z.boolean().optional().catch(undefined) })), missing: z.array(text), authorizationSigned: z.boolean() })
     .optional().catch(undefined),
+  // From an API with clearance and dispatch assignments.
+  clearedAt: nullableText.optional().catch(undefined), clearedBy: safetyPerson.optional().catch(undefined),
+  clearance: z.looseObject({ items: z.array(z.looseObject({ key: text, status: text, result: nullableText, doneOn: nullableText, note: nullableText })),
+    employers: z.array(z.looseObject({ id: text, name: text, fromMonth: text, toMonth: text, requestedOn: nullableText, answeredOn: nullableText, goodFaithOn: nullableText.optional().catch(undefined), goodFaithNote: nullableText.optional().catch(undefined) })), missing: z.array(text) }).optional().catch(undefined),
+  assignments: z.array(z.looseObject({ id: text, startedAt: text, endedAt: nullableText, truck: nullableText, mc: text, team: nullableText, dispatcher: text })).optional().catch(undefined),
 });
 
 /** GET /safety/consents: the consent forms drivers sign. */
@@ -147,3 +152,9 @@ export async function readResponse<T>(response: Response, resource: string, sche
   try { data = await response.json(); } catch { throw new ApiResponseError(resource); }
   return schema ? parseResponse<T>(schema, data, resource) : data as T;
 }
+
+/** GET /dispatch/drivers and /team/drivers: cleared drivers and where they work. */
+export const dispatchDriverListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, phone: text, driverType: text, version: z.number(), clearedAt: text,
+  assignment: z.looseObject({ mcId: text, mc: text, memberId: text, dispatcher: text }).nullable() })) });
+/** GET /dispatch/drivers/options and /team/drivers/options: MCs and the dispatchers in teams under each. */
+export const dispatchDriverOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean().optional().catch(undefined), dispatchers: z.array(z.looseObject({ id: text, name: text, team: text })) })) });
