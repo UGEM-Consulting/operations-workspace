@@ -15,6 +15,8 @@ import { BeginDriverDto, DriverDocumentDto, SaveDriverApplicationDto, VerifyDriv
 import { consentStatus } from './consent-rules';
 import { scanPdf } from './scan';
 import { PiiService } from './pii';
+import { historyMissing } from './history-rules';
+import { usDay } from './screening-rules';
 import { DOCUMENT_SEGMENTS, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
 
 /** Code requests per window, like applicant verification: a circuit breaker plus per-address buckets, no per-link cap. */
@@ -28,7 +30,11 @@ const labels: Record<string, string> = { legalFirstName: 'first name', legalLast
  city: 'city', state: 'state', zip: 'ZIP code', emergencyName: 'emergency contact name', emergencyRelationship: 'emergency contact relationship',
  emergencyPhone: 'emergency contact phone', licenseNumber: 'license number', licenseState: 'license state', licenseClass: 'license class', licenseExpiresOn: 'license expiration', ssn: 'Social Security number',
  LICENSE: 'license scan', MEDICAL_CARD: 'medical card scan', WORK_AUTHORIZATION: 'work authorization scan',
- 'consent:BACKGROUND_DISCLOSURE': 'background check disclosure', 'consent:BACKGROUND_AUTHORIZATION': 'background check authorization', 'consent:CLEARINGHOUSE_CONSENT': 'Clearinghouse consent' };
+ 'consent:BACKGROUND_DISCLOSURE': 'background check disclosure', 'consent:BACKGROUND_AUTHORIZATION': 'background check authorization', 'consent:CLEARINGHOUSE_CONSENT': 'Clearinghouse consent',
+ 'history:currentSince': 'when you moved to your current address', 'history:addresses': 'addresses for the last 3 years', 'history:dates': 'the dates in your history',
+ 'history:gap': 'what you did in each gap between jobs', 'history:driving': 'driving jobs for the last 10 years', 'history:accidents': 'accidents', 'history:tickets': 'traffic tickets',
+ 'history:licenses': 'other licenses', 'history:licenseTrouble': 'whether a license was denied, suspended or revoked' };
+const label = (code: string) => labels[code.startsWith('history:gap:') ? 'history:gap' : code] ?? code;
 const years = (from: string, to = new Date()) => {
  const date = new Date(`${from}T12:00:00Z`);
  let age = to.getUTCFullYear() - date.getUTCFullYear();
@@ -122,6 +128,9 @@ export class DriverAccessService {
    const repo = em.getRepository(DriverApplication);
    const changes: Partial<DriverApplication> = { fields, version: application.version + 1 };
    if (dto.ssn?.trim()) { const sealed = this.pii.sealSsn(dto.ssn, driver.id); changes.ssnCiphertext = sealed.ciphertext; changes.ssnLast4 = sealed.last4; }
+   // The page always sends its whole history; leaving it out (an older page) keeps the saved one.
+   if (dto.history !== undefined) changes.history = JSON.parse(JSON.stringify(dto.history));
+   const history = changes.history !== undefined ? changes.history : application.history;
    if (submit) {
     const missing: string[] = REQUIRED_DRIVER_FIELDS.filter(field => !fields[field]);
     if (!changes.ssnLast4 && !application.ssnLast4) missing.push('ssn');
@@ -132,7 +141,8 @@ export class DriverAccessService {
      // Every published consent form, signed in its current version.
      missing.push(...(await consentStatus(em, driver.id, true)).missing);
     }
-    if (missing.length) throw new BadRequestException({ message: `Answer every required question first: ${missing.map(field => labels[field]).join(', ')}.`, missing });
+    missing.push(...historyMissing(history, usDay('latest').slice(0, 7)));
+    if (missing.length) throw new BadRequestException({ message: `Answer every required question first: ${[...new Set(missing.map(label))].join(', ')}.`, missing });
     const age = years(fields.dateOfBirth!);
     if (age < 18 || age > 100) throw new BadRequestException({ message: 'Check your date of birth.', missing: ['dateOfBirth'] });
     if (fields.licenseExpiresOn! < new Date().toISOString().slice(0, 10)) throw new BadRequestException({ message: 'Your license has expired. Contact Safety before you continue.', missing: ['licenseExpiresOn'] });
@@ -214,7 +224,7 @@ export class DriverAccessService {
  async view(em: EntityManager, link: DriverLink, application: DriverApplication) {
   const documents = await em.getRepository(DriverDocument).find({ where: { driverId: application.driverId, replacedAt: IsNull() }, order: { createdAt: 'ASC' } });
   const consents = await consentStatus(em, application.driverId, this.storage.enabled);
-  return { email: link.email, expiresAt: link.expiresAt, status: application.status, fields: application.fields, version: application.version,
+  return { email: link.email, expiresAt: link.expiresAt, status: application.status, fields: application.fields, history: application.history ?? null, version: application.version,
    ssnLast4: application.ssnLast4, submittedAt: application.submittedAt, ssnAvailable: this.pii.enabled,
    // What Safety asked the driver to correct, while the application is back with them.
    correction: application.status === 'DRAFT' && application.correctionNote ? { message: application.correctionNote, requestedAt: application.correctionRequestedAt } : null,

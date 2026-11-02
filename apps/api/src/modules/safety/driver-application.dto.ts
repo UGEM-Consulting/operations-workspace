@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { applyDecorators } from '@nestjs/common';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsBoolean, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { MAX_PHOTO_BYTES } from '../documents/documents.dto';
 import { MAX_SCAN_PAGES } from './scan';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
@@ -40,10 +41,85 @@ export class DriverFieldsDto {
  @IsOptional() @IsString() @ValidateIf(filled) @IsIn(LICENSE_TYPES) licenseClass?: LicenseType | '';
  @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the license expiration as a full date.' }) licenseExpiresOn?: string;
 }
-/** Saves a draft or submits. `ssn` replaces the stored SSN when sent; omit it to keep the one already saved. */
+// Address and work history. Each entry the driver adds is complete (the page's own forms ask for every part); the whole
+// history is checked for coverage only at submission (history-rules.ts).
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/, MONTH_MESSAGE = { message: 'Enter a month.' };
+const required = (max: number) => applyDecorators(text(), IsString(), MinLength(1, { message: 'Fill in every part.' }), MaxLength(max));
+const state = () => applyDecorators(upper(), IsIn(US_STATES, { message: 'Choose a US state.' }));
+export class HistoryAddressDto {
+ @IsUUID() id!: string;
+ @required(200) line1!: string;
+ @required(100) city!: string;
+ @state() state!: string;
+ @text() @Matches(/^\d{5}(-\d{4})?$/, { message: 'Enter a 5-digit ZIP code.' }) zip!: string;
+ @Matches(MONTH, MONTH_MESSAGE) fromMonth!: string;
+ @Matches(MONTH, MONTH_MESSAGE) toMonth!: string;
+}
+export class HistoryJobDto {
+ @IsUUID() id!: string;
+ @required(200) company!: string;
+ @required(100) city!: string;
+ @state() state!: string;
+ @text() @IsString() @MaxLength(40) @Matches(INTERNATIONAL_PHONE_PATTERN, PHONE) phone!: string;
+ @required(100) position!: string;
+ @Matches(MONTH, MONTH_MESSAGE) fromMonth!: string;
+ // null: the driver still works there.
+ @ValidateIf((_object: unknown, value: unknown) => value !== null) @Matches(MONTH, MONTH_MESSAGE) toMonth!: string | null;
+ @IsIn(['YES', 'NO']) drove!: 'YES' | 'NO';
+ @IsIn(['YES', 'NO', 'UNSURE']) fmcsr!: 'YES' | 'NO' | 'UNSURE';
+ @IsIn(['YES', 'NO', 'UNSURE']) dotTesting!: 'YES' | 'NO' | 'UNSURE';
+ @text() @IsString() @MaxLength(200) reasonLeft!: string;
+}
+export class HistoryGapDto {
+ @Matches(MONTH, MONTH_MESSAGE) from!: string;
+ @Matches(MONTH, MONTH_MESSAGE) to!: string;
+ @text() @IsString() @MaxLength(500) explanation!: string;
+}
+export class HistoryAccidentDto {
+ @IsUUID() id!: string;
+ @Matches(MONTH, MONTH_MESSAGE) month!: string;
+ @state() state!: string;
+ @required(300) description!: string;
+}
+export class HistoryTicketDto {
+ @IsUUID() id!: string;
+ @Matches(MONTH, MONTH_MESSAGE) month!: string;
+ @state() state!: string;
+ @required(200) violation!: string;
+ @IsIn(['CMV', 'OTHER']) vehicle!: 'CMV' | 'OTHER';
+}
+export class HistoryLicenseDto {
+ @IsUUID() id!: string;
+ @state() state!: string;
+ @upper() @IsString() @Matches(/^[A-Z0-9][A-Z0-9 -]{0,19}$/, { message: 'Enter the license number as printed (letters and digits).' }) number!: string;
+ @IsIn(LICENSE_TYPES) licenseClass!: string;
+}
+const list = (type: () => new () => object, max: number) => applyDecorators(IsOptional(), IsArray(), ArrayMaxSize(max), ValidateNested({ each: true }), Type(type));
+const yesNo = () => applyDecorators(IsOptional(), IsIn(['YES', 'NO']));
+/** The whole history as the driver's page holds it; a save that sends it replaces the stored one. */
+export class DriverHistoryDto {
+ @IsOptional() @Matches(MONTH, MONTH_MESSAGE) currentSince?: string;
+ @list(() => HistoryAddressDto, 20) addresses?: HistoryAddressDto[];
+ @list(() => HistoryJobDto, 40) jobs?: HistoryJobDto[];
+ @list(() => HistoryGapDto, 40) gaps?: HistoryGapDto[];
+ @IsOptional() @IsBoolean() noEarlierDriving?: boolean;
+ @yesNo() accidents?: 'YES' | 'NO';
+ @list(() => HistoryAccidentDto, 20) accidentList?: HistoryAccidentDto[];
+ @yesNo() tickets?: 'YES' | 'NO';
+ @list(() => HistoryTicketDto, 20) ticketList?: HistoryTicketDto[];
+ @yesNo() otherLicenses?: 'YES' | 'NO';
+ @list(() => HistoryLicenseDto, 5) licenseList?: HistoryLicenseDto[];
+ @yesNo() licenseTrouble?: 'YES' | 'NO';
+ @text() @IsOptional() @IsString() @MaxLength(500) licenseTroubleNote?: string;
+}
+/**
+ * Saves a draft or submits. `ssn` replaces the stored SSN when sent; omit it to keep the one already saved. `history`,
+ * when sent, replaces the stored history; omit it to keep it.
+ */
 export class SaveDriverApplicationDto {
  @IsInt() @Min(1) version!: number;
  @IsDefined() @IsObject() @ValidateNested() @Type(() => DriverFieldsDto) fields!: DriverFieldsDto;
+ @IsOptional() @IsObject() @ValidateNested() @Type(() => DriverHistoryDto) history?: DriverHistoryDto;
  @IsOptional() @IsString() @MaxLength(20) ssn?: string;
 }
 export class DriverVersionDto {

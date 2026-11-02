@@ -11,6 +11,8 @@ import { ApiError, errorMessage, mutate, readApi } from '@/lib/client-api';
 import { DOCUMENT_KINDS, documentLabels, licenseTypes, requiredDocuments, US_STATES, type DocumentKind } from '@/features/safety/types';
 import { ConsentSigning, consentSectionId, type ConsentItem } from './consent-signing';
 import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
+import { historyMissing, type DriverHistory } from './history-rules';
+import { HistoryEditor, historySection, HistorySections, type HistoryEditing } from './history-section';
 
 export interface DriverApplicationView { email: string; expiresAt: string; status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; version: number; ssnLast4: string | null; submittedAt: string | null; ssnAvailable: boolean;
   // From an API with document scanning; absent on an older one.
@@ -18,7 +20,9 @@ export interface DriverApplicationView { email: string; expiresAt: string; statu
   // What Safety asked the driver to correct, from an API with screening.
   correction?: { message: string; requestedAt: string } | null;
   // The consent forms Safety published, from an API with consent forms.
-  consents?: { required: boolean; consent: string; items: ConsentItem[] } }
+  consents?: { required: boolean; consent: string; items: ConsentItem[] };
+  // Address and work history, from an API with it (null until the driver adds any); absent on an older one.
+  history?: DriverHistory | null }
 const REQUIRED = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone',
   'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'];
 const FIELDS = [...REQUIRED, 'legalMiddleName', 'addressLine2'];
@@ -137,6 +141,20 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
   const onDraft = useCallback((kind: DocumentKind, draft: ScanDraft) => setDrafts(previous =>
     previous[kind]?.pages === draft.pages && previous[kind]?.busy === draft.busy ? previous : { ...previous, [kind]: draft }), []);
   const value = (key: string) => view.fields[key] ?? '';
+  // The history is kept here while the driver works on it and sent whole with every save; an entry's own form opens in
+  // place of the application, which stays on the page (hidden) so nothing typed there is lost.
+  const historyEnabled = view.history !== undefined;
+  const [history, setHistory] = useState<DriverHistory>(view.history ?? {});
+  const [editing, setEditing] = useState<HistoryEditing | null>(null);
+  const [editorError, setEditorError] = useState('');
+  const [historyErrors, setHistoryErrors] = useState<string[]>([]);
+  const now = today?.slice(0, 7);
+  const scrollBack = useRef(0);
+  function edit(next: HistoryEditing | null) {
+    if (next) scrollBack.current = window.scrollY;
+    setEditing(next); setEditorError('');
+    requestAnimationFrame(() => window.scrollTo(0, next ? 0 : scrollBack.current));
+  }
   if (view.status === 'SUBMITTED') return <Card className="space-y-4 p-6 sm:p-8">
     <CheckCircle2 aria-hidden="true" className="size-8 text-success" />
     <h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Application sent</h1>
@@ -147,9 +165,11 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
     const fields = Object.fromEntries(FIELDS.map(key => [key, String(data.get(key) ?? '').trim()]));
     return { fields, ssn: String(data.get('ssn') ?? '').trim() };
   }
-  async function save(submit: boolean) {
-    if (pending) return;
+  /** Saves (or submits) the answers and the history; true when it worked. `nextHistory` is a history an entry's form just changed. */
+  async function save(submit: boolean, nextHistory?: DriverHistory): Promise<boolean> {
+    if (pending) return false;
     const { fields, ssn } = read();
+    const sentHistory = nextHistory ?? history;
     // Pages taken but not saved would be lost on submit; Save and finish later keeps answers only.
     const unsaved = DOCUMENT_KINDS.filter(kind => drafts[kind]?.pages);
     if (submit) {
@@ -164,48 +184,68 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
       setScanErrors(problems);
       // Forms come last on the page, after the answers and scans.
       const unsigned = view.consents?.required ? view.consents.items.filter(item => !item.current) : [];
-      if (Object.keys(missing).length || unsaved.length || unscanned.length || unsigned.length) {
+      const historyGaps = historyEnabled && now ? historyMissing(sentHistory, now) : [];
+      setHistoryErrors(historyGaps);
+      if (Object.keys(missing).length || unsaved.length || unscanned.length || unsigned.length || historyGaps.length) {
         setFailed(true);
         // An unanswered question comes first; otherwise say what is wrong with the one answer (age, expired license).
         const issues = Object.values(missing);
-        setMessage(issues.includes('Required') ? 'Answer every required question first.' : issues.length === 1 ? issues[0] : issues.length ? 'Check the highlighted answers.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : unscanned.length ? `Scan these documents first: ${names(unscanned)}.`
+        setMessage(issues.includes('Required') ? 'Answer every required question first.' : issues.length === 1 ? issues[0] : issues.length ? 'Check the highlighted answers.'
+          : historyGaps.length ? 'Finish your address and work history first.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : unscanned.length ? `Scan these documents first: ${names(unscanned)}.`
           : `Sign these forms first: ${unsigned.map(item => item.label.toLowerCase()).join(', ')}.`);
         // Answers come before the documents on the page, so the first answer in page order is the first problem.
         const answer = firstOnPage(form.current, Object.keys(missing)), scan = DOCUMENT_KINDS.find(kind => problems[kind]);
+        const section = historyGaps.map(historySection).find(Boolean);
         if (answer) answer.focus();
+        else if (section) document.getElementById(section)?.focus();
         else if (scan) document.getElementById(scannerId(scan))?.focus();
         else document.getElementById(consentSectionId)?.focus();
-        return;
+        return false;
       }
       if (ssnBlocked) {
         setFailed(true);
         setMessage('Your application can’t be sent until Safety turns on SSN entry. Select Save and finish later; Safety will tell you when to come back.');
-        return;
+        return false;
       }
     }
     setPending(submit ? 'submit' : 'save'); setFailed(false); setMessage('');
     try {
-      const saved = await mutate<DriverApplicationView>(submit ? 'driver/application/submit' : 'driver/application', submit ? 'POST' : 'PATCH', { version: view.version, fields, ...(ssn ? { ssn } : {}) });
+      const saved = await mutate<DriverApplicationView>(submit ? 'driver/application/submit' : 'driver/application', submit ? 'POST' : 'PATCH', { version: view.version, fields, ...(ssn ? { ssn } : {}),
+        ...(historyEnabled ? { history: sentHistory } : {}) });
       const ssnInput = form.current?.querySelector<HTMLInputElement>('[name="ssn"]');
       if (ssnInput) ssnInput.value = '';
-      onSaved(saved); setErrors({});
+      onSaved(saved); setErrors({}); setHistoryErrors([]);
       if (!submit) setMessage(unsaved.length ? `Answers saved. The pages you took for ${names(unsaved)} aren’t saved yet: select Save under each one.`
         : 'Saved. You can come back to this link until you submit.');
+      return true;
     } catch (error) {
-      if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error.message);
+      if (error instanceof ApiError && error.kind === 'applicant-session') { onEnded(error.message); return false; }
       setFailed(true); setMessage(errorMessage(error, 'Unable to save. Your answers are still on this page.'));
       // A refused submission names the answers it needs (an age outside 18 to 100, an expired license, a missing answer):
       // mark them, with the API's explanation when it is about one answer, and move to the first.
       const refused = submit && error instanceof ApiError && error.status === 400 ? error : null, missing = refused?.missing ?? [];
       if (refused && missing.length) {
-        setErrors(Object.fromEntries(missing.map(key => [key, missing.length === 1 ? refused.message : 'Required'])));
-        firstOnPage(form.current, missing)?.focus();
+        const answers = missing.filter(key => !key.startsWith('history:'));
+        setErrors(Object.fromEntries(answers.map(key => [key, missing.length === 1 ? refused.message : 'Required'])));
+        setHistoryErrors(missing.filter(key => key.startsWith('history:')));
+        const section = missing.map(historySection).find(Boolean), answer = firstOnPage(form.current, answers);
+        if (answer) answer.focus(); else if (section) document.getElementById(section)?.focus();
       }
+      return false;
     } finally { setPending(null); }
   }
+  /** An entry's form saved: keep the new history and save the draft with it, so the entry is never only on the page. */
+  async function saveEntry(next: DriverHistory) {
+    setHistory(next); setEditorError('');
+    if (await save(false, next)) edit(null);
+    else setEditorError('Unable to save. Check your connection and try again; your entry is still here.');
+  }
+  const currentAddress = [value('addressLine1'), value('city'), [value('state'), value('zip')].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   const field = (key: string) => ({ name: key, defaultValue: value(key), error: errors[key], width: 'full' as const });
   const uploading = Object.values(drafts).some(draft => draft?.busy);
-  return <form ref={form} onSubmit={event => { event.preventDefault(); void save(true); }} className="space-y-6" noValidate>
+  return <>{editing && <HistoryEditor key={`${editing.kind}-${editing.id ?? 'new'}`} editing={editing} history={history} now={now} busy={pending === 'save'} error={editorError}
+    onSave={next => void saveEntry(next)} onCancel={() => edit(null)} />}
+  <form ref={form} hidden={!!editing} onSubmit={event => { event.preventDefault(); void save(true); }} className="space-y-6" noValidate>
     <div><h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Your driver application</h1>
       <p className="mt-1 text-sm text-muted-foreground">Signed in as {view.email}. Answers save when you select Save; the link works until <LocalTime iso={view.expiresAt} format="date" />.</p></div>
     {view.correction && <Alert tone="warning" title="Safety asked you to correct your application">
@@ -229,7 +269,7 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
     <Section title="Contact and home address">
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Phone" type="tel" {...field('phone')} maxLength={40} autoComplete="tel" />
-        <Input label="Email" value={view.email} readOnly width="full" hint="The address Safety has for you." />
+        <Input id="driver-email" label="Email" value={view.email} readOnly width="full" hint="The address Safety has for you." />
       </div>
       <Input label="Street address" {...field('addressLine1')} maxLength={200} autoComplete="address-line1" />
       <Input label="Apartment, suite or unit" optional {...field('addressLine2')} maxLength={200} autoComplete="address-line2" />
@@ -254,6 +294,7 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
         <Input label="Expiration date" type="date" {...field('licenseExpiresOn')} min={today} />
       </div>
     </Section>
+    {historyEnabled && <HistorySections history={history} onChange={setHistory} onEdit={edit} now={now} currentAddress={currentAddress} missing={historyErrors} Section={Section} />}
     {view.documentsEnabled && <Section title="Documents" hint="Use your phone’s camera. We remove photo details such as location before saving, and only UGEM Safety staff and administrators can see your documents.">
       {DOCUMENT_KINDS.map(kind => <DocumentScanner key={kind} kind={kind} view={view} onSaved={onSaved} onEnded={onEnded} onDraft={onDraft} error={scanErrors[kind]}
         required={requiredDocuments(licenseClass).includes(kind)} />)}
@@ -268,9 +309,10 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
       <Button type="button" variant="outline" disabled={!!pending} onClick={() => void save(false)}>{pending === 'save' ? 'Saving…' : 'Save and finish later'}</Button>
     </div>
     <PendingHint pending={!!pending} />
-  </form>;
+  </form></>;
 }
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return <Card className="space-y-4 p-5 sm:p-6"><div><h2 className="text-base font-semibold">{title}</h2>{hint && <p className="mt-1 text-sm text-muted-foreground">{hint}</p>}</div>{children}</Card>;
+function Section({ title, hint, id, children }: { title: string; hint?: string; id?: string; children: React.ReactNode }) {
+  // An id lets a refused submission move focus to the section with the problem.
+  return <Card id={id} tabIndex={id ? -1 : undefined} className="scroll-mt-20 space-y-4 p-5 outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-6"><div><h2 className="text-base font-semibold">{title}</h2>{hint && <p className="mt-1 text-sm text-muted-foreground">{hint}</p>}</div>{children}</Card>;
 }

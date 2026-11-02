@@ -86,7 +86,8 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
       <CardHeader title="Previous employers" description="DOT-regulated employers from the last 3 years, asked about the driver’s safety performance within 30 days of hire. Kept with the qualification file."
         actions={canWork ? <Button size="sm" variant="outline" onClick={() => open({ kind: 'add' })}><Plus aria-hidden="true" className="size-4" />Add employer</Button> : undefined} />
       {clearance.employers.length ? <Table className="mt-3" caption="Previous employers" rows={clearance.employers} rowKey={row => row.id} columns={[
-        { key: 'name', label: 'Employer', primary: true, cell: row => row.name },
+        { key: 'name', label: 'Employer', primary: true, cell: row => <>{row.name}{(row.location || row.phone) && <span className="block text-[13px] text-muted-foreground">{[row.location, row.phone].filter(Boolean).join(' · ')}</span>}
+          {row.source === 'APPLICATION' && <span className="mt-1 block"><Badge label="From application" tone="neutral" /></span>}</> },
         { key: 'dates', label: 'Dates', muted: true, nowrap: true, cell: row => `${month(row.fromMonth)} – ${month(row.toMonth)}` },
         { key: 'requested', label: 'Requested', muted: true, nowrap: true, cell: row => row.requestedOn ? day(row.requestedOn) : 'Not yet' },
         { key: 'status', label: 'Status', cell: row => <>

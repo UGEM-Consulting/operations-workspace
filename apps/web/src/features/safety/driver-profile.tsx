@@ -18,6 +18,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { ApplicationCard } from './application-card';
 import { ClearanceCard, ClearanceProgress } from './clearance-card';
+import { HistoryReview } from './history-review';
 import { ConsentCard } from './consent-card';
 import { DecisionCard } from './decision-card';
 import { DriverDocuments } from './driver-documents';
@@ -34,7 +35,7 @@ const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'D
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
   SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form',
   CLEARANCE_RECORDED: 'Clearance item recorded', EMPLOYER_RECORDED: 'Previous employer recorded', CLEARED: 'Cleared', DISPATCH_ASSIGNED: 'Assigned to a dispatcher' };
-const employerActions: Record<string, string> = { added: 'added', requested: 'asked', answered: 'answered', 'good-faith': 'good-faith effort recorded', updated: 'dates changed', removed: 'removed' };
+const employerActions: Record<string, string> = { 'from-application': 'added from the application', added: 'added', requested: 'asked', answered: 'answered', 'good-faith': 'good-faith effort recorded', updated: 'dates changed', removed: 'removed' };
 const results: Record<string, string> = { PASS: 'passed', CONCERN: 'concern' };
 const who = (person: SafetyPerson | null) => person ? `${person.name}${person.active ? '' : ' (inactive)'}` : null;
 function eventMeta(row: DriverEventRow) {
@@ -121,6 +122,8 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         {/* Kept while corrections are out too: the new link is shown once from this card after the driver leaves screening. */}
         {driver.screening && (driver.status === 'SCREENING' || driver.screening.checks.length > 0 || driver.screening.mvr || driver.application?.correctionNote) && <ScreeningCard driver={driver} screener={screener} />}
         {(driver.application !== undefined || driver.link !== undefined) && <ApplicationCard driver={driver} screener={screener} owns={owns} />}
+        {driver.application?.status === 'SUBMITTED' && driver.application.history && <HistoryReview history={driver.application.history} sentOn={driver.application.submittedAt}
+          currentAddress={[driver.application.fields.addressLine1, driver.application.fields.city, [driver.application.fields.state, driver.application.fields.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')} />}
         {driver.documents !== undefined && (driver.documents.length > 0 || driver.application) && <DriverDocuments driver={driver} canVerify={screener || owns} />}
         {driver.consents && (driver.consents.signatures.length > 0 || (driver.application && driver.consents.missing.length > 0)) && <ConsentCard driver={driver} />}
         <Card>

@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import type { StorageLayout } from '../storage/storage.service';
+import type { DriverHistory } from './history-rules';
 
 export const DRIVER_TYPES = ['COMPANY', 'OWNER_OPERATOR'] as const;
 export type DriverType = typeof DRIVER_TYPES[number];
@@ -123,6 +124,8 @@ export class DriverApplication {
  @Column('uuid') driverId!: string;
  @Column('varchar', { default: 'DRAFT' }) status!: 'DRAFT' | 'SUBMITTED';
  @Column('jsonb', { default: {} }) fields!: DriverApplicationFields;
+ // Address and work history (history-rules.ts); null until the driver adds any.
+ @Column('jsonb', { nullable: true }) history!: DriverHistory | null;
  @Column('text', { nullable: true, select: false }) ssnCiphertext!: string | null;
  @Column('varchar', { length: 4, nullable: true }) ssnLast4!: string | null;
  @Column('integer', { default: 1 }) version!: number;
@@ -171,7 +174,7 @@ export class DriverDocument {
  * The Safety lead's screening checklist. Each check is passed, or noted as a concern for the Safety manager (a concern
  * needs a note). Notes never hold SSNs, medical or drug test details.
  */
-export const SCREENING_CHECKS = ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'MVR'] as const;
+export const SCREENING_CHECKS = ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'HISTORY', 'MVR'] as const;
 export type ScreeningCheckKey = typeof SCREENING_CHECKS[number];
 export const SCREENING_RESULTS = ['PASS', 'CONCERN'] as const;
 export type ScreeningResult = typeof SCREENING_RESULTS[number];
@@ -271,6 +274,10 @@ export class DriverPreviousEmployer {
  @Column('varchar', { length: 200 }) name!: string;
  @Column('char', { length: 7 }) fromMonth!: string;
  @Column('char', { length: 7 }) toMonth!: string;
+ // APPLICATION: copied at approval from the driver's DOT-regulated jobs; SAFETY: added by Safety.
+ @Column('varchar', { default: 'SAFETY' }) source!: 'SAFETY' | 'APPLICATION';
+ @Column('varchar', { length: 120, nullable: true }) location!: string | null;
+ @Column('varchar', { length: 40, nullable: true }) phone!: string | null;
  @Column('date', { nullable: true }) requestedOn!: string | null;
  @Column('date', { nullable: true }) answeredOn!: string | null;
  // For an employer who never answers: when Safety last tried and what they did.

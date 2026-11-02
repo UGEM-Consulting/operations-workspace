@@ -55,7 +55,7 @@ export class SafetyService {
     FROM driver_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."driverId" = $1 ORDER BY e."createdAt" DESC LIMIT 200`, [id]),
    // The open link (never its token) and the driver's answers; the SSN only as its last four digits.
    this.db.query(`SELECT email, "createdAt", "expiresAt", "openedAt", "expiresAt" <= now() AS expired FROM driver_links WHERE "driverId" = $1 AND "revokedAt" IS NULL AND "completedAt" IS NULL`, [id]),
-   this.db.query(`SELECT status, fields, "ssnLast4", version, "submittedAt", "updatedAt", "correctionNote", "correctionRequestedAt" FROM driver_applications WHERE "driverId" = $1`, [id]),
+   this.db.query(`SELECT status, fields, history, "ssnLast4", version, "submittedAt", "updatedAt", "correctionNote", "correctionRequestedAt" FROM driver_applications WHERE "driverId" = $1`, [id]),
    // Current scans and Safety's check of each.
    this.db.query(`SELECT d.id, d.kind, d.subtype, d."pageCount", d."createdAt", d."verifiedAt", d.number, d.version, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn",
      CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "verifiedBy"
@@ -76,7 +76,7 @@ export class SafetyService {
    // Clearance: results only (no drug test or medical details are entered), the employers asked, and where Dispatch placed the driver.
    this.db.query(`SELECT c.key, c.status, c.result, to_char(c."doneOn", 'YYYY-MM-DD') AS "doneOn", c.note, c."updatedAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "updatedBy"
     FROM driver_clearance_items c LEFT JOIN users u ON u.id = c."updatedBy" WHERE c."driverId" = $1`, [id]),
-   this.db.query(`SELECT id, name, "fromMonth", "toMonth", to_char("requestedOn", 'YYYY-MM-DD') AS "requestedOn", to_char("answeredOn", 'YYYY-MM-DD') AS "answeredOn",
+   this.db.query(`SELECT id, name, "fromMonth", "toMonth", source, location, phone, to_char("requestedOn", 'YYYY-MM-DD') AS "requestedOn", to_char("answeredOn", 'YYYY-MM-DD') AS "answeredOn",
      to_char("goodFaithOn", 'YYYY-MM-DD') AS "goodFaithOn", "goodFaithNote"
     FROM driver_previous_employers WHERE "driverId" = $1 ORDER BY "toMonth" DESC, "createdAt"`, [id]),
    this.db.query(`SELECT a.id, a."startedAt", a."endedAt", a.truck, m.name AS mc, t.name AS team, x."firstName" || ' ' || x."lastName" AS dispatcher
