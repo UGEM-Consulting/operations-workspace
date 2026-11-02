@@ -72,3 +72,12 @@ export async function createSupportForApproval(em: EntityManager, application: D
  await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
  return member;
 }
+
+/**
+ * The active teams the signed-in team lead's dispatcher record leads; empty when it leads none. Loaded on every request,
+ * so changing a team's lead changes their access with it.
+ */
+export async function ledTeams(em: EntityManager, userId: string): Promise<{ id: string; name: string; mc: string; mcId: string }[]> {
+ return em.query(`SELECT t.id, t.name, m.name AS mc, m.id AS "mcId" FROM teams t JOIN mcs m ON m.id = t."mcId"
+  JOIN dispatch_members d ON d.id = t."leadMemberId" WHERE d."accountUserId" = $1 AND d.status <> 'LEFT' AND t."archivedAt" IS NULL ORDER BY t."nameKey"`, [userId]);
+}

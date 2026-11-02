@@ -6,7 +6,8 @@ export type DriverType = typeof DRIVER_TYPES[number];
 export const LICENSE_TYPES = ['CDL_A', 'CDL_B', 'CDL_C', 'DL'] as const;
 export type LicenseType = typeof LICENSE_TYPES[number];
 // LEAD → APPLYING → SCREENING → AWAITING_DECISION → APPROVED → CLEARED; REJECTED, WITHDRAWN and LEFT close the record.
-// A rejection always passes through PRE_ADVERSE (the pre-adverse notice and its waiting period). CLEARED and LEFT come later.
+// A rejection always passes through PRE_ADVERSE (the pre-adverse notice and its waiting period), also from APPROVED when
+// clearance turns something up. LEFT comes later.
 export const DRIVER_STATUSES = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION', 'PRE_ADVERSE', 'APPROVED', 'CLEARED', 'REJECTED', 'WITHDRAWN', 'LEFT'] as const;
 export type DriverStatus = typeof DRIVER_STATUSES[number];
 export const CLOSED_STATUSES: readonly DriverStatus[] = ['REJECTED', 'WITHDRAWN', 'LEFT'];
@@ -16,7 +17,8 @@ export const WITHDRAWABLE: readonly DriverStatus[] = ['LEAD', 'APPLYING', 'SCREE
 export const OWNABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
 export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED',
  'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED',
- 'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED'] as const;
+ 'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED',
+ 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -47,6 +49,8 @@ export class Driver {
  @Column('timestamptz', { nullable: true }) closedAt!: Date | null;
  @Column('uuid', { nullable: true }) safetyLeadId!: string | null;
  @Column('uuid', { nullable: true }) createdBy!: string | null;
+ @Column('timestamptz', { nullable: true }) clearedAt!: Date | null;
+ @Column('uuid', { nullable: true }) clearedBy!: string | null;
  @Column('integer', { default: 1 }) version!: number;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
@@ -229,4 +233,64 @@ export function earliestFinalRejection(noticeSentOn: string): string {
   if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) added++;
  }
  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * What has to be on file before an approved driver can run loads. The owner records results only: drug test and medical
+ * details stay out of the workspace. The drug test and the Clearinghouse query take a result, which sets the status; the
+ * others take a status. No row means not started.
+ */
+export const CLEARANCE_ITEMS = ['DRUG_TEST', 'CLEARINGHOUSE', 'PREVIOUS_EMPLOYERS', 'MEDICAL_REGISTRY', 'ROAD_TEST'] as const;
+export type ClearanceKey = typeof CLEARANCE_ITEMS[number];
+export const CLEARANCE_STATUSES = ['IN_PROGRESS', 'BLOCKED', 'COMPLETED', 'NOT_NEEDED'] as const;
+export type ClearanceStatus = typeof CLEARANCE_STATUSES[number];
+/** Items that may be not needed (with a note): no earlier DOT employer, or no road test for the license. */
+export const CLEARANCE_OPTIONAL: readonly ClearanceKey[] = ['PREVIOUS_EMPLOYERS', 'ROAD_TEST'];
+/** The result each result-based item takes, and the status each result means. */
+export const CLEARANCE_RESULTS: Partial<Record<ClearanceKey, Record<string, ClearanceStatus>>> = {
+ DRUG_TEST: { NEGATIVE: 'COMPLETED', NOT_NEGATIVE: 'BLOCKED', CANCELLED: 'IN_PROGRESS' },
+ CLEARINGHOUSE: { NO_VIOLATIONS: 'COMPLETED', VIOLATIONS: 'BLOCKED' },
+};
+@Entity('driver_clearance_items')
+export class DriverClearanceItem {
+ @PrimaryColumn('uuid') driverId!: string;
+ @PrimaryColumn('varchar') key!: ClearanceKey;
+ @Column('varchar') status!: ClearanceStatus;
+ @Column('varchar', { nullable: true }) result!: string | null;
+ @Column('date', { nullable: true }) doneOn!: string | null;
+ @Column('varchar', { length: 1000, nullable: true }) note!: string | null;
+ @Column('uuid', { nullable: true }) updatedBy!: string | null;
+ @Column('timestamptz') updatedAt!: Date;
+}
+
+/** An employer Safety asks about the driver's safety record (months as YYYY-MM). Removable until Safety asks them. */
+@Entity('driver_previous_employers')
+export class DriverPreviousEmployer {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('varchar', { length: 200 }) name!: string;
+ @Column('char', { length: 7 }) fromMonth!: string;
+ @Column('char', { length: 7 }) toMonth!: string;
+ @Column('date', { nullable: true }) requestedOn!: string | null;
+ @Column('date', { nullable: true }) answeredOn!: string | null;
+ // For an employer who never answers: when Safety last tried and what they did.
+ @Column('date', { nullable: true }) goodFaithOn!: string | null;
+ @Column('varchar', { length: 500, nullable: true }) goodFaithNote!: string | null;
+ @Column('uuid', { nullable: true }) createdBy!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** Which MC and dispatcher a cleared driver works with, from a date; the open row (no endedAt) is now. Changes add rows. */
+@Entity('driver_assignments')
+export class DriverAssignment {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('uuid') mcId!: string;
+ @Column('uuid') memberId!: string;
+ @Column('varchar', { length: 40, nullable: true }) truck!: string | null;
+ @Column('timestamptz') startedAt!: Date;
+ @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
+ @Column('varchar', { length: 500, nullable: true }) reason!: string | null;
+ @Column('uuid', { nullable: true }) actorId!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }

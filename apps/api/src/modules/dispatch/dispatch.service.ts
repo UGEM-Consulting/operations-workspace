@@ -6,18 +6,19 @@ import { Role } from '../users/user.entity';
 import { AddContactDto, CreateTeamDto, LeaveMemberDto, MoveMemberDto, ReassignSupportDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberContact, MemberSupportLink, PromotionRequest, Team } from './dispatch.entity';
 import { lockTeam, supportedDispatcher } from './create-member';
+import { DriverAssignment } from '../safety/safety.entity';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 // A date picked in the form is stored at midday UTC, so it shows as the same calendar day in every US time zone.
 // A change dated the same day as the period it ends starts at that period's start: a date picked in a form is midday UTC,
 // while an approval or earlier change that same day may have a later time. Anything clearly earlier is refused.
-function notBefore(date: Date, previous: Date, message: string) {
+export function notBefore(date: Date, previous: Date, message: string) {
  if (date.getTime() > previous.getTime()) return date;
  // One millisecond after: the database keeps microseconds that a JavaScript date would round down to before the start.
  if (previous.getTime() - date.getTime() <= 36 * 3600_000) return new Date(previous.getTime() + 1);
  throw new BadRequestException(message);
 }
-function day(value: string) {
+export function day(value: string) {
  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00Z` : value);
  if (Number.isNaN(date.getTime())) throw new BadRequestException('Choose a valid date.');
  if (date.getTime() > Date.now() + 36 * 3600_000) throw new BadRequestException('The date can’t be in the future.');
@@ -203,6 +204,9 @@ export class DispatchService {
     if (lockId === teamId && (!team || team.archivedAt || team.mcId !== dto.mcId)) throw new BadRequestException('Choose an active team of the selected MC.');
    }
    if (current && current.mcId === dto.mcId && current.teamId === teamId) throw new BadRequestException('The dispatcher already works for this MC and team.');
+   // Their drivers work for the MC they work for; a manager moves the drivers first.
+   if (current?.mcId !== dto.mcId && await em.getRepository(DriverAssignment).existsBy({ memberId: id, endedAt: IsNull() }))
+    throw new ConflictException('This dispatcher still has drivers under this MC. Reassign their drivers first.');
    if (current) startedAt = notBefore(startedAt, current.startedAt, 'The move can’t start before the current MC and team did.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
@@ -219,6 +223,8 @@ export class DispatchService {
    // Their supports would be left assisting no one; a manager moves them to another dispatcher first.
    if (member.position === 'DISPATCHER' && await em.getRepository(MemberSupportLink).existsBy({ dispatcherId: id, endedAt: IsNull() }))
     throw new ConflictException('This dispatcher still has supports. Reassign their supports to another dispatcher first.');
+   if (await em.getRepository(DriverAssignment).existsBy({ memberId: id, endedAt: IsNull() }))
+    throw new ConflictException('This dispatcher still has drivers. Reassign their drivers to another dispatcher first.');
    let leftAt = day(dto.leftAt);
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
    if (current) leftAt = notBefore(leftAt, current.startedAt, 'The leaving date can’t be before the current MC and team started.');

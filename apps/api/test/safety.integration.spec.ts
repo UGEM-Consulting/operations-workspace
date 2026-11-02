@@ -776,10 +776,166 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await driver(id)).screening.mvr).toMatchObject({ authorization: 'PAPER' });
   });
 
+  it('clears an approved driver: the owner records results only, the previous employers, then Cleared', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const item = (agent: Agent, key: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/clearance/${key}`).set(headers).send(body);
+    const employer = (agent: Agent, path: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/employers${path}`).set(headers).send(body);
+    expect((await item(agents.manager, 'DRUG_TEST', { version: 1, result: 'NEGATIVE', doneOn: today() }).expect(409)).body.message).toMatch(/once the Safety manager approves/);
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    // Before an owner is assigned only the Safety manager and administrators work on it; never the Safety lead.
+    await item(agents.staff, 'DRUG_TEST', { version: 1, result: 'NEGATIVE', doneOn: today() }).expect(403);
+    await item(agents.lead, 'DRUG_TEST', { version: 1, result: 'NEGATIVE', doneOn: today() }).expect(403);
+    let { version } = (await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201)).body;
+    await item(agents.staff2, 'DRUG_TEST', { version, result: 'NEGATIVE', doneOn: today() }).expect(403);
+    await item(agents.staff, 'UNKNOWN', { version, status: 'COMPLETED' }).expect(404);
+    // The drug test takes a result, which sets the status: not negative blocks it, only negative completes it.
+    await item(agents.staff, 'DRUG_TEST', { version, status: 'COMPLETED', doneOn: today() }).expect(400);
+    await item(agents.staff, 'DRUG_TEST', { version, result: 'NEGATIVE' }).expect(400);
+    await item(agents.staff, 'DRUG_TEST', { version, result: 'NEGATIVE', doneOn: addDays(today(), 3) }).expect(400);
+    await item(agents.staff, 'DRUG_TEST', { version, result: 'NO_VIOLATIONS', doneOn: today() }).expect(400);
+    ({ version } = (await item(agents.staff, 'DRUG_TEST', { version, result: 'NOT_NEGATIVE', doneOn: today() }).expect(201)).body);
+    expect((await driver(id)).clearance.items).toEqual([expect.objectContaining({ key: 'DRUG_TEST', status: 'BLOCKED', result: 'NOT_NEGATIVE', doneOn: today(), updatedBy: 'Fictional staff' })]);
+    ({ version } = (await item(agents.staff, 'DRUG_TEST', { version, result: 'NEGATIVE', doneOn: today() }).expect(201)).body);
+    // The others take a status: blocked needs a note, completed a date, and only some items can be not needed.
+    await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: 'BLOCKED' }).expect(400);
+    await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: 'COMPLETED' }).expect(400);
+    expect((await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: 'NOT_NEEDED', note: 'x' }).expect(400)).body.message).toBe('This item is needed for every driver.');
+    await item(agents.staff, 'MEDICAL_REGISTRY', { version, result: 'NEGATIVE', doneOn: today() }).expect(400);
+    ({ version } = (await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: 'COMPLETED', doneOn: today() }).expect(201)).body);
+    ({ version } = (await item(agents.manager, 'CLEARINGHOUSE', { version, result: 'NO_VIOLATIONS', doneOn: daysAgo(1) }).expect(201)).body);
+    // Cleared only once every item is done.
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(400)).body.missing).toEqual(['clearance:PREVIOUS_EMPLOYERS', 'clearance:ROAD_TEST']);
+    // Previous employers: removable until asked; an answer comes after the request.
+    await employer(agents.staff, '', { version, name: 'Prairie Haulers', fromMonth: '2024-01', toMonth: '2023-12' }).expect(400);
+    await employer(agents.staff, '', { version, name: 'Prairie Haulers', fromMonth: '2024-01', toMonth: '2999-01' }).expect(400);
+    ({ version } = (await employer(agents.staff, '', { version, name: 'Prairie Haulers', fromMonth: '2024-01', toMonth: '2025-06', requestedOn: daysAgo(2) }).expect(201)).body);
+    ({ version } = (await employer(agents.staff, '', { version, name: 'Lone Star Freight', fromMonth: '2022-03', toMonth: '2023-12' }).expect(201)).body);
+    let [prairie] = (await driver(id)).clearance.employers as { id: string; name: string; requestedOn: string | null; answeredOn: string | null }[];
+    const loneStar = ((await driver(id)).clearance.employers as { id: string; name: string }[])[1];
+    expect([prairie.name, loneStar.name]).toEqual(['Prairie Haulers', 'Lone Star Freight']);
+    expect((await employer(agents.staff, `/${prairie.id}/remove`, { version }).expect(409)).body.message).toMatch(/already asked/);
+    ({ version } = (await employer(agents.staff, `/${loneStar.id}/remove`, { version }).expect(201)).body);
+    await employer(agents.staff, `/${prairie.id}`, { version, answeredOn: daysAgo(3) }).expect(400);
+    ({ version } = (await employer(agents.staff, `/${prairie.id}`, { version, answeredOn: today() }).expect(201)).body);
+    [prairie] = (await driver(id)).clearance.employers;
+    expect(prairie).toMatchObject({ requestedOn: daysAgo(2), answeredOn: today() });
+    ({ version } = (await item(agents.staff, 'PREVIOUS_EMPLOYERS', { version, status: 'COMPLETED', doneOn: today() }).expect(201)).body);
+    await item(agents.staff, 'ROAD_TEST', { version, status: 'NOT_NEEDED' }).expect(400);
+    ({ version } = (await item(agents.staff, 'ROAD_TEST', { version, status: 'NOT_NEEDED', note: 'CDL accepted in place of the road test.' }).expect(201)).body);
+    expect((await driver(id)).clearance.missing).toEqual([]);
+    // The Safety lead can't clear; the owner can.
+    await agents.lead.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(403);
+    await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version: version - 1 }).expect(409);
+    ({ version } = (await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(201)).body);
+    const done = await driver(id);
+    expect(done).toMatchObject({ status: 'CLEARED', clearedBy: { id: users.staff.id }, version });
+    expect(done.clearedAt).toBeTruthy();
+    // The checklist is read-only once cleared.
+    expect((await item(agents.staff, 'ROAD_TEST', { version, status: 'IN_PROGRESS' }).expect(409)).body.message).toBe('This driver is already cleared.');
+    const recorded = (await events(id)).filter(row => ['CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED'].includes(row.event));
+    expect(recorded.map(row => [row.event, row.metadata])).toEqual([
+      ['CLEARANCE_RECORDED', { item: 'DRUG_TEST', status: 'BLOCKED' }], ['CLEARANCE_RECORDED', { item: 'DRUG_TEST', status: 'COMPLETED' }],
+      ['CLEARANCE_RECORDED', { item: 'MEDICAL_REGISTRY', status: 'COMPLETED' }], ['CLEARANCE_RECORDED', { item: 'CLEARINGHOUSE', status: 'COMPLETED' }],
+      ['EMPLOYER_RECORDED', { action: 'added', requested: true }], ['EMPLOYER_RECORDED', { action: 'added', requested: false }], ['EMPLOYER_RECORDED', { action: 'removed' }],
+      ['EMPLOYER_RECORDED', { action: 'answered' }], ['CLEARANCE_RECORDED', { item: 'PREVIOUS_EMPLOYERS', status: 'COMPLETED' }],
+      ['CLEARANCE_RECORDED', { item: 'ROAD_TEST', status: 'NOT_NEEDED' }], ['CLEARED', {}]]);
+    expect(JSON.stringify(recorded)).not.toMatch(/Prairie|CDL accepted|NEGATIVE/);
+  });
+
+  it('holds Cleared to current results, every employer followed up and an active owner', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const item = (agent: Agent, key: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/clearance/${key}`).set(headers).send(body);
+    const employer = (path: string, body: Record<string, unknown>) => agents.staff.post(`/api/safety/drivers/${id}/employers${path}`).set(headers).send(body);
+    const missing = async () => (await driver(id)).clearance.missing as string[];
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    let { version } = (await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201)).body;
+    // Saving an item with nothing recorded and nothing chosen changes nothing.
+    expect((await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: null }).expect(201)).body.version).toBe(version);
+    expect((await events(id)).filter(row => row.event === 'CLEARANCE_RECORDED')).toEqual([]);
+
+    // Completed needs employers, every one followed up; not needed needs none listed.
+    expect((await item(agents.staff, 'PREVIOUS_EMPLOYERS', { version, status: 'COMPLETED', doneOn: today() }).expect(400)).body.message).toMatch(/Add the employers/);
+    ({ version } = (await employer('', { version, name: 'Prairie Haulers', fromMonth: '2024-01', toMonth: '2025-06', requestedOn: daysAgo(2) }).expect(201)).body);
+    expect((await item(agents.staff, 'PREVIOUS_EMPLOYERS', { version, status: 'NOT_NEEDED', note: 'No DOT employer.' }).expect(400)).body.message).toMatch(/while employers are listed/);
+    expect((await item(agents.staff, 'PREVIOUS_EMPLOYERS', { version, status: 'COMPLETED', doneOn: today() }).expect(400)).body.message).toMatch(/good-faith effort/);
+    const [prairie] = (await driver(id)).clearance.employers as { id: string }[];
+    // A recorded request stays, so an asked employer can't be made removable.
+    expect((await employer(`/${prairie.id}`, { version, requestedOn: null, answeredOn: null }).expect(400)).body.message).toMatch(/request is kept/);
+    await employer(`/${prairie.id}/remove`, { version }).expect(409);
+    // A good-faith effort needs what was done, and can't come before the request.
+    await employer(`/${prairie.id}`, { version, goodFaithOn: today() }).expect(400);
+    await employer(`/${prairie.id}`, { version, goodFaithNote: 'Two calls.' }).expect(400);
+    await employer(`/${prairie.id}`, { version, goodFaithOn: daysAgo(3), goodFaithNote: 'Two calls.' }).expect(400);
+    ({ version } = (await employer(`/${prairie.id}`, { version, goodFaithOn: today(), goodFaithNote: 'Two calls and a letter.' }).expect(201)).body);
+    expect((await driver(id)).clearance.employers[0]).toMatchObject({ goodFaithOn: today(), goodFaithNote: 'Two calls and a letter.' });
+    ({ version } = (await item(agents.staff, 'PREVIOUS_EMPLOYERS', { version, status: 'COMPLETED', doneOn: today() }).expect(201)).body);
+    expect((await events(id)).filter(row => row.event === 'EMPLOYER_RECORDED').at(-1)?.metadata).toEqual({ action: 'good-faith' });
+    expect(JSON.stringify(await events(id))).not.toMatch(/Two calls/);
+
+    // An employer added after the item was completed holds Cleared back until it is settled.
+    for (const [key, body] of [['DRUG_TEST', { result: 'NEGATIVE', doneOn: today() }], ['CLEARINGHOUSE', { result: 'NO_VIOLATIONS', doneOn: today() }], ['MEDICAL_REGISTRY', { status: 'COMPLETED', doneOn: today() }], ['ROAD_TEST', { status: 'COMPLETED', doneOn: today() }]] as const)
+      ({ version } = (await item(agents.staff, key, { version, ...body }).expect(201)).body);
+    expect(await missing()).toEqual([]);
+    ({ version } = (await employer('', { version, name: 'Lone Star Freight', fromMonth: '2022-03', toMonth: '2023-12' }).expect(201)).body);
+    expect(await missing()).toEqual(['employers']);
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(400)).body.missing).toEqual(['employers']);
+    const loneStar = ((await driver(id)).clearance.employers as { id: string; name: string }[]).find(row => row.name === 'Lone Star Freight')!;
+    ({ version } = (await employer(`/${loneStar.id}/remove`, { version }).expect(201)).body);
+
+    // A request from over a year ago can still get its answer: only a changed date is checked.
+    await db.query(`UPDATE driver_previous_employers SET "requestedOn" = $2, "goodFaithOn" = NULL, "goodFaithNote" = NULL WHERE id = $1`, [prairie.id, daysAgo(400)]);
+    await employer(`/${prairie.id}`, { version, requestedOn: daysAgo(380), answeredOn: today() }).expect(400);
+    ({ version } = (await employer(`/${prairie.id}`, { version, requestedOn: daysAgo(400), answeredOn: today() }).expect(201)).body);
+
+    // A result that has aged past a year since it was recorded has to be done again.
+    await db.query(`UPDATE driver_clearance_items SET "doneOn" = $2 WHERE "driverId" = $1 AND key = 'DRUG_TEST'`, [id, daysAgo(366)]);
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(400)).body.missing).toEqual(['expired:DRUG_TEST']);
+    ({ version } = (await item(agents.staff, 'DRUG_TEST', { version, result: 'NEGATIVE', doneOn: today() }).expect(201)).body);
+
+    // An owner who is no longer active, or no longer safety staff, doesn't count.
+    for (const change of [`status = 'INACTIVE'`, `role = 'SAFETY_LEAD'`]) {
+      await db.query(`UPDATE users SET ${change} WHERE id = $1`, [users.staff.id]);
+      expect((await agents.manager.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(400)).body.missing).toEqual(['owner']);
+      await db.query(`UPDATE users SET status = 'ACTIVE', role = 'SAFETY_STAFF' WHERE id = $1`, [users.staff.id]);
+    }
+    await agents.manager.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(201);
+  });
+
+  it('lets the Safety manager send an approved driver with a failed clearance result to a pre-adverse notice', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_reviews ("driverId", action, "previousStatus", "newStatus", "actorId") VALUES ($1, 'APPROVED', 'AWAITING_DECISION', 'APPROVED', $2)`, [id, users.manager.id]);
+    expect(await app.get(ScreeningService).waitingCount(users.manager)).toBe(0);
+    let { version } = (await agents.manager.post(`/api/safety/drivers/${id}/clearance/DRUG_TEST`).set(headers).send({ version: 1, result: 'NOT_NEGATIVE', doneOn: today() }).expect(201)).body;
+    // It shows as waiting on the deciders, and withdrawing stays refused.
+    expect(await app.get(ScreeningService).waitingCount(users.manager)).toBe(1);
+    await agents.manager.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version, reason: 'Failed test' }).expect(409);
+    const notice = { decision: 'PRE_ADVERSE', note: 'Clearance result.', noticeSent: true };
+    await decide(agents.lead, id, { version, ...notice, noticeSentOn: today() }).expect(403);
+    // Never dated before the approval, so the waiting period can't be cut short.
+    expect((await decide(agents.manager, id, { version, ...notice, noticeSentOn: daysAgo(5) }).expect(400)).body.message).toMatch(/before the driver was approved/);
+    ({ version } = (await decide(agents.manager, id, { version, ...notice, noticeSentOn: today() }).expect(201)).body);
+    const record = await driver(id);
+    expect(record).toMatchObject({ status: 'PRE_ADVERSE', closedAt: null, screening: { finalRejectionFrom: earliestFinalRejection(today()) } });
+    expect(record.screening.reviews[0]).toMatchObject({ action: 'PRE_ADVERSE', previousStatus: 'APPROVED' });
+    // The waiting period holds, and clearance stops while the notice is out.
+    await decide(agents.manager, id, { version, decision: 'REJECT', note: 'x', noticeSent: true, noticeSentOn: today() }).expect(409);
+    await agents.manager.post(`/api/safety/drivers/${id}/clearance/DRUG_TEST`).set(headers).send({ version, result: 'NEGATIVE', doneOn: today() }).expect(409);
+    // A cleared driver can't get one here.
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() WHERE id = $1`, [id]);
+    await decide(agents.manager, id, { version, ...notice, noticeSentOn: today() }).expect(409);
+  });
+
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_clearance_items ("driverId", key, status, "updatedAt") VALUES ($1, 'ROAD_TEST', 'IN_PROGRESS', now())`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver clearance or dispatch assignments');
+    await db.query('TRUNCATE driver_clearance_items');
+    await db.query(`UPDATE drivers SET status = 'APPLYING' WHERE id = $1`, [id]);
+    await db.undoLastMigration(); // DriverClearance, with nothing recorded yet
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard files stored in the per-person folders');
     // Mark this test's files as flat-layout to step past StorageFolders and reach the older refusals.
     await db.query(`TRUNCATE signed_copies; UPDATE driver_documents SET "storageLayout" = 1; UPDATE driver_reports SET "storageLayout" = 1;
@@ -810,6 +966,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('StorageFolders1792920000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverClearance1792930000000');
   });
 });

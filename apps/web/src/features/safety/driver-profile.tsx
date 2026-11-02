@@ -17,12 +17,13 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { ApplicationCard } from './application-card';
+import { ClearanceCard, ClearanceProgress } from './clearance-card';
 import { ConsentCard } from './consent-card';
 import { DecisionCard } from './decision-card';
 import { DriverDocuments } from './driver-documents';
 import { DriverForm, driverBody } from './driver-form';
 import { ScreeningCard } from './screening-card';
-import { CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
+import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
   type SafetyPeople, type SafetyPerson } from './types';
 
 type Action = 'edit' | 'withdraw' | 'reopen' | 'owner';
@@ -31,7 +32,9 @@ const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'D
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
   DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
-  SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form' };
+  SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form',
+  CLEARANCE_RECORDED: 'Clearance item recorded', EMPLOYER_RECORDED: 'Previous employer recorded', CLEARED: 'Cleared', DISPATCH_ASSIGNED: 'Assigned to a dispatcher' };
+const employerActions: Record<string, string> = { added: 'added', requested: 'asked', answered: 'answered', 'good-faith': 'good-faith effort recorded', updated: 'dates changed', removed: 'removed' };
 const results: Record<string, string> = { PASS: 'passed', CONCERN: 'concern' };
 const who = (person: SafetyPerson | null) => person ? `${person.name}${person.active ? '' : ' (inactive)'}` : null;
 function eventMeta(row: DriverEventRow) {
@@ -40,7 +43,9 @@ function eventMeta(row: DriverEventRow) {
   const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED', 'CONSENT_SIGNED'].includes(row.event) ? 'Driver' : 'Someone');
   const check = row.metadata.check ? ` · ${screeningChecks.find(item => item.key === row.metadata.check)?.label ?? row.metadata.check}: ${row.metadata.result ? results[row.metadata.result] ?? statusLabel(row.metadata.result) : 'cleared'}` : '';
   return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${documentLabels[row.metadata.kind as DocumentKind] ?? consentLabels[row.metadata.kind] ?? row.metadata.kind}` : ''}
-    {check}{row.metadata.replaced ? ' · replaced the earlier one' : ''}{row.metadata.authorization === 'PAPER' ? ' · paper authorization on file' : ''}{row.metadata.conditional ? ' · with conditions' : ''}{row.metadata.concerns ? ` · ${row.metadata.concerns} ${row.metadata.concerns === 1 ? 'concern' : 'concerns'}` : ''}</>;
+    {check}{row.metadata.replaced ? ' · replaced the earlier one' : ''}{row.metadata.authorization === 'PAPER' ? ' · paper authorization on file' : ''}{row.metadata.conditional ? ' · with conditions' : ''}{row.metadata.concerns ? ` · ${row.metadata.concerns} ${row.metadata.concerns === 1 ? 'concern' : 'concerns'}` : ''}
+    {row.metadata.item ? ` · ${CLEARANCE_ITEMS.find(item => item.key === row.metadata.item)?.label ?? row.metadata.item}: ${row.metadata.status ? statusLabel(row.metadata.status).toLowerCase() : 'not started'}` : ''}
+    {row.metadata.action ? ` · ${employerActions[row.metadata.action] ?? row.metadata.action}` : ''}{row.event === 'DISPATCH_ASSIGNED' && row.metadata.first === false ? ' · changed' : ''}</>;
 }
 
 /**
@@ -57,6 +62,10 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
   const [error, setError] = useState('');
   const name = `${driver.firstName} ${driver.lastName}`.trim(), badge = driverBadge(driver.status), closed = CLOSED.includes(driver.status);
   const canEdit = !closed && (screener || owns), owner = driver.owners.find(row => row.endedAt === null) ?? null;
+  // Clearance: the owner, the Safety manager and administrators, while the driver is approved (the API decides).
+  const clearing = driver.status === 'APPROVED' || driver.status === 'CLEARED', canClear = driver.status === 'APPROVED' && (decider || owns);
+  const conditions = clearing ? driver.screening?.reviews.find(row => row.action === 'APPROVED')?.conditions : null;
+  const assignment = driver.assignments?.find(row => row.endedAt === null) ?? null;
   function start(next: Action) { setAction(next); setError(''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -93,8 +102,11 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     {screener && driver.status === 'APPROVED' && !owner && people.staff.length > 0 && <Alert tone="info" title="Assign a safety staff owner"
       action={<Button size="sm" variant="outline" onClick={() => start('owner')}>Assign owner</Button>}>
       <p>The owner looks after this driver from now on, starting with the clearance checklist.</p></Alert>}
+    {conditions && <Alert tone="info" title="Condition from the approval"><p className="whitespace-pre-wrap">{conditions}</p></Alert>}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">
+        {/* While the driver is being cleared (and after), clearance is the work in hand, so it comes first. */}
+        {driver.clearance && (clearing || driver.clearance.items.length > 0 || driver.clearance.employers.length > 0) && <ClearanceCard driver={driver} canWork={canClear} />}
         <Card>
           <CardHeader title="Details" />
           <CardBody><DescriptionList items={[
@@ -117,7 +129,15 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
             tone: row.event === 'WITHDRAWN' ? 'neutral' : row.event === 'CREATED' ? 'info' : undefined }))} /> : <EmptyState compact title="Nothing yet" />}</CardBody>
         </Card>
       </div>
-      <Card className="xl:sticky xl:top-20">
+      <div className="space-y-6 xl:sticky xl:top-20">
+      {driver.clearance && clearing && <ClearanceProgress driver={driver} canWork={canClear} />}
+      {driver.status === 'CLEARED' && driver.assignments && <Card>
+        <CardHeader title="Dispatch" />
+        <CardBody>{assignment ? <DescriptionList layout="rows" items={[{ label: 'MC', value: assignment.mc }, { label: 'Dispatcher', value: `${assignment.dispatcher}${assignment.team ? ` · ${assignment.team}` : ''}` },
+          { label: 'Truck', value: assignment.truck, emptyLabel: 'No truck yet' }, { label: 'Since', value: <LocalTime iso={assignment.startedAt} format="date" /> }]} />
+          : <p className="text-sm text-muted-foreground">Waiting for Dispatch to assign an MC and a dispatcher.</p>}</CardBody>
+      </Card>}
+      <Card>
         <CardHeader title="Safety people" />
         <CardBody className="space-y-5">
           <DescriptionList layout="rows" items={[{ label: 'Safety lead', value: who(driver.safetyLead), emptyLabel: 'Not set' },
@@ -134,6 +154,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
           </div>}
         </CardBody>
       </Card>
+      </div>
     </div>
     {action && <Dialog open onClose={() => setAction(null)} busy={pending} title={titles[action]} tone={action === 'withdraw' ? 'danger' : undefined}
       description={action === 'withdraw' ? 'The record is closed and kept. You can reopen it later.' : action === 'reopen' ? 'They start again as a lead.' : action === 'owner' ? 'The safety staff member who looks after this driver from now on.' : undefined}

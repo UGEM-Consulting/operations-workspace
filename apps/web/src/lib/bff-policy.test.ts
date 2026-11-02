@@ -31,3 +31,18 @@ describe('driver screening through the BFF', () => {
     assert.equal(bodyLimit(`safety/drivers/${ID}/decision`), 16384);
   });
 });
+
+describe('driver clearance and dispatch assignment through the BFF', () => {
+  it('allows the clearance mutations and the assignment, and nothing beside them', () => {
+    for (const path of [`safety/drivers/${ID}/clearance/DRUG_TEST`, `safety/drivers/${ID}/employers`, `safety/drivers/${ID}/employers/${ID}`, `safety/drivers/${ID}/employers/${ID}/remove`,
+      `safety/drivers/${ID}/clear`, `dispatch/drivers/${ID}/assign`, `team/drivers/${ID}/assign`])
+      assert.equal(allowedEndpoint('POST', path), true, path);
+    assert.equal(allowedEndpoint('POST', `safety/drivers/${ID}/clearance/drug_test`), false);
+    assert.equal(allowedEndpoint('POST', `safety/drivers/${ID}/employers/${ID}/delete`), false);
+    assert.equal(allowedEndpoint('POST', `safety/drivers/${ID}/clear/undo`), false);
+    assert.equal(allowedEndpoint('POST', `dispatch/drivers/${ID}/unassign`), false);
+    // Lists and dialog options are read by server pages, never through the BFF.
+    assert.equal(allowedEndpoint('GET', 'dispatch/drivers'), false);
+    assert.equal(bodyLimit(`dispatch/drivers/${ID}/assign`), 16384);
+  });
+});

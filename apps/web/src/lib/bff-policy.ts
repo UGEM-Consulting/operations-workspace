@@ -40,6 +40,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
     (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave|contacts|reassign)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
+    // Cleared drivers: a dispatcher manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
+    (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||
     // Promotions: a team lead's request or cancellation, and a manager's decision.
     (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path))) ||
     // Safety drivers: add and edit a driver, withdraw or reopen them, assign their safety staff owner.
@@ -49,6 +51,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && match(`safety/drivers/${ID}/documents/${ID}/verify`, path)) ||
     // Screening (checks, the MVR, corrections, the hand-off) and the Safety manager's decision.
     (method === 'POST' && match(`safety/drivers/${ID}/(checks/[A-Z_]+|mvr|corrections|send-for-decision|decision)`, path)) ||
+    // Clearance of an approved driver: checklist items, previous employers and Cleared.
+    (method === 'POST' && match(`safety/drivers/${ID}/(clearance/[A-Z_]+|employers|employers/${ID}|employers/${ID}/remove|clear)`, path)) ||
     // Driver consent forms: the Safety manager publishes them; a driver opens and signs them in their application.
     (method === 'POST' && (path === 'safety/consents' || match(`driver/consents/${ID}/(view|sign)`, path))) ||
     ((method === 'GET' || method === 'PATCH') && path === 'driver/application') || (method === 'PATCH' && match(`safety/drivers/${ID}`, path)) ||

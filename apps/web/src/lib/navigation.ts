@@ -40,6 +40,7 @@ export const TEAM_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search:
 export const MEMBER_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
 export const DRIVER_DEFAULTS: Record<string, string> = { status: 'OPEN', search: '' };
 export const PROMOTION_DEFAULTS: Record<string, string> = { status: 'PENDING', search: '' };
+export const DISPATCH_DRIVER_DEFAULTS: Record<string, string> = { status: 'READY', search: '' };
 export function queueHref(path: string, filters: Record<string, string>, changes: Record<string, string>) {
   return `${path}?${new URLSearchParams({ ...filters, page: '1', ...changes })}`;
 }

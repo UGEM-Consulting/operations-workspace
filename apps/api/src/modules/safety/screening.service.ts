@@ -19,12 +19,13 @@ import { Decision, DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendFo
 const DECISION_RULES: Record<Decision, { from: DriverStatus[]; to: DriverStatus; action: DriverReviewAction; event: DriverEventType }> = {
  APPROVE: { from: ['AWAITING_DECISION', 'PRE_ADVERSE'], to: 'APPROVED', action: 'APPROVED', event: 'APPROVED' },
  MORE_INFO: { from: ['AWAITING_DECISION', 'PRE_ADVERSE'], to: 'SCREENING', action: 'MORE_INFO', event: 'MORE_INFO_REQUESTED' },
- PRE_ADVERSE: { from: ['AWAITING_DECISION'], to: 'PRE_ADVERSE', action: 'PRE_ADVERSE', event: 'PRE_ADVERSE_RECORDED' },
+ // From APPROVED when clearance turns something up (a failed drug test, Clearinghouse violations); never once Cleared.
+ PRE_ADVERSE: { from: ['AWAITING_DECISION', 'APPROVED'], to: 'PRE_ADVERSE', action: 'PRE_ADVERSE', event: 'PRE_ADVERSE_RECORDED' },
  REJECT: { from: ['PRE_ADVERSE'], to: 'REJECTED', action: 'REJECTED', event: 'REJECTED' },
 };
 const WRONG_STAGE: Record<Decision, string> = {
  APPROVE: 'Only a driver waiting for a decision can be approved.', MORE_INFO: 'Only a driver waiting for a decision can be sent back to screening.',
- PRE_ADVERSE: 'Only a driver waiting for a decision can get a pre-adverse notice.', REJECT: 'Record the pre-adverse notice first; the rejection is final only after the waiting period.',
+ PRE_ADVERSE: 'Only a driver waiting for a decision or in clearance can get a pre-adverse notice.', REJECT: 'Record the pre-adverse notice first; the rejection is final only after the waiting period.',
 };
 const NO_AUTHORIZATION = { message: 'The driver hasn’t signed the background check authorization. Ask them to sign it, or confirm that a signed paper authorization is on file.', missing: ['authorization'] };
 // How far back a notice date may be entered: a notice is recorded when it is sent, not weeks later.
@@ -156,8 +157,10 @@ export class ScreeningService {
    if (dto.decision === 'PRE_ADVERSE') {
     // The notice follows the decision to send it, so it can't be dated before the driver reached the Safety manager; a
     // backdated notice would end the driver's waiting period before it began.
-    const sent = await reviews.findOne({ where: { driverId: id, action: 'SENT_FOR_DECISION' }, order: { createdAt: 'DESC' } });
-    if (sent && dto.noticeSentOn! < usDay('earliest', sent.createdAt)) throw new BadRequestException('The notice can’t be dated before the driver was sent for a decision.');
+    // For an approved driver the same goes for the approval.
+    const approved = driver.status === 'APPROVED';
+    const sent = await reviews.findOne({ where: { driverId: id, action: approved ? 'APPROVED' : 'SENT_FOR_DECISION' }, order: { createdAt: 'DESC' } });
+    if (sent && dto.noticeSentOn! < usDay('earliest', sent.createdAt)) throw new BadRequestException(approved ? 'The notice can’t be dated before the driver was approved.' : 'The notice can’t be dated before the driver was sent for a decision.');
    }
    if (dto.decision === 'REJECT') {
     const preAdverse = await reviews.findOne({ where: { driverId: id, action: 'PRE_ADVERSE' }, order: { createdAt: 'DESC' } });
@@ -176,16 +179,17 @@ export class ScreeningService {
  }
 
  /**
-  * Drivers waiting for the signed-in person, for the sidebar: for the Safety manager and administrators, decisions and
-  * pre-adverse notices whose waiting period is over (the final notice is due); for a Safety lead, the drivers in screening
-  * they lead. Other roles get null (no count).
+  * Drivers waiting for the signed-in person, for the sidebar: for the Safety manager and administrators, decisions,
+  * pre-adverse notices whose waiting period is over (the final notice is due) and approved drivers with a failed clearance
+  * result; for a Safety lead, the drivers in screening they lead. Other roles get null (no count).
   */
  async waitingCount(user: User): Promise<number | null> {
   if (DECIDERS.includes(user.role)) {
    const rows: { status: DriverStatus; notice: string | null }[] = await this.db.query(`SELECT d.status, (SELECT to_char(r."noticeSentOn", 'YYYY-MM-DD') FROM driver_reviews r
-    WHERE r."driverId" = d.id AND r.action = 'PRE_ADVERSE' ORDER BY r."createdAt" DESC LIMIT 1) AS notice FROM drivers d WHERE d.status IN ('AWAITING_DECISION','PRE_ADVERSE')`);
+    WHERE r."driverId" = d.id AND r.action = 'PRE_ADVERSE' ORDER BY r."createdAt" DESC LIMIT 1) AS notice FROM drivers d WHERE d.status IN ('AWAITING_DECISION','PRE_ADVERSE')
+     OR (d.status = 'APPROVED' AND EXISTS(SELECT 1 FROM driver_clearance_items c WHERE c."driverId" = d.id AND c.status = 'BLOCKED' AND c.result IS NOT NULL))`);
    const today = usDay('earliest');
-   return rows.filter(row => row.status === 'AWAITING_DECISION' || (row.notice !== null && earliestFinalRejection(row.notice) <= today)).length;
+   return rows.filter(row => row.status !== 'PRE_ADVERSE' || (row.notice !== null && earliestFinalRejection(row.notice) <= today)).length;
   }
   if (user.role !== Role.SAFETY_LEAD) return null;
   const [row] = await this.db.query(`SELECT count(*) AS n FROM drivers WHERE status = 'SCREENING' AND "safetyLeadId" = $1`, [user.id]);
