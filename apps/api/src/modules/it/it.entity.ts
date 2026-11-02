@@ -37,6 +37,8 @@ export class ItOnboardingRequest {
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @UpdateDateColumn({type:'timestamptz'}) updatedAt!:Date;
  @Column('timestamptz',{nullable:true}) completedAt!:Date|null;
+ // Set when the dispatcher left before setup finished: the request leaves the queue and their removal takes over.
+ @Column('timestamptz',{nullable:true}) cancelledAt!:Date|null;
 }
 @Entity('it_onboarding_tasks')
 export class ItOnboardingTask {
@@ -61,7 +63,9 @@ export class ItOnboardingActivity {
 export class PortalNotification {
  @PrimaryGeneratedColumn('uuid') id!:string;
  @Column('uuid') recipientId!:string;
- @Column('uuid') requestId!:string;
+ // A notice names a setup request (IT_ONBOARDING_COMPLETED) or a removal (IT_REMOVAL_COMPLETED), never both.
+ @Column('uuid',{nullable:true}) requestId!:string|null;
+ @Column('uuid',{nullable:true}) removalId!:string|null;
  @Column('varchar') kind!:string;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) readAt!:Date|null;
@@ -78,8 +82,70 @@ export function itStatus(request: Pick<ItOnboardingRequest,'completedAt'>, tasks
  if(request.completedAt)return 'COMPLETED';
  return PROGRESS_RULES.find(rule=>tasks.some(task=>rule.anyTask.includes(task.status)))?.status??'PENDING';
 }
-/** SQL for itStatus on the request alias. The statuses are the constants above, never input. */
-export function itStatusSql(alias:string){
+/** SQL for itStatus on the request alias (a removal's tasks with tasks='it_removal_tasks'). The statuses are the constants above, never input. */
+export function itStatusSql(alias:string,tasks:'it_onboarding_tasks'|'it_removal_tasks'='it_onboarding_tasks'){
  return `CASE WHEN ${alias}."completedAt" IS NOT NULL THEN 'COMPLETED' ${PROGRESS_RULES.map(rule=>
-  `WHEN EXISTS (SELECT 1 FROM it_onboarding_tasks t WHERE t."requestId"=${alias}.id AND t.status IN (${rule.anyTask.map(status=>`'${status}'`).join(',')})) THEN '${rule.status}'`).join(' ')} ELSE 'PENDING' END`;
+  `WHEN EXISTS (SELECT 1 FROM ${tasks} t WHERE t."requestId"=${alias}.id AND t.status IN (${rule.anyTask.map(status=>`'${status}'`).join(',')})) THEN '${rule.status}'`).join(' ')} ELSE 'PENDING' END`;
+}
+
+// Removal: the reverse of setup, opened when a dispatcher who had IT setup is marked as left. Same task rules as setup.
+export const REMOVAL_CHECKLIST: readonly {key:string;label:string;description:string;optional?:boolean}[] = [
+ {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Suspend the account and sign it out everywhere.'},
+ {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Remove them from the Dispatch group.'},
+ {key:'RINGCENTRAL',label:'RingCentral',description:'Remove the user, including SMS and call recording. Record what happens to the number.'},
+ {key:'BUSINESS_SOFTWARE',label:'Business software',description:'Remove their access to every business app they had. List the apps in notes; never store credentials.'},
+ {key:'SHARED_PASSWORDS',label:'Shared passwords',description:'Change any shared password they knew, such as load board or carrier portal logins.'},
+ {key:'EQUIPMENT',label:'Equipment',description:'Record the laptop and headset as returned, or Not needed when they used their own.',optional:true},
+];
+export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&REMOVAL_CHECKLIST.some(item=>item.key===task.key&&item.optional));}
+export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
+export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
+/** What IT removes, copied from the setup request and the dispatcher record when they left. */
+export interface RemovalProfile {displayName:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;}
+@Entity('it_removal_requests')
+export class ItRemovalRequest {
+ @PrimaryGeneratedColumn('uuid') id!:string;
+ @Column('uuid') memberId!:string;
+ @Column('uuid') setupRequestId!:string;
+ // Who gets the portal notice and, when chosen, new email: whoever marked them as left, or who took over from them.
+ @Column('uuid') managerId!:string;
+ // Who marked them as left; never changes.
+ @Column('uuid') createdBy!:string;
+ @Column('jsonb') profile!:RemovalProfile;
+ @Column('varchar') emailAfter!:'FORWARD'|'SUSPEND';
+ @Column('uuid',{nullable:true}) forwardTo!:string|null;
+ @Column('date') dueOn!:string;
+ @Column('varchar',{nullable:true}) numberOutcome!:NumberOutcome|null;
+ @Column('integer',{default:0}) version!:number;
+ @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
+ @UpdateDateColumn({type:'timestamptz'}) updatedAt!:Date;
+ @Column('timestamptz',{nullable:true}) completedAt!:Date|null;
+ // A manager asked to remove access before the last day: due today, tasks can be completed at once.
+ @Column('timestamptz',{nullable:true}) removeNowAt!:Date|null;
+ @Column('text',{nullable:true}) removeNowReason!:string|null;
+ // When IT got the alert that the removal is due; empty while it is scheduled.
+ @Column('timestamptz',{nullable:true}) dueAlertedAt!:Date|null;
+ // The notice was cancelled before IT started. Kept for the history; out of every list.
+ @Column('timestamptz',{nullable:true}) cancelledAt!:Date|null;
+}
+/** Scheduled until the last day has begun (the Eastern date reaches it) or access must go now: IT plans, but can't mark tasks completed. */
+export function removalScheduled(removal:Pick<ItRemovalRequest,'dueOn'|'removeNowAt'|'completedAt'>,today:string){return !removal.completedAt&&!removal.removeNowAt&&removal.dueOn>today;}
+@Entity('it_removal_tasks')
+export class ItRemovalTask {
+ @PrimaryGeneratedColumn('uuid') id!:string;
+ @Column('uuid') requestId!:string;
+ @Column('varchar') key!:string;
+ @Column('varchar') status!:TaskStatus;
+ @Column('text',{default:''}) notes!:string;
+ @Column('uuid',{nullable:true}) updatedBy!:string|null;
+ @UpdateDateColumn({type:'timestamptz'}) updatedAt!:Date;
+}
+@Entity('it_removal_activity')
+export class ItRemovalActivity {
+ @PrimaryGeneratedColumn('uuid') id!:string;
+ @Column('uuid') requestId!:string;
+ @Column('uuid') actorId!:string;
+ @Column('varchar') event!:string;
+ @Column('jsonb',{default:{}}) metadata!:Record<string,string|boolean|null>;
+ @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
 }

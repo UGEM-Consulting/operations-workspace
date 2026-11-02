@@ -1,12 +1,14 @@
 import { digest, generateVerificationCode } from './verification-code';
 import { supportedDispatcher } from '../dispatch/create-member';
+import { responsibleManager } from './hand-over';
 export { digest } from './verification-code';
 import { EmailService } from '../email/email.service';
 import { requiredApplicantFields } from './application-requirements';
+import { applicantEmploymentOptions, settleApplicantEmployment } from './applicant-employment';
 import { activeAttempts, clientBucket, countAttempt, onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
 import { randomBytes } from 'node:crypto';
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { webOrigins } from '../../config/environment';
 import { Request } from 'express';
@@ -56,14 +58,16 @@ export class OnboardingService {
   if (support && !input.supportsMemberId) throw new BadRequestException('Choose the dispatcher this support will assist.');
   if (!support && input.supportsMemberId) throw new BadRequestException('Only a support invitation names a dispatcher.');
   if (support && (input.mcName || input.teamLead || input.jobTitle)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
+  if (input.managerId && input.managerId !== user.id && user.role !== Role.SYSTEM_ADMIN) throw new ForbiddenException('Only administrators create invitations for another manager.');
   await this.limit('create:'+user.id,30);
   const token = randomBytes(32).toString('hex');
   const invitation = await this.db.transaction(async em => {
    if (support) await supportedDispatcher(em, input.supportsMemberId!);
+   const manager = input.managerId ? (await responsibleManager(em, input.managerId)).id : user.id;
    const inv = await em.getRepository(Invitation).save({ email: null, expectedEmail: input.email ?? null, mcName: input.mcName ?? null, teamLead: input.teamLead ?? null, jobTitle: input.jobTitle ?? null,
     position: support ? 'SUPPORT' : 'DISPATCHER', supportsMemberId: support ? input.supportsMemberId! : null,
-    telegramRequired: input.telegramRequired, managerId: user.id, tokenHash: digest(token), expiresAt: new Date(Date.now()+input.expirationDays*86400000) });
-   await em.getRepository(DispatcherApplication).save({ invitationId: inv.id, assignedManagerId: user.id, status: 'INVITED', fields: support ? {} : {mcName:input.mcName ?? '',teamLead:input.teamLead ?? '',jobTitle:input.jobTitle ?? 'Dispatcher'}, applicantAccessUntil: inv.expiresAt });
+    telegramRequired: input.telegramRequired, managerId: manager, tokenHash: digest(token), expiresAt: new Date(Date.now()+input.expirationDays*86400000) });
+   await em.getRepository(DispatcherApplication).save({ invitationId: inv.id, assignedManagerId: manager, status: 'INVITED', fields: support ? {} : {mcName:input.mcName ?? '',teamLead:input.teamLead ?? '',jobTitle:input.jobTitle ?? 'Dispatcher'}, applicantAccessUntil: inv.expiresAt });
    await this.activity(em,inv.id,'INVITATION_CREATED',user.id);
    return inv;
   });
@@ -188,7 +192,9 @@ export class OnboardingService {
   const documents: Pick<ApplicantDocuments,'required'|'missing'> = known ?? await documentStatus(em,app.id,this.storage.enabled);
   // Existing correction rounds must allow completion of newly required fields too. Base this
   // on the submitted revision so saved values remain editable until the applicant resubmits.
-  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...requiredApplicantFields(lastSubmission?.fields ?? {},position),...documents.missing])] : [];
+  // A team belongs to its MC, so correcting the MC means choosing the team again.
+  const teamWithMc: RequestableItem[] = correction?.requestedFields.includes('mcName') && position !== 'SUPPORT' ? ['teamLead'] : [];
+  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...teamWithMc,...requiredApplicantFields(lastSubmission?.fields ?? {},position),...documents.missing])] : [];
   const editableFields: RequestableItem[] = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS,...(documents.required ? DOCUMENT_ITEMS : [])] : [];
   return { correction, effectiveCorrections, editableFields, documents };
  }
@@ -199,7 +205,9 @@ export class OnboardingService {
   return { application:{id:app.id,invitationId:app.invitationId,status:app.status,fields:app.fields,version:app.version,updatedAt:app.updatedAt,submittedAt:app.submittedAt},
    invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired,position:inv.position},
    correction:correction ? {id:correction.id,reason:correction.reason,requestedFields:effectiveCorrections,createdAt:correction.createdAt} : null,
-   editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents };
+   editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents,
+   // The choices for the employment step; a support has none, and neither does a closed application.
+   employmentOptions:editableFields.length>0&&inv.position!=='SUPPORT' ? await applicantEmploymentOptions(em) : null };
  }
  async current(req: Request) {
   const {application,invitation} = await this.applicant(this.db.manager,req);
@@ -230,6 +238,7 @@ export class OnboardingService {
     if (!view.editableFields.includes(key) && input[key] !== (app.fields[key] ?? '')) throw new BadRequestException('Only requested fields may be corrected.');
     if (view.editableFields.includes(key)) fields[key] = input[key];
    }
+   if (inv.position !== 'SUPPORT') await settleApplicantEmployment(em,app.fields,fields);
    if (submit) {
     const missing = requiredApplicantFields(fields,inv.position);
     if (missing.length) throw new BadRequestException(`Complete required applicant fields: ${missing.join(', ')}.`);

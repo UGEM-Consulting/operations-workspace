@@ -2,9 +2,16 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 const WIDTH = 600, HEIGHT = 180;
+const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
 // Installed handwriting-style fonts; no web font is downloaded. The image is what is signed, not the font.
 const SCRIPT_FONT = '"Segoe Script", "Brush Script MT", "Lucida Handwriting", "Snell Roundhand", "Apple Chancery", cursive';
 export type SignatureMethod = 'DRAWN' | 'TYPED';
+/** The name in a script font, shrunk to fit the box. */
+function paintName(ctx: CanvasRenderingContext2D, name: string, color: string) {
+ let fontSize = 72;
+ do { ctx.font = `${fontSize}px ${SCRIPT_FONT}`; fontSize -= 4; } while (ctx.measureText(name).width > WIDTH - 48 && fontSize > 20);
+ ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.fillText(name, 24, HEIGHT / 2);
+}
 /**
  * Sign with mouse, pen or finger, or (with allowTyped) adopt the typed name rendered in a script font onto the same
  * canvas. Either way it reports a transparent PNG data URL and how it was made, or null when cleared.
@@ -21,12 +28,15 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
   context()?.clearRect(0, 0, WIDTH, HEIGHT); adopted.current = ''; setFilled(false);
   onChange(null, mode); setStatus(message);
  }
- // An adopted signature must match the name being signed; a changed name needs a new adoption.
+ // An adopted signature must match the name being signed; a changed name needs a new adoption. Until one is adopted the
+ // box previews the name in grey: nothing counts as signed, and only Adopt reports an image.
  useEffect(() => {
-  if (mode !== 'TYPED' || !adopted.current || adopted.current === typedName.trim()) return;
-  canvas.current?.getContext('2d')?.clearRect(0, 0, WIDTH, HEIGHT); adopted.current = '';
-  setFilled(false); onChange(null, 'TYPED'); setStatus('Your typed name changed. Adopt the typed signature again.');
- }, [typedName, mode, onChange]);
+  const ctx = canvas.current?.getContext('2d'), name = typedName.trim();
+  if (mode !== 'TYPED' || !ctx || (adopted.current && adopted.current === name)) return;
+  if (adopted.current) { adopted.current = ''; setFilled(false); onChange(null, 'TYPED'); setStatus('Your typed name changed. Adopt the typed signature again.'); }
+  ctx.clearRect(0, 0, WIDTH, HEIGHT);
+  if (LATIN_NAME.test(name)) paintName(ctx, name, '#6b7280');
+ }, [typedName, mode, filled, onChange]);
  function point(event: React.PointerEvent<HTMLCanvasElement>) {
   const box = event.currentTarget.getBoundingClientRect();
   return [(event.clientX - box.left) * WIDTH / box.width, (event.clientY - box.top) * HEIGHT / box.height] as const;
@@ -52,11 +62,9 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
  function adopt() {
   const ctx = context(), name = typedName.trim();
   if (!ctx) return;
-  if (!/^[A-Za-z][A-Za-z .,'-]+$/.test(name)) { setStatus('Type your full legal name in Latin letters first.'); return; }
+  if (!LATIN_NAME.test(name)) { setStatus('Type your full legal name in Latin letters first.'); return; }
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
-  let fontSize = 72;
-  do { ctx.font = `${fontSize}px ${SCRIPT_FONT}`; fontSize -= 4; } while (ctx.measureText(name).width > WIDTH - 48 && fontSize > 20);
-  ctx.fillStyle = '#111827'; ctx.textBaseline = 'middle'; ctx.fillText(name, 24, HEIGHT / 2);
+  paintName(ctx, name, '#111827');
   adopted.current = name; setFilled(true);
   onChange(canvas.current!.toDataURL('image/png'), 'TYPED'); setStatus('Typed signature adopted.');
  }

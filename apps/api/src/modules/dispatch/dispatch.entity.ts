@@ -3,7 +3,7 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -22,6 +22,8 @@ export class DispatchMember {
  @Column('uuid', { nullable: true }) accountUserId!: string | null;
  @Column('timestamptz') joinedAt!: Date;
  @Column('timestamptz', { nullable: true }) leftAt!: Date | null;
+ // Why they left, as given when they were marked as left (staff text; never health or other private details).
+ @Column('text', { nullable: true }) leftReason!: string | null;
  @Column('integer', { default: 1 }) version!: number;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
@@ -109,4 +111,22 @@ export class DispatchEvent {
  @Column('uuid', { nullable: true }) actorId!: string | null;
  @Column('jsonb', { default: {} }) metadata!: Record<string, unknown>;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** A future last day. The dispatcher stays Active until the last day has passed and everyone is reassigned; one open per member. */
+@Entity('member_notices')
+export class MemberNotice {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('date') lastDay!: string;
+ @Column('text') reason!: string;
+ @Column('uuid') recordedBy!: string;
+ // Each change of the last day: from, to, why, who and when.
+ @Column('jsonb', { default: [] }) changes!: { from: string; to: string; reason: string; by: string; at: string }[];
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+ @Column('timestamptz', { nullable: true }) cancelledAt!: Date | null;
+ @Column('uuid', { nullable: true }) cancelledBy!: string | null;
+ @Column('text', { nullable: true }) cancelReason!: string | null;
+ @Column('timestamptz', { nullable: true }) finishedAt!: Date | null;
 }

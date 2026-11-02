@@ -35,10 +35,24 @@ export class ReassignSupportDto {
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the support is changing dispatcher.' }) @MaxLength(500) reason!: string;
 }
+/** Notice for a future last day: a new date, and why it changed. */
+export class ChangeLastDayDto {
+ @IsInt() @Min(1) version!: number;
+ @IsDateString({ strict: true }) lastDay!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why the last day changed.' }) @MaxLength(500) reason!: string;
+}
+/** Cancelling a notice, or removing access before the last day: a reason for the history. */
+export class NoticeActionDto {
+ @IsInt() @Min(1) version!: number;
+ @text() @IsString() @MinLength(1, { message: 'Give a reason.' }) @MaxLength(500) reason!: string;
+}
 export class LeaveMemberDto {
  @IsInt() @Min(1) version!: number;
  @IsDateString({ strict: true }) leftAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher left.' }) @MaxLength(500) reason!: string;
+ // What IT does with their company email: forward new mail to the manager marking them as left for 30 days, or just
+ // suspend it. An older page sends nothing, which suspends.
+ @IsOptional() @IsIn(['FORWARD', 'SUSPEND']) emailAfter?: 'FORWARD' | 'SUSPEND';
 }
 export class UpdateMemberDto {
  @IsInt() @Min(1) version!: number;

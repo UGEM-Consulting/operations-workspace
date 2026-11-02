@@ -2,7 +2,7 @@ import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { ItContactDto, ItQueueDto, TaskUpdateDto } from './it.dto';
+import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } from './it.dto';
 import { ItService } from './it.service';
 import { UpdatesModule } from '../updates/updates.module';
 @Controller('it/onboarding')
@@ -14,6 +14,19 @@ class ItController {
  @Patch(':id/contact') contact(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Body() input:ItContactDto){return this.service.contact(req.currentUser,id,input);}
  @Patch(':id/tasks/:key') task(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Param('key') key:string,@Body() input:TaskUpdateDto){return this.service.task(req.currentUser,id,key,input);}
 }
+@Controller('it/tasks')
+@Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
+class ItTasksController {
+ constructor(private readonly service:ItService){}
+ @Get() list(@Req() req:AuthRequest,@Query() input:ItTasksDto){return this.service.tasks(req.currentUser,input);}
+}
+@Controller('it/removals')
+@Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
+class ItRemovalController {
+ constructor(private readonly service:ItService){}
+ @Get(':id') get(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.getRemoval(req.currentUser,id);}
+ @Patch(':id/tasks/:key') task(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Param('key') key:string,@Body() input:RemovalTaskDto){return this.service.removalTask(req.currentUser,id,key,input);}
+}
 @Controller('notifications')
 @Roles(Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER)
 class NotificationController {
@@ -21,5 +34,5 @@ class NotificationController {
  @Get() list(@Req() req:AuthRequest){return this.service.notifications(req.currentUser);}
  @Post(':id/read') read(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.readNotification(req.currentUser,id);}
 }
-@Module({imports:[UpdatesModule],controllers:[ItController,NotificationController],providers:[ItService],exports:[ItService]})
+@Module({imports:[UpdatesModule],controllers:[ItController,ItTasksController,ItRemovalController,NotificationController],providers:[ItService],exports:[ItService]})
 export class ItModule {}

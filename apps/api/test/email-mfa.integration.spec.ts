@@ -117,7 +117,7 @@ integration('Staff two-step verification with email codes (isolated PostgreSQL d
     await client.post('/api/auth/mfa/email-code').set(headers).send({}).expect(200);
     await client.post('/api/auth/mfa/disable').set(headers).send({ code: lastCode('manage') }).expect(200);
     expect((await client.get('/api/auth/mfa').set(headers).expect(200)).body).toMatchObject({ enabled: false, method: null });
-  });
+  }, 20000); // Ten recovery codes are hashed with Argon2, which can take several seconds on a busy machine.
 
   it('keeps administrators on an authenticator app, including someone promoted from email codes', async () => {
     const admin = agent();

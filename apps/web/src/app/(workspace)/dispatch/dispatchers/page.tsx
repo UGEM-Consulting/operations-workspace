@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { memberListSchema, readResponse } from '@/lib/api-schemas';
-import { MEMBER_DEFAULTS } from '@/lib/navigation';
+import { MEMBER_DEFAULTS, middayIso } from '@/lib/navigation';
+import { Alert } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
 import { Person } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/feedback';
@@ -10,7 +11,7 @@ import { LocalTime } from '@/components/ui/local-time';
 import { Table } from '@/components/ui/table';
 import { Badge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
-import { fullName, memberBadge, type MemberList } from '@/features/dispatch/types';
+import { fullName, memberBadge, toReassign, type MemberList } from '@/features/dispatch/types';
 export const metadata = { title: 'Dispatchers' };
 /** Dispatch › Dispatchers: every dispatch member record (no login), with where they work now. */
 export default async function DispatchersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -22,23 +23,34 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
   const data = await readResponse<MemberList>(response, 'dispatchers', memberListSchema);
   const search = filters.search.toLowerCase();
   const searched = data.items.filter(member => `${fullName(member)} ${member.mc ?? 'independent'} ${member.team ?? ''} ${member.jobTitle ?? ''}`.toLowerCase().includes(search));
-  const visible = searched.filter(member => filters.status === 'ALL' || member.status === filters.status);
+  // Leaving: on notice, the soonest last day first. They also still count as Active (or Onboarding) until they've left.
+  const leavingNow = filters.status === 'LEAVING', leaving = searched.filter(member => member.lastDay).sort((a, b) => a.lastDay!.localeCompare(b.lastDay!));
+  const visible = leavingNow ? leaving : searched.filter(member => filters.status === 'ALL' || member.status === filters.status);
+  const passed = data.items.filter(member => member.lastDayPassed);
   const filtered = filters.search !== '' || filters.status !== MEMBER_DEFAULTS.status;
   return <div className="space-y-6">
     <PageHeader title="Dispatchers" description="Approved dispatchers and where they work. Onboarding until IT finishes their setup, then Active. Records only: dispatchers don’t sign in." />
+    {passed.map(member => <Alert key={member.id} tone="danger" title={`${fullName(member)}’s last day has passed`}><p>{toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0)} still assigned, so the record stays Leaving until they’re reassigned. IT’s removal of their access doesn’t wait for this.</p></Alert>)}
     <Card>
       <FilterBar path="/dispatch/dispatchers" filters={filters} defaults={MEMBER_DEFAULTS} searchLabel="Search name, MC, team or job title" statuses={[
         { key: 'ONBOARDING', label: 'Onboarding', count: searched.filter(member => member.status === 'ONBOARDING').length },
         { key: 'ACTIVE', label: 'Active', count: searched.filter(member => member.status === 'ACTIVE').length },
+        { key: 'LEAVING', label: 'Leaving', count: leaving.length },
         { key: 'LEFT', label: 'Left', count: searched.filter(member => member.status === 'LEFT').length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption="Dispatchers" className="border-t border-border" rows={visible} rowKey={member => member.id} columns={[
         { key: 'name', label: 'Dispatcher', primary: true, cell: member => <Link href={`/dispatch/dispatchers/${member.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={fullName(member)} secondary={member.lead ? 'Team lead' : member.position === 'SUPPORT' ? `Support for ${member.dispatcher ?? 'a dispatcher'}` : 'Dispatcher'} /></Link> },
         { key: 'mc', label: 'MC', cell: member => member.mc ?? <span className="text-muted-foreground">Independent</span> },
-        { key: 'team', label: 'Team', hideBelow: 'md', cell: member => member.team ?? <span className="text-muted-foreground">No team</span> },
-        { key: 'title', label: 'Job title', hideBelow: 'lg', muted: true, cell: member => member.jobTitle ?? 'Not set' },
-        { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'xl', cell: member => <LocalTime iso={member.since} format="date" /> },
-        { key: 'status', label: 'Status', cell: member => <Badge {...memberBadge(member.status)} /> },
+        ...(leavingNow ? [
+          { key: 'lastDay', label: 'Last day', nowrap: true, cell: (member: MemberList['items'][number]) => <LocalTime iso={middayIso(member.lastDay!)} format="date" /> },
+          { key: 'reassign', label: 'To reassign', cell: (member: MemberList['items'][number]) => toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0) },
+          { key: 'it', label: 'IT removal', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.itRemoval ? <Badge label={member.itRemoval === 'SCHEDULED' ? 'Scheduled' : member.itRemoval === 'COMPLETED' ? 'Completed' : 'In progress'} tone={member.itRemoval === 'COMPLETED' ? 'success' : 'info'} /> : <span className="text-muted-foreground">No accounts</span> },
+        ] : [
+          { key: 'team', label: 'Team', hideBelow: 'md' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">No team</span> },
+          { key: 'title', label: 'Job title', hideBelow: 'lg' as const, muted: true, cell: (member: MemberList['items'][number]) => member.jobTitle ?? 'Not set' },
+          { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'xl' as const, cell: (member: MemberList['items'][number]) => <LocalTime iso={member.since} format="date" /> },
+        ]),
+        { key: 'status', label: 'Status', cell: member => member.lastDayPassed ? <Badge label="Last day passed" tone="danger" /> : member.lastDay ? <Badge label="Leaving" tone="warning" /> : <Badge {...memberBadge(member.status)} /> },
       ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />
         : <EmptyState compact title="No dispatchers yet" description="Approving an application adds the dispatcher here." />}
         footer={<p className="text-[13px] text-muted-foreground">{visible.length} of {data.items.length} dispatcher records.</p>} />

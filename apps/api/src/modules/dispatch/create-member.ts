@@ -49,6 +49,12 @@ export function lockTeam(em: EntityManager, id: string) {
  return em.getRepository(Team).findOne({ where: { id }, lock: { mode: 'pessimistic_read' } });
 }
 
+/** On notice: nobody new is placed with them and they take on no new role. */
+export async function onNotice(em: EntityManager, memberId: string) {
+ const [row] = await em.query(`SELECT 1 FROM member_notices WHERE "memberId" = $1 AND "cancelledAt" IS NULL AND "finishedAt" IS NULL`, [memberId]);
+ return !!row;
+}
+
 /**
  * A dispatcher a support can assist: a dispatcher record that hasn't left (still in IT setup is fine). Read FOR SHARE so
  * the dispatcher can't leave (which refuses while supports are linked) until the new link commits.
@@ -56,6 +62,7 @@ export function lockTeam(em: EntityManager, id: string) {
 export async function supportedDispatcher(em: EntityManager, id: string) {
  const dispatcher = await em.getRepository(DispatchMember).findOne({ where: { id }, lock: { mode: 'pessimistic_read' } });
  if (!dispatcher || dispatcher.position !== 'DISPATCHER' || dispatcher.status === 'LEFT') throw new BadRequestException('Choose a current dispatcher for this support.');
+ if (await onNotice(em, id)) throw new BadRequestException('This dispatcher is leaving. Choose another dispatcher for this support.');
  return dispatcher;
 }
 

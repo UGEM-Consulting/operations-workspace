@@ -1,4 +1,6 @@
 'use client';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
@@ -23,6 +25,8 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
 import { ItDetail, ItTask, taskDone, taskOutcomes, TaskOutcome } from './types';
 const RINGCENTRAL=['RINGCENTRAL','SMS','CALL_RECORDING'];
+// Task names in the activity list, written as on the checklist (not the key in sentence case: SMS, not Sms).
+const TASK_NAMES:Record<string,string>={GOOGLE_WORKSPACE:'Google Workspace',DISPATCH_GROUP:'Dispatch group',RINGCENTRAL:'RingCentral',SMS:'SMS',CALL_RECORDING:'Call recording',BUSINESS_SOFTWARE:'Business software',EQUIPMENT:'Equipment'};
 // The account a task creates: recorded first in that task's dialog, before its status can change.
 const ACCOUNTS:Record<string,{label:string;prompt:string;type:'email'|'tel';max:number;placeholder:string;hint?:string}>={
  GOOGLE_WORKSPACE:{label:'Company email',prompt:'company email',type:'email',max:254,placeholder:'name@ugemconsulting.com'},
@@ -35,10 +39,12 @@ const WITHOUT_ACCOUNT:readonly TaskOutcome[]=['PENDING','IN_PROGRESS','BLOCKED']
  */
 export function ItOnboarding({initial}:{initial:ItDetail}){
  const toast=useToast();
+ const router=useRouter();
  const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[taskError,setTaskError]=useState('');
  const [account,setAccount]=useState(''),[verified,setVerified]=useState(false);
- const {request,tasks}=data,profile=request.profile,closed=!!request.completedAt,busy=!!pending;
+ // A setup cancelled because the dispatcher left is read-only too; their removal checklist takes over.
+ const {request,tasks}=data,profile=request.profile,cancelled=!!request.cancelledAt,closed=!!request.completedAt||cancelled,busy=!!pending;
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
  const field=editing?ACCOUNTS[editing.key]:undefined;
@@ -65,6 +71,8 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
    }
    const updated=taskStatus===editing.status&&notes===editing.notes&&accountChanged?null:await mutate<ItDetail>(`it/onboarding/${request.id}/tasks/${editing.key}`,'PATCH',{version,status:taskStatus,notes});
    if(updated)setData(updated);setEditing(null);
+   // Finishing changes the IT tasks count in the sidebar, which comes from the server layout.
+   if(updated?.request.completedAt)router.refresh();
    toast(updated?.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has a new portal notification.'}:{title:accountChanged&&!updated?`${field!.label} saved`:'Checklist task updated'});
   }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
  }
@@ -80,19 +88,20 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const activityTone=(event:ItDetail['activity'][number])=>event.event==='IT_ONBOARDING_COMPLETED'||event.metadata.newStatus==='COMPLETED'?'success' as const:event.metadata.newStatus==='BLOCKED'?'warning' as const:'neutral' as const;
  return <div className="space-y-6">
  <PageCrumb label={name}/>
- <PageHeader title={name} badge={<StatusBadge status={closed?'COMPLETED':request.status}/>}
+ <PageHeader title={name} badge={cancelled?<Badge label="Cancelled" tone="neutral"/>:<StatusBadge status={closed?'COMPLETED':request.status}/>}
   meta={[created&&<>Request created <LocalTime iso={created} format="date"/></>,`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
   action={!closed&&<Button variant="outline" disabled={busy} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
   <div className="min-w-0 space-y-6">
-   {closed?<Alert tone="success" title="Setup complete"><p>Finished <LocalTime iso={request.completedAt}/>. The manager was notified and this checklist is read-only.</p></Alert>
+   {cancelled?<Alert tone="info" title="Setup cancelled"><p>The dispatcher left on <LocalTime iso={request.cancelledAt} format="date"/> before setup finished. Remove anything already created on their removal checklist in <Link href="/it/tasks?view=removal" className="text-primary underline-offset-4 hover:underline">IT tasks</Link>.</p></Alert>
+    :closed?<Alert tone="success" title="Setup complete"><p>Finished <LocalTime iso={request.completedAt}/>. The manager was notified and this checklist is read-only.</p></Alert>
     :blocked.length>0&&<Alert tone="warning" title={blocked.length===1?'1 task is blocked':`${blocked.length} tasks are blocked`}><ul className="space-y-1">{blocked.map(task=><li key={task.key}><span className="font-medium">{task.label}:</span> {task.notes}</li>)}</ul></Alert>}
    <Card>
     <CardHeader title="Setup checklist" description={closed?'Every task is finished.':'Finishing the last task completes setup and lets the manager know.'}
      actions={<Progress className="w-44" label="Progress" value={completed} max={tasks.length}/>}/>
     <div className="mt-3 border-t border-border">{sections.map((section,index)=><Checklist key={section.items[0].key} className={index>0?'border-t border-border':undefined} heading={section.heading} titleAs={section.heading?'h4':'h3'} items={section.items.map(toChecklist)}/>)}</div>
    </Card>
-   <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(event=>({id:event.id,tone:activityTone(event),title:`${statusLabel(event.event)}${event.metadata.key?` · ${statusLabel(String(event.metadata.key))}`:''}`,meta:<LocalTime iso={event.createdAt}/>}))}/></CardBody></Card>
+   <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(event=>({id:event.id,tone:activityTone(event),title:`${statusLabel(event.event)}${event.metadata.key?` · ${TASK_NAMES[String(event.metadata.key)]??statusLabel(String(event.metadata.key))}`:''}`,meta:<LocalTime iso={event.createdAt}/>}))}/></CardBody></Card>
   </div>
   <div className="min-w-0 space-y-6 xl:sticky xl:top-20 xl:-mx-1 xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1">
    <Card><CardHeader title="Profile"/><CardBody className="space-y-4">

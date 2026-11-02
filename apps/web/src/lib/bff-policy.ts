@@ -12,6 +12,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && /^it\/onboarding\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'PATCH' && /^it\/onboarding\/[0-9a-f-]{36}\/(contact|tasks\/[A-Z_]+)$/.test(path)) ||
     (method === 'POST' && /^notifications\/[0-9a-f-]{36}\/read$/.test(path)) ||
+    // IT tasks (setups and removals together) and the removal checklist after a dispatcher left.
+    (method === 'GET' && (path === 'it/tasks' || match(`it/removals/${ID}`, path))) || (method === 'PATCH' && match(`it/removals/${ID}/tasks/[A-Z_]+`, path)) ||
+    // Handing an application to another manager, and a manager's open records before their account changes.
+    (method === 'POST' && match(`onboarding/applications/${ID}/manager`, path)) || (method === 'GET' && match(`users/${ID}/open-records`, path)) ||
     (method === 'POST' && ['applicant/begin','applicant/verify','applicant/submit','applicant/logout','onboarding/invitations'].includes(path)) ||
     (method === 'PATCH' && ['applicant/draft','applicant/updates'].includes(path)) ||
     // Applicant status updates: chosen channels and the Telegram connect link.
@@ -38,7 +42,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Managed lists: add, edit, archive and restore MCs and job titles.
     (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
-    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave|contacts|reassign)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave|last-day|cancel-notice|remove-access|contacts|reassign)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     // Cleared drivers: a dispatcher manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
     (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||

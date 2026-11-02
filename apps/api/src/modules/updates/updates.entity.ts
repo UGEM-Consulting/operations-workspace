@@ -64,7 +64,7 @@ export class StaffTelegramLinkToken {
  @Column('timestamptz', { nullable: true }) consumedAt!: Date | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
-export const NOTIFICATION_KINDS = ['SETUP_COMPLETE', 'REVIEW_WAITING', 'IT_SETUP_WAITING'] as const;
+export const NOTIFICATION_KINDS = ['SETUP_COMPLETE', 'REVIEW_WAITING', 'IT_SETUP_WAITING', 'IT_REMOVAL_WAITING', 'IT_REMOVAL_SCHEDULED', 'IT_REMOVAL_DUE', 'IT_REMOVAL_NOW'] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 /**
  * Outbox for notifications other than applicant decisions: written in the transaction that causes them, sent after it

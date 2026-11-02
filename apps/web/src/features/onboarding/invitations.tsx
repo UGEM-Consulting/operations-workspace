@@ -33,7 +33,8 @@ const EXPIRY=[3,7,14,30];
  * and, from the managed lists, the MC, team and job title to pre-fill (sent as the existing text fields).
  * The raw link is shown once, so leaving before copying it asks first.
  */
-export function Invitations({initial,filters,options=null,dispatchers=null}:{initial:Invitation[];filters:Record<string,string>;options?:EmploymentOptions|null;dispatchers?:DispatcherOption[]|null}) {
+// managers: for an administrator, the other active managers who can be made responsible (designed as InvitationForManagerScreen).
+export function Invitations({initial,filters,options=null,dispatchers=null,managers=null,me=''}:{initial:Invitation[];filters:Record<string,string>;options?:EmploymentOptions|null;dispatchers?:DispatcherOption[]|null;managers?:{id:string;name:string}[]|null;me?:string}) {
  const [rows,setRows]=useState(initial),[server,setServer]=useState(initial);
  // A filter change re-renders the page with a fresh list from the server; take it without an effect.
  if(server!==initial){setServer(initial);setRows(initial);}
@@ -41,7 +42,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null}:{ini
  const [pending,setPending]=useState<'create'|'revoke'|null>(null),[error,setError]=useState('');
  const [url,setUrl]=useState(''),[linkId,setLinkId]=useState(''),[linkOpen,setLinkOpen]=useState(false),[copied,setCopied]=useState(false),[copyMessage,setCopyMessage]=useState('');
  const [revoking,setRevoking]=useState<Invitation|null>(null),[revokeError,setRevokeError]=useState('');
- const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'>('DISPATCHER'),[supportsId,setSupportsId]=useState('');
+ const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'>('DISPATCHER'),[supportsId,setSupportsId]=useState(''),[managerId,setManagerId]=useState('');
  const [optionsOpen,setOptionsOpen]=useState(false),[employment,setEmployment]=useState<Employment>(NO_EMPLOYMENT),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
  useEffect(()=>{if(!url||copied)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[url,copied]);
  // Sidebar, breadcrumb and notification links navigate inside the app, which beforeunload never sees: the shell asks this guard.
@@ -59,8 +60,9 @@ export function Invitations({initial,filters,options=null,dispatchers=null}:{ini
    const support=withOptions&&position==='SUPPORT';
    if(support&&!supportsId){toast({tone:'danger',title:'Choose a dispatcher',description:'Pick the dispatcher this support will assist.'});setPending(null);return;}
    const assignments=support?{position:'SUPPORT',supportsMemberId:supportsId}:withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
-   const result=await mutate<{id:string;url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,expirationDays:expiry});
-   setUrl(result.url);setLinkId(result.id);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setPosition('DISPATCHER');setSupportsId('');setLinkOpen(true);
+   // Only another manager is sent, so an older API (which refuses the field) still creates the administrator's own invitations.
+   const result=await mutate<{id:string;url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,...(withOptions&&managerId?{managerId}:{}),expirationDays:expiry});
+   setUrl(result.url);setLinkId(result.id);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setPosition('DISPATCHER');setSupportsId('');setManagerId('');setLinkOpen(true);
    await refreshRows();
   }catch(error){toast({tone:'danger',title:'Invitation not created',description:errorMessage(error,'Unable to create invitation.')});}finally{setPending(null);}
  }
@@ -97,6 +99,9 @@ export function Invitations({initial,filters,options=null,dispatchers=null}:{ini
   {optionsOpen&&<Dialog open onClose={()=>setOptionsOpen(false)} busy={pending==='create'} title="Create an invitation" description="Every setting is optional. The applicant fills in everything else."
    actions={<Button type="submit" form="invitation-options">{pending==='create'?'Creating…':'Create invitation'}</Button>}>
    <form id="invitation-options" onSubmit={event=>{event.preventDefault();void create(true);}} className="space-y-4">
+    {managers&&managers.length>0&&<Select id="invitation-manager" label="Responsible manager" name="managerId" value={managerId} onChange={event=>setManagerId(event.target.value)} width="md"
+     options={[{value:'',label:`Me (${me||'you'})`},...managers.map(manager=>({value:manager.id,label:manager.name}))]}
+     hint={managerId?`Shown to administrators only. ${managers.find(manager=>manager.id===managerId)?.name} reviews the application and gets the setup notice.`:'Shown to administrators only. The responsible manager reviews the application and gets the setup notice.'}/>}
     <Input label="Applicant’s personal email" optional name="expectedEmail" type="email" value={email} onChange={event=>setEmail(event.target.value)} maxLength={254} placeholder="name@example.com" hint="If you add one, only that person can use the link. Otherwise the first applicant to verify their email claims it." width="full"/>
     {dispatchers&&<Select label="Position" name="position" value={position} onChange={event=>setPosition(event.target.value as 'DISPATCHER'|'SUPPORT')} width="sm"
      options={[{value:'DISPATCHER',label:'Dispatcher'},{value:'SUPPORT',label:'Support (updater)'}]} hint={position==='SUPPORT'?'Supports assist one dispatcher. They skip the employment questions and need no IT setup.':undefined}/>}

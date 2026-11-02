@@ -14,8 +14,13 @@ export function setupCompleteMessage() {
 }
 
 /** Telegram alerts for staff: what is waiting and a link to it. The link opens nothing without signing in. */
-export function staffAlertMessage(kind: 'REVIEW_WAITING' | 'IT_SETUP_WAITING', url: string) {
-  return kind === 'REVIEW_WAITING'
-    ? `An application is waiting for your review in UGEM Workspace.\n\n${url}`
-    : `A new IT setup checklist is waiting in UGEM Workspace.\n\n${url}`;
-}
+const STAFF_ALERTS = {
+  REVIEW_WAITING: 'An application is waiting for your review in UGEM Workspace.',
+  IT_SETUP_WAITING: 'A new IT setup checklist is waiting in UGEM Workspace.',
+  IT_REMOVAL_WAITING: 'A dispatcher has left. Their accounts are waiting to be removed in UGEM Workspace.',
+  IT_REMOVAL_SCHEDULED: 'A dispatcher is leaving. Their accounts are scheduled for removal in UGEM Workspace.',
+  IT_REMOVAL_DUE: 'A dispatcher’s last day is today. Remove their accounts at the end of the day in UGEM Workspace.',
+  IT_REMOVAL_NOW: 'A manager asked to remove a dispatcher’s accounts now in UGEM Workspace.',
+};
+export type StaffAlertKind = keyof typeof STAFF_ALERTS;
+export function staffAlertMessage(kind: StaffAlertKind, url: string) { return `${STAFF_ALERTS[kind]}\n\n${url}`; }

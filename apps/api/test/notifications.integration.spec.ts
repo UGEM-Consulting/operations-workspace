@@ -91,7 +91,7 @@ integration('New-hire and staff notifications (disposable PostgreSQL)', () => {
 
   it('connects a staff member’s Telegram once per link and alerts the assigned manager when an application is submitted', async () => {
     expect((await agents.manager.get('/api/staff/telegram').set(headers).expect(200)).body).toEqual({ available: true, connected: false, username: null, alerts: ['REVIEW_WAITING'] });
-    expect((await agents.it.get('/api/staff/telegram').set(headers).expect(200)).body.alerts).toEqual(['IT_SETUP_WAITING']);
+    expect((await agents.it.get('/api/staff/telegram').set(headers).expect(200)).body.alerts).toEqual(['IT_SETUP_WAITING', 'IT_REMOVAL_WAITING']);
     expect(await connectStaff('manager', 901)).toMatchObject({ connected: true, username: 'fictional_901' });
     expect(messages).toEqual([{ chat_id: '901', text: expect.stringMatching(/^Connected\. You will get UGEM Workspace alerts here/) }]);
     messages.length = 0;

@@ -8,7 +8,10 @@ import { Card, CardHeader } from '@/components/ui/card';
 import { Person } from '@/components/ui/avatar';
 import { StatCard } from '@/components/workspace-ui';
 import { EmptyState } from '@/components/ui/feedback';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { Badge, StatusBadge } from '@/components/ui/status-badge';
+import { LocalTime } from '@/components/ui/local-time';
+import { middayIso } from '@/lib/navigation';
+import { fullName, toReassign, type MemberList } from '@/features/dispatch/types';
 import type { ApplicationList, ReviewSummary } from '@/features/onboarding/types';
 import { type ItQueue, type ItRequest, type Notifications } from '@/features/it/types';
 import { ManagerNotifications } from '@/features/it/notifications';
@@ -69,6 +72,23 @@ export async function ReviewWork({ firstName }: { firstName: string }) {
       {notifications.status === 'fulfilled' ? <ManagerNotifications initial={notifications.value} /> : <Unavailable title="Updates unavailable" />}
     </div>
   </div>;
+}
+
+const daysAhead = (days: number) => new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);
+/** Dispatchers leaving in the next 14 days, and last days that have passed. Shows nothing when nobody is leaving, or if it can't load. */
+export async function LeavingSoon() {
+  const list = await read<MemberList>('dispatch/members').catch(() => null);
+  const soon = daysAhead(14);
+  const rows = (list?.items ?? []).filter(member => member.lastDay && member.lastDay <= soon).sort((a, b) => a.lastDay!.localeCompare(b.lastDay!));
+  if (!rows.length) return null;
+  return <Card>
+    <CardHeader title="Leaving soon" description="Departures in the next 14 days, and last days that have passed." actions={viewAll('/dispatch/dispatchers?status=LEAVING')} />
+    <ul className="mt-3 divide-y divide-border border-t border-border">{rows.map(member => <li key={member.id}><Link href={`/dispatch/dispatchers/${member.id}`} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent focus-visible:bg-accent sm:px-5">
+      <Person name={fullName(member)} secondary={member.mc ?? 'Independent'} />
+      <span className="flex flex-wrap items-center gap-3 text-[13px] text-muted-foreground"><span>Last day <LocalTime iso={middayIso(member.lastDay!)} format="date" /></span><span>To reassign: {toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0)}</span>
+        <Badge label={member.lastDayPassed ? 'Last day passed' : 'Leaving'} tone={member.lastDayPassed ? 'danger' : 'warning'} /></span>
+    </Link></li>)}</ul>
+  </Card>;
 }
 
 const IT_STATUSES = [['BLOCKED', 'Blocked', 'warning', 'Waiting on something'], ['PENDING', 'Not started', 'neutral', 'New approvals'], ['IN_PROGRESS', 'In progress', 'info', 'Setup under way'], ['COMPLETED', 'Completed', 'success', 'Manager notified']] as const;
