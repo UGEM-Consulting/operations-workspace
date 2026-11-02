@@ -8,8 +8,10 @@ import { Badge } from '@/components/ui/status-badge';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
-export interface StaffTelegram { available: boolean; connected: boolean; username: string | null; alerts: ('REVIEW_WAITING' | 'IT_SETUP_WAITING')[] }
-const alertText = { REVIEW_WAITING: 'an application assigned to you is waiting for review', IT_SETUP_WAITING: 'a new IT setup checklist is waiting' };
+import type { StaffAlert } from '@/lib/api-schemas';
+export interface StaffTelegram { available: boolean; connected: boolean; username: string | null; alerts: StaffAlert[] }
+const alertText: Record<StaffAlert, string> = { REVIEW_WAITING: 'an application assigned to you is waiting for review', IT_SETUP_WAITING: 'a new IT setup checklist is waiting',
+  IT_REMOVAL_WAITING: 'a dispatcher has left and their accounts are waiting to be removed' };
 type Pending = 'link' | 'check' | 'disconnect' | null;
 // The connect link works once, for 30 minutes; after that it is dropped from the page.
 const LINK_MS = 30 * 60_000;

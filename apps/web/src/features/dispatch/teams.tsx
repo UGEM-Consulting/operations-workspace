@@ -35,7 +35,7 @@ export function Teams({ data, mcs, members, filters }: { data: TeamList; mcs: Ch
   const team = editing === 'new' ? null : editing;
   // Only the team's own active dispatchers can lead it.
   // Only the team's own active dispatchers can lead it (not those still in IT setup).
-  const candidates = team ? members.filter(member => member.teamId === team.id && member.status === 'ACTIVE' && member.position === 'DISPATCHER') : [];
+  const candidates = team ? members.filter(member => member.teamId === team.id && member.status === 'ACTIVE' && member.position === 'DISPATCHER' && (!member.lastDay || member.id === team.lead?.id)) : [];
   function open(next: TeamRow | 'new') { setEditing(next); setError(''); }
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();

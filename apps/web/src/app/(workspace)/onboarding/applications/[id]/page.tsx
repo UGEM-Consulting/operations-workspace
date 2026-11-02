@@ -16,6 +16,7 @@ import { Table } from '@/components/ui/table';
 import { decisionTitle, decisionTone } from '@/features/onboarding/history';
 import { PrivateImage } from '@/components/ui/private-image';
 import { ReviewActions } from '@/features/onboarding/review-actions';
+import { ChangeManager } from '@/features/onboarding/change-manager';
 import { TaskStatus } from '@/features/it/types';
 import { PageHeader } from '@/components/workspace-ui';
 import { PageCrumb } from '@/components/shell-context';
@@ -28,7 +29,7 @@ export const metadata = { title: 'Application' };
  * rail on the right, sticky from 1280px (scrolling on its own when taller than the screen); below that the rail follows the content.
  */
 export default async function Page({params}:{params:Promise<{id:string}>}) {
- await requirePage('applications');const {id}=await params;if(!/^[0-9a-f-]{36}$/.test(id))notFound();
+ const identity=await requirePage('applications');const {id}=await params;if(!/^[0-9a-f-]{36}$/.test(id))notFound();
  const response=await apiRequest(`onboarding/applications/${id}`);if([404,409].includes(response.status))notFound();if(!response.ok)throw new Error('Unable to load application');
  const data=await readResponse<ReviewDetail>(response,'application review',reviewDetailSchema),app=data.application;
  // The approver's own saved signature, offered when this approval needs an NDA countersignature.
@@ -41,13 +42,15 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const name=`${app.fields.firstName??''} ${app.fields.lastName??''}`.trim()||'Applicant';
  const decided=[...data.reviews].reverse().find(review=>review.decisionType!=='REQUEST_CHANGES');
  const changes=data.submissions.length-1;
+ const responsible=data.responsibleManager?`${data.responsibleManager.firstName} ${data.responsibleManager.lastName}`:null;
+ const yours=data.responsibleManager?.id===identity.user.id;
 
  const overview=<div className="space-y-6">
   {app.status==='RESUBMITTED'&&<Alert tone="info" title="Resubmitted after your change request"><p>See <span className="font-medium">What changed</span> for the updated answers.</p></Alert>}
   {app.status==='CHANGES_REQUESTED'&&<Alert tone="info" title="Waiting for corrections"><p>These are the last submitted answers. The applicant’s saved correction drafts stay private until they resubmit.</p></Alert>}
   {data.requiredFields.length>0&&<Alert tone="warning" title={data.readyForIt?'Historical approval preserved':'Completion required before approval'}><p>{data.requiredFields.map(field=>itemLabels[field]).join(', ')}</p>{data.canReview&&<p className="text-muted-foreground">Request corrections so the applicant can complete these.</p>}</Alert>}
   <Card><CardHeader title="Application details" description="As the applicant sent it."/><CardBody><DescriptionList items={fields.map(([label,value])=>({label:String(label),value}))}/></CardBody></Card>
-  {it&&<Card><CardHeader title="Employee details" description="The approved assignments and the accounts IT created."/><CardBody><DescriptionList items={([['Display name',data.itDetails.proposedDisplayName],['MC / Independent',data.invitation.mcName],['Team lead / Independent',data.invitation.teamLead],['Job title',data.invitation.jobTitle],['Company email',it.companyEmail],['Work phone (RingCentral)',it.workPhoneNumber]] as const).map(([label,value])=>({label,value,emptyLabel:'Pending IT setup'}))}/></CardBody></Card>}
+  {it&&<Card><CardHeader title="Employee details" description={it.cancelledAt?'IT setup was cancelled because they left before it finished.':'The approved assignments and the accounts IT created.'}/><CardBody><DescriptionList items={([['Display name',data.itDetails.proposedDisplayName],['MC / Independent',data.invitation.mcName],['Team lead / Independent',data.invitation.teamLead],['Job title',data.invitation.jobTitle],['Company email',it.companyEmail],['Work phone (RingCentral)',it.workPhoneNumber]] as const).map(([label,value])=>({label,value,emptyLabel:it.cancelledAt?'Not set up':'Pending IT setup'}))}/></CardBody></Card>}
   {data.documents.required&&<Card><CardHeader title="Identity photos" description="Check that the face and name match the ID. Photos are checked by a person, not software."/><CardBody>
    <div className="grid gap-6 sm:grid-cols-2">{([['selfie','Selfie','Becomes the profile photo',data.documents.photos.selfie],['id-selfie','Selfie holding ID','Managers and admins only',data.documents.photos.idSelfie]] as const).map(([path,label,caption,present])=><figure key={path} className="space-y-2">
     {present?<a href={`/api/backend/onboarding/applications/${id}/photos/${path}`} target="_blank" rel="noopener" className="block"><PrivateImage src={`/api/backend/onboarding/applications/${id}/photos/${path}`} alt={label} className="aspect-[4/3] w-full rounded-md border border-border bg-muted object-contain"/></a>
@@ -75,6 +78,9 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const history=<div className="space-y-6">
   <Card><CardHeader title="Decisions"/><CardBody>{data.reviews.length?<Timeline items={[...data.reviews].reverse().map(review=>({id:review.id,tone:decisionTone(review.decisionType),title:decisionTitle(review),
    meta:<><LocalTime iso={review.createdAt}/> · {statusLabel(review.previousStatus)} → {statusLabel(review.newStatus)}{review.employment&&<><br/>Confirmed assignments: {review.employment.mcName} · {review.employment.teamLead} · {review.employment.jobTitle}</>}{review.requestedFields.length>0&&<><br/>Requested: {review.requestedFields.map(field=>itemLabels[field]).join(', ')}</>}</>,body:review.reason||undefined}))}/>:<p className="text-sm text-muted-foreground">No decisions yet.</p>}</CardBody></Card>
+  {!!data.managerChanges?.length&&<Card><CardHeader title="Responsible manager" description="Every hand-over, with the note left for the new manager."/><CardBody><Timeline items={[...data.managerChanges].reverse().map(change=>({id:change.id,
+   title:change.reason==='HANDED_OVER'?`Handed over to ${change.to}`:`${change.from} handed it to ${change.to}`,
+   meta:<><LocalTime iso={change.createdAt}/>{change.reason==='HANDED_OVER'?` · ${change.from}’s account changed, by ${change.by}`:change.by!==change.from?` · by ${change.by}`:''}</>,body:change.note??undefined}))}/></CardBody></Card>}
   <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(item=>({id:item.id,title:statusLabel(item.event),meta:<LocalTime iso={item.createdAt}/>}))}/></CardBody></Card>
  </div>;
 
@@ -86,8 +92,9 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
 
  return <div className="space-y-6"><PageCrumb label={name}/>
   <PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><StatusBadge status={app.status}/>{data.invitation.position==='SUPPORT'&&<Badge label="Support" tone="info"/>}</span>}
-   meta={[<span key="ref" className="font-mono">{app.id}</span>,app.submittedAt?<>Last submitted <LocalTime iso={app.submittedAt}/></>:'Not submitted yet']}
-   action={<CopyButton text={app.id} label="Copy reference"/>}/>
+   meta={[<span key="ref" className="font-mono">{app.id}</span>,app.submittedAt?<>Last submitted <LocalTime iso={app.submittedAt}/></>:'Not submitted yet',...(responsible?[`Responsible manager: ${responsible}${yours?' (you)':''}`]:[])]}
+   action={<span className="flex flex-wrap items-center gap-2"><CopyButton text={app.id} label="Copy reference"/>
+    {data.managerOptions&&responsible&&<ChangeManager id={id} current={responsible} options={data.managerOptions} admin={identity.user.role==='SYSTEM_ADMIN'}/>}</span>}/>
   <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
    <Tabs label="Application sections" items={[{key:'overview',label:'Overview'},{key:'documents',label:'Documents',count:data.documents.required?data.documents.items.length:undefined},
     ...(changes>0?[{key:'changes',label:'What changed',count:changes}]:[]),{key:'history',label:'History'}]}

@@ -28,10 +28,11 @@ export function ManagerNotifications({initial}:{initial:Notifications}){
   {data.items.length?<ul className="mt-3 divide-y divide-border border-t border-border">{data.items.map(item=><li key={item.id} className="flex items-start gap-3 px-4 py-3 sm:px-5">
    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-success-background text-success"><CircleCheck aria-hidden="true" className="size-4"/></span>
    <div className="min-w-0 flex-1">
-    <p className={cn('text-sm',!item.readAt&&'font-medium')}>IT setup completed</p>
-    <p className="text-[13px] leading-5 text-muted-foreground">{item.displayName??'Dispatcher'} is ready to work.</p>
+    <p className={cn('text-sm',!item.readAt&&'font-medium')}>{item.kind==='IT_REMOVAL_COMPLETED'?'IT access removed':'IT setup completed'}</p>
+    <p className="text-[13px] leading-5 text-muted-foreground">{item.kind==='IT_REMOVAL_COMPLETED'?`IT removed ${item.displayName??'the dispatcher'}’s accounts.`:`${item.displayName??'Dispatcher'} is ready to work.`}</p>
     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"><LocalTime iso={item.createdAt}/>
-     <Link href={`/onboarding/applications/${item.applicationId}`} className="text-primary underline-offset-4 hover:underline">View application<span className="sr-only"> for {item.displayName??'dispatcher'}</span></Link>
+     {item.kind==='IT_REMOVAL_COMPLETED'?item.memberId&&<Link href={`/dispatch/dispatchers/${item.memberId}`} className="text-primary underline-offset-4 hover:underline">View dispatcher<span className="sr-only"> {item.displayName??''}</span></Link>
+      :item.applicationId&&<Link href={`/onboarding/applications/${item.applicationId}`} className="text-primary underline-offset-4 hover:underline">View application<span className="sr-only"> for {item.displayName??'dispatcher'}</span></Link>}
      {!item.readAt&&<button type="button" disabled={!!pending} onClick={()=>void read(item.id)} className="text-primary underline-offset-4 hover:underline disabled:opacity-50">{pending===item.id?'Updating…':'Mark as read'}<span className="sr-only">: {item.displayName??'dispatcher'}</span></button>}</div>
    </div>
    {!item.readAt&&<span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary"><span className="sr-only">Unread</span></span>}

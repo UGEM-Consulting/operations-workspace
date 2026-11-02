@@ -13,11 +13,15 @@ import { EmptyState } from '@/components/ui/feedback';
 import { Person } from '@/components/ui/avatar';
 import { useToast } from '@/components/ui/toast';
 import { Badge, roleLabel, StatusBadge } from '@/components/ui/status-badge';
-import { mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate } from '@/lib/client-api';
+import { readApi } from '@/features/onboarding/types';
 import { USER_DEFAULTS } from '@/lib/navigation';
 import type { StaffUser } from '@/lib/auth';
 import { PageHeader } from '@/components/workspace-ui';
 const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD', 'SAFETY_MANAGER', 'SAFETY_LEAD', 'SAFETY_STAFF'];
+// Roles that can be responsible for invitations and applications; losing them (or the account) hands those records over.
+const RESPONSIBLE = ['DISPATCHER_MANAGER', 'SYSTEM_ADMIN'];
+interface OpenRecords { invitations: number; applications: number; changes: number; itSetup: number; removals?: number; total: number }
 type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null };
 /** A dispatcher record a team lead account can link to; what the account sees follows the team it leads. */
 export interface LeadChoice { id: string; name: string; team: string | null }
@@ -37,13 +41,32 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
   const visible = searched.filter(user => filters.status === 'ALL' || user.status === filters.status);
   const filtered = filters.search !== '' || filters.status !== 'ALL';
   const [role, setRole] = useState('DISPATCHER_MANAGER');
-  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); }
+  const [status, setStatus] = useState('ACTIVE');
+  // A manager's open records, loaded when the change would take their access away (designed as HandOverOnDeactivateScreen).
+  const [records, setRecords] = useState<OpenRecords | 'loading' | 'failed' | null>(null);
+  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); setStatus(user?.status ?? 'ACTIVE'); setRecords(null); }
+  const responsible = !!editing && editing.status === 'ACTIVE' && RESPONSIBLE.includes(editing.role);
+  const losesAccess = responsible && (status === 'INACTIVE' || !RESPONSIBLE.includes(role));
+  async function change(next: { role?: string; status?: string }) {
+    if (next.role !== undefined) setRole(next.role);
+    if (next.status !== undefined) setStatus(next.status);
+    const nextRole = next.role ?? role, nextStatus = next.status ?? status;
+    if (!editing || !responsible || records !== null || (nextStatus !== 'INACTIVE' && RESPONSIBLE.includes(nextRole))) return;
+    await loadRecords(editing.id);
+  }
+  async function loadRecords(id: string) {
+    setRecords('loading');
+    try { setRecords(await readApi<OpenRecords>(`users/${id}/open-records`)); } catch { setRecords('failed'); }
+  }
+  const takers = users.filter(user => user.status === 'ACTIVE' && RESPONSIBLE.includes(user.role) && user.id !== editing?.id);
+  const takerOptions = takers.map(user => ({ value: user.id, label: `${user.firstName} ${user.lastName} · ${roleLabel(user.role)}${user.id === currentUserId ? ' (you)' : ''}` }));
   const linked = (user: ManagedUser) => leads.find(lead => lead.id === user.memberId);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
     const data: Record<string, FormDataEntryValue> = Object.fromEntries(new FormData(event.currentTarget));
     if (!data.password) delete data.password;
+    if (!data.handOverTo) delete data.handOverTo;
     setPending(true); setError('');
     try {
       // Name-only edits keep sessions; email, role, status and password changes end them.
@@ -52,10 +75,15 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       if (editing?.id === currentUserId && result.sessionsRevoked !== false) { window.location.assign('/login'); return; }
       setHighlight(String(data.email).trim().toLowerCase());
-      toast(editing ? { title: 'User updated', description: result.sessionsRevoked === false ? undefined : 'Their existing sessions have ended.' }
+      const handed = (result as { handedOver?: number }).handedOver ?? 0;
+      toast(editing ? { title: 'User updated', description: [result.sessionsRevoked === false ? '' : 'Their existing sessions have ended.', handed ? `${handed} open record${handed === 1 ? '' : 's'} handed over.` : ''].filter(Boolean).join(' ') || undefined }
         : { title: 'User created', description: 'They choose their own password when they first sign in.' });
       setOpen(false); router.refresh();
-    } catch (error) { setError(error instanceof Error ? error.message : 'Unable to save the user. Your entries have been kept.'); }
+    } catch (error) {
+      setError(errorMessage(error, 'Unable to save the user. Your entries have been kept.'));
+      // They may have gained open records since the check: load them again so the dialog can ask who takes over.
+      if (error instanceof ApiError && error.kind === 'conflict' && editing && losesAccess) void loadRecords(editing.id);
+    }
     finally { setPending(false); }
   }
   const description = 'People who can sign in to the workspace. Applicants don’t need accounts.';
@@ -77,11 +105,24 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
         ]} empty={<EmptyState compact title={filtered ? 'No matching accounts' : 'No staff accounts'} description={filtered ? 'Try another status, name or email.' : undefined} />}
         footer={<p className="text-[13px] text-muted-foreground">{visible.length} of {users.length} staff account{users.length === 1 ? '' : 's'} · up to 200 shown.</p>} />
     </Card>
-    {open && <Dialog open onClose={() => setOpen(false)} busy={pending} title={editing ? `Edit ${editing.firstName} ${editing.lastName}` : 'Add staff member'} actions={<Button type="submit" form="user-editor">{pending ? 'Saving…' : editing ? 'Save changes' : 'Create user'}</Button>}>
+    {open && <Dialog open onClose={() => setOpen(false)} busy={pending} title={editing ? `Edit ${editing.firstName} ${editing.lastName}` : 'Add staff member'} actions={<Button type="submit" form="user-editor">{pending ? 'Saving…' : editing ? (losesAccess && records && typeof records === 'object' && records.total > 0 ? (status === 'INACTIVE' ? 'Hand over and deactivate' : 'Hand over and save') : 'Save changes') : 'Create user'}</Button>}>
       <form id="user-editor" onSubmit={submit} className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2"><Input label="First name" name="firstName" defaultValue={editing?.firstName} required maxLength={100} width="full" /><Input label="Last name" name="lastName" defaultValue={editing?.lastName} required maxLength={100} width="full" /></div>
         <Input label="Email" name="email" type="email" defaultValue={editing?.email} required maxLength={254} width="full" />
-        <div className="grid gap-4 sm:grid-cols-2"><Select label="Role" name="role" value={role} onChange={event => setRole(event.target.value)} width="full" options={roles.map(role => ({ value: role, label: roleLabel(role) }))} /><Select label="Status" name="status" defaultValue={editing?.status ?? 'ACTIVE'} width="full" options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} /></div>
+        <div className="grid gap-4 sm:grid-cols-2"><Select label="Role" name="role" value={role} onChange={event => void change({ role: event.target.value })} width="full" options={roles.map(role => ({ value: role, label: roleLabel(role) }))} /><Select label="Status" name="status" value={status} onChange={event => void change({ status: event.target.value })} width="full" options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} /></div>
+        {losesAccess && records === 'loading' && <p role="status" className="text-sm text-muted-foreground">Checking their open invitations and applications…</p>}
+        {losesAccess && records === 'failed' && <>
+          <Alert tone="warning"><p>Their open records couldn’t be checked. If they may have any, choose who takes them over.</p></Alert>
+          <Select id="hand-over-to" label="Hand them over to" optional name="handOverTo" defaultValue="" placeholder="Choose a manager" width="full" options={takerOptions} /></>}
+        {losesAccess && records && typeof records === 'object' && records.total > 0 && <Card>
+          <CardHeader title={`${editing?.firstName} has ${records.total} open record${records.total === 1 ? '' : 's'}`} />
+          <div className="space-y-4 px-4 pb-4 pt-3 sm:px-5">
+            <ul className="space-y-2 text-sm">{([['Invitations not used yet', records.invitations], ['Applications in progress or awaiting review', records.applications], ['Waiting for the applicant’s changes', records.changes], ['Approved, IT setup not finished', records.itSetup], ...(records.removals ? [['Dispatchers leaving, IT removal not finished', records.removals]] as const : [])] as const)
+              .map(([label, count]) => <li key={label} className="flex justify-between gap-3"><span>{label}</span><span className="font-semibold tabular-nums">{count}</span></li>)}</ul>
+            <Select id="hand-over-to" label="Hand them over to" name="handOverTo" required placeholder="Choose a manager" width="full"
+              options={takerOptions}
+              hint={`All ${records.total} move together. Finished applications stay with ${editing?.firstName} for the record. Applicants aren’t told; their links keep working.${records.removals ? ' New email from a leaving dispatcher goes to the new manager instead, and IT sees that on the checklist.' : ''}`} />
+          </div></Card>}
         {role === 'TEAM_LEAD' && <Select label="Team lead’s dispatcher record" name="memberId" defaultValue={editing?.memberId ?? ''} required placeholder="Choose a dispatcher" width="full"
           options={leads.map(lead => ({ value: lead.id, label: lead.team ? `${lead.name} · leads ${lead.team}` : `${lead.name} · leads no team yet` }))}
           hint="They see and act only for the team this dispatcher leads. Changing it ends their sessions." />}

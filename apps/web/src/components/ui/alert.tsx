@@ -13,7 +13,7 @@ const icons = { neutral: Info, info: Info, success: CheckCircle2, warning: Trian
 
 /** Page or section state: an icon, an optional title, the message and an optional action. */
 export function Alert({ tone = 'info', title, action, role, className, children }: {
-  tone?: StatusTone; title?: string; action?: ReactNode; role?: 'alert' | 'status'; className?: string; children?: ReactNode;
+  tone?: StatusTone; title?: ReactNode; action?: ReactNode; role?: 'alert' | 'status'; className?: string; children?: ReactNode;
 }) {
   const Icon = icons[tone];
   return <div role={role} className={cn('flex items-start gap-3 rounded-md border p-4 text-sm', tones[tone], className)}>

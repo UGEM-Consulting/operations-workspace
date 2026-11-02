@@ -46,3 +46,19 @@ describe('driver clearance and dispatch assignment through the BFF', () => {
     assert.equal(bodyLimit(`dispatch/drivers/${ID}/assign`), 16384);
   });
 });
+
+describe('offboarding and manager hand-over through the BFF', () => {
+  it('allows the IT task list, the removal checklist and the hand-over routes, and nothing beside them', () => {
+    assert.equal(allowedEndpoint('GET', 'it/tasks'), true);
+    assert.equal(allowedEndpoint('GET', `it/removals/${ID}`), true);
+    assert.equal(allowedEndpoint('PATCH', `it/removals/${ID}/tasks/SHARED_PASSWORDS`), true);
+    assert.equal(allowedEndpoint('PATCH', `it/removals/${ID}/tasks/shared`), false);
+    assert.equal(allowedEndpoint('DELETE', `it/removals/${ID}`), false);
+    assert.equal(allowedEndpoint('POST', `onboarding/applications/${ID}/manager`), true);
+    assert.equal(allowedEndpoint('GET', `onboarding/applications/${ID}/manager`), false);
+    assert.equal(allowedEndpoint('GET', `users/${ID}/open-records`), true);
+    assert.equal(allowedEndpoint('POST', `users/${ID}/open-records`), false);
+    for (const action of ['last-day', 'cancel-notice', 'remove-access']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/last-day`), false);
+  });
+});

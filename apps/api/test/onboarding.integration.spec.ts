@@ -367,12 +367,14 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await db.getRepository(Invitation).findOneByOrFail({id:created.body.id})).email).toBe('expected.person@example.test');
  });
  it('completes open-link claiming, applicant employment, resume, corrections and confirmed manager approval',async()=>{
+  await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Fictional MC','fictional mc'),('Fictional corrected MC','fictional corrected mc') ON CONFLICT DO NOTHING`);
+  await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Dispatcher','dispatcher') ON CONFLICT DO NOTHING`);
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
   const token=created.body.url.split('#').pop(),applicant=request.agent(app.getHttpServer());
   const begin=await applicant.post('/api/applicant/begin').set(headers).send({token,email:payload.email}).expect(201);
   const code=await issueDemoCode(db,begin.body.challengeId,'test');
   const verified=await applicant.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);const id=verified.body.applicationId;
-  await applicant.patch('/api/applicant/draft').set(headers).send({version:0,...answers,accurate:undefined,mcName:'Fictional MC',teamLead:'Independent',jobTitle:'Dispatcher'}).expect(200);
+  await applicant.patch('/api/applicant/draft').set(headers).send({version:0,...answers,accurate:undefined,mcName:'Fictional MC',teamLead:'No team yet',jobTitle:'Dispatcher'}).expect(200);
   await applicant.post('/api/applicant/logout').set(headers).send({}).expect(201);
   const resume=await applicant.post('/api/applicant/begin').set(headers).send({applicationId:id,email:payload.email}).expect(201);
   const resumeCode=await issueDemoCode(db,resume.body.challengeId,'test');await applicant.post('/api/applicant/verify').set(headers).send({challengeId:resume.body.challengeId,code:resumeCode}).expect(201);
@@ -389,6 +391,62 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const detail=await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200);expect(detail.body.readyForIt).toBe(true);expect(detail.body.invitation).toMatchObject(employment);
   expect(detail.body.application.fields.mcName).toBe('Fictional corrected MC');expect(detail.body.reviews[1].employment).toEqual(employment);
   expect(await db.getRepository(ApplicationActivity).countBy({invitationId:created.body.id,event:'EMPLOYMENT_CONFIRMED'})).toBe(1);
+ });
+ it('lets applicants pick employment only from the lists, keeping earlier answers until they change',async()=>{
+  const [{id:mcId}]=await db.query(`INSERT INTO mcs (name,"nameKey","mcNumber","dotNumber") VALUES ('Pick Freight','pick freight','7654321','1234567') RETURNING id`);
+  const [{id:otherMc}]=await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Pick Other','pick other') RETURNING id`);
+  await db.query(`INSERT INTO teams (name,"nameKey","mcId") VALUES ('Red team','red team',$1),('Blue team','blue team',$2)`,[mcId,otherMc]);
+  await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Pick title','pick title')`);
+  const created=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
+  const applicant=request.agent(app.getHttpServer());await verify(applicant,created.body.url.split('#').pop());
+  const own=await applicant.get('/api/applicant/application').set(headers).expect(200);
+  expect(own.body.employmentOptions.mcs).toContain('Pick Freight');expect(own.body.employmentOptions.teams).toContainEqual({name:'Red team',mc:'Pick Freight',value:'Red team',led:false});
+  // Names only: no MC or DOT numbers anywhere in what the applicant receives.
+  expect(JSON.stringify(own.body)).not.toMatch(/7654321|1234567|mcNumber|dotNumber/);
+  const save=(version:number,body:object)=>applicant.patch('/api/applicant/draft').set(headers).send({version,...body});
+  for(const body of [{mcName:'Typed Carrier'},{mcName:'Pick Freight',teamLead:'Blue team'},{jobTitle:'Typed title'},{mcName:'Independent',teamLead:'Red team'}])expect((await save(0,body).expect(400)).body.message).toMatch(/isn't on the list/);
+  const saved=await save(0,{mcName:' pick  FREIGHT ',teamLead:'red TEAM',jobTitle:'pick title'}).expect(200);
+  expect(saved.body.application.fields).toMatchObject({mcName:'Pick Freight',teamLead:'Red team',jobTitle:'Pick title'});
+  // A new MC needs a team from that MC, and the choices that leave it to the manager always work.
+  await save(1,{mcName:'Pick Other'}).expect(400);
+  await save(1,{mcName:'Not listed',teamLead:'Not listed',jobTitle:'Not listed'}).expect(200);
+  await save(2,{mcName:'Pick Other',teamLead:'No team yet'}).expect(200);
+  // Archived entries can't be picked, but someone who already has the answer isn't stopped.
+  await save(3,{mcName:'Pick Freight',teamLead:'Red team'}).expect(200);
+  await db.query(`UPDATE mcs SET "archivedAt"=now() WHERE id=$1`,[otherMc]);
+  await save(4,{mcName:'Pick Other',teamLead:'No team yet'}).expect(400);
+  await db.query(`UPDATE mcs SET "archivedAt"=now() WHERE id=$1`,[mcId]);
+  await save(4,{firstName:'Fictional'}).expect(200);
+  // An answer typed before the lists stays until it changes, on submission too, and the submission is left alone.
+  await db.query(`UPDATE dispatcher_applications SET fields=fields||'{"mcName":"Old Typed Carrier","teamLead":"Old Typed Lead"}'::jsonb WHERE "invitationId"=$1`,[created.body.id]);
+  const kept=await save(5,{...answers,accurate:undefined,mcName:'Old Typed Carrier',teamLead:'Old Typed Lead',jobTitle:'Pick title'}).expect(200);
+  expect(kept.body.application.fields.mcName).toBe('Old Typed Carrier');
+  const submitted=await applicant.post('/api/applicant/submit').set(headers).send({version:6,accurate:true}).expect(201);
+  expect(submitted.body.application.fields.teamLead).toBe('Old Typed Lead');expect(submitted.body.employmentOptions).toBeNull();
+  await db.query(`DELETE FROM teams WHERE "mcId" IN ($1,$2)`,[mcId,otherMc]);await db.query(`DELETE FROM mcs WHERE id IN ($1,$2)`,[mcId,otherMc]);await db.query(`DELETE FROM job_titles WHERE name='Pick title'`);
+ });
+ it('lets a correction of the MC alone choose a team from the new MC too',async()=>{
+  const [{id:firstMc}]=await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Fix First','fix first') RETURNING id`);
+  const [{id:secondMc}]=await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Fix Second','fix second') RETURNING id`);
+  await db.query(`INSERT INTO teams (name,"nameKey","mcId") VALUES ('First team','first team',$1),('Second team','second team',$2)`,[firstMc,secondMc]);
+  await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Fix title','fix title')`);
+  const created=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
+  const applicant=request.agent(app.getHttpServer());await verify(applicant,created.body.url.split('#').pop());
+  const save=(version:number,body:object)=>applicant.patch('/api/applicant/draft').set(headers).send({version,...body});
+  const id=(await save(0,{...answers,accurate:undefined,mcName:'Fix First',teamLead:'First team',jobTitle:'Fix title'}).expect(200)).body.application.id;
+  await applicant.post('/api/applicant/submit').set(headers).send({version:1,accurate:true}).expect(201);
+  await decision(manager,id,{version:2,decisionType:'REQUEST_CHANGES',reason:'Please correct the MC name.',requestedFields:['mcName']}).expect(201);
+  const own=(await applicant.get('/api/applicant/application').set(headers).expect(200)).body;
+  expect(own.editableFields).toEqual(expect.arrayContaining(['mcName','teamLead']));expect(own.editableFields).not.toContain('jobTitle');
+  expect(own.correction.requestedFields).toEqual(expect.arrayContaining(['mcName','teamLead']));
+  // What the page sends when the MC changes: the team is blank until they choose one, and submission waits for it.
+  await save(3,{mcName:'Fix Second',teamLead:''}).expect(200);
+  await applicant.post('/api/applicant/submit').set(headers).send({version:4,accurate:true}).expect(400);
+  await save(4,{teamLead:'Second team'}).expect(200);
+  await save(5,{jobTitle:'Not listed'}).expect(400);
+  const done=await applicant.post('/api/applicant/submit').set(headers).send({version:5,accurate:true}).expect(201);
+  expect(done.body.application.fields).toMatchObject({mcName:'Fix Second',teamLead:'Second team',jobTitle:'Fix title'});
+  await db.query(`DELETE FROM teams WHERE "mcId" IN ($1,$2)`,[firstMc,secondMc]);await db.query(`DELETE FROM mcs WHERE id IN ($1,$2)`,[firstMc,secondMc]);await db.query(`DELETE FROM job_titles WHERE name='Fix title'`);
  });
  it('validates employment before submission and keeps verified email immutable',async()=>{
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
@@ -667,7 +725,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  // The newest migration file, whatever later work adds; later migrations are stepped back generically first.
  const newestMigration=()=>db.migrations.map(migration=>migration.name??migration.constructor.name).sort((a,b)=>Number(a.slice(-13))-Number(b.slice(-13))).at(-1);
  // The notifications migration refuses rollback while delivery history exists; clear this disposable database's rows first.
- const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='DriverHistory1792940000000')await db.query('TRUNCATE drivers CASCADE');if(await latestMigration()==='DriverClearance1792930000000')await db.query('TRUNCATE drivers CASCADE');if(await latestMigration()==='StorageFolders1792920000000')await db.query('TRUNCATE signed_copies, applicant_photos, company_documents, driver_documents, driver_reports, driver_consent_documents CASCADE');if(await latestMigration()==='DriverDocuments1792880000000')await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`);if(await latestMigration()==='DriverApplications1792870000000')await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`);if(await latestMigration()==='SafetyDrivers1792860000000')await db.query(`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`);if(await latestMigration()==='TeamLeads1792850000000')await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`);if(await latestMigration()==='SupportMembers1792840000000')await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`);if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
+ const undoTo=async(name:string)=>{while(await latestMigration()!==name){if(await latestMigration()==='DispatcherOffboarding1792950000000')await db.query(`DELETE FROM portal_notifications WHERE "removalId" IS NOT NULL; DELETE FROM notification_deliveries WHERE kind LIKE 'IT_REMOVAL%'; DELETE FROM member_notices; DELETE FROM it_removal_activity; DELETE FROM it_removal_tasks; DELETE FROM it_removal_requests; DELETE FROM application_manager_changes; UPDATE it_onboarding_requests SET "cancelledAt" = NULL WHERE "cancelledAt" IS NOT NULL; UPDATE dispatch_members SET "leftReason" = NULL WHERE "leftReason" IS NOT NULL`);if(await latestMigration()==='DriverHistory1792940000000')await db.query('TRUNCATE drivers CASCADE');if(await latestMigration()==='DriverClearance1792930000000')await db.query('TRUNCATE drivers CASCADE');if(await latestMigration()==='StorageFolders1792920000000')await db.query('TRUNCATE signed_copies, applicant_photos, company_documents, driver_documents, driver_reports, driver_consent_documents CASCADE');if(await latestMigration()==='DriverDocuments1792880000000')await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`);if(await latestMigration()==='DriverApplications1792870000000')await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`);if(await latestMigration()==='SafetyDrivers1792860000000')await db.query(`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`);if(await latestMigration()==='TeamLeads1792850000000')await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`);if(await latestMigration()==='SupportMembers1792840000000')await db.query(`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`);if(await latestMigration()==='DispatcherContacts1792830000000')await db.query('TRUNCATE member_contacts');if(await latestMigration()==='DispatchTeams1792820000000')await db.query('TRUNCATE dispatch_events');if(await latestMigration()==='ManagedLists1792810000000')await db.query('TRUNCATE list_events');if(await latestMigration()==='Notifications1792800000000')await db.query('TRUNCATE notification_deliveries,staff_telegram_links,staff_telegram_link_tokens');await db.undoLastMigration();}};
  // The staff MFA migration is newer and refuses rollback while enrolments exist; clear this disposable database's test enrolments first.
  // Steps back past the later optional-equipment, applicant-updates and staff MFA migrations.
  const undoStaffMfa=async()=>{await undoTo('OptionalEquipmentTask1792740000000');await db.query(`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`);await db.undoLastMigration();await db.query('TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens');await db.undoLastMigration();await db.query('TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events');await db.undoLastMigration();expect(await latestMigration()).toBe('OnboardingDocuments1792710000000');};

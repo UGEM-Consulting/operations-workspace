@@ -6,7 +6,8 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { DataSource } from 'typeorm';
 import { canAccessAssignedApplication } from '../auth/policy';
 import { Role, User, UserStatus } from '../users/user.entity';
-import { ApplicationQueryDto, ReviewDto } from './dto';
+import { ApplicationQueryDto, ChangeManagerDto, ReviewDto } from './dto';
+import { moveApplication, responsibleManager, RESPONSIBLE_ROLES } from './hand-over';
 import { ApplicationActivity, ApplicationReview, ApplicationStatus, ApplicationSubmission, DispatcherApplication, Invitation, type RequestableItem } from './entities';
 import { StorageService } from '../storage/storage.service';
 import { documentStatus } from '../documents/requirements';
@@ -73,6 +74,12 @@ export class ReviewService {
    .where('r.applicationId = :id',{id}).orderBy('r.applicationVersion','ASC').getRawAndEntities();
   const activity = await this.db.getRepository(ApplicationActivity).find({where:{invitationId:invitation.id},order:{createdAt:'ASC'}});
   const itRequest=await this.db.getRepository(ItOnboardingRequest).findOneBy({applicationId:id});
+  // Who is responsible now, every earlier change with its note, and whom it can be handed to.
+  const [responsible]=await this.db.query(`SELECT id, "firstName", "lastName", role FROM users WHERE id = $1`,[application.assignedManagerId]);
+  const managerChanges=await this.db.query(`SELECT c.id, c.reason, c.note, c."createdAt", f."firstName" || ' ' || f."lastName" AS "from", t."firstName" || ' ' || t."lastName" AS "to",
+    a."firstName" || ' ' || a."lastName" AS "by" FROM application_manager_changes c JOIN users f ON f.id = c."fromUserId" JOIN users t ON t.id = c."toUserId" JOIN users a ON a.id = c."actorId"
+   WHERE c."applicationId" = $1 ORDER BY c."createdAt"`,[id]);
+  const managerOptions=await this.db.query(`SELECT id, "firstName", "lastName", role FROM users WHERE status = 'ACTIVE' AND role = ANY($1) AND id <> $2 ORDER BY lower("firstName"), lower("lastName")`,[RESPONSIBLE_ROLES,application.assignedManagerId]);
   const itTasks=itRequest?await this.db.getRepository(ItOnboardingTask).findBy({requestId:itRequest.id}):[];
   // Photos as of the last submission; signatures are final acts and visible once made.
   const documents=await documentStatus(this.db.manager,id,this.storage.enabled,application.submittedAt);
@@ -90,21 +97,43 @@ export class ReviewService {
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
    // The responsible manager sees the company accounts IT created; never IT notes or verification metadata.
-   itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
+   itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,cancelledAt:itRequest.cancelledAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
    // Historical decisions are never second-guessed: missing photos/signatures only matter while the application is open.
    requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {},invitation.position),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
    documents:{required:documents.required,photos:{selfie:!!documents.photos.SELFIE,idSelfie:!!documents.photos.ID_SELFIE},
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
     countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
-   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support, employmentOptions, supports };
+   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support, employmentOptions, supports,
+   responsibleManager:responsible?{id:responsible.id,firstName:responsible.firstName,lastName:responsible.lastName}:null, managerChanges, managerOptions };
  }
- /** Current dispatchers (not left, including those in IT setup) with where they work now, plus the one already picked. */
+ /**
+  * Hands an application, with its invitation and any unfinished IT setup, to another active dispatcher manager or
+  * administrator (designed and approved 2026-11-02). The current manager or an administrator may do it; the previous
+  * manager loses access unless they are an administrator. The applicant isn't told. Finished applications can move too.
+  */
+ async changeManager(user: User, id: string, dto: ChangeManagerDto) {
+  await onboardingLimit(this.db,'manager-change:'+user.id,30,60);
+  return this.db.transaction(async em => {
+   const current = await em.getRepository(DispatcherApplication).findOneBy({id});
+   if (!current || !canAccessAssignedApplication(user,current)) throw new NotFoundException();
+   // The invitation first, as every application write does, then the application again under the lock.
+   await em.getRepository(Invitation).findOne({where:{id:current.invitationId},lock:{mode:'pessimistic_write'}});
+   const application = await em.getRepository(DispatcherApplication).findOneByOrFail({id});
+   if (!canAccessAssignedApplication(user,application)) throw new NotFoundException();
+   if (dto.managerId === application.assignedManagerId) throw new BadRequestException('They are already the responsible manager.');
+   const manager = await responsibleManager(em, dto.managerId);
+   await moveApplication(em,{applicationId:id,invitationId:application.invitationId,fromId:application.assignedManagerId,toId:manager.id,actorId:user.id,reason:'CHANGED',note:dto.note||null});
+   return { responsibleManager: { id: manager.id, firstName: manager.firstName, lastName: manager.lastName }, canStillOpen: user.role === Role.SYSTEM_ADMIN };
+  });
+ }
+ /** Current dispatchers (not left or leaving, including those in IT setup) with where they work now, plus the one already picked. */
  async dispatcherOptions(current: string | null) {
-  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.status, m.name AS mc, t.name AS team
+  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.status, m.name AS mc, t.name AS team, n.id IS NOT NULL AS leaving
    FROM dispatch_members d LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
-   WHERE d.position = 'DISPATCHER' AND (d.status <> 'LEFT' OR d.id = $1) ORDER BY lower(d."firstName"), lower(d."lastName")`, [current]);
+   LEFT JOIN member_notices n ON n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL
+   WHERE d.position = 'DISPATCHER' AND ((d.status <> 'LEFT' AND n.id IS NULL) OR d.id = $1) ORDER BY lower(d."firstName"), lower(d."lastName")`, [current]);
  }
  async employmentOptions() {
   const [mcs, teams, jobTitles] = await Promise.all([

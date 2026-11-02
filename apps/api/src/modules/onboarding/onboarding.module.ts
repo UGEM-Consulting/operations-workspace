@@ -10,7 +10,7 @@ import { Request } from 'express';
 import { Roles, Public } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { ApplicationQueryDto, ReviewDto, BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, UpdatePreferencesDto, VerifyApplicantDto } from './dto';
+import { ApplicationQueryDto, ChangeManagerDto, ReviewDto, BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, UpdatePreferencesDto, VerifyApplicantDto } from './dto';
 import { OnboardingService } from './onboarding.service';
 @Controller('onboarding')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
@@ -24,6 +24,7 @@ class OnboardingController {
  @Get('review-queue') queue(@Req() req: AuthRequest, @Query() query: ApplicationQueryDto) { return this.reviews.queue(req.currentUser,query); }
  @Post('applications/:id/reviews') review(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ReviewDto) { return this.reviews.decide(req.currentUser,id,dto,clientContext(req)); }
  @Get('applications/:id') detail(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string) { return this.reviews.detail(req.currentUser,id); }
+ @Post('applications/:id/manager') changeManager(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ChangeManagerDto) { return this.reviews.changeManager(req.currentUser,id,dto); }
 }
 // Public to the STAFF guard only. Each record operation verifies a restricted applicant session in the service.
 // The shared BFF and CSRF boundary applies to every route, including verification.

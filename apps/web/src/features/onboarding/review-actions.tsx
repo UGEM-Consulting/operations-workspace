@@ -73,7 +73,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
       <legend className="sr-only">{supports?'The dispatcher this support assists':'Final employment assignments'}</legend>
       {supports?<>
        <Select label="Supports" name="supportsMemberId" value={supportsId} onChange={event=>{setSupportsId(event.target.value);setEmploymentConfirmed(false);}} placeholder="Choose a dispatcher" required width="full"
-        options={supports.options.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')+(option.status==='ONBOARDING'?' (onboarding)':'')}))}
+        options={supports.options.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')+(option.leaving?' (leaving)':option.status==='ONBOARDING'?' (onboarding)':'')}))}
         hint="Supports work where their dispatcher works; they have no MC, team or job title of their own."/>
        <Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label="This is the dispatcher they will assist."/>
       </>:options?<EmploymentPicker options={options} original={initial} onChange={next=>{setEmployment(next);setEmploymentConfirmed(false);}} disabled={blocked}/>

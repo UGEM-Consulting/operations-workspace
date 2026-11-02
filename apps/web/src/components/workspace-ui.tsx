@@ -13,7 +13,7 @@ export function PageHeader({ eyebrow, title, description, action, badge, meta }:
 }
 const statDots = { neutral: 'bg-muted-foreground', info: 'bg-info', success: 'bg-success', warning: 'bg-warning', danger: 'bg-danger' };
 /** A count that links to the filtered list it counts. The dot matches the tone of that list's status badge. */
-export function StatCard({ label, value, detail, href, tone }: { label: string; value: number; detail: string; href: string; tone?: keyof typeof statDots }) {
+export function StatCard({ label, value, detail, href, tone }: { label: string; value: number; detail: React.ReactNode; href: string; tone?: keyof typeof statDots }) {
   return <Link href={href} className="group rounded-lg border bg-card p-5 shadow-xs transition-colors hover:border-border-strong"><p className="flex items-center gap-2 text-xs font-medium text-muted-foreground">{tone && <span aria-hidden="true" className={`size-1.5 rounded-full ${statDots[tone]}`} />}{label}</p><div className="mt-4 flex items-end justify-between gap-3"><span className="text-[28px] font-semibold leading-9 tracking-tight tabular-nums">{value}</span><ArrowUpRight aria-hidden="true" className="size-4 text-primary" /></div><p className="mt-3 text-xs text-muted-foreground">{detail}</p></Link>;
 }
 /** Page header, a row of cards and a table-shaped block: the layout most workspace pages load into. */

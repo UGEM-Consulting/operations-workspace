@@ -38,6 +38,9 @@ export const USER_DEFAULTS: Record<string, string> = { status: 'ALL', search: ''
 export const LIST_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
 export const TEAM_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
 export const MEMBER_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
+/** A date picked in a form as a moment that shows as the same calendar day everywhere. */
+export const middayIso = (day: string) => `${day}T12:00:00Z`;
+export const IT_TASK_DEFAULTS: Record<string, string> = { view: 'open', search: '' };
 export const DRIVER_DEFAULTS: Record<string, string> = { status: 'OPEN', search: '' };
 export const PROMOTION_DEFAULTS: Record<string, string> = { status: 'PENDING', search: '' };
 export const DISPATCH_DRIVER_DEFAULTS: Record<string, string> = { status: 'READY', search: '' };

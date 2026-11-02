@@ -7,6 +7,7 @@ import { revokeUserSessions } from '../auth/revoke';
 import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { clearSavedSignature } from '../documents/saved-signature';
 import { removeEmailEnrolment } from '../auth/mfa.service';
+import { handOver, openRecords, RESPONSIBLE_ROLES } from '../onboarding/hand-over';
 type Editable = 'firstName' | 'lastName' | 'email' | 'role' | 'status';
 const EDITABLE: Editable[] = ['firstName', 'lastName', 'email', 'role', 'status'];
 // Audit event per kind of change. Names change nothing about access; the others end the user's sessions.
@@ -63,6 +64,11 @@ export class UsersService {
     if (target) await manager.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [user.id, target]);
     return true;
   }
+  /** What a manager is responsible for now, asked before their account is deactivated or their role changes. */
+  async openRecords(id: string) {
+    if (!await this.db.getRepository(User).existsBy({ id })) throw new NotFoundException();
+    return (await openRecords(this.db.manager, id)).counts;
+  }
   async update(id: string, dto: UpdateUserDto, actor: User) {
     const passwordHash = dto.password ? await hashPassword(dto.password) : undefined;
     try {
@@ -75,6 +81,10 @@ export class UsersService {
         if (user.role === Role.SYSTEM_ADMIN && user.status === UserStatus.ACTIVE && ((dto.role && dto.role !== Role.SYSTEM_ADMIN) || dto.status === UserStatus.INACTIVE)) {
           if (await repo.countBy({ role: Role.SYSTEM_ADMIN, status: UserStatus.ACTIVE }) <= 1) throw new BadRequestException('At least one active administrator is required');
         }
+        // A manager losing access hands their open records to someone first, in this same transaction.
+        const wasResponsible = user.status === UserStatus.ACTIVE && RESPONSIBLE_ROLES.includes(user.role);
+        const losesAccess = dto.status === UserStatus.INACTIVE || (dto.role !== undefined && !RESPONSIBLE_ROLES.includes(dto.role));
+        const handedOver = wasResponsible && losesAccess ? await this.handOverFor(manager, id, dto.handOverTo, actor) : 0;
         // The editor submits every field; only real differences count as changes.
         const changed: string[] = EDITABLE.filter(key => dto[key] !== undefined && dto[key] !== user[key]);
         for (const key of changed) Object.assign(user, { [key]: dto[key as Editable] });
@@ -99,9 +109,15 @@ export class UsersService {
         for (const event of events) {
           await this.audit(manager, id, actor.id, event.type, { fields: event.fields.filter(field => changed.includes(field)), sessionsRevoked });
         }
-        return { ...publicUser(user), sessionsRevoked };
+        return { ...publicUser(user), sessionsRevoked, handedOver };
       });
     } catch (error) { return this.handleError(error); }
+  }
+  private async handOverFor(manager: EntityManager, id: string, to: string | undefined, actor: User) {
+    const { counts } = await openRecords(manager, id);
+    if (!counts.total) return 0;
+    if (!to) throw new ConflictException({ message: 'Choose who takes over their open records.', openRecords: counts });
+    return handOver(manager, id, to, actor.id);
   }
   /** Serializes administrator mutations (preserving the final active administrator) and rechecks the actor in the transaction. */
   private async lockAdministration(manager: EntityManager, actor: User) {

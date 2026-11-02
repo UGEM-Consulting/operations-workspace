@@ -2,17 +2,18 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Building2, FileText, Mail, Phone, Plus, Route, UserMinus, Users } from 'lucide-react';
+import { Ban, Building2, Calendar, Ellipsis, FileText, Mail, Phone, Plus, RotateCcw, Route, UserMinus, Users } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog } from '@/components/ui/dialog';
+import { DropdownMenu } from '@/components/ui/dropdown-menu';
 import { Alert, Notice } from '@/components/ui/alert';
 import { Avatar } from '@/components/ui/avatar';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Progress } from '@/components/ui/feedback';
-import { Input, Select, Textarea } from '@/components/ui/field';
+import { Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
 import { Timeline } from '@/components/ui/timeline';
@@ -21,10 +22,15 @@ import { Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { Choice, fullName, memberBadge, MemberProfile, TeamRow } from './types';
+import { middayIso } from '@/lib/navigation';
+import { Choice, fullName, memberBadge, MemberProfile, TeamRow, toReassign } from './types';
 
-type Action = 'move' | 'reassign' | 'leave' | 'title' | 'contact';
-const today = () => new Date().toLocaleDateString('en-CA');
+type Action = 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact';
+// The Eastern date, as the API uses to tell a notice from leaving today; the browser's own date could promise the wrong one.
+const today = (at = Date.now()) => new Date(at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+const NOTICE_MAX_DAYS = 90;
+const noticeLimit = () => today(Date.now() + NOTICE_MAX_DAYS * 86400_000);
+const LastDay = ({ day }: { day: string }) => <LocalTime iso={middayIso(day)} format="date" />;
 // One reachable way to contact the dispatcher: where it came from, and a copy button.
 function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; value: string; source: string; action?: React.ReactNode }) {
   return <li className="flex items-center gap-3 px-4 py-3 sm:px-5">
@@ -48,13 +54,15 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [error, setError] = useState('');
   const [mcId, setMcId] = useState(member.current?.mcId ?? '');
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
+  const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('FORWARD');
+  const [lastDay, setLastDay] = useState(today());
   const [removing, setRemoving] = useState<{ id: string; value: string } | null>(null);
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts;
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
   const support = member.position === 'SUPPORT', supportOf = member.supportOf ?? null;
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
-  function start(next: Action) { setAction(next); setError(''); setMcId(member.current?.mcId ?? ''); }
+  function start(next: Action) { setAction(next); setError(''); setMcId(member.current?.mcId ?? ''); setLastDay(next === 'lastDay' && member.notice ? member.notice.lastDay : today()); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending || !action) return;
@@ -63,10 +71,14 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     try {
       if (action === 'reassign') await mutate(`dispatch/members/${member.id}/reassign`, 'POST', { version: member.version, dispatcherId: form.dispatcherId, startedAt: form.startedAt, reason: form.reason });
       else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId || null, teamId: form.teamId || null, startedAt: form.startedAt, reason: form.reason });
-      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason });
+      // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
+      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && accounts?.companyEmail ? { emailAfter } : {}) });
+      else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
+      else if (action === 'cancel') await mutate(`dispatch/members/${member.id}/cancel-notice`, 'POST', { version: member.version, reason: form.reason });
+      else if (action === 'removeNow') await mutate(`dispatch/members/${member.id}/remove-access`, 'POST', { version: member.version, reason: form.reason });
       else if (action === 'title') await mutate(`dispatch/members/${member.id}`, 'PATCH', { version: member.version, jobTitleId: form.jobTitleId || null });
       else await mutate(`dispatch/members/${member.id}/contacts`, 'POST', { kind, value: form.value, ...(form.label?.trim() ? { label: form.label } : {}) });
-      toast({ title: action === 'reassign' ? 'Dispatcher changed' : action === 'move' ? `${name} moved` : action === 'leave' ? `${name} marked as left` : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
+      toast({ title: action === 'reassign' ? 'Dispatcher changed' : action === 'move' ? `${name} moved` : action === 'leave' ? (lastDay > today() ? `Notice recorded for ${name}` : `${name} marked as left`) : action === 'lastDay' ? 'Last day changed' : action === 'cancel' ? 'Notice cancelled' : action === 'removeNow' ? 'IT was asked to remove access now' : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(null); }
@@ -80,28 +92,57 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   }
   const where = (row: { mc: string | null; team: string | null }) => row.mc ? `${row.mc}${row.team ? ` · ${row.team}` : ''}` : 'Independent';
   const progress = accounts?.total ? <Progress label="IT setup" value={accounts.done ?? 0} max={accounts.total} /> : null;
+  // Someone with IT setup (finished or not) gets an IT removal checklist when marked as left; supports never had accounts.
+  const removesAccess = !support && !!accounts, removal = member.removal ?? null;
+  const removalOpen = !!removal && !removal.completedAt, notice = member.notice ?? null, onNotice = open && !!notice;
+  const drivers = member.driversToReassign ?? [], supportsLeft = member.supports ?? [], reassign = toReassign(drivers.length, supportsLeft.length), anyoneLeft = drivers.length + supportsLeft.length > 0;
+  const noticeDay = lastDay > today();
+  const emailNow = removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
+    ? (removal.emailAfter === 'FORWARD' ? `suspended and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : 'suspended') : null;
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <div className="flex flex-wrap items-start gap-4">
       {member.photo ? <a href={`/api/backend/dispatch/members/${member.id}/photos/selfie`} target="_blank" rel="noopener" className="shrink-0 rounded-lg focus-visible:outline-2" title="Open the photo full size">
         <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/selfie`} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></a> : <Avatar name={name} size="lg" />}
-      <div className="min-w-0 flex-1"><PageHeader title={name} badge={<Badge label={badge.label} tone={badge.tone} />}
+      <div className="min-w-0 flex-1"><PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><Badge label={badge.label} tone={badge.tone} />{notice && <Badge label={notice.passed ? 'Last day passed' : `Leaving ${new Date(middayIso(notice.lastDay)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`} tone={notice.passed ? 'danger' : 'warning'} />}</span>}
         meta={[support ? (supportOf ? <>Support for {supportOf.dispatcher} · {where(supportOf)}</> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No dispatcher')
           : current ? <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No MC or team',
           member.leadOf ? `Team lead of ${member.leadOf.name}` : member.position === 'SUPPORT' ? 'Support' : member.jobTitle?.name ?? 'Dispatcher',
-          <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
+          notice ? <>Last day <LastDay day={notice.lastDay} /></> : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
         action={open && <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => start('leave')}><UserMinus aria-hidden="true" className="size-4" />Mark as left</Button>
+          {onNotice ? <><Button variant="outline" onClick={() => start('lastDay')}><Calendar aria-hidden="true" className="size-4" />Change last day</Button>
+            <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={[{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') },
+              ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]} /></>
+            : <Button variant="outline" onClick={() => start('leave')}><UserMinus aria-hidden="true" className="size-4" />Mark as leaving</Button>}
           {support ? <Button onClick={() => start('reassign')}><Route aria-hidden="true" className="size-4" />Change dispatcher</Button>
-            : <Button onClick={() => start('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button>}</div>} /></div>
+            : !onNotice && <Button onClick={() => start('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button>}</div>} /></div>
     </div>
+    {notice && (notice.passed ? <Alert tone="danger" title="Their last day has passed"><p>{anyoneLeft ? `${reassign} still assigned, so this record stays Leaving until they’re reassigned, then it becomes Left automatically. ` : 'They’ll be marked as left within a few minutes. '}IT’s removal of their access doesn’t wait for this.</p></Alert>
+      : anyoneLeft ? <Alert tone="warning" title={<>{reassign} to reassign by <LastDay day={notice.lastDay} /></>}><p>{name} can’t be marked as left while anyone is still with them. IT removes their access at the end of that day either way.</p></Alert>
+      : <Alert tone="info" title={<>Leaving <LastDay day={notice.lastDay} /></>}><p>Everyone is reassigned. The workspace marks them as left once that day has passed.</p></Alert>)}
+    {open && member.signInOff && !notice?.passed && !removal?.removeNowAt && <Alert tone="warning" title="Their team lead sign-in is off"><p>If they’re still working as a team lead, an administrator can turn it back on in Staff accounts.</p></Alert>}
     {member.status === 'ONBOARDING' && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
-    {member.status === 'LEFT' && <Alert tone="info" title="This dispatcher has left"><p>The record and its history are kept. It can’t be moved or edited.</p></Alert>}
+    {member.status === 'LEFT' && (removal && removalOpen ? <Alert tone="warning" title={`IT is removing access: ${removal.done} of ${removal.total} done`}>
+      <p>{emailNow ? `Company email ${emailNow}. ` : ''}The record and its history are kept; it can’t be moved or edited.</p></Alert>
+      : <Alert tone="info" title="This dispatcher has left"><p>{removal?.completedAt ? <>IT removed their access <LocalTime iso={removal.completedAt} format="date" />. </> : null}The record and its history are kept. It can’t be moved or edited.</p></Alert>)}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0">
         <Tabs label="Dispatcher sections" defaultValue="overview" items={[{ key: 'overview', label: 'Overview' }, { key: 'files', label: 'Photos and documents', count: (member.photo ? 1 : 0) + (member.idPhoto ? 1 : 0) + (member.documents?.length ?? 0) }, { key: 'history', label: 'History' }]}
           panels={{
             overview: <div className="space-y-6">
+            {notice && anyoneLeft && <Card><CardHeader title="Still to reassign" description="Move each one to another dispatcher before the last day." />
+              <ul className="mt-3 divide-y divide-border border-t border-border">
+                {drivers.map(driver => <li key={driver.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5"><span className="min-w-0"><span className="block text-sm font-medium">{driver.name}</span><span className="text-[13px] text-muted-foreground">Driver{driver.truck ? ` · truck ${driver.truck}` : ''}</span></span>
+                  <Button asChild size="sm" variant="outline"><Link href="/dispatch/drivers?status=ASSIGNED">Change dispatcher<span className="sr-only"> for {driver.name}</span></Link></Button></li>)}
+                {supportsLeft.map(row => <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5"><span className="min-w-0"><span className="block text-sm font-medium">{row.name}</span><span className="text-[13px] text-muted-foreground">Support</span></span>
+                  <Button asChild size="sm" variant="outline"><Link href={`/dispatch/dispatchers/${row.id}`}>Reassign<span className="sr-only"> {row.name}</span></Link></Button></li>)}
+              </ul></Card>}
+            {notice && <Card><CardHeader title="Why they’re leaving" /><CardBody className="space-y-1"><p className="whitespace-pre-wrap text-sm">{notice.reason}</p>
+              <p className="text-[13px] text-muted-foreground">Notice recorded{notice.recordedBy ? ` by ${notice.recordedBy}` : ''} on <LocalTime iso={notice.createdAt} format="date" />.</p>
+              {removal?.removeNowAt && <p className="pt-2 text-sm"><span className="font-medium">Access removal requested <LocalTime iso={removal.removeNowAt} format="date" />:</span> {removal.removeNowReason}</p>}</CardBody></Card>}
+            {member.status === 'LEFT' && member.leftReason && <Card><CardHeader title="Why they left" />
+              <CardBody className="space-y-1"><p className="whitespace-pre-wrap text-sm">{member.leftReason}</p>
+                {(member.leftBy || member.leftAt) && <p className="text-[13px] text-muted-foreground">Marked as left{member.leftBy ? ` by ${member.leftBy}` : ''}{member.leftAt ? <> on <LocalTime iso={member.leftAt} format="date" /></> : null}.</p>}</CardBody></Card>}
             {details && <Card>
               <CardHeader title="Personal details" description={<>From the approved application{details.submittedAt ? <>, last submitted <LocalTime iso={details.submittedAt} format="date" /></> : null}.</>} />
               <CardBody><DescriptionList items={[
@@ -146,6 +187,11 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
                   {!member.photo && !member.idPhoto && !member.documents?.length && <p className="text-sm text-muted-foreground">No photos or signed documents.</p>}
             </div>,
             history: <div className="space-y-6">
+            {!!member.noticeHistory?.length && <Card><CardHeader title="Notices" description="Last days that changed, and notices that were cancelled." />
+              <CardBody><Timeline items={member.noticeHistory.flatMap(row => [
+                ...(row.cancelledAt ? [{ id: `${row.id}-cancelled`, title: `Notice cancelled${row.cancelledBy ? ` by ${row.cancelledBy}` : ''}`, meta: <LocalTime iso={row.cancelledAt} />, body: row.cancelReason ?? undefined }] : []),
+                ...[...row.changes].reverse().map((change, index) => ({ id: `${row.id}-${index}`, title: <>Last day changed to <LastDay day={change.to} /></>, meta: <>From <LastDay day={change.from} /> · <LocalTime iso={change.at} /></>, body: change.reason })),
+                { id: row.id, title: `Notice recorded${row.recordedBy ? ` by ${row.recordedBy}` : ''}`, meta: <LocalTime iso={row.createdAt} />, body: row.reason }])} /></CardBody></Card>}
             {support && <Card>
               <CardHeader title="Dispatcher history" description="Every dispatcher this support has assisted. Changes are recorded, never overwritten." />
               <CardBody><Timeline items={(member.supportHistory ?? []).map(row => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const, icon: <Users aria-hidden="true" />,
@@ -186,11 +232,30 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             <Link href={`/dispatch/dispatchers/${row.id}`} className="min-w-0 text-sm font-medium text-primary underline-offset-4 hover:underline">{row.name}</Link>
             <span className="shrink-0 text-[13px] text-muted-foreground">since <LocalTime iso={row.since} format="date" /></span></li>)}</ul>
         </Card>}
+        {removal?.scheduled && <Card>
+          <CardHeader title="IT access" actions={<Badge label="Scheduled" tone="info" />} />
+          <CardBody className="text-sm"><DescriptionList layout="rows" items={[
+            { label: 'Company email', value: <>Working until <LastDay day={removal.dueOn} /></> }, { label: 'RingCentral', value: <>Working until <LastDay day={removal.dueOn} /></> },
+            { label: 'Email afterwards', value: removal.emailAfter === 'FORWARD' ? `Forward to ${removal.forwardTo ?? 'the manager'}, 30 days` : 'Suspend only' },
+            { label: 'Remove', value: <>End of <LastDay day={removal.dueOn} /></> }]} /></CardBody></Card>}
+        {notice && <Card><CardHeader title="On the last day" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">Once everyone is reassigned, the workspace marks {member.firstName} as left. A team lead sign-in ends then too. The workspace never messages the person leaving.</p></CardBody></Card>}
+        {removal && !removal.scheduled && <Card>
+          <CardHeader title="IT access" />
+          <CardBody className="space-y-4 text-sm">
+            <Progress label="Removal" value={removal.done} max={removal.total} />
+            <DescriptionList layout="rows" items={[
+              { label: 'Company email', value: emailNow ? emailNow[0].toUpperCase() + emailNow.slice(1) : removal.completedAt ? 'Removed' : 'Being removed' },
+              { label: 'RingCentral', value: removal.tasks.find(task => task.key === 'RINGCENTRAL')?.status === 'COMPLETED' ? 'Removed' : 'Being removed' },
+              { label: removal.completedAt ? 'Removed' : 'Remove by', value: <LocalTime iso={removal.completedAt ?? `${removal.dueOn}T12:00:00Z`} format="date" /> }]} />
+          </CardBody>
+        </Card>}
+        {removalOpen && !removal?.scheduled && <Card><CardHeader title="When it’s done" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">You get a portal notice when IT finishes. The workspace never messages the person who left.</p></CardBody></Card>}
         <Card>
           <CardHeader title={support ? 'Onboarding' : 'IT setup'} />
           <CardBody className="space-y-3 text-sm">
             {support ? <p className="text-muted-foreground">Supports need no IT setup or company accounts.</p>
               : !accounts ? <p className="text-muted-foreground">No IT setup request for this dispatcher.</p>
+              : accounts.cancelledAt ? <p>Cancelled <LocalTime iso={accounts.cancelledAt} format="date" />: they left before setup finished.</p>
               : accounts.completedAt ? <p>Setup complete <LocalTime iso={accounts.completedAt} format="date" />.</p>
               : <><p>In progress. The dispatcher becomes Active when IT finishes.</p>{progress}</>}
             {member.canOpenApplication && member.applicationId && <Link href={`/onboarding/applications/${member.applicationId}`} className="inline-block text-primary underline-offset-4 hover:underline">Open onboarding record</Link>}
@@ -199,10 +264,10 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         <p className="text-xs leading-5 text-muted-foreground">Dispatcher managers and administrators see this record. Dispatchers don’t have accounts and never see the workspace.</p>
       </div>
     </div>
-    {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' ? 'warning' : undefined}
-      title={action === 'reassign' ? `Change ${name}’s dispatcher` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as left?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
-      description={action === 'reassign' ? 'They start assisting the new dispatcher on the start date; the current one stays in the history.' : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'The record and its history are kept. Leaving a team also ends being its lead.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
-      actions={<Button type="submit" form="member-action" variant={action === 'leave' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'reassign' ? 'Change dispatcher' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? 'Mark as left' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
+    {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' || action === 'removeNow' ? 'danger' : undefined} size={action === 'leave' && removesAccess ? 'lg' : undefined} closeLabel={action === 'cancel' ? 'Keep notice' : undefined}
+      title={action === 'reassign' ? `Change ${name}’s dispatcher` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
+      description={action === 'reassign' ? 'They start assisting the new dispatcher on the start date; the current one stays in the history.' : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
+      actions={<Button type="submit" form="member-action" variant={action === 'leave' || action === 'removeNow' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'reassign' ? 'Change dispatcher' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? (noticeDay ? 'Record notice' : 'Mark as left') : action === 'lastDay' ? 'Change last day' : action === 'cancel' ? 'Cancel notice' : action === 'removeNow' ? 'Remove access now' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
         {action === 'reassign' && <>
           {dispatchersFailed && <Alert tone="danger"><p>Couldn’t load dispatchers. Reload the page.</p></Alert>}
@@ -221,8 +286,35 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Lakeside needed more dispatchers." />
         </>}
         {action === 'leave' && <>
-          <Input label="Last day" name="leftAt" type="date" required defaultValue={today()} max={today()} width="sm" />
-          <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="Kept with the record. Don’t include personal details." />
+          <Input label="Last day" name="leftAt" type="date" required value={lastDay} onChange={event => setLastDay(event.target.value)} max={support || !accounts || accounts.completedAt ? noticeLimit() : today()} width="sm"
+            hint={support || !accounts || accounts.completedAt ? `Up to ${NOTICE_MAX_DAYS} days ahead.` : 'Today or earlier: their IT setup isn’t finished.'} />
+          <Textarea label={noticeDay ? 'Why they’re leaving' : 'Why they left'} name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
+          {noticeDay && <Alert tone="info" title={<>{member.firstName} stays {badge.label} until <LastDay day={lastDay} /></>}><p>They keep working, with their drivers and accounts, until the end of that day. Then the workspace marks them as left.</p></Alert>}
+          {noticeDay && anyoneLeft && <Alert tone="warning" title={<>{reassign} to reassign by <LastDay day={lastDay} /></>}><p>You can do this during the notice. They can’t be marked as left until it’s done.</p></Alert>}
+          {removesAccess && <Card><CardHeader title="IT removes their access" description={noticeDay ? 'IT gets the removal checklist and a Telegram alert now, so it can prepare.' : 'Mark as left starts an IT removal checklist and alerts the IT team on Telegram.'} />
+            <CardBody className="space-y-4"><DescriptionList layout="rows" items={[
+              { label: 'Company email', value: accounts?.companyEmail, emptyLabel: 'None recorded' },
+              { label: 'RingCentral number', value: accounts?.workPhone, mono: true, emptyLabel: 'None recorded' },
+              { label: noticeDay ? 'Remove' : 'Remove by', value: noticeDay ? <>At the end of <LastDay day={lastDay} />, not before</> : 'End of their last day' }]} />
+              {accounts?.companyEmail && <RadioGroup name="emailAfter" label="Their company email" cards value={emailAfter} onChange={value => setEmailAfter(value as 'FORWARD' | 'SUSPEND')} options={[
+                { value: 'FORWARD', label: 'Forward new email to me', description: 'IT suspends the account and forwards new email to you for 30 days.' },
+                { value: 'SUSPEND', label: 'Just suspend it', description: 'New email bounces. IT keeps the mailbox until the retention rules say otherwise.' }]} />}
+            </CardBody></Card>}
+          {!noticeDay && <p className="text-[13px] leading-5 text-muted-foreground">A dispatcher with drivers or supports can’t be marked as left: reassign them first, or choose a later last day.</p>}
+        </>}
+        {action === 'lastDay' && <>
+          <Input label="New last day" name="lastDay" type="date" required value={lastDay} onChange={event => setLastDay(event.target.value)} min={today()} max={noticeLimit()} width="sm" hint={<>Now <LastDay day={notice?.lastDay ?? today()} />. Today, or up to {NOTICE_MAX_DAYS} days ahead.</>} />
+          <Textarea label="Why it changed" name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
+          <Alert tone="info"><p>Choosing today means they leave at the end of today, once everyone is reassigned.</p></Alert>
+        </>}
+        {action === 'cancel' && <>
+          <Textarea label="Why they’re staying" name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
+          <Alert tone="info"><p>IT’s removal checklist is cancelled too. Once IT has started removing anything, or access removal was requested now, the notice can’t be cancelled: talk to IT.</p></Alert>
+        </>}
+        {action === 'removeNow' && <>
+          <Textarea label="Why now" name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
+          <DescriptionList layout="rows" items={[{ label: 'IT', value: 'Removal due today; IT gets a Telegram alert now' }, { label: 'Team lead sign-in', value: 'Turned off now, if they have one' }, { label: 'Last day', value: <>Stays <LastDay day={notice?.lastDay ?? today()} /> until you change it</> }]} />
+          {anyoneLeft && <Alert tone="warning" title={`Reassign their ${reassign}`}><p>{member.firstName} won’t be able to work with them without access. Removing access never waits for this.</p></Alert>}
         </>}
         {action === 'title' && <Select label="Job title" name="jobTitleId" defaultValue={member.jobTitle?.id ?? ''} placeholder="Not set" width="full"
           options={jobTitles.filter(title => !title.archived || title.id === member.jobTitle?.id).map(title => ({ value: title.id, label: title.name }))} />}

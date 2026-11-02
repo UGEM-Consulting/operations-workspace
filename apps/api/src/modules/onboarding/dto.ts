@@ -16,6 +16,13 @@ export class CreateInvitationDto {
  @optional() @IsUUID() supportsMemberId?: string;
  @IsInt() @Min(1) @Max(30) expirationDays = 7;
  @IsBoolean() telegramRequired = false;
+ // An administrator may make another active manager responsible; omitted means whoever creates it.
+ @optional() @IsUUID() managerId?: string;
+}
+/** Hand an application (and its invitation) to another responsible manager, with an optional note for the history. */
+export class ChangeManagerDto {
+ @IsUUID() managerId!: string;
+ @optional() @trim() @IsString() @MaxLength(500) note?: string;
 }
 export class BeginVerificationDto {
  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toLowerCase() : value) @IsEmail() @MaxLength(254) email!: string;

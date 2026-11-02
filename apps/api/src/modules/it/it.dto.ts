@@ -1,7 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
-import { REQUEST_STATUSES, RequestStatus, TASK_STATUSES, TaskStatus } from './it.entity';
+import { NUMBER_OUTCOMES, NumberOutcome, REQUEST_STATUSES, RequestStatus, TASK_STATUSES, TaskStatus } from './it.entity';
 const trim=()=>Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim():value);
 export class TaskUpdateDto {
  @IsInt() @Min(0) version!:number;
@@ -22,5 +22,17 @@ export class ItQueueDto {
  @Type(()=>Number) @IsInt() @Min(1) @Max(100000) page=1;
  @Type(()=>Number) @IsInt() @Min(1) @Max(50) pageSize=20;
  @IsIn(['ALL',...REQUEST_STATUSES]) status:RequestStatus|'ALL'='ALL';
+ @trim() @IsString() @MaxLength(100) search='';
+}
+/** A removal task. Completing RingCentral records what happens to the number (kept, forwarded or released). */
+export class RemovalTaskDto extends TaskUpdateDto {
+ @IsOptional() @IsIn(NUMBER_OUTCOMES) numberOutcome?:NumberOutcome;
+}
+/** IT tasks: setups and removals in one list. Open is every unfinished task; Setup and Removal the open ones of each, due removals only; Scheduled the removals not due yet. */
+export const TASK_VIEWS=['open','setup','removal','scheduled','finished','all'] as const;
+export class ItTasksDto {
+ @Type(()=>Number) @IsInt() @Min(1) @Max(100000) page=1;
+ @Type(()=>Number) @IsInt() @Min(1) @Max(50) pageSize=20;
+ @IsIn(TASK_VIEWS) view:typeof TASK_VIEWS[number]='open';
  @trim() @IsString() @MaxLength(100) search='';
 }

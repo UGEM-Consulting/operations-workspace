@@ -39,7 +39,7 @@ export function EmploymentPicker({ options, original, onChange, optional = false
   const teams = options.teams.filter(team => team.mcId === choice.mc);
   function update(next: Choice) { setChoice(next); onChange(asText(options, next)); }
   // Text that matches no list entry (typed before the lists existed) is shown so the manager can pick its match.
-  const unmatched = (text: string, picked: string) => !picked && text.trim() ? `Entered as “${text.trim()}”, which isn’t in the list. Pick the matching entry.` : undefined;
+  const unmatched = (text: string, picked: string) => !picked && text.trim() ? (['not listed', 'no team yet'].includes(key(text)) ? `The applicant answered “${text.trim()}”. Pick the right entry.` : `Entered as “${text.trim()}”, which isn’t in the list. Pick the matching entry.`) : undefined;
   return <div className="space-y-4">
     <Select label="MC" name="mcId" value={choice.mc} disabled={disabled} required={!optional} optional={optional} width="full" placeholder={optional ? 'Let the applicant choose' : 'Choose an MC'}
       onChange={event => update({ ...choice, mc: event.target.value, team: event.target.value === INDEPENDENT ? INDEPENDENT : '' })}

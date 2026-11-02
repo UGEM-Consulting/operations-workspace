@@ -3,7 +3,11 @@ export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
 export interface MemberRow { id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
-  jobTitle: string | null; since: string | null; mc: string | null; teamId: string | null; team: string | null; lead: boolean; dispatcherId?: string | null; dispatcher?: string | null }
+  jobTitle: string | null; since: string | null; mc: string | null; teamId: string | null; team: string | null; lead: boolean; dispatcherId?: string | null; dispatcher?: string | null;
+  // On notice (from an API with notice periods): the last day, whether it has passed, who still needs reassigning, IT's removal.
+  lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null }
+/** "3 drivers, 1 support", for someone on notice. */
+export const toReassign = (drivers: number, supports: number) => [drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', supports ? `${supports} support${supports === 1 ? '' : 's'}` : ''].filter(Boolean).join(drivers && supports ? ', ' : '') || 'Nobody';
 export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number } }
 export interface Assignment { id: string; startedAt: string; endedAt: string | null; reason: string | null; mcId: string | null; mc: string | null; mcNumber: string | null; teamId: string | null; team: string | null; movedBy: string | null }
 export interface MemberDetails { legalFirstName: string | null; legalLastName: string | null; preferredAmericanFirstName: string | null; preferredAmericanLastName: string | null;
@@ -11,7 +15,14 @@ export interface MemberDetails { legalFirstName: string | null; legalLastName: s
 export interface MemberContact { id: string; kind: 'EMAIL' | 'PHONE'; value: string; label: string | null; createdAt: string; addedBy: string | null }
 export interface MemberProfile { id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
-  accounts: { companyEmail: string | null; workPhone: string | null; completedAt: string | null; done?: number; total?: number } | null;
+  accounts: { companyEmail: string | null; workPhone: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
+  // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).
+  leftReason?: string | null; leftBy?: string | null; signInOff?: boolean;
+  removal?: { id: string; dueOn: string; scheduled?: boolean; removeNowAt?: string | null; removeNowReason?: string | null; completedAt: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardTo: string | null; numberOutcome: string | null; done: number; total: number; tasks: { key: string; status: string }[] } | null;
+  // A notice period in progress, who still needs reassigning, and earlier notices that were cancelled or moved.
+  notice?: { id: string; lastDay: string; reason: string; createdAt: string; recordedBy: string | null; passed: boolean } | null;
+  driversToReassign?: { id: string; name: string; truck: string | null }[];
+  noticeHistory?: { id: string; lastDay: string; reason: string; recordedBy: string | null; createdAt: string; cancelledAt: string | null; cancelledBy: string | null; cancelReason: string | null; changes: { from: string; to: string; reason: string; at: string }[] }[];
   // From an API with full dispatcher details; absent on an older one.
   canOpenApplication?: boolean; details?: MemberDetails | null; documents?: { id: string; kind: string; title: string; version: number; signedAt: string }[]; photo?: boolean; idPhoto?: boolean; contacts?: MemberContact[]; activity?: { id: string; event: string; createdAt: string }[];
   // A support's dispatcher now and before (with that dispatcher's MC and team); a dispatcher's supports now.

@@ -37,7 +37,10 @@ export const mfaStatusSchema = z.looseObject({ enabled: z.boolean(), required: z
   method: z.enum(['TOTP', 'EMAIL']).nullable().optional(), emailCodesAvailable: z.boolean().optional(), email: text.optional() });
 
 /** GET /staff/telegram: own Telegram alert connection. */
-export const staffTelegramSchema = z.looseObject({ available: z.boolean(), connected: z.boolean(), username: nullableText, alerts: z.array(z.enum(['REVIEW_WAITING', 'IT_SETUP_WAITING'])) });
+export const staffTelegramSchema = z.looseObject({ available: z.boolean(), connected: z.boolean(), username: nullableText, alerts: z.array(z.string()).transform(list => list.filter((kind): kind is StaffAlert => (STAFF_ALERTS as readonly string[]).includes(kind))) });
+/** Staff alert kinds this page can describe; an unknown kind from a newer API is left out. */
+export const STAFF_ALERTS = ['REVIEW_WAITING', 'IT_SETUP_WAITING', 'IT_REMOVAL_WAITING'] as const;
+export type StaffAlert = typeof STAFF_ALERTS[number];
 
 /** GET /onboarding/applications/:id */
 export const reviewDetailSchema = z.looseObject({
@@ -141,6 +144,17 @@ export const driverProfileSchema = driverRow.extend({
 export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), canPublish: z.boolean(),
   kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
 
+/** GET /it/tasks: setups and removals together, with the counts for each view. */
+export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL']), id: text, name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
+  dueOn: nullableText, scheduled: z.boolean(), updatedAt: text, completedAt: nullableText })), total: z.number(), page: z.number(), pageCount: z.number(), pageSize: z.number(),
+  stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number() }) });
+/** GET /it/removals/:id */
+export const itRemovalSchema = z.looseObject({
+  request: z.looseObject({ id: text, memberId: text, version: z.number(), status: text, scheduled: z.boolean(), dueOn: text, emailAfter: text, numberOutcome: nullableText, completedAt: nullableText, cancelledAt: nullableText, removeNowAt: nullableText,
+    profile: z.looseObject({ displayName: text, companyEmail: nullableText, ringCentralNumber: nullableText, mcName: nullableText, teamName: nullableText, setUpAt: nullableText }) }),
+  tasks: z.array(z.looseObject({ id: text, key: text, label: text, status: text, optional: z.boolean() })),
+  activity: z.array(z.looseObject({ id: text, event: text, createdAt: text, metadata: z.record(z.string(), z.unknown()) })),
+});
 /** GET /it/onboarding/:id */
 export const itDetailSchema = z.looseObject({
   request: z.looseObject({ id: text, version: z.number(), status: text, profile: z.looseObject({ mcName: text, teamLead: text, jobTitle: text }), completedAt: nullableText }),

@@ -13,10 +13,10 @@ export default async function DispatcherPage({ params }: { params: Promise<{ id:
   if (!member.ok || !mcs.ok || !teams.ok || !titles.ok) throw new Error('Unable to load the dispatcher');
   const [profile, mcList, teamList, titleList] = await Promise.all([readResponse<MemberProfile>(member, 'dispatcher', memberProfileSchema), readResponse<{ items: Choice[] }>(mcs, 'MCs', choiceListSchema),
     readResponse<TeamList>(teams, 'teams', teamListSchema), readResponse<{ items: Choice[] }>(titles, 'job titles', choiceListSchema)]);
-  // Dispatchers a support could assist instead (not left; still in IT setup is fine). If they can't be loaded, the
+  // Dispatchers a support could assist instead (not left or leaving; still in IT setup is fine). If they can't be loaded, the
   // "Change dispatcher" dialog says so instead of offering an empty list.
   const dispatcherList = members.ok ? await readResponse<MemberList>(members, 'dispatchers', memberListSchema).catch(() => null) : null;
-  const dispatchers = (dispatcherList?.items ?? []).filter(item => item.position === 'DISPATCHER' && item.status !== 'LEFT' && item.id !== profile.id)
+  const dispatchers = (dispatcherList?.items ?? []).filter(item => item.position === 'DISPATCHER' && item.status !== 'LEFT' && !item.lastDay && item.id !== profile.id)
     .map(item => ({ id: item.id, name: fullName(item), mc: item.mc, team: item.team }));
   return <MemberProfileView member={profile} mcs={mcList.items} teams={teamList.items} jobTitles={titleList.items} dispatchers={dispatchers} dispatchersFailed={!dispatcherList} />;
 }

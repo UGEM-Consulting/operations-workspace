@@ -18,6 +18,7 @@ import { useToast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
 import { ApiError, APPLICANT_SESSION_EXPIRED_EVENT, errorMessage, mutate, readApi } from '@/lib/client-api';
 import { applicantSessionExpiry, clearApplicantSession } from '@/lib/applicant-session';
+import { ApplicantEmployment, startingJobTitle } from './applicant-employment';
 import { ApplicantRecord, fieldLabels, FieldName, itemLabels } from './types';
 import { ApplicantDocuments } from './applicant-documents';
 import { ApplicantUpdates } from './applicant-updates';
@@ -27,7 +28,7 @@ const baseSteps=['Personal information','Employment','Review & submit'];
 const documentSteps=['Personal information','Employment','Documents & signatures','Review & submit'];
 const labels = fieldLabels;
 const blank={firstName:'',lastName:'',personalPhoneNumber:'',workPhoneNumber:'',preferredAmericanFirstName:'',preferredAmericanLastName:'',telegram:'',mcName:'',teamLead:'',jobTitle:'Dispatcher'};
-const formValues=(record:ApplicantRecord):Values=>({...blank,...record.application.fields,accurate:false});
+const formValues=(record:ApplicantRecord):Values=>({...blank,jobTitle:startingJobTitle(record.employmentOptions,blank.jobTitle),...record.application.fields,accurate:false});
 const conflictMessage='Your application changed in another tab; we loaded the latest version. Review your entries and save again.';
 // Autofill and keyboard hints. American names are chosen names, so the browser must not fill the legal name into them.
 const inputHints:Partial<Record<FieldName,React.ComponentProps<'input'>>>={
@@ -112,7 +113,10 @@ function Form({ initial }: { initial: ApplicantRecord }) {
   const issues=stepIssues(getValues(),record.invitation.telegramRequired,fields,support);
   clearErrors(fields as (keyof Values)[]);
   if(issues.length){for(const issue of issues)setError(issue.path[0] as keyof Values,{message:issue.message});setFailed(true);setMessage(`Please correct the highlighted fields. ${[...new Set(issues.map(issue=>issue.message))].join(' ')}`);setInvalidField({field:issues[0].path[0] as keyof Values});return;}
-  setFailed(false);setMessage('');goTo(step+1);
+  const advance=()=>{setFailed(false);setMessage('');goTo(step+1);};
+  // The draft is saved on each step, so a session that ends later loses nothing. A failed save stays here with its message.
+  if(!isDirty){advance();return;}
+  void handleSubmit(async values=>{if(await save(values,false,true))advance();},invalidForm)();
  }
  async function loadLatest(keepEntries:boolean) {
   const latest=await readApi<ApplicantRecord>('applicant/application');
@@ -121,11 +125,12 @@ function Form({ initial }: { initial: ApplicantRecord }) {
   if(!keepEntries)reset(formValues(latest));
   return latest;
  }
- async function save(values:Values,submit:boolean) {
+ /** Saves or submits; true when it worked. Quiet saves (Continue) show no toast: the step changing says enough. */
+ async function save(values:Values,submit:boolean,quiet=false):Promise<boolean> {
   if(submit)setSubmitAttempted(true);
-  if(submit&&record.documents.missing.length){setFailed(true);setStep(2);setMessage('Upload both photos and sign every required document before submitting.');return;}
+  if(submit&&record.documents.missing.length){setFailed(true);setStep(2);setMessage('Upload both photos and sign every required document before submitting.');return false;}
   if(submit){const checked=applicationSubmitSchema(record.invitation.telegramRequired,support).safeParse(values);
-   if(!checked.success){for(const issue of checked.error.issues)setError(issue.path[0] as keyof Values,{message:issue.message});showValidationErrors(checked.error.issues);return;}}
+   if(!checked.success){for(const issue of checked.error.issues)setError(issue.path[0] as keyof Values,{message:issue.message});showValidationErrors(checked.error.issues);return false;}}
   setBusy(true);setFailed(false);setMessage('');setConflict(false);
   try {
    const {accurate,...fields}=values;
@@ -138,13 +143,15 @@ function Form({ initial }: { initial: ApplicantRecord }) {
    const updated=await mutate<ApplicantRecord>(submit?'applicant/submit':'applicant/draft',submit?'POST':'PATCH',{...fields,version,...(submit?{accurate}: {})});
    if(submit)setSubmittedHere(true);
    setRecord(updated);reset(values);
-   toast({title:submit?'Application submitted':updated.correction?'Corrections saved':'Draft saved',description:submit?'Your information has been received.':updated.correction?'Resubmit when you are ready for review.':'You can return using your application reference.'});
+   if(!quiet)toast({title:submit?'Application submitted':updated.correction?'Corrections saved':'Draft saved',description:submit?'Your information has been received.':updated.correction?'Resubmit when you are ready for review.':'You can return using your application reference.'});
+   return true;
   }catch(error){
    setFailed(true);
    if(error instanceof ApiError&&error.kind==='conflict'){
     // Never retry the save: load the latest record, keep the typed values and let the user review and save again.
     try{await loadLatest(true);setConflict(true);setMessage(conflictMessage);}catch(reload){setMessage(errorMessage(reload,'Your application changed. Reload the page before saving again.'));}
    }else setMessage(errorMessage(error,'Unable to save. Your changes remain on this page.'));
+   return false;
   }finally{setBusy(false);}
  }
  async function reloadLatest(){setBusy(true);try{await loadLatest(false);setConflict(false);setFailed(false);setMessage('');clearErrors();toast({title:'Latest version loaded'});}catch(error){setFailed(true);setMessage(errorMessage(error,'Unable to reload. Please try again.'));}finally{setBusy(false);}}
@@ -180,12 +187,13 @@ function Form({ initial }: { initial: ApplicantRecord }) {
  <form noValidate onSubmit={handleSubmit(values=>save(values,true),invalidForm)}><fieldset disabled={busy} className="min-w-0"><Card className="space-y-5 p-6 sm:p-8"><h2 ref={stepHeading} tabIndex={-1} className="text-lg font-semibold outline-none">{steps[step]}</h2><p className="text-sm text-muted-foreground">Step {step+1} of {steps.length}. All fields are required unless marked optional.</p>
  {step===0&&<div className="grid gap-4 sm:grid-cols-2">{personalShown.map(name=>field(name,{required:['firstName','lastName','personalPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName'].includes(name)||(name==='telegram'&&record.invitation.telegramRequired),maxLength:['personalPhoneNumber','workPhoneNumber'].includes(name)?40:100,hint:['personalPhoneNumber','workPhoneNumber'].includes(name)?phoneHint:undefined}))}<Input id="field-verifiedEmail" label="Verified personal email" type="email" readOnly value={record.invitation.email??''} hint="Verified when you started. It cannot be changed." className="sm:col-span-2" width="full"/></div>}
  {step===1&&support&&<p className="text-sm leading-6 text-muted-foreground">You’re joining as a support (updater), working with one of our dispatchers. Your manager sets your assignment, so there’s nothing to fill in here. Continue to the next step.</p>}
- {step===1&&!support&&<><p className="text-sm text-muted-foreground">Enter your employment details. Your manager will confirm the final assignments before approval. IT will assign your work phone number when setting up RingCentral.</p><div className="grid gap-4">{employmentFields.map(name=><div key={name} className="grid gap-2">{field(name,{required:true,maxLength:name==='jobTitle'?100:150})}{name!=='jobTitle'&&<Checkbox label="Independent" checked={watched[name]==='Independent'} disabled={!editable(name)} onChange={event=>setValue(name,event.target.checked?'Independent':'',{shouldDirty:true,shouldValidate:!!errors[name]})}/>}</div>)}</div></>}
+ {step===1&&!support&&record.employmentOptions&&<ApplicantEmployment options={record.employmentOptions} prefilled={!!(record.invitation.mcName||record.invitation.teamLead||record.invitation.jobTitle)} values={{mcName:watched.mcName??'',teamLead:watched.teamLead??'',jobTitle:watched.jobTitle??''}} errors={{mcName:errors.mcName?.message,teamLead:errors.teamLead?.message,jobTitle:errors.jobTitle?.message}} editable={editable} requested={requested} hint={correctionHint} register={name=>{const {ref,name:field,onBlur}=register(name);return {ref,name:field,onBlur};}} onChange={(name,value)=>setValue(name,value,{shouldDirty:true,shouldValidate:!!errors[name]})}/>}
+ {step===1&&!support&&!record.employmentOptions&&<><p className="text-sm text-muted-foreground">Enter your employment details. Your manager will confirm the final assignments before approval. IT will assign your work phone number when setting up RingCentral.</p><div className="grid gap-4">{employmentFields.map(name=><div key={name} className="grid gap-2">{field(name,{required:true,maxLength:name==='jobTitle'?100:150})}{name!=='jobTitle'&&<Checkbox label="Independent" checked={watched[name]==='Independent'} disabled={!editable(name)} onChange={event=>setValue(name,event.target.checked?'Independent':'',{shouldDirty:true,shouldValidate:!!errors[name]})}/>}</div>)}</div></>}
  {steps[step]==='Documents & signatures'&&<ApplicantDocuments record={record} onRecord={setRecord} busy={busy}/>}
  {step===reviewStep&&<>{record.documents.missing.length>0&&<Alert tone="warning"><p>Still needed: {record.documents.missing.map(item=>itemLabels[item]).join(', ')}.</p></Alert>}<DescriptionList items={reviewItems}/><ApplicantUpdates email={record.invitation.email}/><Checkbox {...register('accurate')} label="I confirm that the information is accurate." error={!!errors.accurate} aria-describedby={errors.accurate?'accurate-error':undefined} className="border-t border-border pt-5"/>{errors.accurate&&<p id="accurate-error" className="text-sm text-danger">{errors.accurate.message}</p>}</>}
  {message&&<Alert tone={failed?(conflict?'warning':'danger'):'success'} role={failed?'alert':'status'} action={conflict?<Button type="button" size="sm" variant="outline" onClick={()=>void reloadLatest()}>Reload latest</Button>:undefined}><p>{message}</p>{conflict&&<p className="text-[13px] text-muted-foreground">Reload latest replaces your unsaved entries with the saved version.</p>}</Alert>}
  <p role="status" className="text-sm text-muted-foreground">{busy?'Saving your information…':isDirty?'You have unsaved changes.':'No unsaved changes.'}</p><PendingHint pending={busy}/>
- <div className="flex flex-wrap justify-between gap-3"><div className="flex gap-2">{step>0&&<Button type="button" variant="outline" onClick={()=>goTo(step-1)}>Back</Button>}<Button type="button" variant="outline" disabled={busy} onClick={()=>void handleSubmit(values=>save(values,false),invalidForm)()}>{record.correction?'Save corrections':'Save draft'}</Button></div>{step<reviewStep?<Button type="button" onClick={continueStep}>Continue</Button>:<Button type="submit" disabled={busy}>{record.correction?'Resubmit application':'Submit application'}</Button>}</div></Card></fieldset></form>
+ <div className="flex flex-wrap justify-between gap-3"><div className="flex gap-2">{step>0&&<Button type="button" variant="outline" onClick={()=>goTo(step-1)}>Back</Button>}<Button type="button" variant="outline" disabled={busy} onClick={()=>void handleSubmit(values=>save(values,false),invalidForm)()}>{record.correction?'Save corrections':'Save draft'}</Button></div>{step<reviewStep?<Button key="continue" type="button" disabled={busy} onClick={continueStep}>Continue</Button>:<Button key="submit" type="submit" disabled={busy}>{record.correction?'Resubmit application':'Submit application'}</Button>}</div></Card></fieldset></form>
  <p className="text-sm text-muted-foreground">Save your draft before closing this page. <Link href="/apply/resume" onClick={event=>{if(isDirty||busy){event.preventDefault();if(!busy)setLeaving(true);}}} className="underline">Returning applicant access</Link></p>
  {leaving&&<Dialog open title="Leave without saving?" description="Your unsaved application changes will be lost. Save your draft before returning later." onClose={()=>setLeaving(false)} protectChanges={false} closeLabel="Keep editing" actions={<Button variant="destructive" onClick={()=>router.push('/apply/resume')}>Leave without saving</Button>}><p className="text-sm">Your previously saved draft will still be available.</p></Dialog>}
  {reverifyDialog}</div>;

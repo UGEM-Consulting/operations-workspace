@@ -7,7 +7,7 @@ import { EmailService } from '../email/email.service';
 import { DispatcherApplication, Invitation } from '../onboarding/entities';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, User, UserStatus } from '../users/user.entity';
-import { setupCompleteMessage, staffAlertMessage } from './notification-messages';
+import { setupCompleteMessage, staffAlertMessage, type StaffAlertKind } from './notification-messages';
 import { TelegramClient, TelegramError } from './telegram.client';
 import { ApplicantUpdateSettings, NotificationDelivery, type NotificationKind, StaffTelegramLink, StaffTelegramLinkToken, type UpdateChannel } from './updates.entity';
 import { DELIVERY_RETRY, UpdatesService } from './updates.service';
@@ -20,7 +20,8 @@ type Row = Pick<NotificationDelivery, 'kind' | 'applicationId' | 'recipientId' |
 
 /**
  * Notifications beyond applicant decisions: "setup complete" for the new hire (their chosen channels) and Telegram alerts
- * for staff (review waiting for the assigned manager, a new IT checklist for each IT specialist). Same outbox rules as
+ * for staff (review waiting for the assigned manager; a new IT setup checklist, or accounts to remove after a dispatcher
+ * left, for each IT specialist). Same outbox rules as
  * decision updates: queued in the causing transaction, sent after commit, swept and retried; no text or addresses stored.
  */
 @Injectable()
@@ -60,6 +61,11 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
     const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
     return this.insert(em, await this.staffRows(em, 'IT_SETUP_WAITING', specialists.map(user => user.id), request.id));
   }
+  /** With a removal's change (authorized 2026-11-02): every active IT specialist. Up to three for a notice: scheduled, due and, if asked, now. */
+  async queueItRemoval(em: EntityManager, removal: { id: string }, kind: 'IT_REMOVAL_WAITING' | 'IT_REMOVAL_SCHEDULED' | 'IT_REMOVAL_DUE' | 'IT_REMOVAL_NOW') {
+    const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
+    return this.insert(em, await this.staffRows(em, kind, specialists.map(user => user.id), removal.id));
+  }
   /** After the causing transaction commits. Never throws into the request. */
   dispatch(ids: string[]) { if (ids.length) this.email.runInBackground(() => this.deliver(ids)); }
   sweep() {
@@ -95,7 +101,7 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
     return { kind, applicationId: recipient.applicationId ?? null, recipientId: recipient.recipientId ?? null, referenceId, channel, status: skipped ? 'SKIPPED' : 'PENDING', failureCode: skipped };
   }
   /** Staff alerts are Telegram only; someone who has not connected Telegram gets a SKIPPED record instead. */
-  private async staffRows(em: EntityManager, kind: 'REVIEW_WAITING' | 'IT_SETUP_WAITING', userIds: string[], referenceId: string) {
+  private async staffRows(em: EntityManager, kind: StaffAlertKind, userIds: string[], referenceId: string) {
     if (!userIds.length) return [];
     const linked = new Set((await em.getRepository(StaffTelegramLink).createQueryBuilder('link').where('link.userId IN (:...ids)', { ids: userIds }).getMany()).map(link => link.userId));
     return userIds.map(id => this.row(kind, { recipientId: id }, referenceId, 'TELEGRAM', !this.telegram.enabled ? 'DISABLED' : linked.has(id) ? null : 'NOT_CONNECTED'));
@@ -145,11 +151,11 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
     if (!user || user.status !== UserStatus.ACTIVE) return 'INACTIVE';
     const link = await this.db.getRepository(StaffTelegramLink).findOneBy({ userId: user.id });
     if (!link) return 'NOT_CONNECTED';
-    const path = delivery.kind === 'REVIEW_WAITING' ? `/onboarding/applications/${delivery.referenceId}` : `/it/tasks/${delivery.referenceId}`;
+    const path = delivery.kind === 'REVIEW_WAITING' ? `/onboarding/applications/${delivery.referenceId}` : delivery.kind.startsWith('IT_REMOVAL') ? `/it/tasks/removals/${delivery.referenceId}` : `/it/tasks/${delivery.referenceId}`;
     return telegram(link.chatId, staffAlertMessage(delivery.kind, `${this.origin()}${path}`));
   }
 }
 /** Which alerts a role receives, for the Account security description. */
 function alertsFor(role: Role): string[] {
-  return [...(role === Role.DISPATCHER_MANAGER || role === Role.SYSTEM_ADMIN ? ['REVIEW_WAITING'] : []), ...(role === Role.IT_SPECIALIST ? ['IT_SETUP_WAITING'] : [])];
+  return [...(role === Role.DISPATCHER_MANAGER || role === Role.SYSTEM_ADMIN ? ['REVIEW_WAITING'] : []), ...(role === Role.IT_SPECIALIST ? ['IT_SETUP_WAITING', 'IT_REMOVAL_WAITING'] : [])];
 }

@@ -7,7 +7,7 @@ import { createItRequest } from '../it/create-request';
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
-import { ledTeams, lockTeam } from './create-member';
+import { ledTeams, lockTeam, onNotice } from './create-member';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
 
@@ -49,6 +49,7 @@ export class PromotionsService {
   return this.write(async em => {
    const support = await this.supportInScope(em, user, dto.supportId);
    if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support can be promoted.');
+   if (await onNotice(em, dto.supportId)) throw new ConflictException('This support is leaving, so they can’t be promoted.');
    const request = await em.getRepository(PromotionRequest).save({ supportId: dto.supportId, requestedBy: user.id, reason: dto.reason });
    await this.event(em, user, 'PROMOTION_REQUESTED', dto.supportId, { requestId: request.id });
    return { id: request.id };
@@ -101,6 +102,7 @@ export class PromotionsService {
    const request = await em.getRepository(PromotionRequest).findOneOrFail({ where: { id }, lock: { mode: 'pessimistic_write' } });
    if (request.version !== dto.version) throw new ConflictException('Someone else changed this request. Reload and try again.');
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
+   if (dto.decision !== 'DECLINE' && await onNotice(em, request.supportId)) throw new ConflictException('This support is leaving, so they can’t be promoted. Cancel their notice first.');
    const now = new Date();
    if (dto.decision === 'DECLINE') {
     if (!dto.note?.trim()) throw new BadRequestException('Say why the request is declined.');

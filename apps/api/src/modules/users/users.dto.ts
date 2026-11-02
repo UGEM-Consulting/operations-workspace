@@ -16,4 +16,7 @@ export class CreateUserDto {
   // A team lead's dispatcher record (required for TEAM_LEAD, ignored otherwise; omitted keeps the current link).
   @ValidateIf((_object, value) => value !== undefined && value !== null) @IsUUID() memberId?: string | null;
 }
-export class UpdateUserDto extends PartialType(CreateUserDto, { skipNullProperties: false }) {}
+export class UpdateUserDto extends PartialType(CreateUserDto, { skipNullProperties: false }) {
+  // Who takes over a manager's open invitations and applications when this change deactivates them or changes their role.
+  @ValidateIf((_object, value) => value !== undefined) @IsUUID() handOverTo?: string;
+}

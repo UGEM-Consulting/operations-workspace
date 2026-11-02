@@ -88,3 +88,17 @@ export class ApplicationSubmission {
  @Column('jsonb') fields!: ApplicationFields;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
+
+// A change of responsible manager: who had it, who has it now, who changed it and the optional note for the history.
+// HANDED_OVER is the move made when the previous manager's account was deactivated or their role changed.
+@Entity('application_manager_changes')
+export class ApplicationManagerChange {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') applicationId!: string;
+ @Column('uuid') fromUserId!: string;
+ @Column('uuid') toUserId!: string;
+ @Column('uuid') actorId!: string;
+ @Column('varchar') reason!: 'CHANGED' | 'HANDED_OVER';
+ @Column('text', { nullable: true }) note!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
