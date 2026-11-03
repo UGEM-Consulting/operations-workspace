@@ -287,6 +287,8 @@ export class ExistingDispatchersService {
     if (!record.personalEmail) { refuse('Add their personal email first.'); continue; }
     const open = await em.getRepository(Invitation).find({ where: { catchUpMemberId: memberId, revokedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
     if (open.some(item => item.consumedAt)) { refuse('They’ve already started. Give them their reference from their page.'); continue; }
+    // A link in use belongs to the manager who sent it: whoever replaces it becomes responsible, and sees their ID selfie.
+    if (user.role !== Role.SYSTEM_ADMIN && open.some(item => item.managerId !== user.id && item.expiresAt > new Date())) { refuse('Another manager has sent their link. Ask that manager or an administrator.'); continue; }
     for (const earlier of open) { earlier.revokedAt = new Date(); await em.save(earlier); await em.getRepository(ApplicationActivity).save({ invitationId: earlier.id, event: 'INVITATION_REVOKED', actorId: user.id }); }
     const token = randomBytes(32).toString('hex'), expiresAt = new Date(Date.now() + LINK_DAYS * 86400000);
     const invitation = await em.getRepository(Invitation).save({ email: null, expectedEmail: record.personalEmail, mcName: null, teamLead: null, jobTitle: null, position: member.position, supportsMemberId: null,
