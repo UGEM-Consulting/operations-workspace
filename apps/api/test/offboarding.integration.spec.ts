@@ -429,6 +429,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
   it('refuses to roll back while offboarding or hand-over history exists', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
+    await db.undoLastMigration(); // DocumentFields, with none placed here
     await db.undoLastMigration(); // ExistingDispatchers, with none added here
     expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DispatcherOffboarding1792950000000');
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard dispatcher offboarding or manager hand-over history');

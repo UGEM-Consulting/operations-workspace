@@ -1,10 +1,11 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib';
+import { type DocumentField, fillFields } from './fields';
 import { inspectSignaturePng } from './images';
 export interface CertificateSignature {
  signerRole:'APPLICANT'|'COMPANY';typedName:string;signedAt:Date;ipAddress:string|null;userAgent:string|null;signatureMethod?:'DRAWN'|'TYPED'|null;fromSavedSignature?:boolean;
- statement:string;translatedStatement:string|null;consent:string|null;signatureImage:Buffer|null;firstViewedAt:Date|null;
+ statement:string;translatedStatement:string|null;consent:string|null;signatureImage:Buffer|null;firstViewedAt:Date|null;signerTitle?:string|null;
 }
-export interface CertificateDocument {title:string;version:number;sha256:string;}
+export interface CertificateDocument {title:string;version:number;sha256:string;fields?:DocumentField[];}
 /** Validates an uploaded company document: an unencrypted, readable PDF. Returns its page count. */
 export async function inspectPdf(file: Buffer): Promise<number> {
  const pdf = await PDFDocument.load(file, { updateMetadata: false });
@@ -25,13 +26,14 @@ function lines(text: string, font: PDFFont, size: number, width: number): string
  return result;
 }
 /**
- * The executed copy: the original document, unchanged, followed by an electronic signature certificate with each
+ * The executed copy: the original document, with its marked fields filled in if it has any, followed by a certificate with each
  * signer's typed name, signature image, statement, consent, time, IP address, browser and the document fingerprint.
  * The applicant's copy leaves out the company countersigner's IP address and browser; staff copies include them.
  */
 /** `applicationId` names a dispatcher application on the certificate; driver forms pass null (their record ID is internal). */
 export async function executedDocument(original: Buffer, doc: CertificateDocument, applicationId: string | null, signatures: CertificateSignature[], audience: 'applicant'|'staff' = 'staff'): Promise<Buffer> {
  const pdf = await PDFDocument.load(original, { updateMetadata: false });
+ const filled = await fillFields(pdf, doc.fields ?? [], signatures);
  const regular = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
  const margin = 54, width = 612 - margin * 2;
  let page: PDFPage = pdf.addPage([612, 792]), y = 792 - margin;
@@ -43,13 +45,14 @@ export async function executedDocument(original: Buffer, doc: CertificateDocumen
  };
  write('Electronic Signature Certificate', { size: 16, font: bold, gap: 10 });
  write(`Document: ${doc.title} (version ${doc.version})`);
- write(`SHA-256 fingerprint of the signed document: ${doc.sha256}`);
+ write(`SHA-256 fingerprint of the ${filled ? 'blank document before it was filled in' : 'signed document'}: ${doc.sha256}`);
  if (applicationId) write(`Application reference: ${applicationId}`);
- write('The pages before this certificate are the exact document that was signed. Its fingerprint above can be recomputed to confirm it has not changed.', { gap: 14 });
+ write(filled ? 'The pages before this certificate are the document that was signed, with the names, signatures and dates below filled in where the form marks them. Nothing else on those pages was changed.' : 'The pages before this certificate are the exact document that was signed. Its fingerprint above can be recomputed to confirm it has not changed.', { gap: 14 });
  for (const signature of signatures) {
   space(140);
   write(signature.signerRole === 'APPLICANT' ? 'Signer' : 'Countersigner on behalf of the company', { size: 12, font: bold });
   write(`Name: ${signature.typedName}`);
+  if (signature.signerTitle) write(`Title: ${signature.signerTitle}`);
   write(`Signed: ${signature.signedAt.toISOString()} (UTC)`);
   if (signature.firstViewedAt) write(`Signer first opened the full document from the signing page: ${signature.firstViewedAt.toISOString()} (UTC)`);
   if (audience === 'applicant' && signature.signerRole === 'COMPANY') write('IP address and browser: Recorded by UGEM');
@@ -70,7 +73,7 @@ export async function executedDocument(original: Buffer, doc: CertificateDocumen
    y -= 6;
    write((signature.signatureMethod === 'TYPED' ? 'Signature adopted from the typed name' : 'Drawn signature') + (signature.fromSavedSignature ? ', applied from their saved signature' : ''), { size: 8 });
   } else {
-   write('Acknowledged by checkbox (no signature required for this document).');
+   write(signature.consent ? 'Acknowledged by checkbox (no signature required for this document).' : 'Acknowledged as read with one button (no signature required for this document).');
   }
   y -= 10;
  }

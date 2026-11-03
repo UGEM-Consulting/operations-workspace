@@ -12,8 +12,9 @@ import { CURRENT_LAYOUT, documentKey, photoKey, StorageService } from '../storag
 import { Role, User, UserStatus } from '../users/user.entity';
 import { executedDocument, inspectPdf } from './certificate';
 import type { ClientContext } from './client-context';
-import { ApplicantSignatureDto, PhotoDto, PublishDocumentDto } from './documents.dto';
+import { ApplicantSignatureDto, LATIN_NAME, PhotoDto, PublishDocumentDto } from './documents.dto';
 import { ApplicantPhoto, CompanyDocument, DOCUMENT_KINDS, DOCUMENT_RULES, DocumentSignature, DocumentView, PHOTO_KINDS, type PhotoKind } from './documents.entity';
+import { checkedFields } from './fields';
 import { assertSignatureEmbeds, decodeJpeg, decodePdf, decodeSignature, sha256 } from './images';
 import { currentDocuments, photoFor } from './requirements';
 import { applicantStatement, ESIGN_CONSENT } from './statements';
@@ -39,6 +40,8 @@ export class DocumentsService {
   await onboardingLimit(this.db,'document-publish:'+user.id,10,3600);
   const file = decodePdf(input.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
+  // The contact list is read with one button, so nobody fills anything in on it.
+  const rules = DOCUMENT_RULES[input.kind], fields = checkedFields(input.fields,pageCount,{signature:rules.signature,typedName:rules.signature,countersign:rules.countersign});
   const id = randomUUID(), stored = {id,kind:input.kind,storageLayout:CURRENT_LAYOUT};
   await this.storage.put(documentKey(stored),file,'application/pdf');
   try {
@@ -46,7 +49,7 @@ export class DocumentsService {
     // Serialize publishers per kind so version numbers stay sequential.
     await em.query('SELECT pg_advisory_xact_lock(42002028, $1)',[DOCUMENT_KINDS.indexOf(input.kind)]);
     const [{next}] = await em.query('SELECT COALESCE(MAX(version),0)+1 AS next FROM company_documents WHERE kind = $1',[input.kind]);
-    return em.getRepository(CompanyDocument).save({id,kind:input.kind,version:Number(next),title:input.title,sha256:sha256(file),byteSize:file.length,pageCount,uploadedBy:user.id,storageLayout:CURRENT_LAYOUT});
+    return em.getRepository(CompanyDocument).save({id,kind:input.kind,version:Number(next),title:input.title,sha256:sha256(file),byteSize:file.length,pageCount,uploadedBy:user.id,storageLayout:CURRENT_LAYOUT,fields});
    });
   } catch (error) { await this.storage.remove(documentKey(stored)); throw error; }
  }
@@ -131,6 +134,25 @@ export class DocumentsService {
    await em.getRepository(DocumentSignature).insert({applicationId,documentId,signerRole:'APPLICANT',signerUserId:null,typedName:input.typedName,
     signatureImage:DOCUMENT_RULES[doc.kind].signature ? image : null,signatureMethod:DOCUMENT_RULES[doc.kind].signature ? input.signatureMethod ?? 'DRAWN' : null,consent:ESIGN_CONSENT,...applicantStatement(doc),documentSha256:doc.sha256,...client});
    return DOCUMENT_RULES[doc.kind].signature ? 'DOCUMENT_SIGNED' : 'DOCUMENT_ACKNOWLEDGED';
+  });
+ }
+ /** Reading a document nobody signs: one button, with no name, consent or signature. The time is still recorded. */
+ async acknowledge(req: Request, documentId: string, client: ClientContext) {
+  const applicationId = this.applicantId(req); this.requireStorage();
+  await onboardingLimit(this.db,'sign:'+applicationId,20,900);
+  return this.editableTransaction(req,'documents','Documents cannot be signed now.',async (em,application) => {
+   const doc = (await currentDocuments(em)).find(current => current.id === documentId);
+   if (!doc) throw new ConflictException('A newer version of this document was published. Reload and review it first.');
+   if (DOCUMENT_RULES[doc.kind].signature) throw new BadRequestException('This document needs your signature.');
+   if (!(await em.getRepository(DocumentView).existsBy({applicationId,documentId}))) throw new BadRequestException('Open and read the document first. If you already opened it, reload this page and open it again.');
+   if (await em.getRepository(DocumentSignature).existsBy({applicationId,documentId,signerRole:'APPLICANT'})) throw new ConflictException('You have already read this document.');
+   // This row is permanent and its certificate prints Latin letters only. Answers may be unsaved or in another alphabet; then the name they last signed with is theirs.
+   const fields = application.fields as Record<string,string|undefined>, answered = `${fields.firstName ?? ''} ${fields.lastName ?? ''}`.trim();
+   const signed = LATIN_NAME.test(answered) ? null : await em.getRepository(DocumentSignature).findOne({where:{applicationId,signerRole:'APPLICANT'},order:{signedAt:'DESC'}});
+   const typedName = (signed ? signed.typedName : answered).slice(0,200);
+   if (!LATIN_NAME.test(typedName)) throw new BadRequestException('Save your first and last name in Latin letters, or sign your other documents first.');
+   await em.getRepository(DocumentSignature).insert({applicationId,documentId,signerRole:'APPLICANT',signerUserId:null,typedName,signatureImage:null,signatureMethod:null,consent:null,...applicantStatement(doc),documentSha256:doc.sha256,...client});
+   return 'DOCUMENT_ACKNOWLEDGED';
   });
  }
  async applicantSignedCopy(req: Request, documentId: string) {

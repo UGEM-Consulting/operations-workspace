@@ -63,6 +63,7 @@ class ApplicantDocumentsController {
  @Get('documents/:id/file') @FileResponse() async file(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return send(await this.service.applicantDocument(req, id)); }
  @Post('documents/:id/view') view(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return this.service.recordView(req, id); }
  @Post('documents/:id/sign') sign(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApplicantSignatureDto) { return this.service.sign(req, id, dto, clientContext(req)); }
+ @Post('documents/:id/acknowledge') acknowledge(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return this.service.acknowledge(req, id, clientContext(req)); }
  @Get('documents/:id/signed') @FileResponse() async signed(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return send(await this.service.applicantSignedCopy(req, id)); }
 }
 @Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService, ApplicantSignedCopies] })

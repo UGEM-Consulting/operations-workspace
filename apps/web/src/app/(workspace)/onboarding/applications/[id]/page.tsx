@@ -1,10 +1,11 @@
 import { notFound, redirect } from 'next/navigation';
-import { Download, FileText } from 'lucide-react';
+import { FileText } from 'lucide-react';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
+import { signedDocuments } from '@/features/documents/signed-documents';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { readResponse, reviewDetailSchema, savedSignatureSchema } from '@/lib/api-schemas';
 import type { SavedSignature } from '@/features/auth/saved-signature';
 import { Alert } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { CopyButton } from '@/components/ui/copy-button';
 import { DescriptionList } from '@/components/ui/description-list';
@@ -69,7 +70,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
     <div className="min-w-0 flex-1 text-sm"><p className="font-medium">{signed?.title??doc.current.title}</p>
      <p className="text-[13px] leading-5 text-muted-foreground">{doc.label} · version {signed?.version??doc.current.version}{signed&&<> · {doc.requiresSignature?'Signed':'Acknowledged'} by {signed.typedName} <LocalTime iso={signed.signedAt} format="date"/></>}{doc.company&&<> · Countersigned by {doc.company.typedName}</>}</p></div>
     <span className="flex shrink-0 items-center gap-1">{!signed?<Badge label="Not signed" tone="warning"/>:pending?<Badge label="Countersign at approval" tone="warning"/>:<Badge label="Complete" tone="success"/>}
-     {signed&&<Button asChild variant="ghost" size="icon"><a href={`/api/backend/onboarding/applications/${id}/documents/${signed.documentId}/signed`} target="_blank" rel="noopener" aria-label={`Download signed ${signed.title}`}><Download aria-hidden="true" className="size-4"/></a></Button>}</span>
+     {signed&&<ViewDocumentButton documents={signedDocuments(data.documents.items,`/api/backend/onboarding/applications/${id}/documents`,`${app.fields.firstName??''} ${app.fields.lastName??''}`)} index={data.documents.items.filter(item=>item.applicant).indexOf(doc)}>View<span className="sr-only"> signed {signed.title}</span></ViewDocumentButton>}</span>
    </li>;})}</ul></Card>
   :<Card><EmptyState title="No company documents published" description="Publish the NDA and SOP under Documents before applicants sign."/></Card>)
   :<Card><EmptyState title="Documents are not collected here" description="This workspace has no document storage, so photos and signatures are not required."/></Card>;
@@ -102,7 +103,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
     ...(changes>0?[{key:'changes',label:'What changed',count:changes}]:[]),{key:'history',label:'History'}]}
     panels={{overview,documents,changes:whatChanged,history}}/>
    <aside aria-label="Decision" className="space-y-4 xl:sticky xl:top-20 xl:-mx-1 xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1">
-    {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
+    {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">
      <p>{data.invitation.position==='SUPPORT'?'Approving adds them as a support for the dispatcher you confirm. Supports need no IT setup.':'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>

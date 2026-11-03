@@ -108,7 +108,9 @@ export class ReviewService {
    requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {},askedAs(invitation)),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
    documents:{required:documents.required,photos:{selfie:!!documents.photos.SELFIE,idSelfie:!!documents.photos.ID_SELFIE},
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
-    countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
+    countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,fields:pendingCountersign.fields,
+     // Remembered from their last countersignature, so they don't type it each time.
+     lastTitle:(await this.db.query(`SELECT "signerTitle" FROM document_signatures WHERE "signerUserId" = $1 AND "signerTitle" IS NOT NULL ORDER BY "signedAt" DESC LIMIT 1`,[user.id]))[0]?.signerTitle??null,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
    canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support&&!catchUp, employmentOptions, supports, catchUp,
    responsibleManager:responsible?{id:responsible.id,firstName:responsible.firstName,lastName:responsible.lastName}:null, managerChanges, managerOptions };
@@ -194,6 +196,7 @@ export class ReviewService {
    if (countersign && useSaved && !saved) throw new BadRequestException('Your saved signature is no longer available. Sign here instead.');
    const countersignImage = saved?.signatureImage ?? drawnImage;
    if (countersign && !countersignImage) throw new BadRequestException('Countersign the NDA before approval.');
+   if (countersign && !input.countersignature?.title && countersign.fields.some(field=>field.signer==='COMPANY'&&field.kind==='TITLE')) throw new BadRequestException('Add your job title to countersign the NDA.');
    const requestedFields = input.decisionType === 'REQUEST_CHANGES' ? [...new Set([...input.requestedFields,...missing])] : input.requestedFields;
    const previousEmployment = input.employment ? {mcName:invitation.mcName ?? '',teamLead:invitation.teamLead ?? '',jobTitle:invitation.jobTitle ?? ''} : null;
    if (input.employment) {
@@ -215,7 +218,7 @@ export class ReviewService {
     reason:input.reason?.trim() || null,requestedFields,previousStatus,newStatus:nextStatus,applicationVersion:application.version,employment:input.employment ?? null,previousEmployment});
    if (countersign && input.countersignature && countersignImage) {
     const doc = await em.getRepository(CompanyDocument).findOneByOrFail({id:countersign.documentId});
-    await em.getRepository(DocumentSignature).save({applicationId:id,documentId:doc.id,signerRole:'COMPANY',signerUserId:user.id,typedName:saved?.typedName ?? input.countersignature.typedName ?? '',
+    await em.getRepository(DocumentSignature).save({applicationId:id,documentId:doc.id,signerRole:'COMPANY',signerUserId:user.id,typedName:saved?.typedName ?? input.countersignature.typedName ?? '',signerTitle:input.countersignature.title ?? null,
      signatureImage:countersignImage,signatureMethod:saved?.signatureMethod ?? input.countersignature.signatureMethod ?? 'DRAWN',fromSavedSignature:!!saved,consent:null,statement:companyStatement(doc,countersign.typedName),translatedStatement:null,documentSha256:doc.sha256,...client});
     await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
    }

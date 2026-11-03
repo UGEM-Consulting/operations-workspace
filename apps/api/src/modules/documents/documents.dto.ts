@@ -1,6 +1,9 @@
-import { Transform } from 'class-transformer';
-import { Equals, IsBase64, IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { ArrayMaxSize, Equals, IsArray, IsBase64, IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { DOCUMENT_KINDS, SIGNATURE_METHODS, type DocumentKind, type SignatureMethod } from './documents.entity';
+import { DocumentFieldDto, MAX_FIELDS } from './fields';
+// A legal name as signed documents and certificates can print it.
+export const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
 const trim = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : value);
 // Size limits are on the base64 text; the decoded files are checked again in the service.
 export const MAX_PHOTO_BYTES = 2_500_000, MAX_PDF_BYTES = 3_000_000, MAX_SIGNATURE_BYTES = 200_000;
@@ -23,6 +26,8 @@ export class CountersignatureDto {
  @Matches(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/, { message: 'Draw your signature.' }) signature?: string;
  @IsOptional() @IsIn(SIGNATURE_METHODS) signatureMethod?: SignatureMethod;
  @Equals(true, { message: 'Confirm the signature statement.' }) agreed!: boolean;
+ // For a form with a Title field. Standard PDF fonts, so Latin letters like the name.
+ @IsOptional() @trim() @IsString() @MinLength(2) @MaxLength(100) @Matches(/^[A-Za-z0-9][A-Za-z0-9 .,'&/-]*$/, { message: 'Type your job title in Latin letters.' }) title?: string;
 }
 // Saving a countersigning signature for later approvals; a fresh image is always required.
 export class SaveSignatureDto {
@@ -42,4 +47,5 @@ export class PublishDocumentDto {
  @IsIn(DOCUMENT_KINDS) kind!: DocumentKind;
  @trim() @IsString() @MinLength(1) @MaxLength(200) title!: string;
  @IsString() @IsBase64() @MaxLength(base64Length(MAX_PDF_BYTES)) file!: string;
+ @IsOptional() @IsArray() @ArrayMaxSize(MAX_FIELDS) @ValidateNested({ each: true }) @Type(() => DocumentFieldDto) fields?: DocumentFieldDto[];
 }

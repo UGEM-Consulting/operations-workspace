@@ -4,16 +4,28 @@ New hires complete a **Documents & signatures** step before they can submit an a
 
 1. **Selfie**: a clear photo of their face. It becomes the profile photo that IT sees.
 2. **Selfie holding their ID**: seen only by the responsible manager and administrators, who compare the face and ID photo and check the name by eye. No automated face matching or biometric processing is done (Illinois BIPA).
-3. **Company documents**: the NDA and SOP are signed with a typed legal name plus a signature, either drawn or adopted from the typed name. The Quick Contact List is acknowledged as read.
+3. **Company documents**: the NDA and SOP are read and signed in a modal, with a typed legal name plus a signature, either drawn or adopted from the typed name. The Quick Contact List is read in the same modal and confirmed with one button.
 
 Photos and signatures are required to submit and to approve. The approving manager countersigns the NDA as part of the approval.
+
+## Reading and signing in a modal
+
+Everything happens over the application page, with no new tab: read to the last page, tick the statements, type the name and sign once, then download the copy or go on to the next document. Every marked space on the form fills in as they sign. Staff open documents in the same modal, with zoom, Print and Download. Phones print from the downloaded file.
+
+Next waits until the last page has been reached and drawn. A page the browser can't draw says so with Try again and holds Next until it shows. Pages with real text carry a selectable text layer for screen readers; scanned pages have none, so a screen reader user needs the downloaded file and may need someone to read a scan to them. After a new version is published, the applicant can still open the copy they signed of the earlier one.
+
+The Quick Contact List takes one button, so the record uses the name on the application, or the name they last signed with when the application's name isn't saved or isn't in Latin letters. With neither, the button asks for the name first.
+
+**Publishing with fields.** Publishing a new NDA or SOP asks where each field goes: drag it onto the line, or choose it and move it. The last version's layout is offered first. The new hire fills their fields from one name and one signature; the approving manager's signature, name, title and date fill in at approval. A version with no fields signs as before, with a certificate page only.
+
+The signed copy is the form filled in, followed by the certificate. The certificate's fingerprint is of the blank file, which is kept unchanged in storage.
 
 ## Signing flow (ESIGN Act / UETA)
 
 - The applicant gives one explicit consent to use electronic records and signatures. The checkbox is unticked by default, and the consent tells them they can ask for a paper copy.
-- Each document has to be opened in full before it can be signed. When the applicant chooses **Open document** on the signing page, the web app sends an explicit request (`POST applicant/documents/:id/view`, with the usual BFF/CSRF checks) and the API records the first time (`document_views`). Fetching the file itself records nothing. The API refuses a signature without that record. The certificate states only what this shows: when the signer first opened the full document from the signing page.
+- Each document has to be opened in full before it can be signed. When the document opens in the modal, the web app sends an explicit request (`POST applicant/documents/:id/view`, with the usual BFF/CSRF checks) and the API records the first time (`document_views`). Fetching the file itself records nothing. The API refuses a signature without that record. The certificate states only what this shows: when the signer first opened the full document from the signing page.
 - Each document has its own unticked statement, in English with a Russian translation. The English text governs.
-- The applicant types their legal name in Latin letters, then either draws a signature or chooses **Type signature** and **Adopt typed signature**, which renders the typed name in a handwriting-style font on the same canvas (the keyboard-accessible option). They confirm in a dialog that warns the signature is legally binding.
+- The applicant types their legal name in Latin letters, then either draws a signature or chooses **Type signature** and **Adopt typed signature**, which renders the typed name in a handwriting-style font on the same canvas (the keyboard-accessible option). The notice that the signature is legally binding sits above the **Sign** button.
 - Each `document_signatures` row stores:
   - the exact consent and statement text;
   - the typed name, the signature image (PNG) and how it was made (`signatureMethod`: `DRAWN` or `TYPED`; older rows are `NULL`, meaning drawn);
@@ -108,7 +120,7 @@ company-documents/
 5. Delete the local key file.
 6. Deploy the API. Migrations `OnboardingDocuments1792710000000` and `SignatureMethod1792750000000` run automatically. `SignatureMethod` only adds a nullable column; its rollback refuses while typed signatures exist.
 7. Deploy the web app.
-8. Publish the NDA, SOP and Quick Contact List on **Documents**.
+8. Publish the NDA, SOP and Quick Contact List on **Documents**, placing each form's fields.
 
 ## Not yet implemented
 

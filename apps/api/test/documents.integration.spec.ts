@@ -7,7 +7,7 @@ import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { PDFDocument } from 'pdf-lib';
+import { degrees, PDFDocument } from 'pdf-lib';
 import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { validateEnvironment } from '../src/config/environment';
@@ -26,6 +26,8 @@ import { jpeg, pdfText, png, pngChunk, pngHeader, PNG_SIGNATURE } from './docume
 import { SignatureMethod1792750000000 } from '../src/database/migrations/1792750000000-SignatureMethod';
 import { SavedStaffSignatures1792780000000 } from '../src/database/migrations/1792780000000-SavedStaffSignatures';
 import { cleanJpeg } from '../src/modules/documents/images';
+import { DocumentFields1792970000000 } from '../src/database/migrations/1792970000000-DocumentFields';
+import { fieldText, fillFields, type DocumentField } from '../src/modules/documents/fields';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 const integration=process.env.TEST_DATABASE_URL?describe:describe.skip;
 // Fictional test files: a real PDF, structurally valid JPEG photos (with fictional EXIF to strip) and PNG signatures.
@@ -216,7 +218,8 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   // Newer migrations go first, each after removing the records its rollback refuses to discard.
   const cleanup:Record<string,string>={DriverDocuments1792880000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,DriverApplications1792870000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,SafetyDrivers1792860000000:`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`,TeamLeads1792850000000:`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`,SupportMembers1792840000000:`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`,DispatcherContacts1792830000000:'TRUNCATE member_contacts',DispatchTeams1792820000000:'TRUNCATE dispatch_events',ManagedLists1792810000000:'TRUNCATE list_events',OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
-  expect(await latestMigration()).toBe('ExistingDispatchers1792960000000');
+  expect(await latestMigration()).toBe('DocumentFields1792970000000');
+  await db.undoLastMigration(); // DocumentFields, with none placed here
   await db.undoLastMigration(); // ExistingDispatchers, with none added here
   await db.undoLastMigration(); // DispatcherOffboarding, with nothing offboarded here
   await db.undoLastMigration(); // DriverHistory, with no drivers here
@@ -378,5 +381,115 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   await db.query(`INSERT INTO staff_saved_signatures ("userId","typedName","signatureImage","signatureMethod") VALUES ($1,'Fictional Admin',$2,'DRAWN')`,[self.id,png(600,180)]);
   await admin.patch(`/api/users/${self.id}`).set(headers).send({password:randomBytes(18).toString('base64url')}).expect(200);
   expect((await db.query('SELECT 1 FROM staff_saved_signatures WHERE "userId"=$1',[self.id])).length).toBe(1);
+ });
+ const field=(page:number,kind:DocumentField['kind'],signer:DocumentField['signer']='SIGNER',y=0.5):DocumentField=>({page,x:0.1,y,width:0.4,height:0.03,kind,signer});
+ const publish=(kind:string,file:Buffer,fields?:DocumentField[])=>manager.post('/api/documents').set(headers).send({kind,title:`Fictional ${kind}`,file:file.toString('base64'),...(fields?{fields}:{})});
+ it('keeps a version\'s signing fields with it and refuses fields that can\'t work',async()=>{
+  const file=await pdf(2);
+  await publish('NDA',file,[field(3,'NAME')]).expect(400);
+  await publish('NDA',file,[{...field(1,'NAME'),x:0.9}]).expect(400);
+  await publish('NDA',file,[field(1,'TITLE')]).expect(400);
+  await publish('SOP',file,[field(1,'SIGNATURE','COMPANY')]).expect(400);
+  await publish('CONTACT_LIST',file,[field(1,'NAME')]).expect(400);
+  await publish('NDA',file,[{...field(1,'NAME'),kind:'SSN' as DocumentField['kind']}]).expect(400);
+  const placed=[field(1,'NAME'),field(2,'SIGNATURE'),field(2,'DATE','SIGNER',0.6),field(2,'TITLE','COMPANY',0.7)];
+  expect((await publish('NDA',file,placed).expect(201)).body.fields).toEqual(placed);
+  const list=await manager.get('/api/documents').set(headers).expect(200);
+  expect(list.body.kinds.find((kind:{kind:string})=>kind.kind==='NDA').versions[0].fields).toEqual(placed);
+  const {agent}=await applicant();
+  const view=await agent.get('/api/applicant/application').set(headers).expect(200);
+  expect(view.body.documents.items[0].fields).toEqual(placed);
+ },30000);
+ it('fills the form in on the signed copy, asks for a title where the form has one, and remembers it',async()=>{
+  const placed=[field(1,'NAME'),field(1,'DAY','SIGNER',0.6),field(2,'SIGNATURE'),field(2,'TITLE','COMPANY',0.7),field(2,'SIGNATURE','COMPANY',0.8)];
+  await publish('NDA',await pdf(2),placed).expect(201);
+  const {agent,id}=await applicant();const view=await completeDocuments(agent);const nda=view.documents.items[0].id;
+  await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  const copy=(await agent.get(`/api/applicant/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body as Buffer;
+  expect(pdfText(copy)).toContain('blank document before it was filled in');
+  // The two pages stay two pages, followed by the certificate.
+  expect((await PDFDocument.load(copy)).getPageCount()).toBeGreaterThanOrEqual(3);
+  const decide=(title?:string)=>manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true,...(title?{title}:{})}});
+  expect((await decide().expect(400)).body.message).toContain('job title');
+  expect((await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body.documents.countersign.lastTitle).toBeNull();
+  await decide('Дирeктор').expect(400);
+  await decide('Dispatch manager').expect(201);
+  const staff=pdfText((await manager.get(`/api/onboarding/applications/${id}/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
+  expect(staff).toContain('Title: Dispatch manager');
+  const second=await applicant();await completeDocuments(second.agent);
+  await second.agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
+  expect((await manager.get(`/api/onboarding/applications/${second.id}`).set(headers).expect(200)).body.documents.countersign.lastTitle).toBe('Dispatch manager');
+ },60000);
+ it('leaves a version with no fields as the exact document plus a certificate',async()=>{
+  await publish('NDA',await pdf(2)).expect(201);
+  const {agent}=await applicant();const view=await completeDocuments(agent);
+  const text=pdfText((await agent.get(`/api/applicant/documents/${view.documents.items[0].id}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
+  expect(text).toContain('exact document that was signed');expect(text).not.toContain('filled in');
+ },30000);
+ it('reads the contact list with one button: no name, consent or signature, and only after opening it',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();
+  const {body:view}=await agent.get('/api/applicant/application').set(headers).expect(200);
+  const list=view.documents.items.find((doc:{kind:string})=>doc.kind==='CONTACT_LIST'),nda=view.documents.items.find((doc:{kind:string})=>doc.kind==='NDA');
+  await agent.post(`/api/applicant/documents/${list.id}/acknowledge`).set(headers).send({}).expect(400);
+  await agent.post(`/api/applicant/documents/${nda.id}/view`).set(headers).send({}).expect(201);
+  expect((await agent.post(`/api/applicant/documents/${nda.id}/acknowledge`).set(headers).send({}).expect(400)).body.message).toContain('signature');
+  await agent.post(`/api/applicant/documents/${list.id}/view`).set(headers).send({}).expect(201);
+  const done=await agent.post(`/api/applicant/documents/${list.id}/acknowledge`).set({...headers,'x-client-ip':'203.0.113.8'}).send({}).expect(201);
+  expect(done.body.documents.items.find((doc:{kind:string})=>doc.kind==='CONTACT_LIST').signed).toBeTruthy();
+  await agent.post(`/api/applicant/documents/${list.id}/acknowledge`).set(headers).send({}).expect(409);
+  const [row]=await db.query(`SELECT "typedName",consent,"signatureImage","ipAddress",statement FROM document_signatures WHERE "applicationId"=$1 AND "documentId"=$2`,[id,list.id]);
+  expect(row).toMatchObject({typedName:'Fictional Applicant',consent:null,signatureImage:null,ipAddress:'203.0.113.8'});expect(row.statement).toContain('read');
+  // The API keeps refusing a signature with no consent where there is one.
+  await expect(db.query(`INSERT INTO document_signatures ("applicationId","documentId","signerRole","typedName","signatureImage",statement,"documentSha256") VALUES ($1,$2,'APPLICANT','X','\\x00','s',$3)`,[id,nda.id,'a'.repeat(64)])).rejects.toThrow();
+  const copy=pdfText((await agent.get(`/api/applicant/documents/${list.id}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
+  expect(copy).toContain('one button');
+ },30000);
+ it('names a one-button read after the name they signed with when their answers aren\'t saved yet',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();
+  const {body:view}=await agent.get('/api/applicant/application').set(headers).expect(200);
+  const list=view.documents.items.find((doc:{kind:string})=>doc.kind==='CONTACT_LIST'),nda=view.documents.items.find((doc:{kind:string})=>doc.kind==='NDA');
+  await db.query(`UPDATE dispatcher_applications SET fields='{}' WHERE id=$1`,[id]);
+  await db.query(`INSERT INTO document_signatures ("applicationId","documentId","signerRole","typedName",statement,"documentSha256") VALUES ($1,$2,'APPLICANT','Signed Name','s',$3)`,[id,nda.id,'a'.repeat(64)]);
+  await agent.post(`/api/applicant/documents/${list.id}/view`).set(headers).send({}).expect(201);
+  await agent.post(`/api/applicant/documents/${list.id}/acknowledge`).set(headers).send({}).expect(201);
+  const [row]=await db.query(`SELECT "typedName" FROM document_signatures WHERE "applicationId"=$1 AND "documentId"=$2`,[id,list.id]);
+  expect(row.typedName).toBe('Signed Name');
+ },30000);
+ it('refuses a one-button read when there is no name a certificate can print, and uses the signed name instead of another alphabet',async()=>{
+  await publishAll();
+  const {agent,id}=await applicant();
+  const {body:view}=await agent.get('/api/applicant/application').set(headers).expect(200);
+  const list=view.documents.items.find((doc:{kind:string})=>doc.kind==='CONTACT_LIST'),nda=view.documents.items.find((doc:{kind:string})=>doc.kind==='NDA');
+  await agent.post(`/api/applicant/documents/${list.id}/view`).set(headers).send({}).expect(201);
+  for (const fields of [{},{firstName:'Иван',lastName:'Петров'}]) {
+   await db.query(`UPDATE dispatcher_applications SET fields=$2 WHERE id=$1`,[id,JSON.stringify(fields)]);
+   expect((await agent.post(`/api/applicant/documents/${list.id}/acknowledge`).set(headers).send({}).expect(400)).body.message).toContain('Latin');
+  }
+  await db.query(`INSERT INTO document_signatures ("applicationId","documentId","signerRole","typedName",statement,"documentSha256") VALUES ($1,$2,'APPLICANT','Ivan Petrov','s',$3)`,[id,nda.id,'a'.repeat(64)]);
+  await agent.post(`/api/applicant/documents/${list.id}/acknowledge`).set(headers).send({}).expect(201);
+  const [row]=await db.query(`SELECT "typedName" FROM document_signatures WHERE "applicationId"=$1 AND "documentId"=$2`,[id,list.id]);
+  expect(row.typedName).toBe('Ivan Petrov');
+ },30000);
+ it('places text and signatures by what the page shows, on rotated pages too, and dates in the Eastern zone',async()=>{
+  const at=new Date('2026-01-01T03:00:00Z');
+  expect([fieldText('DAY',{typedName:'A B',signedAt:at}),fieldText('MONTH',{typedName:'A B',signedAt:at}),fieldText('YEAR',{typedName:'A B',signedAt:at}),fieldText('DATE',{typedName:'A B',signedAt:at})]).toEqual(['31','December','25','December 31, 2025']);
+  for(const angle of [0,90,180,270]){
+   const doc=await PDFDocument.create(),page=doc.addPage([612,792]);page.setRotation(degrees(angle));
+   const filled=await fillFields(doc,[field(1,'NAME'),field(1,'SIGNATURE'),field(1,'TITLE','COMPANY'),field(2,'NAME')],[{signerRole:'APPLICANT',typedName:'Fictional Applicant',signedAt:at,signatureImage:png(600,180)}]);
+   // No company signature yet and no second page: only the signer's two on this page are written.
+   expect(filled).toBe(2);
+   await doc.save();
+  }
+  // An image that fails the structural check is never decoded.
+  const doc=await PDFDocument.create();doc.addPage([612,792]);
+  expect(await fillFields(doc,[field(1,'SIGNATURE')],[{signerRole:'APPLICANT',typedName:'A B',signedAt:at,signatureImage:Buffer.from('not a png')}])).toBe(0);
+ });
+ it('refuses to roll back while fields, titles or one-button reads exist',async()=>{
+  await publish('NDA',await pdf(1),[field(1,'NAME')]).expect(201);
+  const runner=db.createQueryRunner();
+  await expect(new DocumentFields1792970000000().down(runner)).rejects.toThrow('Cannot discard placed signing fields');
+  await runner.release();
  });
 });

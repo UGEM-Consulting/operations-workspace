@@ -1,10 +1,10 @@
 import { notFound, redirect } from 'next/navigation';
-import { Download } from 'lucide-react';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
+import { signedDocuments } from '@/features/documents/signed-documents';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { memberProfileSchema, readResponse, reviewDetailSchema, savedSignatureSchema } from '@/lib/api-schemas';
 import type { SavedSignature } from '@/features/auth/saved-signature';
 import { Alert } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { DescriptionList } from '@/components/ui/description-list';
 import { LocalTime } from '@/components/ui/local-time';
@@ -54,12 +54,12 @@ export default async function PaperworkReviewPage({ params }: { params: Promise<
           { key: 'doc', label: 'Document', primary: true, cell: doc => doc.label },
           { key: 'detail', label: 'Detail', cell: doc => doc.applicant ? <>{doc.requiresSignature ? 'Signed' : 'Acknowledged'} <LocalTime iso={doc.applicant.signedAt} format="date" />.{doc.company ? <> Countersigned by {doc.company.typedName}.</> : data.documents.countersign?.documentId === doc.applicant.documentId ? ' Needs your countersignature.' : ''}</> : 'Not signed.' },
           { key: 'status', label: 'Status', cell: doc => doc.applicant ? <Badge label={doc.requiresSignature ? 'Signed' : 'Acknowledged'} tone="success" /> : <Badge label="To sign" tone="warning" /> },
-          { key: 'open', label: 'Open', srOnly: true, action: true, cell: doc => doc.applicant && <Button asChild variant="ghost" size="icon"><a href={`/api/backend/onboarding/applications/${applicationId}/documents/${doc.applicant.documentId}/signed`} target="_blank" rel="noopener" aria-label={`Download signed ${doc.label}`}><Download aria-hidden="true" className="size-4" /></a></Button> }]} /></Card>}
+          { key: 'open', label: 'Open', srOnly: true, action: true, cell: doc => doc.applicant && <ViewDocumentButton documents={signedDocuments(data.documents.items, `/api/backend/onboarding/applications/${applicationId}/documents`, name)} index={data.documents.items.filter(item => item.applicant).indexOf(doc)}>View<span className="sr-only"> signed {doc.label}</span></ViewDocumentButton> }]} /></Card>}
       </div>
       <div className="min-w-0 space-y-6 xl:sticky xl:top-6">
         {app.status === 'APPROVED' ? <Alert tone="success" title="Paperwork finished"><p>{member.firstName}’s details and signed copies are on their page.</p></Alert>
           : app.status === 'CHANGES_REQUESTED' ? <Alert tone="info" title="Waiting for their changes"><p>They were asked to correct something. This updates when they send it again.</p></Alert>
-          : <ReviewActions id={applicationId} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} savedSignature={savedSignature} employment={{ mcName: '', teamLead: '', jobTitle: '' }} catchUpName={member.firstName} />}
+          : <ReviewActions id={applicationId} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} employment={{ mcName: '', teamLead: '', jobTitle: '' }} catchUpName={member.firstName} />}
       </div>
     </div>
   </div>;

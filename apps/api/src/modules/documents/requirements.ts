@@ -1,8 +1,9 @@
 import { EntityManager, IsNull, LessThanOrEqual } from 'typeorm';
 import type { DocumentItem } from '../onboarding/entities';
 import { ApplicantPhoto, CompanyDocument, DOCUMENT_KINDS, DOCUMENT_RULES, DocumentView, type PhotoKind } from './documents.entity';
+import type { DocumentField } from './fields';
 import { applicantStatement, ESIGN_CONSENT, ESIGN_CONSENT_RU } from './statements';
-export interface SignedRecord {documentId:string;version:number;title:string;typedName:string;signedAt:Date;}
+export interface SignedRecord {documentId:string;version:number;title:string;publishedAt:Date;typedName:string;signedAt:Date;signatureMethod:string|null;signerTitle:string|null;ipAddress:string|null;userAgent:string|null;documentSha256:string;fields:DocumentField[];}
 /** The latest published version of each company document kind. */
 export function currentDocuments(em: EntityManager): Promise<CompanyDocument[]> {
  return em.getRepository(CompanyDocument).createQueryBuilder('d').distinctOn(['d.kind']).orderBy('d.kind').addOrderBy('d.version','DESC').getMany()
@@ -14,7 +15,7 @@ export function photoFor(em: EntityManager, applicationId: string, kind: PhotoKi
  return em.getRepository(ApplicantPhoto).findOne({ where: { applicationId, kind, ...(submittedAt ? { createdAt: LessThanOrEqual(submittedAt) } : { replacedAt: IsNull() }) }, order: { createdAt: 'DESC' } });
 }
 async function signatures(em: EntityManager, applicationId: string) {
- const rows: (SignedRecord & {kind:string;signerRole:'APPLICANT'|'COMPANY'})[] = await em.query(`SELECT s."documentId", s."signerRole", s."typedName", s."signedAt", d.kind, d.version, d.title
+ const rows: (SignedRecord & {kind:string;signerRole:'APPLICANT'|'COMPANY'})[] = await em.query(`SELECT s."documentId", s."signerRole", s."typedName", s."signedAt", s."signatureMethod", s."signerTitle", s."ipAddress", s."userAgent", s."documentSha256", d.kind, d.version, d.title, d.fields, d."createdAt" AS "publishedAt"
   FROM document_signatures s JOIN company_documents d ON d.id = s."documentId" WHERE s."applicationId" = $1 ORDER BY d.version DESC, s."signedAt" DESC`, [applicationId]);
  return rows;
 }
@@ -34,7 +35,7 @@ export async function documentStatus(em: EntityManager, applicationId: string, e
   const applicant = signed.find(row => row.documentId === doc.id && row.signerRole === 'APPLICANT') ?? signed.find(row => row.kind === doc.kind && row.signerRole === 'APPLICANT') ?? null;
   const company = applicant && signed.find(row => row.documentId === applicant.documentId && row.signerRole === 'COMPANY') || null;
   return { kind: doc.kind, label: DOCUMENT_RULES[doc.kind].label, requiresSignature: DOCUMENT_RULES[doc.kind].signature, countersign: DOCUMENT_RULES[doc.kind].countersign,
-   current: { id: doc.id, title: doc.title, version: doc.version, pageCount: doc.pageCount }, applicant, company, signedCurrent: applicant?.documentId === doc.id };
+   current: { id: doc.id, title: doc.title, version: doc.version, pageCount: doc.pageCount, fields: doc.fields }, applicant, company, signedCurrent: applicant?.documentId === doc.id };
  });
  const missing: DocumentItem[] = [];
  if (!selfie) missing.push('selfiePhoto');

@@ -1,11 +1,22 @@
 'use client';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-const WIDTH = 600, HEIGHT = 180;
+const WIDTH = 600, HEIGHT = 300;
 const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
 // Installed handwriting-style fonts; no web font is downloaded. The image is what is signed, not the font.
 const SCRIPT_FONT = '"Segoe Script", "Brush Script MT", "Lucida Handwriting", "Snell Roundhand", "Apple Chancery", cursive';
 export type SignatureMethod = 'DRAWN' | 'TYPED';
+/** The drawing cropped to its edges, so it fills a signature line on a form instead of sitting in empty space. */
+function cropped(canvas: HTMLCanvasElement): string {
+ const ctx = canvas.getContext('2d')!, { data } = ctx.getImageData(0, 0, WIDTH, HEIGHT);
+ let left = WIDTH, right = -1, top = HEIGHT, bottom = -1;
+ for (let y = 0; y < HEIGHT; y += 1) for (let x = 0; x < WIDTH; x += 1) if (data[(y * WIDTH + x) * 4 + 3] > 8) { if (x < left) left = x; if (x > right) right = x; if (y < top) top = y; if (y > bottom) bottom = y; }
+ if (right < 0) return canvas.toDataURL('image/png');
+ const pad = 4, x = Math.max(left - pad, 0), y = Math.max(top - pad, 0), width = Math.min(right + pad, WIDTH - 1) - x + 1, height = Math.min(bottom + pad, HEIGHT - 1) - y + 1;
+ const out = document.createElement('canvas'); out.width = width; out.height = height;
+ out.getContext('2d')!.drawImage(canvas, x, y, width, height, 0, 0, width, height);
+ return out.toDataURL('image/png');
+}
 /** The name in a script font, shrunk to fit the box. */
 function paintName(ctx: CanvasRenderingContext2D, name: string, color: string) {
  let fontSize = 72;
@@ -56,7 +67,7 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
  function end(event: React.PointerEvent<HTMLCanvasElement>) {
   if (!drawing.current) return;
   drawing.current = false;
-  onChange(event.currentTarget.toDataURL('image/png'), 'DRAWN');
+  onChange(cropped(event.currentTarget), 'DRAWN');
   if (!filled) { setFilled(true); setStatus('Signature added.'); }
  }
  function adopt() {
@@ -66,7 +77,7 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   paintName(ctx, name, '#111827');
   adopted.current = name; setFilled(true);
-  onChange(canvas.current!.toDataURL('image/png'), 'TYPED'); setStatus('Typed signature adopted.');
+  onChange(cropped(canvas.current!), 'TYPED'); setStatus('Typed signature adopted.');
  }
  function switchMode(next: SignatureMethod) {
   if (next === mode) return;
@@ -83,9 +94,13 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
    <Button type="button" size={size} variant={mode === 'TYPED' ? 'secondary' : 'outline'} aria-pressed={mode === 'TYPED'} disabled={disabled} onClick={() => switchMode('TYPED')}>Type signature</Button>
   </div>}
   <p id={`${id}-help`} className="text-[13px] leading-5 text-muted-foreground">{instructions}</p>
-  <canvas ref={canvas} width={WIDTH} height={HEIGHT} role="img" aria-labelledby={`${id}-label`} aria-describedby={`${id}-state`}
-   onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
-   className={`aspect-[10/3] w-full touch-none rounded-md border border-dashed border-input bg-white ${disabled ? 'opacity-60' : mode === 'DRAWN' ? 'cursor-crosshair' : ''}`}/>
+  <div className="relative">
+   <canvas ref={canvas} width={WIDTH} height={HEIGHT} role="img" aria-labelledby={`${id}-label`} aria-describedby={`${id}-state`}
+    onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
+    className={`block aspect-[2/1] w-full touch-none rounded-md border border-dashed border-input bg-white ${disabled ? 'opacity-60' : mode === 'DRAWN' ? 'cursor-crosshair' : ''}`}/>
+   {/* A line to sign on. It isn't part of the image, which is cropped to what was drawn. */}
+   <span aria-hidden="true" className="pointer-events-none absolute inset-x-4 bottom-[22%] border-b border-[#a8a29e]"/>
+  </div>
   <p id={`${id}-state`} className="sr-only">{filled ? 'A signature is in the box.' : 'The signature box is empty.'}</p>
   <div className="flex flex-wrap items-center justify-between gap-3">
    <p role="status" aria-live="polite" className="text-[13px] leading-5 text-muted-foreground">{status}</p>

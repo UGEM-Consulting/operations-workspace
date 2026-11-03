@@ -6,6 +6,7 @@ import { executedDocument, inspectPdf } from '../documents/certificate';
 import type { ClientContext } from '../documents/client-context';
 import type { ApplicantSignatureDto } from '../documents/documents.dto';
 import type { FileResult } from '../documents/documents.service';
+import { checkedFields } from '../documents/fields';
 import { assertSignatureEmbeds, decodePdf, decodeSignature, sha256 } from '../documents/images';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { CURRENT_LAYOUT, driverConsentKey, StorageService } from '../storage/storage.service';
@@ -28,7 +29,7 @@ export class ConsentService {
  private requireStorage() { if (!this.storage.enabled) throw new ServiceUnavailableException('Document storage is not configured.'); }
 
  async list(user: User) {
-  const rows: (DriverConsentDocument & { uploader: string | null })[] = await this.db.query(`SELECT d.id, d.kind, d.version, d.title, d.sha256, d."byteSize", d."pageCount", d."createdAt",
+  const rows: (DriverConsentDocument & { uploader: string | null })[] = await this.db.query(`SELECT d.id, d.kind, d.version, d.title, d.sha256, d."byteSize", d."pageCount", d."createdAt", d.fields,
    CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS uploader FROM driver_consent_documents d LEFT JOIN users u ON u.id = d."uploadedBy" ORDER BY d.kind, d.version DESC`);
   return { storageEnabled: this.storage.enabled, canPublish: DECIDERS.includes(user.role),
    kinds: CONSENT_KINDS.map(kind => ({ kind, ...CONSENT_RULES[kind], versions: rows.filter(row => row.kind === kind) })) };
@@ -40,6 +41,8 @@ export class ConsentService {
   await onboardingLimit(this.db, `consent-publish:${user.id}`, 10, 3600);
   const file = decodePdf(dto.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
+  // Acknowledged forms still take a typed name; only a signed one has somewhere to sign. Nobody countersigns.
+  const fields = checkedFields(dto.fields, pageCount, { signature: CONSENT_RULES[dto.kind].signature, typedName: true, countersign: false });
   const id = randomUUID(), stored = { id, kind: dto.kind, storageLayout: CURRENT_LAYOUT };
   await this.storage.put(driverConsentKey(stored), file, 'application/pdf');
   try {
@@ -47,7 +50,7 @@ export class ConsentService {
     // Publishers of one kind take turns, so version numbers stay sequential.
     await em.query('SELECT pg_advisory_xact_lock(42002032, $1)', [CONSENT_KINDS.indexOf(dto.kind)]);
     const [{ next }] = await em.query('SELECT COALESCE(MAX(version), 0) + 1 AS next FROM driver_consent_documents WHERE kind = $1', [dto.kind]);
-    return em.getRepository(DriverConsentDocument).save({ id, kind: dto.kind, version: Number(next), title: dto.title, sha256: sha256(file), byteSize: file.length, pageCount, uploadedBy: user.id, storageLayout: CURRENT_LAYOUT });
+    return em.getRepository(DriverConsentDocument).save({ id, kind: dto.kind, version: Number(next), title: dto.title, sha256: sha256(file), byteSize: file.length, pageCount, uploadedBy: user.id, storageLayout: CURRENT_LAYOUT, fields });
    });
   } catch (error) { await this.storage.remove(driverConsentKey(stored)); throw error; }
  }

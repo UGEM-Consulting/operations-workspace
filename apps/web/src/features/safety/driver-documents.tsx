@@ -1,7 +1,8 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useState, useSyncExternalStore } from 'react';
-import { BadgeCheck, ExternalLink, FileText } from 'lucide-react';
+import { BadgeCheck, FileText } from 'lucide-react';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
@@ -59,7 +60,7 @@ export function DriverDocuments({ driver, canVerify }: { driver: DriverProfile; 
         </div>
         {document.verifiedAt ? <Badge label={expired ? 'Expired' : 'Verified'} tone={expired ? 'danger' : 'success'} /> : <Badge label="Not verified" tone="neutral" />}
         <span className="flex gap-1">
-          <Button asChild size="sm" variant="ghost"><a href={fileUrl(document)} target="_blank" rel="noopener">View<span className="sr-only"> {documentLabels[document.kind]}</span></a></Button>
+          <ViewDocumentButton documents={[{ url: fileUrl(document), title: documentLabels[document.kind], meta: `${document.pageCount} ${document.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> {documentLabels[document.kind]}</span></ViewDocumentButton>
           {canVerify && submitted && <Button size="sm" variant="outline" onClick={() => { setVerifying(document); setError(''); }}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : 'Verify'}<span className="sr-only"> {documentLabels[document.kind]}</span></Button>}
         </span>
       </li>;
@@ -68,8 +69,7 @@ export function DriverDocuments({ driver, canVerify }: { driver: DriverProfile; 
       description="Open the document, check it’s readable and belongs to this driver, then record what it shows."
       actions={<Button type="submit" form="verify-document" disabled={pending}>{pending ? 'Saving…' : 'Mark as verified'}</Button>}>
       <form id="verify-document" onSubmit={verify} className="space-y-4">
-        <a className="inline-flex items-center gap-1.5 text-sm text-primary underline" href={fileUrl(verifying)} target="_blank" rel="noopener">
-          <ExternalLink aria-hidden="true" className="size-4" />Open the {documentLabels[verifying.kind].toLowerCase()} in a new tab</a>
+        <ViewDocumentButton variant="outline" documents={[{ url: fileUrl(verifying), title: documentLabels[verifying.kind], meta: `${verifying.pageCount} ${verifying.pageCount === 1 ? 'page' : 'pages'}` }]}>Open the {documentLabels[verifying.kind].toLowerCase()}</ViewDocumentButton>
         {verifying.kind === 'WORK_AUTHORIZATION'
           ? <Input label="Expiration date" name="expiresOn" type="date" optional defaultValue={verifying.expiresOn ?? ''} width="md"
             hint="Leave it empty if the document doesn’t expire. Don’t record passport, card or A-numbers." />
