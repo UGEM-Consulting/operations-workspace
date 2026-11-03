@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
 import { Role, User, UserStatus, publicUser } from './user.entity';
 import { CreateUserDto, UpdateUserDto } from './users.dto';
-import { hashPassword } from '../auth/password';
+import { generatePassword, hashPassword } from '../auth/password';
 import { revokeUserSessions } from '../auth/revoke';
 import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { clearSavedSignature } from '../documents/saved-signature';
@@ -30,10 +30,14 @@ export class UsersService {
     const members = new Map(links.map(row => [row.accountUserId, row.id]));
     return users.map(user => ({ ...publicUser(user), mfaEnabled: methods.has(user.id), mfaMethod: methods.get(user.id) ?? null, mustChangePassword: user.mustChangePassword, memberId: members.get(user.id) ?? null }));
   }
-  /** The administrator chose the initial password, so the user must replace it at the first sign-in. */
+  /**
+   * Without a password the API generates one and returns it this once, for the administrator to send them; only its hash is kept.
+   * Either way someone else knows it, so the user must replace it at the first sign-in.
+   */
   async create(dto: CreateUserDto, actor: User) {
     const { password, memberId, ...fields } = dto;
-    const passwordHash = await hashPassword(password);
+    const generatedPassword = password === undefined ? generatePassword() : undefined;
+    const passwordHash = await hashPassword(password ?? generatedPassword!);
     try {
       return await this.db.transaction(async manager => {
         await this.lockAdministration(manager, actor);
@@ -42,7 +46,7 @@ export class UsersService {
         const linked = await this.linkMember(manager, user, memberId);
         const provided = [...Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key), ...(linked ? ['memberId'] : [])];
         await this.audit(manager, user.id, actor.id, SecurityEventType.USER_CREATED, { fields: [...provided, 'password'] });
-        return publicUser(user);
+        return { ...publicUser(user), ...(generatedPassword ? { generatedPassword } : {}) };
       });
     } catch (error) { return this.handleError(error); }
   }
@@ -70,7 +74,12 @@ export class UsersService {
     return (await openRecords(this.db.manager, id)).counts;
   }
   async update(id: string, dto: UpdateUserDto, actor: User) {
-    const passwordHash = dto.password ? await hashPassword(dto.password) : undefined;
+    if (dto.generatePassword && dto.password) throw new BadRequestException('Choose a password or generate one, not both');
+    // Someone resetting their own password has Account security, which asks for the current one.
+    if (dto.generatePassword && id === actor.id) throw new BadRequestException('Change your own password in Account security');
+    const generatedPassword = dto.generatePassword ? generatePassword() : undefined;
+    const newPassword = generatedPassword ?? dto.password;
+    const passwordHash = newPassword ? await hashPassword(newPassword) : undefined;
     try {
       return await this.db.transaction(async manager => {
         await this.lockAdministration(manager, actor);
@@ -109,7 +118,7 @@ export class UsersService {
         for (const event of events) {
           await this.audit(manager, id, actor.id, event.type, { fields: event.fields.filter(field => changed.includes(field)), sessionsRevoked });
         }
-        return { ...publicUser(user), sessionsRevoked, handedOver };
+        return { ...publicUser(user), sessionsRevoked, handedOver, ...(generatedPassword ? { generatedPassword } : {}) };
       });
     } catch (error) { return this.handleError(error); }
   }

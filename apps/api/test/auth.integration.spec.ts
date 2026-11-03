@@ -202,6 +202,36 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     await db.getRepository(User).update(accounts.get(Role.DISPATCHER_MANAGER)!.id, { role: Role.DISPATCHER_MANAGER });
     await admin.patch(`/api/users/${accounts.get(Role.SYSTEM_ADMIN)!.id}`).set(headers).send({ status: UserStatus.INACTIVE }).expect(400);
   });
+  it('generates a first password once, and a new one on reset, never keeping or recording it', async () => {
+    const admin = request.agent(app.getHttpServer()); await signIn(admin);
+    const shape = /^[a-km-np-zA-HJ-NP-Z2-9]{4}(-[a-km-np-zA-HJ-NP-Z2-9]{4}){3}$/;
+    const created = await admin.post('/api/users').set(headers).send({ firstName: 'Fictional', lastName: 'Generated', email: 'generated@example.test', role: Role.IT_SPECIALIST }).expect(201);
+    const first: string = created.body.generatedPassword, id: string = created.body.id;
+    expect(first).toMatch(shape);
+    expect(JSON.stringify((await admin.get('/api/users').set(headers).expect(200)).body)).not.toContain(first);
+    const signInWith = (password: string) => request.agent(app.getHttpServer()).post('/api/auth/login').set(headers).send({ email: 'generated@example.test', password });
+    // It works once, for choosing their own.
+    expect((await signInWith(first).expect(200)).body).toEqual({ stage: 'password', landingPage: '/login/password' });
+    await admin.post('/api/users').set(headers).send({ firstName: 'Fictional', lastName: 'Typed', email: 'typed@example.test', role: Role.IT_SPECIALIST, password: 'short' }).expect(400);
+    expect((await admin.post('/api/users').set(headers).send({ firstName: 'Fictional', lastName: 'Typed', email: 'typed@example.test', role: Role.IT_SPECIALIST, password: randomBytes(24).toString('hex') }).expect(201)).body.generatedPassword).toBeUndefined();
+    const reset = await admin.patch(`/api/users/${id}`).set(headers).send({ generatePassword: true }).expect(200);
+    expect(reset.body.generatedPassword).toMatch(shape);
+    expect(reset.body.generatedPassword).not.toBe(first);
+    expect(reset.body.sessionsRevoked).toBe(true);
+    await signInWith(first).expect(401);
+    await signInWith(reset.body.generatedPassword).expect(200);
+    // A plain edit returns no password.
+    expect((await admin.patch(`/api/users/${id}`).set(headers).send({ firstName: 'Renamed' }).expect(200)).body.generatedPassword).toBeUndefined();
+    await admin.patch(`/api/users/${id}`).set(headers).send({ generatePassword: false }).expect(400);
+    await admin.patch(`/api/users/${id}`).set(headers).send({ generatePassword: true, password: randomBytes(24).toString('hex') }).expect(400);
+    await admin.patch(`/api/users/${accounts.get(Role.SYSTEM_ADMIN)!.id}`).set(headers).send({ generatePassword: true }).expect(400);
+    const manager = request.agent(app.getHttpServer()); await login(manager, Role.DISPATCHER_MANAGER);
+    await manager.patch(`/api/users/${id}`).set(headers).send({ generatePassword: true }).expect(403);
+    await manager.post('/api/users').set(headers).send({ firstName: 'Fictional', lastName: 'Refused', email: 'refused@example.test', role: Role.IT_SPECIALIST }).expect(403);
+    const events: { metadata: unknown }[] = await db.query('SELECT metadata FROM staff_security_events WHERE "userId" = $1', [id]);
+    expect(events.length).toBeGreaterThan(0);
+    expect(JSON.stringify(events)).not.toMatch(new RegExp(`${first}|${reset.body.generatedPassword}`));
+  });
   it('revokes sessions on password reset and disabled-user administration', async () => {
     const admin = request.agent(app.getHttpServer()); await signIn(admin);
     const it = request.agent(app.getHttpServer()); await login(it, Role.IT_SPECIALIST);
