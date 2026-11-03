@@ -73,7 +73,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  // The forwarding target changed after IT started on the email task, so what they set up may point at the wrong person.
  const forwardingMoved=!closed&&!cancelled&&request.emailAfter==='FORWARD'&&data.activity.some(event=>event.event==='MANAGER_HANDED_OVER'&&event.metadata.forwardingStarted===true);
  const activityTitle=(event:RemovalDetail['activity'][number])=>event.event==='REMOVAL_REQUEST_CREATED'?`Removal request created${recordedBy?` · recorded by ${recordedBy}`:''}`
-  :event.event==='MANAGER_HANDED_OVER'?'Handed over to another manager':event.event==='IT_REMOVAL_COMPLETED'?'Access removed':event.event==='LAST_DAY_CHANGED'?'Last day changed':event.event==='REMOVAL_CANCELLED'?'Notice cancelled: the dispatcher is staying':event.event==='ACCESS_REMOVAL_REQUESTED'?'Manager asked to remove access now':`Task updated · ${TASK_NAMES[String(event.metadata.key)]??statusLabel(String(event.metadata.key))}`;
+  :event.event==='MANAGER_HANDED_OVER'?'Handed over to another manager':event.event==='IT_REMOVAL_COMPLETED'?'Access removed':event.event==='LAST_DAY_CHANGED'?'Last day changed':event.event==='ACCOUNTS_CORRECTED'?'Manager corrected the recorded accounts':event.event==='REMOVAL_CANCELLED'?'Notice cancelled: the dispatcher is staying':event.event==='ACCESS_REMOVAL_REQUESTED'?'Manager asked to remove access now':`Task updated · ${TASK_NAMES[String(event.metadata.key)]??statusLabel(String(event.metadata.key))}`;
  const activityTone=(event:RemovalDetail['activity'][number])=>event.event==='IT_REMOVAL_COMPLETED'||event.metadata.newStatus==='COMPLETED'?'success' as const:event.metadata.newStatus==='BLOCKED'?'warning' as const:'neutral' as const;
  return <div className="space-y-6">
  <PageCrumb label={profile.displayName}/>
@@ -83,6 +83,8 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
   <div className="min-w-0 space-y-6">
    {forwardingMoved&&<Alert tone="warning" title="Email forwarding changed"><p>The manager’s records were handed over, so new email now goes to {request.forwardToName??'the new manager'}. If you’ve already set up forwarding, change it.</p></Alert>}
+   {!closed&&!cancelled&&data.activity.some(event=>event.event==='ACCOUNTS_CORRECTED'&&event.metadata.reopened===true)&&<Alert tone="warning" title="A manager corrected the accounts"><p>A step you finished opened again because it names a new company email or RingCentral number. Check the accounts below.</p></Alert>}
+   {profile.noSetupRecord&&!closed&&!cancelled&&<Alert tone="warning" title="No IT setup on record"><p>{profile.displayName} started before the workspace, so these accounts come from their manager and may be incomplete. Check the admin consoles as well.</p></Alert>}
    {cancelled?<Alert tone="info" title="Removal cancelled"><p>The manager cancelled the notice: this dispatcher is staying, and nothing needs removing.</p></Alert>
     :scheduled?<Alert tone="info" title="Don’t remove anything yet"><p>{profile.displayName} keeps working until the end of <LocalTime iso={`${request.dueOn}T12:00:00Z`} format="date"/>. You can add notes and plan now; tasks can be marked completed from that day. If the manager asks to remove access now, this page says so and you get an alert.</p></Alert>
     :request.removeNowAt&&!closed?<Alert tone="danger" title="Remove access now"><p>A manager asked for this <LocalTime iso={request.removeNowAt}/>, before the dispatcher’s last day. Remove sign-in first: email, then RingCentral.</p></Alert>
@@ -105,11 +107,11 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
     <div className="flex items-center gap-3"><Avatar name={profile.displayName} size="lg"/>
      <div className="min-w-0"><p className="truncate font-medium">{profile.displayName}</p><p className="text-[13px] text-muted-foreground">Dispatcher{profile.mcName?` · ${profile.mcName}`:''}{profile.teamName?` · ${profile.teamName}`:''}</p></div></div>
     <DescriptionList layout="rows" items={[
-     {label:'Company email',value:profile.companyEmail&&<><span className="block break-all">{profile.companyEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.companyEmail} label="Copy email" size="sm" variant="ghost"/></span></>,emptyLabel:'None recorded'},
+     {label:'Company email',value:profile.companyEmail&&<><span className="block break-all">{profile.companyEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.companyEmail} label="Copy email" size="sm" variant="ghost"/></span></>,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
      {label:'Email afterwards',value:request.emailAfter==='FORWARD'?`Forward to ${request.forwardToName??'the manager'}, 30 days`:'Suspend only'},
-     {label:'RingCentral number',value:profile.ringCentralNumber,mono:true,emptyLabel:'None recorded'},
+     {label:'RingCentral number',value:profile.ringCentralNumber,mono:true,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
      ...(profile.ringCentralNumber?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),
-     {label:'Set up',value:profile.setUpAt&&<LocalTime iso={profile.setUpAt} format="date"/>,emptyLabel:'Setup wasn’t finished'}]}/>
+     {label:'Set up',value:profile.setUpAt&&<LocalTime iso={profile.setUpAt} format="date"/>,emptyLabel:profile.noSetupRecord?'Before the workspace':'Setup wasn’t finished'}]}/>
    </CardBody></Card>
    <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they don’t remove accounts for you. Never enter passwords or tokens in notes.</p>
   </div>

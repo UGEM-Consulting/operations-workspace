@@ -16,7 +16,7 @@ const DUPLICATES: Record<string, string> = {
 };
 
 /**
- * MCs and job titles: the shared choices forms pick from. Dispatcher managers and administrators manage them; items
+ * MCs and job titles: the shared choices forms pick from. Dispatch managers and administrators manage them; items
  * are archived rather than deleted so records that use them keep working. Every change writes a metadata-only event.
  */
 @Injectable()

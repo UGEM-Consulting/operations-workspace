@@ -2,6 +2,8 @@ import type { ApplicationFields, CorrectionField } from './entities';
 // Structural validation: 7–15 digits, optional leading +, common international separators.
 // Preserve supplied formatting and do not assume a country or invent a work number.
 export const INTERNATIONAL_PHONE_PATTERN = /^(?=(?:\D*\d){7,15}\D*$)\+?[\d\s().-]+$/;
+/** Which questions an invitation asks: someone catching up already has a recorded job, so like a support they aren't asked for one. */
+export const askedAs = (invitation: { position: 'DISPATCHER' | 'SUPPORT'; catchUpMemberId?: string | null }) => invitation.catchUpMemberId ? 'SUPPORT' as const : invitation.position;
 /** Supports have no employment of their own (it follows the dispatcher they assist), so they skip MC, team lead and job title. */
 export function requiredApplicantFields(fields: ApplicationFields, position: 'DISPATCHER' | 'SUPPORT' = 'DISPATCHER'): CorrectionField[] {
  const required: CorrectionField[] = ['firstName','lastName','personalPhoneNumber','preferredAmericanFirstName','preferredAmericanLastName',...(position === 'SUPPORT' ? [] : ['mcName','teamLead','jobTitle'] as CorrectionField[])];

@@ -26,7 +26,7 @@ const employmentFields=['mcName','teamLead','jobTitle'] as const;
  * While corrections are outstanding (CHANGES_REQUESTED) the only decision left is rejection; approval waits for a resubmission.
  * A support (`supports`) has no employment and no IT setup: the rail confirms the dispatcher they will assist instead.
  */
-export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,status,savedSignature=null,options=null,supports=null}:{id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
+export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,status,savedSignature=null,options=null,supports=null,catchUpName=null}:{catchUpName?:string|null;id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
  const router=useRouter();
  const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState('');
  const [employment,setEmployment]=useState<Employment>(()=>options?pickedEmployment(options,initial):initial),[employmentConfirmed,setEmploymentConfirmed]=useState(false),[railError,setRailError]=useState('');
@@ -37,6 +37,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
  const [supportsId,setSupportsId]=useState(supports?.supportsMemberId??'');
  const dispatcher=supports?.options.find(option=>option.id===supportsId);
  function approve(){
+  if(catchUpName){setRailError('');open('APPROVE');return;}
   if(supports){
    if(!supportsId){setRailError('Choose the dispatcher this support will assist.');return;}
    if(!employmentConfirmed){setRailError('Confirm the dispatcher first.');return;}
@@ -47,15 +48,15 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   setRailError('');open('APPROVE');
  }
  // Work phones are assigned by IT; only an invalid legacy value is offered for correction.
- const correctable:RequestableItem[]=[...(Object.keys(fieldLabels) as FieldName[]).filter(field=>field!=='workPhoneNumber'||requiredFields.includes(field)),...(documentsRequired?Object.keys(documentItemLabels) as RequestableItem[]:[])];
+ const correctable:RequestableItem[]=[...(Object.keys(fieldLabels) as FieldName[]).filter(field=>(field!=='workPhoneNumber'||requiredFields.includes(field))&&!(catchUpName&&(employmentFields as readonly string[]).includes(field))),...(documentsRequired?Object.keys(documentItemLabels) as RequestableItem[]:[])];
  async function decide(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(busy||!action)return;const data=new FormData(event.currentTarget);
   if(action==='REQUEST_CHANGES'&&!data.getAll('requestedFields').length){setError('Select at least one item for the applicant to correct.');return;}
   if(action==='APPROVE'&&countersign&&!useSaved&&!signature){setError('Draw or adopt your signature to countersign the NDA.');return;}
   setBusy(true);setError('');
-  try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',...(supports?{}:{employmentConfirmed}),
+  try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',...(supports||catchUpName?{}:{employmentConfirmed}),
    ...(action==='APPROVE'&&supports?{supportsMemberId:supportsId}:{}),
-   ...(action==='APPROVE'&&!supports?{employment:{mcName:employment.mcName.trim(),teamLead:employment.teamLead.trim(),jobTitle:employment.jobTitle.trim()}}:{}),
+   ...(action==='APPROVE'&&!supports&&!catchUpName?{employment:{mcName:employment.mcName.trim(),teamLead:employment.teamLead.trim(),jobTitle:employment.jobTitle.trim()}}:{}),
    ...(action==='APPROVE'&&countersign?{countersignature:useSaved?{useSavedSignature:true,agreed:data.get('countersignAgreed')==='on'}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method,agreed:data.get('countersignAgreed')==='on'}}:{})});setAction(null);router.refresh();}
   catch(error){setError(errorMessage(error,'Unable to record decision. Your entries have been kept.'));}finally{setBusy(false);}
  }
@@ -63,9 +64,14 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
  const blocked=requiredFields.length>0;
  return <>
   <Card>
-   <CardHeader title="Your decision" description={awaitingCorrections?'Waiting for the applicant’s corrections.':supports?'Approving adds them as a support. No IT setup.':'Approving sends this dispatcher to IT setup.'}/>
+   <CardHeader title="Your decision" description={catchUpName?`Accepting finishes ${catchUpName}’s paperwork. It doesn’t change their job, and they aren’t messaged.`:awaitingCorrections?'Waiting for the applicant’s corrections.':supports?'Approving adds them as a support. No IT setup.':'Approving sends this dispatcher to IT setup.'}/>
    <CardBody className="space-y-4">
-    {awaitingCorrections?<>
+    {catchUpName?<>
+     {blocked&&<p className="text-[13px] leading-5 text-warning">This needs complete details, photos and signatures. Ask for changes for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}
+     <Button className="w-full" disabled={blocked} onClick={approve}><CircleCheck aria-hidden="true" className="size-4"/>{countersign?'Accept and countersign NDA':'Accept paperwork'}</Button>
+     <Button variant="outline" className="w-full" onClick={()=>open('REQUEST_CHANGES')}>Ask for changes</Button>
+     <p className="text-[13px] leading-5 text-muted-foreground">Asking for changes sends the usual email, with the way back.</p>
+    </>:awaitingCorrections?<>
      <p className="text-sm leading-6 text-muted-foreground">The applicant has not resubmitted. You can wait, or reject: rejecting closes the application and they can no longer edit it.</p>
      <Button variant="outline" className="w-full text-danger" onClick={()=>open('REJECT')}>Reject</Button>
     </>:<>
@@ -87,13 +93,13 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
     </>}
    </CardBody>
   </Card>
-  {action&&<Dialog open onClose={()=>setAction(null)} busy={busy} title={titles[action]} size={action==='APPROVE'&&countersign?'lg':'md'} tone={action==='REJECT'?'danger':undefined}
-  description={action==='REQUEST_CHANGES'?'Your instructions and selected items will be visible to the applicant. Only these items become editable.':action==='APPROVE'?supports?'Approval is final. Supports need no IT setup.':'Approval is final and creates a manual IT onboarding checklist.':awaitingCorrections?'The applicant has not resubmitted; rejecting closes the application and ends their correction access. This cannot be undone. Your internal reason will not be shown to the applicant.':'Rejection closes this application and cannot be undone. Your internal reason will not be shown to the applicant.'}
-  actions={<Button form="review-decision" type="submit" variant={action==='REJECT'?'destructive':'default'}>{busy?'Recording decision…':titles[action]}</Button>}>
+  {action&&<Dialog open onClose={()=>setAction(null)} busy={busy} title={catchUpName?(action==='APPROVE'?'Accept paperwork':'Ask for changes'):titles[action]} size={action==='APPROVE'&&countersign?'lg':'md'} tone={action==='REJECT'?'danger':undefined}
+  description={catchUpName&&action==='APPROVE'?'This finishes their paperwork and can’t be undone. There’s no IT setup, and they aren’t messaged.':action==='REQUEST_CHANGES'?'Your instructions and selected items will be visible to the applicant. Only these items become editable.':action==='APPROVE'?supports?'Approval is final. Supports need no IT setup.':'Approval is final and creates a manual IT onboarding checklist.':awaitingCorrections?'The applicant has not resubmitted; rejecting closes the application and ends their correction access. This cannot be undone. Your internal reason will not be shown to the applicant.':'Rejection closes this application and cannot be undone. Your internal reason will not be shown to the applicant.'}
+  actions={<Button form="review-decision" type="submit" variant={action==='REJECT'?'destructive':'default'}>{busy?'Recording decision…':catchUpName?(action==='APPROVE'?'Accept paperwork':'Ask for changes'):titles[action]}</Button>}>
   <form id="review-decision" onSubmit={decide} className="space-y-5">
    <PendingHint pending={busy}/>
    {action==='APPROVE'&&supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Support for {dispatcher?.name ?? 'the chosen dispatcher'}</p><p className="mt-1 text-muted-foreground">{[dispatcher?.mc??'Independent',dispatcher?.team].filter(Boolean).join(' · ')}. No IT setup.</p></div>}
-   {action==='APPROVE'&&!supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Final assignments</p><p className="mt-1 text-muted-foreground">{employment.mcName.trim()} · {employment.teamLead.trim()} · {employment.jobTitle.trim()}</p></div>}
+   {action==='APPROVE'&&!supports&&!catchUpName&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Final assignments</p><p className="mt-1 text-muted-foreground">{employment.mcName.trim()} · {employment.teamLead.trim()} · {employment.jobTitle.trim()}</p></div>}
    {action==='APPROVE'&&countersign&&<fieldset className="space-y-4 border-t border-border pt-5"><legend className="mb-3 text-[15px] font-semibold">Countersign the NDA for the company</legend>
     <p className="text-sm text-muted-foreground"><a className="text-primary underline" href={`/api/backend/onboarding/applications/${id}/documents/${countersign.documentId}/signed`} target="_blank" rel="noopener">Open the applicant-signed {countersign.title} (version {countersign.version})</a></p>
     {useSaved&&savedSignature?<div className="space-y-3">
@@ -110,7 +116,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
     <Checkbox name="countersignAgreed" required label={countersign.statement}/>
    </fieldset>}
    <Textarea name="reason" label={action==='REQUEST_CHANGES'?'Instructions for the applicant':action==='REJECT'?'Reason for rejection':'Internal comment'} optional={action==='APPROVE'} required={action!=='APPROVE'} maxLength={2000} hint={action==='REQUEST_CHANGES'?'The applicant sees this message.':'Visible to staff only. The applicant never sees it.'}/>
-   {action==='REQUEST_CHANGES'?<fieldset className="space-y-3"><legend className="mb-1 text-sm font-medium">Items to correct</legend><p className="text-[13px] leading-5 text-muted-foreground">Choose at least one; only these become editable.{requiredFields.length>0&&' Missing required items are already selected.'}</p><div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">{correctable.map(field=><Checkbox key={field} name="requestedFields" value={field} defaultChecked={requiredFields.includes(field)} label={itemLabels[field]}/>)}</div></fieldset>:<Checkbox name="confirmed" required label={`I confirm this ${action==='APPROVE'?'approval':'rejection'}. This decision cannot be reopened.`}/>}
+   {action==='REQUEST_CHANGES'?<fieldset className="space-y-3"><legend className="mb-1 text-sm font-medium">Items to correct</legend><p className="text-[13px] leading-5 text-muted-foreground">Choose at least one; only these become editable.{requiredFields.length>0&&' Missing required items are already selected.'}</p><div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">{correctable.map(field=><Checkbox key={field} name="requestedFields" value={field} defaultChecked={requiredFields.includes(field)} label={itemLabels[field]}/>)}</div></fieldset>:<Checkbox name="confirmed" required label={catchUpName?'I’ve checked this paperwork. This can’t be reopened.':`I confirm this ${action==='APPROVE'?'approval':'rejection'}. This decision cannot be reopened.`}/>}
    <Notice message={error} error/>
    {error&&<p className="text-sm text-muted-foreground">If another reviewer changed this application, close this dialog and reload its latest details before trying again.</p>}
   </form>

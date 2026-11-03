@@ -976,6 +976,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.undoLastMigration(); // ExistingDispatchers, with none added here
     await db.undoLastMigration(); // DispatcherOffboarding, with nothing offboarded here
     await db.query("UPDATE driver_applications SET history = '{}'");
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver address and work history');
@@ -1017,6 +1018,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DispatcherOffboarding1792950000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('ExistingDispatchers1792960000000');
   });
 });

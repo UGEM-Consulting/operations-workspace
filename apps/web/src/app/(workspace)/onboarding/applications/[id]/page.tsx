@@ -1,4 +1,4 @@
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { Download, FileText } from 'lucide-react';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { readResponse, reviewDetailSchema, savedSignatureSchema } from '@/lib/api-schemas';
@@ -32,6 +32,8 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const identity=await requirePage('applications');const {id}=await params;if(!/^[0-9a-f-]{36}$/.test(id))notFound();
  const response=await apiRequest(`onboarding/applications/${id}`);if([404,409].includes(response.status))notFound();if(!response.ok)throw new Error('Unable to load application');
  const data=await readResponse<ReviewDetail>(response,'application review',reviewDetailSchema),app=data.application;
+ // Someone already working here: their paperwork is checked from their dispatcher page, with no job decision to make.
+ if(data.catchUp&&data.invitation.catchUpMemberId)redirect(`/dispatch/dispatchers/${data.invitation.catchUpMemberId}/paperwork`);
  // The approver's own saved signature, offered when this approval needs an NDA countersignature.
  const signatureResponse=data.documents.countersign?await apiRequest('staff/signature'):null;
  const savedSignature=signatureResponse?.ok?(await readResponse<{saved:SavedSignature|null}>(signatureResponse,'saved signature',savedSignatureSchema)).saved:null;

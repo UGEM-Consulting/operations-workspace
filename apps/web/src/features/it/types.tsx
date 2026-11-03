@@ -12,7 +12,7 @@ export interface ItQueue {items:ItRequest[];total:number;page:number;pageCount:n
 // A notice is IT_ONBOARDING_COMPLETED (an application) or IT_REMOVAL_COMPLETED (a dispatcher who left); an older API sends only the first, without kind.
 export interface Notifications {items:{id:string;kind?:string;requestId:string|null;applicationId:string|null;memberId?:string|null;displayName:string|null;createdAt:string;readAt:string|null}[];unread:number;}
 export type ItTasks=import('zod').infer<typeof import('@/lib/api-schemas').itTasksSchema>;
-export interface RemovalProfile {displayName:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;}
+export interface RemovalProfile {displayName:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;}
 export type NumberOutcome='KEPT'|'FORWARDED'|'RELEASED';
 export interface RemovalRequest {id:string;memberId:string;version:number;status:TaskStatus;scheduled:boolean;removeNowAt:string|null;cancelledAt:string|null;dueOn:string;emailAfter:'FORWARD'|'SUSPEND';forwardToName:string|null;managerName:string|null;recordedByName?:string|null;leftAt:string|null;numberOutcome:NumberOutcome|null;profile:RemovalProfile;completedAt:string|null;}
 export interface RemovalDetail {request:RemovalRequest;tasks:ItTask[];activity:ItDetail['activity'];}

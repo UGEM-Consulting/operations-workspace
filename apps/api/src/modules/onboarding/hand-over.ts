@@ -7,25 +7,26 @@ import { ApplicationActivity, ApplicationManagerChange, DispatcherApplication, I
 export const RESPONSIBLE_ROLES = [Role.DISPATCHER_MANAGER, Role.SYSTEM_ADMIN];
 
 /**
- * The new responsible manager: an active dispatcher manager or administrator. Read FOR SHARE in the caller's transaction,
+ * The new responsible manager: an active dispatch manager or administrator. Read FOR SHARE in the caller's transaction,
  * so an account change waits for this record and sees it among their open records, or this sees the change and refuses.
  */
 export async function responsibleManager(em: EntityManager, id: string) {
  const user = await em.getRepository(User).findOne({ where: { id }, lock: { mode: 'pessimistic_read' } });
- if (!user || user.status !== UserStatus.ACTIVE || !RESPONSIBLE_ROLES.includes(user.role)) throw new BadRequestException('Choose an active dispatcher manager or administrator.');
+ if (!user || user.status !== UserStatus.ACTIVE || !RESPONSIBLE_ROLES.includes(user.role)) throw new BadRequestException('Choose an active dispatch manager or administrator.');
  return user;
 }
 
 /**
  * A manager's open records, which move together when their account is deactivated or their role changes: invitations not
  * used yet (still valid: neither revoked nor expired), applications in progress or awaiting review, those waiting for the applicant's changes, and approvals whose
- * IT setup isn't finished (so the setup notice reaches someone). Finished applications stay with them for the record.
+ * IT setup isn't finished (so the setup notice reaches someone). Finished applications stay with them for the record, as does
+ * the unfinished paperwork of someone who left (a revoked catch-up link): nothing more can happen to it.
  */
 const OPEN_RECORDS = `SELECT a.id, a."invitationId", CASE
   WHEN a.status = 'INVITED' THEN 'invitations' WHEN a.status IN ('DRAFT','SUBMITTED','RESUBMITTED') THEN 'applications'
   WHEN a.status = 'CHANGES_REQUESTED' THEN 'changes' ELSE 'itSetup' END AS bucket
  FROM dispatcher_applications a JOIN invitations i ON i.id = a."invitationId" WHERE a."assignedManagerId" = $1
-  AND (a.status <> 'INVITED' OR (i."revokedAt" IS NULL AND i."expiresAt" > now())) AND (a.status NOT IN ('APPROVED','REJECTED')
+  AND NOT (i."catchUpMemberId" IS NOT NULL AND i."revokedAt" IS NOT NULL) AND (a.status <> 'INVITED' OR (i."revokedAt" IS NULL AND i."expiresAt" > now())) AND (a.status NOT IN ('APPROVED','REJECTED')
   OR (a.status = 'APPROVED' AND EXISTS (SELECT 1 FROM it_onboarding_requests r WHERE r."applicationId" = a.id AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL)))`;
 /** Unfinished IT removals that send them the completion notice or new mail from the mailbox of someone who left. */
 const OPEN_REMOVALS = `FROM it_removal_requests r WHERE (r."managerId" = $1 OR r."forwardTo" = $1) AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;

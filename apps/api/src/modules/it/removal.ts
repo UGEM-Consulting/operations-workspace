@@ -19,20 +19,22 @@ export async function lockSetupRequest(em: EntityManager, memberId: string) {
  * Returns the alert ids to send after commit.
  */
 export async function createRemoval(em: EntityManager, alerts: NotificationsService, input: {
- setup: ItOnboardingRequest; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
+ setup: ItOnboardingRequest | null; accounts?: { companyEmail: string | null; ringCentralNumber: string | null }; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
  mcName: string | null; teamName: string | null;
 }) {
  const { setup } = input;
- if (!setup.completedAt) { setup.cancelledAt = new Date(); setup.version += 1; await em.save(setup); }
+ // Someone recorded by hand has no setup request: IT works from the accounts their manager recorded.
+ const companyEmail = setup?.companyEmail ?? input.accounts?.companyEmail ?? null, ringCentralNumber = setup?.assignedRingCentralPhoneNumber ?? input.accounts?.ringCentralNumber ?? null;
+ if (setup && !setup.completedAt) { setup.cancelledAt = new Date(); setup.version += 1; await em.save(setup); }
  // Forwarding needs a mailbox: without a company email there is nothing to forward.
- const forward = input.emailAfter === 'FORWARD' && !!setup.companyEmail;
+ const forward = input.emailAfter === 'FORWARD' && !!companyEmail;
  const removal = await em.getRepository(ItRemovalRequest).save({
-  memberId: input.memberId, setupRequestId: setup.id, managerId: input.actorId, createdBy: input.actorId,
-  profile: { displayName: setup.profile.proposedDisplayName ?? input.name, companyEmail: setup.companyEmail, ringCentralNumber: setup.assignedRingCentralPhoneNumber,
-   mcName: input.mcName, teamName: input.teamName, setUpAt: setup.completedAt?.toISOString() ?? null },
+  memberId: input.memberId, setupRequestId: setup?.id ?? null, managerId: input.actorId, createdBy: input.actorId,
+  profile: { displayName: setup?.profile.proposedDisplayName ?? input.name, companyEmail, ringCentralNumber, noSetupRecord: !setup,
+   mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null },
   emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? input.actorId : null,
   dueOn: input.dueOn, numberOutcome: null, version: 0, completedAt: null, dueAlertedAt: input.scheduled ? null : new Date() });
  await em.getRepository(ItRemovalTask).save(REMOVAL_CHECKLIST.map(task => ({ requestId: removal.id, key: task.key, status: 'PENDING' as const, notes: '' })));
- await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId: input.actorId, event: 'REMOVAL_REQUEST_CREATED', metadata: { setupCancelled: !setup.completedAt } });
+ await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId: input.actorId, event: 'REMOVAL_REQUEST_CREATED', metadata: { setupCancelled: !!setup && !setup.completedAt, noSetupRecord: !setup } });
  return input.scheduled ? alerts.queueItRemoval(em, removal, 'IT_REMOVAL_SCHEDULED') : alerts.queueItRemoval(em, removal, 'IT_REMOVAL_WAITING');
 }

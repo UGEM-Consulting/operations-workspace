@@ -60,5 +60,13 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('POST', `users/${ID}/open-records`), false);
     for (const action of ['last-day', 'cancel-notice', 'remove-access']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/last-day`), false);
+    // People already working here.
+    for (const path of ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links']) { assert.equal(allowedEndpoint('POST', path), true, path); assert.equal(allowedEndpoint('DELETE', path), false, path); }
+    for (const path of ['dispatch/existing/options', 'dispatch/paperwork']) assert.equal(allowedEndpoint('GET', path), false, path);
+    assert.equal(allowedEndpoint('PATCH', `dispatch/members/${ID}/existing`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/more-time`), true);
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/more-time`), false);
+    assert.equal(bodyLimit('dispatch/existing/add'), 1_000_000);
+    assert.equal(bodyLimit('dispatch/paperwork/links'), 16384);
   });
 });

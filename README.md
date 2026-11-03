@@ -47,7 +47,7 @@ Node 22.12.0 validation: clean dependency installation, type checks, lint, 42 en
 | Fictional account | Local default email | Landing page |
 | --- | --- | --- |
 | Avery Demo — System Administrator | admin@example.test | /dashboard |
-| Morgan Demo — Dispatcher Manager | manager@example.test | /onboarding |
+| Morgan Demo — Dispatch Manager | manager@example.test | /onboarding |
 | Taylor Demo — IT Specialist | it@example.test | /it/tasks |
 
 Open http://localhost:3000/login. API health: http://localhost:4000/api/health. Development Swagger: http://localhost:4000/api/docs. Restart the development processes after changing environment files. Both apps must use the same `BFF_SHARED_SECRET` and `WEB_ORIGIN`.

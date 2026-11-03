@@ -38,7 +38,7 @@ class ApplicationFilesController {
  @Get(':id/photos/:kind') @FileResponse() async photo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.service.staffPhoto(req.currentUser, id, photoKindParam(kind))); }
  @Get(':id/documents/:documentId/signed') @FileResponse() async signed(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.service.staffSignedCopy(req.currentUser, id, documentId)); }
 }
-// A dispatcher's photos and signed copies for every dispatcher manager and administrator; the ID selfie only for the
+// A dispatcher's photos and signed copies for every dispatch manager and administrator; the ID selfie only for the
 // responsible manager and administrators.
 @Controller('dispatch/members')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)

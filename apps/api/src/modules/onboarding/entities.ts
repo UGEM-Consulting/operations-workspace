@@ -24,6 +24,8 @@ export class Invitation {
  // DISPATCHER (default) or SUPPORT, who assists one dispatcher (the manager's choice, confirmed at approval).
  @Column('varchar', { default: 'DISPATCHER' }) position!: 'DISPATCHER' | 'SUPPORT';
  @Column('uuid', { nullable: true }) supportsMemberId!: string | null;
+ // A catch-up link: this is someone already working here, bringing their paperwork up to date. Never an application for a job.
+ @Column('uuid', { nullable: true }) catchUpMemberId!: string | null;
  @Column() telegramRequired!: boolean;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @Column('timestamptz') expiresAt!: Date;

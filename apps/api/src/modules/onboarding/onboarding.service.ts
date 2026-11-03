@@ -3,7 +3,7 @@ import { supportedDispatcher } from '../dispatch/create-member';
 import { responsibleManager } from './hand-over';
 export { digest } from './verification-code';
 import { EmailService } from '../email/email.service';
-import { requiredApplicantFields } from './application-requirements';
+import { askedAs, requiredApplicantFields } from './application-requirements';
 import { applicantEmploymentOptions, settleApplicantEmployment } from './applicant-employment';
 import { activeAttempts, clientBucket, countAttempt, onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
@@ -14,7 +14,7 @@ import { webOrigins } from '../../config/environment';
 import { Request } from 'express';
 // Standalone ts-node commands must load our express-session type augmentation too.
 import type {} from '../auth/session';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { User, Role } from '../users/user.entity';
 import { canAccessAssignedApplication } from '../auth/policy';
 import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
@@ -76,7 +76,8 @@ export class OnboardingService {
   return { id: invitation.id, url: `${webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]}/apply#${token}` };
  }
  async invitations(user: User) {
-  const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? {} : { managerId: user.id }, order: { createdAt: 'DESC' }, take: 200 });
+  // Catch-up links live on the Dispatchers page, not here.
+  const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? { catchUpMemberId: IsNull() } : { managerId: user.id, catchUpMemberId: IsNull() }, order: { createdAt: 'DESC' }, take: 200 });
   // A support invitation shows the dispatcher they will assist.
   const ids = [...new Set(rows.map(row => row.supportsMemberId).filter((id): id is string => !!id))];
   const names: Record<string,string> = ids.length ? Object.fromEntries((await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name FROM dispatch_members WHERE id = ANY($1)`, [ids])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
@@ -198,16 +199,26 @@ export class OnboardingService {
   const editableFields: RequestableItem[] = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS,...(documents.required ? DOCUMENT_ITEMS : [])] : [];
   return { correction, effectiveCorrections, editableFields, documents };
  }
+ /** What the manager has on file, shown to someone catching up: names only, never MC or DOT numbers. */
+ private async onFile(em: EntityManager, memberId: string) {
+  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT m.name AS mc, t.name AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
+   FROM dispatch_members d LEFT JOIN job_titles j ON j.id = d."jobTitleId"
+   LEFT JOIN member_support_links l ON l."supportId" = d.id AND l."endedAt" IS NULL LEFT JOIN dispatch_members sd ON sd.id = l."dispatcherId"
+   LEFT JOIN member_assignments a ON a."memberId" = coalesce(sd.id, d.id) AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId" WHERE d.id = $1`,[memberId]);
+  const paper: { kind: string; signedOn: string }[] = await em.query(`SELECT kind, "signedOn"::text AS "signedOn" FROM member_paper_documents WHERE "memberId" = $1 ORDER BY kind`,[memberId]);
+  return { ...place, paper };
+ }
  private async applicantView(em: EntityManager, app: DispatcherApplication, inv: Invitation, known?: ApplicantDocuments) {
   const documents = known ?? await applicantDocuments(em,app.id,this.storage.enabled);
-  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app,documents,inv.position);
+  // Someone catching up has no employment to answer, as a support has none: their manager recorded where they work.
+  const { correction, effectiveCorrections, editableFields } = await this.editable(em,app,documents,askedAs(inv));
   // Explicit projection: no internal review comments, reviewer identity or histories to applicants.
   return { application:{id:app.id,invitationId:app.invitationId,status:app.status,fields:app.fields,version:app.version,updatedAt:app.updatedAt,submittedAt:app.submittedAt},
-   invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired,position:inv.position},
+   invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired,position:inv.position,catchUp:inv.catchUpMemberId?await this.onFile(em,inv.catchUpMemberId):null},
    correction:correction ? {id:correction.id,reason:correction.reason,requestedFields:effectiveCorrections,createdAt:correction.createdAt} : null,
    editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents,
    // The choices for the employment step; a support has none, and neither does a closed application.
-   employmentOptions:editableFields.length>0&&inv.position!=='SUPPORT' ? await applicantEmploymentOptions(em) : null };
+   employmentOptions:editableFields.length>0&&askedAs(inv)!=='SUPPORT' ? await applicantEmploymentOptions(em) : null };
  }
  async current(req: Request) {
   const {application,invitation} = await this.applicant(this.db.manager,req);
@@ -231,16 +242,18 @@ export class OnboardingService {
    if (input.version !== app.version) throw new ConflictException('Your application changed. Reload before saving.');
    // A field save cannot change photos or signatures, so one documents read serves the checks and the response.
    const documents = await applicantDocuments(em,app.id,this.storage.enabled);
-   const view = { ...await this.editable(em,app,documents,inv.position), documents };
+   const view = { ...await this.editable(em,app,documents,askedAs(inv)), documents };
    const fields: ApplicationFields = {...app.fields};
    for (const key of CORRECTION_FIELDS) {
     if (input[key] === undefined) continue;
+    // Their manager recorded where they work; a page's blank answers change nothing.
+    if (inv.catchUpMemberId && ['mcName','teamLead','jobTitle'].includes(key)) continue;
     if (!view.editableFields.includes(key) && input[key] !== (app.fields[key] ?? '')) throw new BadRequestException('Only requested fields may be corrected.');
     if (view.editableFields.includes(key)) fields[key] = input[key];
    }
-   if (inv.position !== 'SUPPORT') await settleApplicantEmployment(em,app.fields,fields);
+   if (askedAs(inv) !== 'SUPPORT') await settleApplicantEmployment(em,app.fields,fields);
    if (submit) {
-    const missing = requiredApplicantFields(fields,inv.position);
+    const missing = requiredApplicantFields(fields,askedAs(inv));
     if (missing.length) throw new BadRequestException(`Complete required applicant fields: ${missing.join(', ')}.`);
     if (!('accurate' in input) || input.accurate !== true) throw new BadRequestException('Confirm the information is accurate before submission.');
     if (view.documents.missing.length) throw new BadRequestException('Upload both photos and sign every required document before submitting.');
@@ -259,7 +272,8 @@ export class OnboardingService {
    }
    await em.save(app);
    await this.activity(em,inv.id,submit ? (correcting ? 'APPLICATION_RESUBMITTED' : 'APPLICATION_SUBMITTED') : (correcting ? 'CORRECTIONS_SAVED' : 'DRAFT_SAVED'));
-   if (submit) alerts = await this.notifications.queueReviewWaiting(em,app);
+   // Someone catching up shows on the Paperwork tab; there is no new alert for it.
+   if (submit && !inv.catchUpMemberId) alerts = await this.notifications.queueReviewWaiting(em,app);
    return this.applicantView(em,app,inv,documents);
   });
   this.notifications.dispatch(alerts);

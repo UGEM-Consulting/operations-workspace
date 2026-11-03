@@ -101,12 +101,13 @@ export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return 
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
-export interface RemovalProfile {displayName:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;}
+export interface RemovalProfile {displayName:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;}
 @Entity('it_removal_requests')
 export class ItRemovalRequest {
  @PrimaryGeneratedColumn('uuid') id!:string;
  @Column('uuid') memberId!:string;
- @Column('uuid') setupRequestId!:string;
+ // The setup this reverses; empty for someone recorded by hand, who never had one here.
+ @Column('uuid',{nullable:true}) setupRequestId!:string|null;
  // Who gets the portal notice and, when chosen, new email: whoever marked them as left, or who took over from them.
  @Column('uuid') managerId!:string;
  // Who marked them as left; never changes.
