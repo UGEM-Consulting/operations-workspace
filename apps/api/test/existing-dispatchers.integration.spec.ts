@@ -215,6 +215,21 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect((await agents.manager.get(`/api/dispatch/members/${noEmail}`).set(headers).expect(200)).body.existing.catchUp.reference).toBe(applicationId);
     expect((await agents.other.get(`/api/dispatch/members/${noEmail}`).set(headers).expect(200)).body.existing.catchUp.reference).toBeNull();
   });
+  it('keeps a link in use with the manager who sent it, until it ends', async () => {
+    const id = await addOne('Rowan');
+    const sent = async (agent: Agent) => (await agent.post('/api/dispatch/paperwork/links').set(headers).send({ memberIds: [id] }).expect(201)).body.items[0];
+    const first = await link(id), owner = async () => (await db.query(`SELECT "managerId" FROM invitations WHERE "catchUpMemberId" = $1 AND "revokedAt" IS NULL`, [id])) as { managerId: string }[];
+    const refused = await sent(agents.other);
+    expect(refused.problem).toContain('Another manager');
+    expect(refused.url).toBeUndefined();
+    expect(await owner()).toEqual([{ managerId: users.manager.id }]);
+    // The link they were sent still works.
+    await request(app.getHttpServer()).post('/api/applicant/begin').set(headers).send({ token: first.url.split('#').pop(), email: 'rowan.home@example.test' }).expect(201);
+    // Once it has run out nobody can use it, so any manager may carry on.
+    await db.query(`UPDATE invitations SET "expiresAt" = now() - interval '1 minute' WHERE "catchUpMemberId" = $1`, [id]);
+    expect((await sent(agents.other)).url).toBeTruthy();
+    expect(await owner()).toEqual([{ managerId: users.other.id }]);
+  });
   it('gives IT the normal checklist when they leave, from what the manager recorded', async () => {
     const id = await addOne('Riley', { companyEmail: 'riley@example.test' });
     const version = (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body.version;

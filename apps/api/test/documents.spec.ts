@@ -9,6 +9,7 @@ import { EnvironmentError, validateEnvironment } from '../src/config/environment
 import { executedDocument, inspectPdf } from '../src/modules/documents/certificate';
 import { applicantStatement } from '../src/modules/documents/statements';
 import { ApplicantSignatureDto, MAX_SIGNATURE_BYTES } from '../src/modules/documents/documents.dto';
+import { ReviewDto } from '../src/modules/onboarding/dto';
 import { assertSignatureEmbeds, cleanJpeg, decodeJpeg, decodeSignature, inspectSignaturePng, MAX_PHOTO_SIDE, MAX_SIGNATURE_WIDTH } from '../src/modules/documents/images';
 import { jpeg, pdfText, png, pngChunk, pngHeader, PNG_SIGNATURE } from './documents.fixtures';
 import { documentKey, driverConsentKey, driverDocumentKey, driverReportKey, photoKey, signedCopyKey, StorageService } from '../src/modules/storage/storage.service';
@@ -116,6 +117,7 @@ describe('signature images', () => {
     expect(await validate(plainToInstance(ApplicantSignatureDto, { ...base, signatureMethod: 'TYPED' }))).toHaveLength(0);
     expect(await validate(plainToInstance(ApplicantSignatureDto, base))).toHaveLength(0);
     expect(await validate(plainToInstance(ApplicantSignatureDto, { ...base, signatureMethod: 'STAMPED' }))).not.toHaveLength(0);
+    for (const property of ['employment', 'countersignature']) expect((await validate(plainToInstance(ReviewDto, { [property]: [] }))).map(error => error.property)).toContain(property);
   });
 });
 describe('photo metadata stripping', () => {

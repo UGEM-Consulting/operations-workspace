@@ -60,6 +60,8 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('POST', `users/${ID}/open-records`), false);
     for (const action of ['last-day', 'cancel-notice', 'remove-access']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/last-day`), false);
+    assert.equal(allowedEndpoint('POST', `applicant/documents/${ID}/acknowledge`), true);
+    assert.equal(allowedEndpoint('GET', `applicant/documents/${ID}/acknowledge`), false);
     // People already working here.
     for (const path of ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links']) { assert.equal(allowedEndpoint('POST', path), true, path); assert.equal(allowedEndpoint('DELETE', path), false, path); }
     for (const path of ['dispatch/existing/options', 'dispatch/paperwork']) assert.equal(allowedEndpoint('GET', path), false, path);

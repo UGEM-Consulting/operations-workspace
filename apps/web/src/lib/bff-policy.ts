@@ -62,7 +62,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Driver consent forms: the Safety manager publishes them; a driver opens and signs them in their application.
     (method === 'POST' && (path === 'safety/consents' || match(`driver/consents/${ID}/(view|sign)`, path))) ||
     ((method === 'GET' || method === 'PATCH') && path === 'driver/application') || (method === 'PATCH' && match(`safety/drivers/${ID}`, path)) ||
-    (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign)`, path))) ||
+    (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign|acknowledge)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));
 }
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }

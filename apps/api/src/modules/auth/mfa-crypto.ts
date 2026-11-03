@@ -22,7 +22,8 @@ export class SecretBox {
   open(sealed: string, userId: string): string {
     const [version, iv, tag, data] = sealed.split(':');
     if (version !== 'v1' || !iv || !tag || !data) throw new Error('Unsupported MFA secret format');
-    const decipher = createDecipheriv('aes-256-gcm', this.key, Buffer.from(iv, 'base64')).setAAD(Buffer.from(userId));
+    // A fixed tag length: Node would otherwise accept a shortened tag.
+    const decipher = createDecipheriv('aes-256-gcm', this.key, Buffer.from(iv, 'base64'), { authTagLength: 16 }).setAAD(Buffer.from(userId));
     decipher.setAuthTag(Buffer.from(tag, 'base64'));
     return Buffer.concat([decipher.update(Buffer.from(data, 'base64')), decipher.final()]).toString('utf8');
   }

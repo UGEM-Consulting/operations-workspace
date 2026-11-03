@@ -10,7 +10,9 @@ import { Checkbox, Input, Textarea } from '@/components/ui/field';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { errorMessage, mutate } from '@/lib/client-api';
 import type { SavedSignature } from '@/features/auth/saved-signature';
-import { SignaturePad, type SignatureMethod } from './signature-pad';
+import type { SignatureMethod } from './signature-pad';
+import { CountersignModal } from '@/features/documents/countersign-modal';
+import { shortName } from '@/features/documents/signed-documents';
 import { EmploymentPicker, pickedEmployment, type EmploymentOptions } from './employment-picker';
 import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments, type SupportChoice } from './types';
 import { Select } from '@/components/ui/field';
@@ -26,14 +28,18 @@ const employmentFields=['mcName','teamLead','jobTitle'] as const;
  * While corrections are outstanding (CHANGES_REQUESTED) the only decision left is rejection; approval waits for a resubmission.
  * A support (`supports`) has no employment and no IT setup: the rail confirms the dispatcher they will assist instead.
  */
-export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,status,savedSignature=null,options=null,supports=null,catchUpName=null}:{catchUpName?:string|null;id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
+export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,documentItems=[],status,savedSignature=null,options=null,supports=null,catchUpName=null}:{catchUpName?:string|null;id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];documentItems?:StaffDocuments['items'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
  const router=useRouter();
- const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState('');
+ const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState(''),[countersignTitle,setCountersignTitle]=useState(countersign?.lastTitle??''),[countersigned,setCountersigned]=useState(false),[reading,setReading]=useState(false);
  const [employment,setEmployment]=useState<Employment>(()=>options?pickedEmployment(options,initial):initial),[employmentConfirmed,setEmploymentConfirmed]=useState(false),[railError,setRailError]=useState('');
  const onSignature=useCallback((image:string|null,method:SignatureMethod)=>setSignature(image?{image,method}:null),[]);
  // A saved signature is offered first; the approver can still sign here instead.
  const [useSaved,setUseSaved]=useState(!!savedSignature);
- function open(next:Action){setAction(next);setError('');setSignature(null);setUseSaved(!!savedSignature);}
+ function open(next:Action){setAction(next);setError('');setSignature(null);setCountersigned(false);setUseSaved(!!savedSignature);}
+ const signedItem=countersign&&documentItems.find(item=>item.applicant?.documentId===countersign.documentId),signedRecord=signedItem?signedItem.applicant:null;
+ const signedOn=signedRecord?new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'America/New_York'}).format(new Date(signedRecord.signedAt)):'';
+ // The title goes on the record only when the form asked for it and the approver saw it.
+ const titleAsked=!!countersign?.fields?.some(field=>field.signer==='COMPANY'&&field.kind==='TITLE');
  const [supportsId,setSupportsId]=useState(supports?.supportsMemberId??'');
  const dispatcher=supports?.options.find(option=>option.id===supportsId);
  function approve(){
@@ -52,12 +58,12 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
  async function decide(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(busy||!action)return;const data=new FormData(event.currentTarget);
   if(action==='REQUEST_CHANGES'&&!data.getAll('requestedFields').length){setError('Select at least one item for the applicant to correct.');return;}
-  if(action==='APPROVE'&&countersign&&!useSaved&&!signature){setError('Draw or adopt your signature to countersign the NDA.');return;}
+  if(action==='APPROVE'&&countersign&&!countersigned){setError('Read and countersign the NDA first.');return;}
   setBusy(true);setError('');
   try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',...(supports||catchUpName?{}:{employmentConfirmed}),
    ...(action==='APPROVE'&&supports?{supportsMemberId:supportsId}:{}),
    ...(action==='APPROVE'&&!supports&&!catchUpName?{employment:{mcName:employment.mcName.trim(),teamLead:employment.teamLead.trim(),jobTitle:employment.jobTitle.trim()}}:{}),
-   ...(action==='APPROVE'&&countersign?{countersignature:useSaved?{useSavedSignature:true,agreed:data.get('countersignAgreed')==='on'}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method,agreed:data.get('countersignAgreed')==='on'}}:{})});setAction(null);router.refresh();}
+   ...(action==='APPROVE'&&countersign?{countersignature:{...(useSaved?{useSavedSignature:true}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method}),agreed:true,...(titleAsked&&countersignTitle.trim()?{title:countersignTitle.trim()}:{})}}:{})});setAction(null);router.refresh();}
   catch(error){setError(errorMessage(error,'Unable to record decision. Your entries have been kept.'));}finally{setBusy(false);}
  }
  const awaitingCorrections=status==='CHANGES_REQUESTED';
@@ -100,26 +106,17 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
    <PendingHint pending={busy}/>
    {action==='APPROVE'&&supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Support for {dispatcher?.name ?? 'the chosen dispatcher'}</p><p className="mt-1 text-muted-foreground">{[dispatcher?.mc??'Independent',dispatcher?.team].filter(Boolean).join(' · ')}. No IT setup.</p></div>}
    {action==='APPROVE'&&!supports&&!catchUpName&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Final assignments</p><p className="mt-1 text-muted-foreground">{employment.mcName.trim()} · {employment.teamLead.trim()} · {employment.jobTitle.trim()}</p></div>}
-   {action==='APPROVE'&&countersign&&<fieldset className="space-y-4 border-t border-border pt-5"><legend className="mb-3 text-[15px] font-semibold">Countersign the NDA for the company</legend>
-    <p className="text-sm text-muted-foreground"><a className="text-primary underline" href={`/api/backend/onboarding/applications/${id}/documents/${countersign.documentId}/signed`} target="_blank" rel="noopener">Open the applicant-signed {countersign.title} (version {countersign.version})</a></p>
-    {useSaved&&savedSignature?<div className="space-y-3">
-     {/* eslint-disable-next-line @next/next/no-img-element -- server-provided data URL */}
-     <img src={savedSignature.image} alt={`Your saved signature for ${savedSignature.typedName}`} className="h-20 w-auto max-w-full rounded-sm border border-border bg-white p-2"/>
-     <p className="text-sm">Signing as <span className="font-medium">{savedSignature.typedName}</span> with your saved signature.</p>
-     <Button type="button" variant="outline" size="sm" disabled={busy} onClick={()=>setUseSaved(false)}>Sign here instead</Button>
-    </div>:<>
-    <Input label="Your full legal name" hint="Latin letters, as on your ID." name="countersignName" value={countersignName} onChange={event=>setCountersignName(event.target.value)} required maxLength={100} pattern="[A-Za-z][A-Za-z .,'\-]+" autoComplete="name" width="md"/>
-    <SignaturePad label="Your signature" onChange={onSignature} disabled={busy} allowTyped typedName={countersignName}/>
-    {savedSignature?<Button type="button" variant="outline" size="sm" disabled={busy} onClick={()=>{setUseSaved(true);setSignature(null);}}>Use my saved signature</Button>
-     :<p className="text-[13px] leading-5 text-muted-foreground">Tip: save your signature on <a className="text-primary underline" href="/account/security">Account security</a> to skip this step next time.</p>}
-    </>}
-    <Checkbox name="countersignAgreed" required label={countersign.statement}/>
-   </fieldset>}
+   {action==='APPROVE'&&countersign&&<div className="space-y-3 rounded-md border border-border p-4"><p className="text-[15px] font-semibold">Countersign the NDA for the company</p>
+    {countersigned?<p className="flex items-center gap-2 text-sm text-success"><CircleCheck aria-hidden="true" className="size-4"/>Ready. It’s added when you approve.</p>:<p className="text-sm text-muted-foreground">Read the signed {countersign.title} and sign it for UGEM.</p>}
+    <Button type="button" variant={countersigned?'outline':'default'} disabled={busy} onClick={()=>{setCountersigned(false);setReading(true);}}>{countersigned?'Review the countersignature':'Read and countersign'}</Button>
+   </div>}
    <Textarea name="reason" label={action==='REQUEST_CHANGES'?'Instructions for the applicant':action==='REJECT'?'Reason for rejection':'Internal comment'} optional={action==='APPROVE'} required={action!=='APPROVE'} maxLength={2000} hint={action==='REQUEST_CHANGES'?'The applicant sees this message.':'Visible to staff only. The applicant never sees it.'}/>
    {action==='REQUEST_CHANGES'?<fieldset className="space-y-3"><legend className="mb-1 text-sm font-medium">Items to correct</legend><p className="text-[13px] leading-5 text-muted-foreground">Choose at least one; only these become editable.{requiredFields.length>0&&' Missing required items are already selected.'}</p><div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">{correctable.map(field=><Checkbox key={field} name="requestedFields" value={field} defaultChecked={requiredFields.includes(field)} label={itemLabels[field]}/>)}</div></fieldset>:<Checkbox name="confirmed" required label={catchUpName?'I’ve checked this paperwork. This can’t be reopened.':`I confirm this ${action==='APPROVE'?'approval':'rejection'}. This decision cannot be reopened.`}/>}
    <Notice message={error} error/>
    {error&&<p className="text-sm text-muted-foreground">If another reviewer changed this application, close this dialog and reload its latest details before trying again.</p>}
   </form>
   </Dialog>}
+  {reading&&countersign&&<CountersignModal url={`/api/backend/onboarding/applications/${id}/documents/${countersign.documentId}/signed`} title={signedItem&&signedRecord?`${shortName(signedItem)} · ${signedRecord.typedName}`:countersign.title} meta={signedRecord?`Signed by ${signedRecord.typedName}, ${signedOn}`:'Signed by the applicant'} statement={countersign.statement} fields={countersign.fields??[]} savedSignature={savedSignature} useSaved={useSaved} onUseSaved={value=>{setUseSaved(value);setSignature(null);setCountersigned(false);}}
+   name={countersignName} onName={setCountersignName} signature={signature} onSignature={onSignature} jobTitle={countersignTitle} onJobTitle={setCountersignTitle} onDone={()=>{setCountersigned(true);setReading(false);setError('');}} onClose={()=>setReading(false)}/>}
  </>;
 }

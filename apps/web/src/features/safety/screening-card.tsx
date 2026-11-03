@@ -3,6 +3,7 @@ import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 import { CircleCheck, CircleDashed, FileText, Send, TriangleAlert, Undo2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Alert, Notice } from '@/components/ui/alert';
@@ -117,7 +118,7 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
           <p className="text-[13px] text-muted-foreground">{screening.mvr ? <>Pulled {day(screening.mvr.pulledOn)} · {screening.mvr.pageCount} {screening.mvr.pageCount === 1 ? 'page' : 'pages'} · uploaded by {screening.mvr.uploadedBy ?? 'a former account'}</> : 'Not uploaded yet. Safety leads and managers upload it; every Safety role can open it.'}</p>
         </div>
         <span className="flex gap-1">
-          {screening.mvr && <Button asChild size="sm" variant="ghost"><a href={`/api/backend/safety/drivers/${driver.id}/reports/${screening.mvr.id}/file`} target="_blank" rel="noopener">View<span className="sr-only"> the MVR</span></a></Button>}
+          {screening.mvr && <ViewDocumentButton documents={[{ url: `/api/backend/safety/drivers/${driver.id}/reports/${screening.mvr.id}/file`, title: `MVR · ${driver.firstName} ${driver.lastName}`, meta: `${screening.mvr.pageCount} ${screening.mvr.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> the MVR</span></ViewDocumentButton>}
           {active && <Button size="sm" variant="outline" onClick={() => start({ kind: 'mvr' })}><Upload aria-hidden="true" className="size-4" />{screening.mvr ? 'Replace' : 'Upload'}</Button>}
         </span>
       </li>

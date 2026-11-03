@@ -5,6 +5,7 @@ import { Notice } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { cn } from '@/lib/utils';
 import { ApiError, errorMessage, mutate } from '@/lib/client-api';
@@ -76,7 +77,7 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
     </div>
     {current && !scanning && <p className="flex flex-wrap items-center gap-2 text-sm"><CheckCircle2 aria-hidden="true" className="size-4 text-success" />
       Scanned {current.pageCount} {current.pageCount === 1 ? 'page' : 'pages'}{current.subtype ? ` · ${workAuthorizationTypes[current.subtype]}` : ''} · <LocalTime iso={current.createdAt} format="date" />
-      <a className="text-primary underline" href={`/api/backend/driver/documents/${current.id}/file`} target="_blank" rel="noopener">View<span className="sr-only"> {documentLabels[kind].toLowerCase()}</span></a></p>}
+      <ViewDocumentButton variant="link" size="sm" className="text-sm" documents={[{ url: `/api/backend/driver/documents/${current.id}/file`, title: documentLabels[kind], meta: `${current.pageCount} ${current.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> {documentLabels[kind].toLowerCase()}</span></ViewDocumentButton></p>}
     {scanning && <>
       {kind === 'WORK_AUTHORIZATION' && <Select id="work-authorization-document" label="Document" value={subtype} onChange={event => setSubtype(event.target.value)} placeholder="Choose a document" width="full"
         options={Object.entries(workAuthorizationTypes).map(([value, label]) => ({ value, label }))} />}

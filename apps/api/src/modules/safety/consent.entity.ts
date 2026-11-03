@@ -1,6 +1,7 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn } from 'typeorm';
 import type { StorageLayout } from '../storage/storage.service';
 import type { SignatureMethod } from '../documents/documents.entity';
+import type { DocumentField } from '../documents/fields';
 
 /**
  * The driver consent forms Safety publishes. The disclosure is acknowledged as read; the authorization and the
@@ -27,6 +28,8 @@ export class DriverConsentDocument {
  @Column('integer') pageCount!: number;
  @Column('uuid') uploadedBy!: string;
  @Column('smallint', { default: 1 }) storageLayout!: StorageLayout;
+ // Where this version's signing fields go. Set when it is published.
+ @Column('jsonb', { default: [] }) fields!: DocumentField[];
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 

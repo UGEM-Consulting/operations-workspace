@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { Ban, Building2, Calendar, Ellipsis, FileText, Mail, Phone, Plus, RotateCcw, Route, UserMinus, Users } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog } from '@/components/ui/dialog';
@@ -189,7 +190,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               <ul className="mt-3 divide-y divide-border border-t border-border">{member.documents.map(doc => <li key={doc.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
                 <span className="flex min-w-0 items-center gap-3"><FileText aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0"><span className="block text-sm font-medium">{doc.title}</span>
                   <span className="text-[13px] text-muted-foreground">Version {doc.version} · signed <LocalTime iso={doc.signedAt} format="date" /></span></span></span>
-                <a className="text-sm text-primary underline-offset-4 hover:underline" href={`/api/backend/dispatch/members/${member.id}/documents/${doc.id}/signed`} target="_blank" rel="noopener">Open signed copy<span className="sr-only"> of {doc.title}</span></a>
+                <ViewDocumentButton documents={member.documents!.map(item => ({ url: `/api/backend/dispatch/members/${member.id}/documents/${item.id}/signed`, title: `${item.title} · ${member.firstName} ${member.lastName}`, meta: `Signed copy · version ${item.version}` }))} index={member.documents!.indexOf(doc)}>Open signed copy<span className="sr-only"> of {doc.title}</span></ViewDocumentButton>
               </li>)}</ul>
             </Card>}
                   {!member.photo && !member.idPhoto && !member.documents?.length && <p className="text-sm text-muted-foreground">No photos or signed documents.</p>}

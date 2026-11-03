@@ -21,7 +21,7 @@ export async function consentStatus(em: EntityManager, driverId: string, storage
  const viewed: { documentId: string }[] = await em.query(`SELECT "documentId" FROM driver_consent_views WHERE "driverId" = $1`, [driverId]);
  const items = current.map(document => {
   const latest = signed.find(row => row.kind === document.kind) ?? null;
-  return { id: document.id, kind: document.kind, label: CONSENT_RULES[document.kind].label, title: document.title, version: document.version, pageCount: document.pageCount,
+  return { id: document.id, kind: document.kind, label: CONSENT_RULES[document.kind].label, title: document.title, version: document.version, pageCount: document.pageCount, fields: document.fields,
    requiresSignature: CONSENT_RULES[document.kind].signature, statement: consentStatement(document), viewed: viewed.some(row => row.documentId === document.id),
    signed: latest ? { documentId: latest.documentId, version: latest.version, signedAt: latest.signedAt } : null, current: latest?.documentId === document.id };
  });

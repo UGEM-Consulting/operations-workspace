@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @custom-variant dark (&:is(.dark *));
+@custom-variant short (@media (max-height: 500px));
 
 /*
  * UGEM Workspace design tokens (design system v2).
@@ -240,3 +241,8 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+
+/* pdf.js places invisible text over each drawn page (features/documents/pdf.tsx), for screen readers and selecting. */
+.textLayer { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: transparent; }
+.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer ::selection { background: rgb(0 90 200 / 0.25); color: transparent; }

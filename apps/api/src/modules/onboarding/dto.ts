@@ -3,7 +3,7 @@ import { VERIFICATION_CODE_PATTERN } from './verification-code';
 import { APPLICATION_STATUSES, REQUESTABLE_ITEMS, ApplicationStatus, RequestableItem, DecisionType } from './entities';
 import { CountersignatureDto } from '../documents/documents.dto';
 import { Type, Transform } from 'class-transformer';
-import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, Equals, IsBoolean, IsEmail, IsInt, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, Equals, IsBoolean, IsEmail, IsInt, IsObject, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 const optional = () => ValidateIf((_object: unknown, value: unknown) => value !== undefined);
 const trim = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 export class CreateInvitationDto {
@@ -69,9 +69,9 @@ export class ReviewDto {
  @IsArray() @ArrayMaxSize(REQUESTABLE_ITEMS.length) @ArrayUnique() @IsIn(REQUESTABLE_ITEMS, { each: true }) requestedFields: RequestableItem[] = [];
  @IsBoolean() confirmed = false;
  @IsBoolean() employmentConfirmed = false;
- @optional() @ValidateNested() @Type(() => EmploymentAssignmentsDto) employment?: EmploymentAssignmentsDto;
+ @optional() @IsObject() @ValidateNested() @Type(() => EmploymentAssignmentsDto) employment?: EmploymentAssignmentsDto;
  // The approving manager's NDA countersignature; required when the applicant signed an NDA.
- @optional() @ValidateNested() @Type(() => CountersignatureDto) countersignature?: CountersignatureDto;
+ @optional() @IsObject() @ValidateNested() @Type(() => CountersignatureDto) countersignature?: CountersignatureDto;
 }
 export class ApplicationQueryDto {
  @Type(() => Number) @IsInt() @Min(1) @Max(100000) page = 1;

@@ -1,25 +1,22 @@
 'use client';
-import { useCallback, useId, useRef, useState } from 'react';
-import { Check, Circle } from 'lucide-react';
+import { useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Dialog } from '@/components/ui/dialog';
-import { Notice } from '@/components/ui/alert';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
-import { ApiError, mutate } from '@/lib/client-api';
+import { mutate } from '@/lib/client-api';
+import { DocumentViewer, type ViewableDocument } from '@/features/documents/document-modal';
+import { emptyMemory, SigningModal, type SignableDocument, type SigningMemory } from '@/features/documents/signing-modal';
 import { photoForUpload } from './photo';
-import { SignaturePad, type SignatureMethod } from './signature-pad';
-import { ApplicantDocument, ApplicantRecord, inputClass } from './types';
+import { ApplicantRecord } from './types';
 const PHOTOS = [
  { item: 'selfiePhoto', path: 'selfie', key: 'selfie', title: 'Selfie', help: 'A clear, recent photo of your face looking at the camera in good light, without sunglasses or a hat. It becomes your profile photo.' },
  { item: 'idPhoto', path: 'id-selfie', key: 'idSelfie', title: 'Selfie holding your ID', help: 'Hold your government-issued photo ID next to your face so your face, the ID photo and your name are clearly readable. Only your manager and administrators can see this photo; it is checked by a person, never by face recognition.' },
 ] as const;
-const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
 type Photo = typeof PHOTOS[number];
-/** The "Documents & signatures" step: two required photos, then each company document opened, read and signed. */
+/** The "Documents & signatures" step: two required photos, then each company document read and signed in a modal. */
 export function ApplicantDocuments({ record, onRecord, busy }: { record: ApplicantRecord; onRecord: (record: ApplicantRecord) => void; busy: boolean }) {
  const docs = record.documents;
- const [working, setWorking] = useState(''), [consent, setConsent] = useState(false), [photoVersion, setPhotoVersion] = useState(0);
+ const [working, setWorking] = useState(''), [photoVersion, setPhotoVersion] = useState(0);
  const disabled = busy || !!working;
  if (!docs.required) return <p className="text-sm text-muted-foreground">No photos or documents are required.</p>;
  const canSign = record.editableFields.includes('documents');
@@ -30,9 +27,8 @@ export function ApplicantDocuments({ record, onRecord, busy }: { record: Applica
     version={photoVersion} onUploaded={() => setPhotoVersion(version => version + 1)}/>)}</div>
   </section>
   {docs.items.length > 0 && <section className="space-y-4" aria-labelledby="documents-heading">
-   <div><h3 id="documents-heading" className="font-semibold">Documents *</h3><p className="text-sm text-muted-foreground">Open and read each document in full, then sign or acknowledge it. You can download a signed copy afterwards.</p></div>
-   {docs.items.some(doc => doc.signed?.documentId !== doc.id) && canSign && <label className="flex items-start gap-3 rounded-md border border-border p-4 text-sm"><input id="esign-consent" type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} className="mt-1 size-5"/><span><span className="block font-medium">Consent to sign electronically</span>{docs.consent.text}<span lang="ru" className="mt-2 block text-muted-foreground">{docs.consent.translation}</span></span></label>}
-   {docs.items.map(doc => <DocumentCard key={doc.id} doc={doc} consent={consent} canSign={canSign} disabled={disabled} onRecord={onRecord} setWorking={setWorking}/>)}
+   <h3 id="documents-heading" className="font-semibold">Documents *</h3>
+   <DocumentRows record={record} onRecord={onRecord} disabled={disabled} canSign={canSign}/>
   </section>}
  </div>;
 }
@@ -67,69 +63,30 @@ function PhotoCard({ photo, record, onRecord, disabled, setWorking, version, onU
   <p role={state.failed ? 'alert' : 'status'} className={`text-sm ${state.failed ? 'text-danger' : state.uploading ? '' : 'text-success'}`}>{state.message}</p>
  </div>;
 }
-function DocumentCard({ doc, consent, canSign, disabled, onRecord, setWorking }: { doc: ApplicantDocument; consent: boolean; canSign: boolean; disabled: boolean; onRecord: (record: ApplicantRecord) => void; setWorking: (value: string) => void }) {
- const [opened, setOpened] = useState(doc.viewed), [agreed, setAgreed] = useState(false), [name, setName] = useState('');
- const [signature, setSignature] = useState<{ image: string; method: SignatureMethod } | null>(null);
- const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState(''), [attempted, setAttempted] = useState(false), [nameTouched, setNameTouched] = useState(false);
- const id = useId(), nameInput = useRef<HTMLInputElement>(null);
- const onSignature = useCallback((image: string | null, method: SignatureMethod) => setSignature(image ? { image, method } : null), []);
- const current = doc.signed?.documentId === doc.id;
- const nameValid = LATIN_NAME.test(name.trim());
- const nameError = (attempted || nameTouched) && !nameValid ? (name.trim() ? 'Use Latin letters (A–Z) only, as on your ID.' : 'Type your full legal name.') : '';
- const steps = [
-  { done: opened, label: 'Open the full document' },
-  { done: consent, label: 'Consent to sign electronically (above)' },
-  { done: agreed, label: 'Tick the statement' },
-  { done: nameValid, label: 'Type your full legal name in Latin letters' },
-  ...(doc.requiresSignature ? [{ done: !!signature, label: 'Draw or adopt your signature' }] : []),
- ];
- const ready = steps.every(step => step.done);
- async function open() {
-  setError('');
-  // Signing evidence is recorded by this explicit request, not by fetching the file.
-  try { await mutate(`applicant/documents/${doc.id}/view`, 'POST'); setOpened(true); }
-  catch (failure) {
-   // An API from before this request existed records the view when the file is fetched (deploys put web first).
-   if (failure instanceof ApiError && failure.status === 404) { setOpened(true); return; }
-   setError(failure instanceof Error ? `We could not record that you opened the document: ${failure.message}` : 'We could not record that you opened the document. Open it again.'); }
- }
- function review() {
-  setAttempted(true);
-  if (!ready) { if (!nameValid && opened && consent && agreed) nameInput.current?.focus(); return; }
-  setConfirming(true);
- }
- async function sign() {
-  setBusy(true); setWorking(doc.id); setError('');
-  try { onRecord(await mutate(`applicant/documents/${doc.id}/sign`, 'POST', { typedName: name, consent, agreed, ...(doc.requiresSignature && signature ? { signature: signature.image, signatureMethod: signature.method } : {}) })); setConfirming(false); }
-  catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to sign. Please try again.'); setConfirming(false); }
-  finally { setBusy(false); setWorking(''); }
- }
- return <article className="space-y-4 rounded-md border border-border p-4" aria-labelledby={`${id}-title`}>
-  <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 id={`${id}-title`} className="font-medium">{doc.title}</h4><p className="text-xs text-muted-foreground">{doc.label} · version {doc.version} · {doc.pageCount} {doc.pageCount === 1 ? 'page' : 'pages'}</p></div>
-   <a href={`/api/backend/applicant/documents/${doc.id}/file`} target="_blank" rel="noopener" onClick={() => void open()} className="inline-flex min-h-11 items-center rounded-md border border-input px-4 text-sm hover:bg-accent">Open document<span className="sr-only"> {doc.title} (opens in a new tab)</span></a></div>
-  {doc.signed && <p className="text-sm text-success">{doc.requiresSignature ? 'Signed' : 'Acknowledged'} <LocalTime iso={doc.signed.signedAt}/>{current ? '' : ` (version ${doc.signed.version})`} · <a className="underline" href={`/api/backend/applicant/documents/${doc.signed.documentId}/signed`} target="_blank" rel="noopener">Download signed copy</a></p>}
-  {!current && canSign && <div className="space-y-4 border-t border-border pt-4">
-   {doc.signed && <p className="text-sm text-warning">A newer version was published. Open, review and sign version {doc.version}; your earlier signature does not cover it.</p>}
-   {!opened && <p className="text-sm text-muted-foreground">Open the document first. It opens in a new tab.</p>}
-   <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={agreed} disabled={!opened} onChange={event => setAgreed(event.target.checked)} className="mt-1 size-5"/><span>{doc.statement}<span lang="ru" className="mt-2 block text-muted-foreground">{doc.translatedStatement}</span><span className="mt-1 block text-xs text-muted-foreground">The Russian translation is for convenience; the English text governs.</span></span></label>
-   <div className="text-sm"><label htmlFor={`${id}-name`}>Full legal name (Latin letters, as on your ID) *</label>
-    <input ref={nameInput} id={`${id}-name`} value={name} onChange={event => setName(event.target.value)} onBlur={() => setNameTouched(true)} maxLength={100} autoComplete="name"
-     aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? `${id}-name-error` : undefined} className={inputClass}/>
-    {nameError && <p id={`${id}-name-error`} className="mt-1 text-[13px] leading-5 text-danger">{nameError}</p>}</div>
-   {doc.requiresSignature && <SignaturePad label="Your signature *" onChange={onSignature} disabled={disabled} allowTyped typedName={name} touch/>}
-   <div className="space-y-2">
-    <p id={`${id}-steps`} className="text-sm font-medium">{ready ? 'Ready to sign.' : 'Before you can sign:'}</p>
-    <ul className="space-y-1 text-sm" aria-labelledby={`${id}-steps`}>{steps.map(step => <li key={step.label} className={`flex items-center gap-2 ${step.done ? 'text-success' : attempted ? 'text-danger' : 'text-muted-foreground'}`}>
-     {step.done ? <Check aria-hidden="true" className="size-4"/> : <Circle aria-hidden="true" className="size-4"/>}{step.label}<span className="sr-only">{step.done ? ' (done)' : ' (still needed)'}</span></li>)}</ul>
-    {attempted && !ready && <p role="alert" className="text-sm text-danger">Complete the steps marked above, then try again.</p>}
-   </div>
-   {error && <Notice message={error} error/>}
-   <Button type="button" size="lg" disabled={disabled} onClick={review}>{doc.requiresSignature ? 'Sign document' : 'Acknowledge'}</Button>
-  </div>}
-  {!(!current && canSign) && error && <Notice message={error} error/>}
-  {confirming && <Dialog open title={doc.requiresSignature ? `Sign ${doc.title}?` : `Acknowledge ${doc.title}?`} description="Your electronic signature is legally binding, the same as a handwritten one. It is recorded with the date, time, your IP address and browser, and cannot be withdrawn here." onClose={() => setConfirming(false)} busy={busy} protectChanges={false} closeLabel="Go back"
-   actions={<Button type="button" onClick={() => void sign()}>{busy ? 'Signing…' : doc.requiresSignature ? 'Yes, sign' : 'Yes, acknowledge'}</Button>}>
-   <p className="text-sm">Signing as <strong>{name.trim()}</strong>{signature?.method === 'TYPED' ? ' with your adopted typed signature' : ''}.</p>
-  </Dialog>}
- </article>;
+/** One row per document and one clear next action. Everything happens in the modal, with nothing to come back to. */
+function DocumentRows({ record, onRecord, disabled, canSign }: { record: ApplicantRecord; onRecord: (record: ApplicantRecord) => void; disabled: boolean; canSign: boolean }) {
+ const docs = record.documents;
+ const [memory, setMemory] = useState<SigningMemory>(emptyMemory), [openId, setOpenId] = useState(''), [viewing, setViewing] = useState(-1);
+ const signable: SignableDocument[] = docs.items.map(doc => ({ id: doc.id, title: doc.title, short: doc.kind === 'CONTACT_LIST' ? 'Quick Contact List' : doc.kind, pageCount: doc.pageCount, requiresSignature: doc.requiresSignature, statement: doc.statement, translatedStatement: doc.translatedStatement,
+  fields: doc.fields ?? [], fileUrl: `/api/backend/applicant/documents/${doc.id}/file`, signedUrl: `/api/backend/applicant/documents/${doc.id}/signed`, viewPath: `applicant/documents/${doc.id}/view`, signPath: `applicant/documents/${doc.id}/sign`,
+  ...(doc.requiresSignature ? {} : { acknowledgePath: `applicant/documents/${doc.id}/acknowledge` }), state: doc.signed?.documentId === doc.id ? 'done' : 'todo', fallbackName: `${doc.kind.toLowerCase()}.pdf` }));
+ const nextId = canSign ? signable.find(doc => doc.state === 'todo')?.id : undefined, open = signable.find(doc => doc.id === openId);
+ const signedItems = docs.items.filter(doc => doc.signed);
+ const copies: ViewableDocument[] = signedItems.map(doc => ({ url: doc.requiresSignature ? `/api/backend/applicant/documents/${doc.signed!.documentId}/signed` : `/api/backend/applicant/documents/${doc.signed!.documentId}/file`, title: doc.title, certificate: doc.requiresSignature, meta: <>{doc.requiresSignature ? 'Signed' : 'Read'} <LocalTime iso={doc.signed!.signedAt} format="date"/></> }));
+ const done = signable.filter(doc => doc.state === 'done').length;
+ return <>
+  <p className="text-sm text-muted-foreground">{done} of {signable.length} done. Everything happens on this page, with nothing to download or come back to.</p>
+  {docs.items.map((doc, index) => { const item = signable[index], current = item.state === 'done', copy = signedItems.indexOf(doc);
+   return <article key={doc.id} className={`flex items-center gap-3 rounded-md border bg-card p-4 ${nextId === doc.id ? 'border-primary' : 'border-border'}`}>
+    <div className="min-w-0 flex-1"><h4 className="text-[15px] font-semibold leading-[22px]">{item.short}</h4>
+     <p className="text-[13px] leading-5 text-muted-foreground">{doc.signed ? <>{doc.requiresSignature ? 'Signed' : 'Read'} <LocalTime iso={doc.signed.signedAt} format="date"/>{current ? '' : ' (an earlier version)'}</> : doc.requiresSignature ? 'To sign' : 'To read'} · {doc.pageCount} {doc.pageCount === 1 ? 'page' : 'pages'}</p>
+     {doc.signed && !current && <p className="text-[13px] leading-5 text-warning">A newer version was published. Your earlier signature doesn’t cover it.</p>}</div>
+    {current ? <Button type="button" size="sm" variant="ghost" onClick={() => setViewing(copy)}>View<span className="sr-only"> {item.short}</span></Button>
+     : canSign ? <div className="flex flex-wrap justify-end gap-2">{doc.signed && <Button type="button" size="sm" variant="ghost" onClick={() => setViewing(copy)}>{doc.requiresSignature ? 'View signed copy' : 'View'}<span className="sr-only"> {item.short}, earlier version</span></Button>}<Button type="button" size="sm" variant={nextId === doc.id ? 'default' : 'outline'} disabled={disabled} onClick={() => setOpenId(doc.id)}>{doc.requiresSignature ? 'Read and sign' : 'Read'}<span className="sr-only"> {item.short}</span></Button></div>
+      : doc.signed && <Button type="button" size="sm" variant="ghost" onClick={() => setViewing(copy)}>View<span className="sr-only"> {item.short}</span></Button>}
+   </article>; })}
+  {open && <SigningModal key={open.id} doc={open} documents={signable} consent={docs.consent.text} consentTranslation={docs.consent.translation} memory={memory} onMemory={setMemory} nameHint="as on your ID"
+   onSigned={result => onRecord(result as ApplicantRecord)} onNext={next => setOpenId(next.id)} onClose={() => setOpenId('')}/>}
+  {viewing >= 0 && <DocumentViewer documents={copies} index={viewing} onClose={() => setViewing(-1)}/>}
+ </>;
 }

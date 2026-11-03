@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import type { StorageLayout } from '../storage/storage.service';
+import type { DocumentField } from './fields';
 export const DOCUMENT_KINDS = ['NDA','SOP','CONTACT_LIST'] as const;
 export type DocumentKind = typeof DOCUMENT_KINDS[number];
 // NDA and SOP need a typed name plus a drawn or typed-name signature; the contact list only a read acknowledgement.
@@ -25,6 +26,8 @@ export class CompanyDocument {
  @Column('integer') pageCount!:number;
  @Column('uuid') uploadedBy!:string;
  @Column('smallint',{default:1}) storageLayout!:StorageLayout;
+ // Where this version's signing fields go. Set when it is published, like everything else on a version.
+ @Column('jsonb',{default:[]}) fields!:DocumentField[];
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
 }
 // The plain selfie is the profile photo; the ID selfie is for manual manager verification only (no face matching).
@@ -51,6 +54,8 @@ export class DocumentSignature {
  @Column('varchar') signerRole!:'APPLICANT'|'COMPANY';
  @Column('uuid',{nullable:true}) signerUserId!:string|null;
  @Column('varchar',{length:200}) typedName!:string;
+ // A countersigner's job title, for a form's Title field.
+ @Column('varchar',{length:100,nullable:true}) signerTitle!:string|null;
  @Column('bytea',{nullable:true,select:false}) signatureImage!:Buffer|null;
  // DRAWN or TYPED (adopted from the typed name); null on rows before the column existed (drawn) and on acknowledgements.
  @Column('varchar',{nullable:true}) signatureMethod!:SignatureMethod|null;

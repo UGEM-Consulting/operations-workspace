@@ -28,6 +28,7 @@ describe('TOTP secret encryption', () => {
     expect(() => box.open([...parts.slice(0, 3), data.toString('base64')].join(':'), 'user-a')).toThrow();
     expect(() => box.open(sealed, 'user-b')).toThrow();
     expect(() => new SecretBox(randomBytes(32).toString('base64')).open(sealed, 'user-a')).toThrow();
+    expect(() => box.open([parts[0], parts[1], Buffer.from(parts[2], 'base64').subarray(0, 4).toString('base64'), parts[3]].join(':'), 'user-a')).toThrow();
     expect(() => box.open(sealed.replace('v1', 'v2'), 'user-a')).toThrow('Unsupported');
     expect(() => new SecretBox(randomBytes(16).toString('base64'))).toThrow('Invalid MFA encryption key');
   });

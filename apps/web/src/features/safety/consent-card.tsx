@@ -1,5 +1,5 @@
 import { FileSignature } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/feedback';
 import { LocalTime } from '@/components/ui/local-time';
@@ -22,7 +22,7 @@ export function ConsentCard({ driver }: { driver: DriverProfile }) {
         <p className="font-medium">{consentLabels[row.kind] ?? row.kind}<span className="font-normal text-muted-foreground"> · {row.title}, version {row.version}</span></p>
         <p className="text-[13px] text-muted-foreground">{row.hasSignature === false ? 'Acknowledged' : 'Signed'} by {row.typedName} · <LocalTime iso={row.signedAt} /></p>
       </div>
-      <Button asChild size="sm" variant="ghost"><a href={`/api/backend/safety/drivers/${driver.id}/consents/${row.documentId}/signed`} target="_blank" rel="noopener">Signed copy<span className="sr-only">: {consentLabels[row.kind] ?? row.kind}, version {row.version}</span></a></Button>
+      <ViewDocumentButton documents={consents.signatures.map(item => ({ url: `/api/backend/safety/drivers/${driver.id}/consents/${item.documentId}/signed`, title: `${consentLabels[item.kind] ?? item.kind} · ${driver.firstName} ${driver.lastName}`, meta: `Signed copy · version ${item.version}` }))} index={consents.signatures.indexOf(row)}>Signed copy<span className="sr-only">: {consentLabels[row.kind] ?? row.kind}, version {row.version}</span></ViewDocumentButton>
     </li>)}</ul> : <CardBody><EmptyState compact title="Nothing signed yet" description="The driver signs the published consent forms in their application." /></CardBody>}
     {consents.missing.length > 0 && <CardBody className="border-t border-border text-sm">
       <p className="flex flex-wrap items-center gap-2"><Badge label={canSign ? 'Still to sign' : 'Not signed'} tone={canSign ? 'warning' : 'neutral'} />{consents.missing.map(code => consentLabels[code.slice('consent:'.length)] ?? code).join(', ')}</p>
