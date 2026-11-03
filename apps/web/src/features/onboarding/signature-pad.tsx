@@ -2,7 +2,8 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 const WIDTH = 600, HEIGHT = 300;
-const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
+export const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
+const NAME_FIRST = 'Type your full legal name in Latin letters first.', ADOPT_AGAIN = 'Your typed name changed. Adopt the typed signature again.';
 // Installed handwriting-style fonts; no web font is downloaded. The image is what is signed, not the font.
 const SCRIPT_FONT = '"Segoe Script", "Brush Script MT", "Lucida Handwriting", "Snell Roundhand", "Apple Chancery", cursive';
 export type SignatureMethod = 'DRAWN' | 'TYPED';
@@ -23,17 +24,26 @@ function paintName(ctx: CanvasRenderingContext2D, name: string, color: string) {
  do { ctx.font = `${fontSize}px ${SCRIPT_FONT}`; fontSize -= 4; } while (ctx.measureText(name).width > WIDTH - 48 && fontSize > 20);
  ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.fillText(name, 24, HEIGHT / 2);
 }
+/** A signature already made, at the size it was drawn in the pad: the image is cropped, so filling the frame would enlarge it. */
+export function SignatureShown({ image, alt, onChange }: { image: string; alt: string; onChange?: () => void }) {
+ const [width, setWidth] = useState(0);
+ return <div className="relative grid aspect-[2/1] w-full max-w-[440px] place-items-center rounded-md border border-input bg-white short:max-w-[240px]">
+  {/* eslint-disable-next-line @next/next/no-img-element -- a data URL the signer made */}
+  <img src={image} alt={alt} onLoad={event => setWidth(event.currentTarget.naturalWidth)} className={width ? 'h-auto' : 'invisible'} style={{ width: `${width / WIDTH * 100}%` }} />
+  {onChange && <Button type="button" size="sm" variant="outline" className="absolute right-2 top-2 bg-card" onClick={onChange}>Change<span className="sr-only"> signature</span></Button>}
+ </div>;
+}
 /**
  * Sign with mouse, pen or finger, or (with allowTyped) adopt the typed name rendered in a script font onto the same
  * canvas. Either way it reports a transparent PNG data URL and how it was made, or null when cleared.
  */
-export function SignaturePad({ label, onChange, disabled = false, allowTyped = false, typedName = '', touch = false }: {
+export function SignaturePad({ label, onChange, disabled = false, allowTyped = false, typedName = '', compact = false }: {
  label: string; onChange: (dataUrl: string | null, method: SignatureMethod) => void; disabled?: boolean;
- allowTyped?: boolean; typedName?: string; touch?: boolean;
+ allowTyped?: boolean; typedName?: string; /** Small screens: fewer words, and Clear sits inside the box, so everything fits together. */ compact?: boolean;
 }) {
  const canvas = useRef<HTMLCanvasElement>(null), drawing = useRef(false), adopted = useRef('');
  const [mode, setMode] = useState<SignatureMethod>('DRAWN'), [status, setStatus] = useState(''), [filled, setFilled] = useState(false);
- const id = useId(), size = touch ? 'lg' : 'default';
+ const id = useId();
  const context = () => canvas.current?.getContext('2d') ?? null;
  function reset(message: string) {
   context()?.clearRect(0, 0, WIDTH, HEIGHT); adopted.current = ''; setFilled(false);
@@ -44,7 +54,7 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
  useEffect(() => {
   const ctx = canvas.current?.getContext('2d'), name = typedName.trim();
   if (mode !== 'TYPED' || !ctx || (adopted.current && adopted.current === name)) return;
-  if (adopted.current) { adopted.current = ''; setFilled(false); onChange(null, 'TYPED'); setStatus('Your typed name changed. Adopt the typed signature again.'); }
+  if (adopted.current) { adopted.current = ''; setFilled(false); onChange(null, 'TYPED'); setStatus(ADOPT_AGAIN); }
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   if (LATIN_NAME.test(name)) paintName(ctx, name, '#6b7280');
  }, [typedName, mode, filled, onChange]);
@@ -73,7 +83,7 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
  function adopt() {
   const ctx = context(), name = typedName.trim();
   if (!ctx) return;
-  if (!LATIN_NAME.test(name)) { setStatus('Type your full legal name in Latin letters first.'); return; }
+  if (!LATIN_NAME.test(name)) { setStatus(NAME_FIRST); return; }
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   paintName(ctx, name, '#111827');
   adopted.current = name; setFilled(true);
@@ -90,23 +100,25 @@ export function SignaturePad({ label, onChange, disabled = false, allowTyped = f
  return <div role="group" aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} className="space-y-2">
   <p id={`${id}-label`} className="text-sm font-medium">{label}</p>
   {allowTyped && <div className="flex flex-wrap gap-2">
-   <Button type="button" size={size} variant={mode === 'DRAWN' ? 'secondary' : 'outline'} aria-pressed={mode === 'DRAWN'} disabled={disabled} onClick={() => switchMode('DRAWN')}>Draw signature</Button>
-   <Button type="button" size={size} variant={mode === 'TYPED' ? 'secondary' : 'outline'} aria-pressed={mode === 'TYPED'} disabled={disabled} onClick={() => switchMode('TYPED')}>Type signature</Button>
+   <Button type="button" variant={mode === 'DRAWN' ? 'secondary' : 'outline'} aria-pressed={mode === 'DRAWN'} disabled={disabled} onClick={() => switchMode('DRAWN')}>Draw signature</Button>
+   <Button type="button" variant={mode === 'TYPED' ? 'secondary' : 'outline'} aria-pressed={mode === 'TYPED'} disabled={disabled} onClick={() => switchMode('TYPED')}>Type signature</Button>
   </div>}
-  <p id={`${id}-help`} className="text-[13px] leading-5 text-muted-foreground">{instructions}</p>
-  <div className="relative">
+  <p id={`${id}-help`} className={`text-[13px] leading-5 text-muted-foreground ${compact && mode === 'DRAWN' ? 'max-lg:sr-only' : ''}`}>{instructions}</p>
+  <div className={compact ? 'relative max-w-[440px] short:max-w-[240px]' : 'relative'}>
    <canvas ref={canvas} width={WIDTH} height={HEIGHT} role="img" aria-labelledby={`${id}-label`} aria-describedby={`${id}-state`}
     onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
     className={`block aspect-[2/1] w-full touch-none rounded-md border border-dashed border-input bg-white ${disabled ? 'opacity-60' : mode === 'DRAWN' ? 'cursor-crosshair' : ''}`}/>
    {/* A line to sign on. It isn't part of the image, which is cropped to what was drawn. */}
    <span aria-hidden="true" className="pointer-events-none absolute inset-x-4 bottom-[22%] border-b border-[#a8a29e]"/>
+   {compact && filled && <Button type="button" size="sm" variant="outline" className="absolute right-2 top-2 bg-card" aria-label="Clear signature" disabled={disabled} onClick={() => reset('Signature cleared.')}>Clear</Button>}
   </div>
   <p id={`${id}-state`} className="sr-only">{filled ? 'A signature is in the box.' : 'The signature box is empty.'}</p>
   <div className="flex flex-wrap items-center justify-between gap-3">
-   <p role="status" aria-live="polite" className="text-[13px] leading-5 text-muted-foreground">{status}</p>
+   {/* Compact mode drops routine updates to save room, never one that says what to do next. */}
+   <p role="status" aria-live="polite" className={status === NAME_FIRST || status === ADOPT_AGAIN ? 'text-[13px] leading-5 text-danger' : `text-[13px] leading-5 text-muted-foreground ${compact ? 'max-lg:sr-only' : ''}`}>{status}</p>
    <div className="flex flex-wrap gap-2">
-    {mode === 'TYPED' && <Button type="button" size={size} disabled={disabled} onClick={adopt}>Adopt typed signature</Button>}
-    <Button type="button" size={size} variant="outline" disabled={disabled || !filled} onClick={() => reset('Signature cleared.')}>Clear signature</Button>
+    {mode === 'TYPED' && <Button type="button" disabled={disabled} onClick={adopt}>Adopt typed signature</Button>}
+    {!compact && <Button type="button" variant="outline" disabled={disabled || !filled} onClick={() => reset('Signature cleared.')}>Clear signature</Button>}
    </div>
   </div>
  </div>;

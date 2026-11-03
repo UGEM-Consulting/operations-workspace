@@ -6,12 +6,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/alert';
+import { useToast } from '@/components/ui/toast';
 import { Checkbox, Input, Textarea } from '@/components/ui/field';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { errorMessage, mutate } from '@/lib/client-api';
 import type { SavedSignature } from '@/features/auth/saved-signature';
-import type { SignatureMethod } from './signature-pad';
+import { LATIN_NAME, type SignatureMethod } from './signature-pad';
 import { CountersignModal } from '@/features/documents/countersign-modal';
+import { roleLabel } from '@/components/ui/status-badge';
 import { shortName } from '@/features/documents/signed-documents';
 import { EmploymentPicker, pickedEmployment, type EmploymentOptions } from './employment-picker';
 import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments, type SupportChoice } from './types';
@@ -30,12 +32,14 @@ const employmentFields=['mcName','teamLead','jobTitle'] as const;
  */
 export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,documentItems=[],status,savedSignature=null,options=null,supports=null,catchUpName=null}:{catchUpName?:string|null;id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];documentItems?:StaffDocuments['items'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
  const router=useRouter();
- const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState(''),[countersignTitle,setCountersignTitle]=useState(countersign?.lastTitle??''),[countersigned,setCountersigned]=useState(false),[reading,setReading]=useState(false);
+ const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState(LATIN_NAME.test(countersign?.signerName??'')?countersign!.signerName!:''),[countersignTitle,setCountersignTitle]=useState(countersign?.lastTitle??(countersign?.signerRole?roleLabel(countersign.signerRole):'')),[countersigned,setCountersigned]=useState(false),[reading,setReading]=useState(false),[saveForLater,setSaveForLater]=useState(false);
+ const toast=useToast();
  const [employment,setEmployment]=useState<Employment>(()=>options?pickedEmployment(options,initial):initial),[employmentConfirmed,setEmploymentConfirmed]=useState(false),[railError,setRailError]=useState('');
- const onSignature=useCallback((image:string|null,method:SignatureMethod)=>setSignature(image?{image,method}:null),[]);
+ // The tick to save a signature adopts that exact image, so any change to it asks again.
+ const onSignature=useCallback((image:string|null,method:SignatureMethod)=>{setSignature(image?{image,method}:null);setSaveForLater(false);},[]);
  // A saved signature is offered first; the approver can still sign here instead.
  const [useSaved,setUseSaved]=useState(!!savedSignature);
- function open(next:Action){setAction(next);setError('');setSignature(null);setCountersigned(false);setUseSaved(!!savedSignature);}
+ function open(next:Action){setAction(next);setError('');setSignature(null);setCountersigned(false);setUseSaved(!!savedSignature);setSaveForLater(false);}
  const signedItem=countersign&&documentItems.find(item=>item.applicant?.documentId===countersign.documentId),signedRecord=signedItem?signedItem.applicant:null;
  const signedOn=signedRecord?new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'America/New_York'}).format(new Date(signedRecord.signedAt)):'';
  // The title goes on the record only when the form asked for it and the approver saw it.
@@ -63,7 +67,13 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',...(supports||catchUpName?{}:{employmentConfirmed}),
    ...(action==='APPROVE'&&supports?{supportsMemberId:supportsId}:{}),
    ...(action==='APPROVE'&&!supports&&!catchUpName?{employment:{mcName:employment.mcName.trim(),teamLead:employment.teamLead.trim(),jobTitle:employment.jobTitle.trim()}}:{}),
-   ...(action==='APPROVE'&&countersign?{countersignature:{...(useSaved?{useSavedSignature:true}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method}),agreed:true,...(titleAsked&&countersignTitle.trim()?{title:countersignTitle.trim()}:{})}}:{})});setAction(null);router.refresh();}
+   ...(action==='APPROVE'&&countersign?{countersignature:{...(useSaved?{useSavedSignature:true}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method}),agreed:true,...(titleAsked&&countersignTitle.trim()?{title:countersignTitle.trim()}:{})}}:{})});
+   // Only once the approval has gone through, and a failed save never affects it.
+   if(action==='APPROVE'&&countersign&&saveForLater&&!useSaved&&!savedSignature&&signature){
+    try{await mutate('staff/signature','POST',{typedName:countersignName,signature:signature.image,signatureMethod:signature.method,agreed:true});toast({title:'Signature saved',description:'You can use it for your next approvals.'});}
+    catch{toast({title:'Your signature wasn’t saved',description:'The approval went through. You can save a signature on Account security.'});}
+   }
+   setAction(null);router.refresh();}
   catch(error){setError(errorMessage(error,'Unable to record decision. Your entries have been kept.'));}finally{setBusy(false);}
  }
  const awaitingCorrections=status==='CHANGES_REQUESTED';
@@ -117,6 +127,6 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   </form>
   </Dialog>}
   {reading&&countersign&&<CountersignModal url={`/api/backend/onboarding/applications/${id}/documents/${countersign.documentId}/signed`} title={signedItem&&signedRecord?`${shortName(signedItem)} · ${signedRecord.typedName}`:countersign.title} meta={signedRecord?`Signed by ${signedRecord.typedName}, ${signedOn}`:'Signed by the applicant'} statement={countersign.statement} fields={countersign.fields??[]} savedSignature={savedSignature} useSaved={useSaved} onUseSaved={value=>{setUseSaved(value);setSignature(null);setCountersigned(false);}}
-   name={countersignName} onName={setCountersignName} signature={signature} onSignature={onSignature} jobTitle={countersignTitle} onJobTitle={setCountersignTitle} onDone={()=>{setCountersigned(true);setReading(false);setError('');}} onClose={()=>setReading(false)}/>}
+   name={countersignName} onName={setCountersignName} signature={signature} onSignature={onSignature} jobTitle={countersignTitle} onJobTitle={setCountersignTitle} saveForLater={saveForLater} onSaveForLater={setSaveForLater} onDone={()=>{setCountersigned(true);setReading(false);setError('');}} onClose={()=>setReading(false)}/>}
  </>;
 }

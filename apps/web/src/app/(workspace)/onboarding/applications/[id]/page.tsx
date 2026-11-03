@@ -16,6 +16,7 @@ import { Timeline } from '@/components/ui/timeline';
 import { Table } from '@/components/ui/table';
 import { decisionTitle, decisionTone } from '@/features/onboarding/history';
 import { PrivateImage } from '@/components/ui/private-image';
+import { PhotoButton } from '@/features/documents/photo-modal';
 import { ReviewActions } from '@/features/onboarding/review-actions';
 import { ChangeManager } from '@/features/onboarding/change-manager';
 import { TaskStatus } from '@/features/it/types';
@@ -47,6 +48,8 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const changes=data.submissions.length-1;
  const responsible=data.responsibleManager?`${data.responsibleManager.firstName} ${data.responsibleManager.lastName}`:null;
  const yours=data.responsibleManager?.id===identity.user.id;
+ const photos=[{path:'selfie',label:'Selfie',caption:'Becomes the profile photo',present:data.documents.photos.selfie},{path:'id-selfie',label:'Selfie holding ID',caption:'Managers and admins only',present:data.documents.photos.idSelfie,meta:'Check that the face and name match the ID.'}].map(photo=>({...photo,src:`/api/backend/onboarding/applications/${id}/photos/${photo.path}`,title:photo.label,alt:photo.label}));
+ const viewablePhotos=photos.filter(photo=>photo.present);
 
  const overview=<div className="space-y-6">
   {app.status==='RESUBMITTED'&&<Alert tone="info" title="Resubmitted after your change request"><p>See <span className="font-medium">What changed</span> for the updated answers.</p></Alert>}
@@ -55,10 +58,10 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
   <Card><CardHeader title="Application details" description="As the applicant sent it."/><CardBody><DescriptionList items={fields.map(([label,value])=>({label:String(label),value}))}/></CardBody></Card>
   {it&&<Card><CardHeader title="Employee details" description={it.cancelledAt?'IT setup was cancelled because they left before it finished.':'The approved assignments and the accounts IT created.'}/><CardBody><DescriptionList items={([['Display name',data.itDetails.proposedDisplayName],['MC / Independent',data.invitation.mcName],['Team lead / Independent',data.invitation.teamLead],['Job title',data.invitation.jobTitle],['Company email',it.companyEmail],['Work phone (RingCentral)',it.workPhoneNumber]] as const).map(([label,value])=>({label,value,emptyLabel:it.cancelledAt?'Not set up':'Pending IT setup'}))}/></CardBody></Card>}
   {data.documents.required&&<Card><CardHeader title="Identity photos" description="Check that the face and name match the ID. Photos are checked by a person, not software."/><CardBody>
-   <div className="grid gap-6 sm:grid-cols-2">{([['selfie','Selfie','Becomes the profile photo',data.documents.photos.selfie],['id-selfie','Selfie holding ID','Managers and admins only',data.documents.photos.idSelfie]] as const).map(([path,label,caption,present])=><figure key={path} className="space-y-2">
-    {present?<a href={`/api/backend/onboarding/applications/${id}/photos/${path}`} target="_blank" rel="noopener" className="block"><PrivateImage src={`/api/backend/onboarding/applications/${id}/photos/${path}`} alt={label} className="aspect-[4/3] w-full rounded-md border border-border bg-muted object-contain"/></a>
+   <div className="grid gap-6 sm:grid-cols-2">{photos.map(photo=><figure key={photo.path} className="space-y-2">
+    {photo.present?<PhotoButton photos={viewablePhotos} src={photo.src} label={`Open ${photo.label.toLowerCase()}`} className="w-full"><PrivateImage src={photo.src} alt={photo.label} className="aspect-[4/3] w-full rounded-md border border-border bg-muted object-contain"/></PhotoButton>
      :<div className="grid aspect-[4/3] place-items-center rounded-md border border-dashed border-border text-sm text-warning">Not uploaded</div>}
-    <figcaption><span className="block text-sm font-medium">{label}</span><span className="block text-[13px] text-muted-foreground">{caption}</span></figcaption>
+    <figcaption><span className="block text-sm font-medium">{photo.label}</span><span className="block text-[13px] text-muted-foreground">{photo.caption}</span></figcaption>
    </figure>)}</div>
   </CardBody></Card>}
  </div>;

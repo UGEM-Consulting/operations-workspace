@@ -41,6 +41,12 @@ export function Dialog({ open, onClose, title, description, size = 'md', tone, b
     if (dirty && protectChanges) { setDiscard(true); return; }
     onClose();
   }
+  // A link inside the form leaves the page and takes the dialog with it, so it asks like every other way out. New tabs lose nothing.
+  function guardLinks(event: React.MouseEvent) {
+    if (!dirty || !protectChanges || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    if (!(event.target as Element).closest('a[href]:not([target]):not([download])')) return;
+    event.preventDefault(); event.stopPropagation(); setDiscard(true);
+  }
   if (!open) return null;
   const Icon = tone === 'danger' ? CircleAlert : TriangleAlert;
   return <dialog ref={ref} role={tone ? 'alertdialog' : undefined} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
@@ -53,7 +59,7 @@ export function Dialog({ open, onClose, title, description, size = 'md', tone, b
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6" aria-busy={busy}>
       {discard && <div role="alert" className="mb-5 space-y-3 rounded-md border border-warning-border bg-warning-background p-4 text-sm"><p className="font-semibold">Discard unsaved changes?</p><p>Your changes have not been saved.</p><div className="flex flex-wrap gap-3"><Button ref={keep} type="button" variant="outline" onClick={() => { setDiscard(false); heading.current?.focus(); }}>Keep editing</Button><Button type="button" variant="destructive" onClick={onClose}>Discard changes</Button></div></div>}
-      <fieldset disabled={busy || discard} className="min-w-0" onChangeCapture={() => setDirty(true)}>
+      <fieldset disabled={busy || discard} className="min-w-0" onChangeCapture={() => setDirty(true)} onClickCapture={guardLinks}>
         {children}
       </fieldset>
     </div>

@@ -9,6 +9,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { DescriptionList } from '@/components/ui/description-list';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
+import { PhotoButton } from '@/features/documents/photo-modal';
 import { Badge } from '@/components/ui/status-badge';
 import { Table } from '@/components/ui/table';
 import { PageCrumb } from '@/components/shell-context';
@@ -37,7 +38,9 @@ export default async function PaperworkReviewPage({ params }: { params: Promise<
   const signatureResponse = data.documents.countersign ? await apiRequest('staff/signature') : null;
   const savedSignature = signatureResponse?.ok ? (await readResponse<{ saved: SavedSignature | null }>(signatureResponse, 'saved signature', savedSignatureSchema)).saved : null;
   const fields = data.application.fields, app = data.application, name = `${member.firstName} ${member.lastName}`;
-  const photos = [['selfie', 'Selfie', 'Becomes the profile photo', data.documents.photos.selfie], ['id-selfie', 'Selfie holding ID', 'Only you and administrators', data.documents.photos.idSelfie]] as const;
+  const photos = [{ path: 'selfie', label: 'Selfie', caption: 'Becomes the profile photo', present: data.documents.photos.selfie }, { path: 'id-selfie', label: 'Selfie holding ID', caption: 'Only you and administrators', present: data.documents.photos.idSelfie }]
+    .map(photo => ({ ...photo, src: `/api/backend/onboarding/applications/${applicationId}/photos/${photo.path}`, title: `${photo.label} · ${name}`, alt: `${photo.label} of ${name}` }));
+  const viewablePhotos = photos.filter(photo => photo.present);
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><Badge label="Active" tone="success" />{data.canReview ? <Badge label="Paperwork to check" tone="info" /> : app.status === 'APPROVED' ? <Badge label="Paperwork finished" tone="success" /> : <Badge label="Changes asked" tone="warning" />}</span>}
@@ -46,10 +49,10 @@ export default async function PaperworkReviewPage({ params }: { params: Promise<
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">
         <Card><CardHeader title="Details" description={`What ${member.firstName} sent. Their MC, team and job title don’t change here.`} /><CardBody><DescriptionList items={[{ label: 'First name', value: fields.firstName }, { label: 'Last name', value: fields.lastName }, { label: 'American first name', value: fields.preferredAmericanFirstName }, { label: 'American last name', value: fields.preferredAmericanLastName }, { label: 'Personal phone', value: fields.personalPhoneNumber, mono: true }, { label: 'Personal email', value: data.invitation.email }, { label: 'Telegram', value: fields.telegram }]} /></CardBody></Card>
-        {data.documents.required && <Card><CardHeader title="Photos" description="Photos are checked by a person, not software." /><CardBody><div className="grid gap-6 sm:grid-cols-2">{photos.map(([path, label, caption, present]) => <figure key={path} className="space-y-2">
-          {present ? <a href={`/api/backend/onboarding/applications/${applicationId}/photos/${path}`} target="_blank" rel="noopener" className="block"><PrivateImage src={`/api/backend/onboarding/applications/${applicationId}/photos/${path}`} alt={label} className="aspect-[4/3] w-full rounded-md border border-border bg-muted object-contain" /></a>
+        {data.documents.required && <Card><CardHeader title="Photos" description="Photos are checked by a person, not software." /><CardBody><div className="grid gap-6 sm:grid-cols-2">{photos.map(photo => <figure key={photo.path} className="space-y-2">
+          {photo.present ? <PhotoButton photos={viewablePhotos} src={photo.src} label={`Open ${photo.label.toLowerCase()}`} className="w-full"><PrivateImage src={photo.src} alt={photo.label} className="aspect-[4/3] w-full rounded-md border border-border bg-muted object-contain" /></PhotoButton>
             : <div className="grid aspect-[4/3] place-items-center rounded-md border border-dashed border-border text-sm text-warning">Not uploaded</div>}
-          <figcaption><span className="block text-sm font-medium">{label}</span><span className="block text-[13px] text-muted-foreground">{caption}</span></figcaption></figure>)}</div></CardBody></Card>}
+          <figcaption><span className="block text-sm font-medium">{photo.label}</span><span className="block text-[13px] text-muted-foreground">{photo.caption}</span></figcaption></figure>)}</div></CardBody></Card>}
         {data.documents.required && <Card><CardHeader title="Documents" description="Documents on file on paper aren’t asked for again." /><Table className="mt-3 border-t border-border" caption={`${name}’s documents`} rows={data.documents.items} rowKey={doc => doc.kind} columns={[
           { key: 'doc', label: 'Document', primary: true, cell: doc => doc.label },
           { key: 'detail', label: 'Detail', cell: doc => doc.applicant ? <>{doc.requiresSignature ? 'Signed' : 'Acknowledged'} <LocalTime iso={doc.applicant.signedAt} format="date" />.{doc.company ? <> Countersigned by {doc.company.typedName}.</> : data.documents.countersign?.documentId === doc.applicant.documentId ? ' Needs your countersignature.' : ''}</> : 'Not signed.' },

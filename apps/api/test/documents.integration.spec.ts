@@ -411,7 +411,8 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   expect((await PDFDocument.load(copy)).getPageCount()).toBeGreaterThanOrEqual(3);
   const decide=(title?:string)=>manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true,...(title?{title}:{})}});
   expect((await decide().expect(400)).body.message).toContain('job title');
-  expect((await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body.documents.countersign.lastTitle).toBeNull();
+  const first=(await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body.documents.countersign;
+  expect(first.lastTitle).toBeNull();expect(first.signerName).toMatch(/\S+ \S+/);expect(first.signerRole).toBe(Role.DISPATCHER_MANAGER);
   await decide('Дирeктор').expect(400);
   await decide('Dispatch manager').expect(201);
   const staff=pdfText((await manager.get(`/api/onboarding/applications/${id}/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);

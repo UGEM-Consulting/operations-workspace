@@ -36,8 +36,8 @@ export function DocumentModal({ title, meta, file, failure, reload, zoom, onZoom
   }, []);
   const stop = (event: { stopPropagation: () => void }) => event.stopPropagation();
   return createPortal(<dialog ref={ref} aria-labelledby="document-title" onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onChange={stop} onInput={stop} onSubmit={stop} onKeyDown={stop}
-    className="fixed inset-0 m-auto h-dvh max-h-dvh w-full max-w-none flex-col overflow-hidden border-0 bg-card p-0 text-card-foreground shadow-lg backdrop:bg-overlay open:flex sm:h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100%-3rem)] sm:rounded-lg">
-    <header className="flex shrink-0 items-center gap-2 border-b py-2 pl-4 pr-2 sm:gap-3 sm:py-3 sm:pl-5 sm:pr-4">
+    className="fixed inset-0 m-auto h-dvh max-h-dvh w-full max-w-none flex-col overflow-hidden border-0 bg-card p-0 text-card-foreground shadow-lg backdrop:bg-overlay open:flex sm:h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100%-3rem)] sm:rounded-lg short:h-dvh! short:max-h-dvh! short:w-full! short:rounded-none!">
+    <header className="flex shrink-0 items-center gap-2 border-b py-2 pl-4 pr-2 short:py-0.5 sm:gap-3 sm:py-3 sm:pl-5 sm:pr-4">
       <div className="min-w-0 flex-1"><h2 ref={heading} id="document-title" tabIndex={-1} className="truncate text-[15px] font-semibold leading-[22px] outline-none">{title}</h2>
         {meta && <p className="truncate text-[13px] leading-5 text-muted-foreground">{meta}</p>}</div>
       <div className="hidden items-center gap-1 lg:flex">
@@ -53,11 +53,11 @@ export function DocumentModal({ title, meta, file, failure, reload, zoom, onZoom
       <Button type="button" variant="ghost" size="icon" className="max-lg:size-11" aria-label={closeLabel} disabled={busy} onClick={onClose}><X aria-hidden="true" className="size-5" /></Button>
     </header>
     <div className={cn('flex min-h-0 flex-1 flex-col short:flex-row lg:grid', panel ? 'lg:grid-cols-[minmax(0,1fr)_400px]' : 'lg:grid-cols-[minmax(0,1fr)]')}>
-      <div className={cn('flex min-h-0 min-w-0 flex-col bg-muted', panelGrows ? 'h-[150px] shrink-0 short:h-auto! short:flex-1 md:h-[40dvh] lg:h-auto' : 'flex-1')}>
+      <div className={cn('flex min-h-0 min-w-0 flex-col bg-muted', panelGrows ? (failure ? 'shrink-0 short:max-lg:w-1/2' : 'shrink-0 max-md:hidden short:hidden! md:h-[28dvh] lg:h-auto') : 'flex-1')}>
         {failure ? <div className="m-auto w-full max-w-md p-4"><Alert tone="danger" title="Document not shown" action={failure === 'other' ? <Button type="button" size="sm" variant="outline" onClick={reload}><RotateCw aria-hidden="true" className="size-4" />Try again</Button> : undefined}><p>{failures[failure]}</p></Alert></div>
           : file ? pages : <div className="mx-auto w-full max-w-[816px] space-y-4 p-4" role="status" aria-label="Loading the document"><Skeleton className="aspect-[17/22] w-full bg-card" /></div>}
       </div>
-      {panel && <aside className={cn('flex min-h-0 flex-col border-t bg-card shadow-[0_-6px_16px_rgba(0,0,0,.08)] short:w-1/2 short:shrink-0 short:border-l short:border-t-0 short:shadow-none lg:w-auto lg:border-l lg:border-t-0 lg:shadow-none', panelGrows && 'flex-1 short:flex-none', panelDesktopOnly && 'max-lg:hidden')}>{panel}</aside>}
+      {panel && <aside className={cn('flex min-h-0 flex-col border-t bg-card shadow-[0_-6px_16px_rgba(0,0,0,.08)] lg:w-auto lg:border-l lg:border-t-0 lg:shadow-none', panelGrows ? 'flex-1 max-md:border-t-0 max-md:shadow-none short:border-t-0! short:shadow-none!' : 'short:w-1/2 short:shrink-0 short:border-l short:border-t-0 short:shadow-none', panelDesktopOnly && 'max-lg:hidden')}>{panel}</aside>}
     </div>
     {floating}
   </dialog>, document.body);
@@ -96,4 +96,11 @@ export function ViewDocumentButton({ documents, index = 0, children, label, vari
   const [open, setOpen] = useState(false);
   return <><Button type="button" variant={variant} size={size} className={className} aria-label={label} onClick={() => setOpen(true)}>{children}</Button>
     {open && <DocumentViewer documents={documents} index={index} onClose={() => setOpen(false)} />}</>;
+}
+/**
+ * On a phone a step has the whole screen; while `peek` is on this shows the page instead, with one way back. Wide screens have room for both, so they keep
+ * the panel. The panel stays mounted either way, so a signature in the pad is still there, and still matches what's held, on the way back.
+ */
+export function PeekPanel({ peek, label, onBack, children }: { peek: boolean; label: string; onBack: () => void; children: ReactNode }) {
+  return <>{peek && <div className="shrink-0 bg-card p-4 lg:hidden"><Button type="button" size="lg" className="w-full" onClick={onBack}>{label}</Button></div>}<div className={peek ? 'hidden min-h-0 flex-1 flex-col lg:flex' : 'contents'}>{children}</div></>;
 }
