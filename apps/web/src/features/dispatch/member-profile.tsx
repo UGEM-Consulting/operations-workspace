@@ -17,6 +17,7 @@ import { Progress } from '@/components/ui/feedback';
 import { Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
+import { PhotoButton, type ViewablePhoto } from '@/features/documents/photo-modal';
 import { Timeline } from '@/components/ui/timeline';
 import { Badge, statusLabel } from '@/components/ui/status-badge';
 import { Tabs } from '@/components/ui/tabs';
@@ -26,6 +27,9 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { middayIso } from '@/lib/navigation';
 import { CatchUpButton, ExistingAccountsCard, ExistingPaperworkCard } from './paperwork';
 import { Choice, fullName, memberBadge, MemberProfile, TeamRow, toReassign } from './types';
+
+const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
+const memberPhotos = (id: string, selfie: boolean, idSelfie: boolean, name: string): ViewablePhoto[] => [...(selfie ? [{ src: selfieUrl(id), title: `Selfie · ${name}`, alt: `Selfie of ${name}` }] : []), ...(idSelfie ? [{ src: idSelfieUrl(id), title: `Selfie holding an ID · ${name}`, meta: 'Check that the face and name match the ID.', alt: `Selfie of ${name} holding an ID` }] : [])];
 
 type Action = 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact';
 // The Eastern date, as the API uses to tell a notice from leaving today; the browser's own date could promise the wrong one.
@@ -59,7 +63,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('FORWARD');
   const [lastDay, setLastDay] = useState(today());
   const [removing, setRemoving] = useState<{ id: string; value: string } | null>(null);
-  const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts;
+  const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts, photos = memberPhotos(member.id, !!member.photo, !!member.idPhoto, name);
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
   const support = member.position === 'SUPPORT', supportOf = member.supportOf ?? null;
@@ -107,8 +111,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <div className="flex flex-wrap items-start gap-4">
-      {member.photo ? <a href={`/api/backend/dispatch/members/${member.id}/photos/selfie`} target="_blank" rel="noopener" className="shrink-0 rounded-lg focus-visible:outline-2" title="Open the photo full size">
-        <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/selfie`} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></a> : <Avatar name={name} size="lg" />}
+      {member.photo ? <PhotoButton photos={photos} src={selfieUrl(member.id)} label={`Open the profile photo of ${name}`} className="shrink-0 rounded-lg">
+        <PrivateImage src={selfieUrl(member.id)} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></PhotoButton> : <Avatar name={name} size="lg" />}
       <div className="min-w-0 flex-1"><PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><Badge label={badge.label} tone={badge.tone} />{existing && <Badge label="Added by hand" tone="neutral" />}{notice && <Badge label={notice.passed ? 'Last day passed' : `Leaving ${new Date(middayIso(notice.lastDay)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`} tone={notice.passed ? 'danger' : 'warning'} />}</span>}
         meta={[support ? (supportOf ? <>Support for {supportOf.dispatcher} · {where(supportOf)}</> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No dispatcher')
           : current ? <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No MC or team',
@@ -178,11 +182,11 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             files: <div className="space-y-6">
               {(member.photo || member.idPhoto) && <Card><CardHeader title="Photos" description="As the applicant sent them. Open a photo to see it full size." />
                 <CardBody><div className="grid max-w-md grid-cols-2 gap-4">
-                  {member.photo && <figure className="space-y-2"><a href={`/api/backend/dispatch/members/${member.id}/photos/selfie`} target="_blank" rel="noopener" className="block rounded-md focus-visible:outline-2">
-              <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/selfie`} alt={`Selfie of ${name}`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></a>
+                  {member.photo && <figure className="space-y-2"><PhotoButton photos={photos} src={selfieUrl(member.id)} label={`Open the selfie of ${name}`} className="w-full">
+              <PrivateImage src={selfieUrl(member.id)} alt={`Selfie of ${name}`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></PhotoButton>
               <figcaption className="text-[13px] leading-5"><span className="font-medium">Selfie</span><span className="block text-muted-foreground">Also the profile photo.</span></figcaption></figure>}
-                  {member.idPhoto && <figure className="space-y-2"><a href={`/api/backend/dispatch/members/${member.id}/photos/id-selfie`} target="_blank" rel="noopener" className="block rounded-md focus-visible:outline-2">
-              <PrivateImage src={`/api/backend/dispatch/members/${member.id}/photos/id-selfie`} alt={`Selfie of ${name} holding an ID`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></a>
+                  {member.idPhoto && <figure className="space-y-2"><PhotoButton photos={photos} src={idSelfieUrl(member.id)} label={`Open the selfie of ${name} holding an ID`} className="w-full">
+              <PrivateImage src={idSelfieUrl(member.id)} alt={`Selfie of ${name} holding an ID`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></PhotoButton>
               <figcaption className="text-[13px] leading-5"><span className="font-medium">Selfie holding an ID</span><span className="block text-muted-foreground">Visible to the responsible manager and administrators only.</span></figcaption></figure>}
                 </div></CardBody></Card>}
             {member.documents && member.documents.length > 0 && <Card>

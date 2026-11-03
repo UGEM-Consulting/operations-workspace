@@ -82,7 +82,7 @@ export function FieldPlacer({ file: pdfFile, title, signerLabel, signature = tru
     return <div key={index} data-field={index} role="button" tabIndex={0} aria-label={`${label}, page ${number}. Arrow keys move it, Alt with the arrow keys resizes it, Delete removes it.`} aria-pressed={selected === index}
       onPointerDown={event => startMove(event, index, 'move', width, height)} onFocus={() => setSelected(index)} onKeyDown={event => nudge(event, index)}
       className={cn('absolute cursor-move touch-none select-none outline-none', selected === index && 'ring-2 ring-primary ring-offset-1')} style={{ left: field.x * width, top: field.y * height, width: field.width * width, height: field.height * height }}>
-      <FieldMark field={{ ...field, x: 0, y: 0, width: 1, height: 1 }} pageWidth={field.width * width} pageHeight={field.height * height} label={label} />
+      <FieldMark field={{ ...field, x: 0, y: 0, width: 1, height: 1 }} pageWidth={field.width * width} pageHeight={field.height * height} label={label} grow />
       {selected === index && <span aria-hidden="true" onPointerDown={event => startMove(event, index, 'size', width, height)} className="absolute -bottom-1.5 -right-1.5 size-3 cursor-nwse-resize touch-none rounded-sm border border-primary bg-card after:absolute after:-inset-2 after:content-['']" />}
     </div>;
   });

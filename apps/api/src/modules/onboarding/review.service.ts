@@ -109,7 +109,8 @@ export class ReviewService {
    documents:{required:documents.required,photos:{selfie:!!documents.photos.SELFIE,idSelfie:!!documents.photos.ID_SELFIE},
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
     countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,fields:pendingCountersign.fields,
-     // Remembered from their last countersignature, so they don't type it each time.
+     // What the form fills in first, so they only change what's different: their own name, and their last title or else their role.
+     signerName:`${user.firstName} ${user.lastName}`.trim(),signerRole:user.role,
      lastTitle:(await this.db.query(`SELECT "signerTitle" FROM document_signatures WHERE "signerUserId" = $1 AND "signerTitle" IS NOT NULL ORDER BY "signedAt" DESC LIMIT 1`,[user.id]))[0]?.signerTitle??null,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
    canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support&&!catchUp, employmentOptions, supports, catchUp,

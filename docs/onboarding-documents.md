@@ -10,7 +10,7 @@ Photos and signatures are required to submit and to approve. The approving manag
 
 ## Reading and signing in a modal
 
-Everything happens over the application page, with no new tab: read to the last page, tick the statements, type the name and sign once, then download the copy or go on to the next document. Every marked space on the form fills in as they sign. Staff open documents in the same modal, with zoom, Print and Download. Phones print from the downloaded file.
+Everything happens over the application page, with no new tab: read to the last page, tick the statements, type the name and sign once, then download the copy or go on to the next document. Every marked space on the form fills in as they sign. Staff open documents in the same modal, with zoom, Print and Download. Phones print from the downloaded file. Photos open in a modal too, with no Download. The last step of the application shows the new hire's photos and documents to check, and the contact list offers a plain copy to save.
 
 Next waits until the last page has been reached and drawn. A page the browser can't draw says so with Try again and holds Next until it shows. Pages with real text carry a selectable text layer for screen readers; scanned pages have none, so a screen reader user needs the downloaded file and may need someone to read a scan to them. After a new version is published, the applicant can still open the copy they signed of the earlier one.
 

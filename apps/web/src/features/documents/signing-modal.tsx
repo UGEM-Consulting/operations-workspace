@@ -6,8 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Checkbox, Input } from '@/components/ui/field';
 import { Badge } from '@/components/ui/status-badge';
 import { ApiError, errorMessage, mutate } from '@/lib/client-api';
-import { SignaturePad, type SignatureMethod } from '@/features/onboarding/signature-pad';
-import { DocumentModal } from './document-modal';
+import { LATIN_NAME, SignaturePad, SignatureShown, type SignatureMethod } from '@/features/onboarding/signature-pad';
+import { DocumentModal, PeekPanel } from './document-modal';
 import { FieldMark, fieldText, type DocumentField } from './fields';
 import { downloadBlob, PdfPages, PrintButton, usePdf } from './pdf';
 
@@ -18,14 +18,14 @@ export interface SignableDocument {
 }
 export interface SigningMemory { consented: boolean; name: string; signature: { image: string; method: SignatureMethod } | null; read: string[] }
 export const emptyMemory: SigningMemory = { consented: false, name: '', signature: null, read: [] };
-const LATIN_NAME = /^[A-Za-z][A-Za-z .,'-]+$/;
 type Step = 'read' | 'agree' | 'sign' | 'done';
 
 const markLabel = (field: DocumentField) => field.signer === 'COMPANY' ? ({ SIGNATURE: 'Your manager signs at approval', NAME: 'Manager’s name', TITLE: 'Manager’s title', DATE: 'Date of approval' } as Record<string, string>)[field.kind] ?? 'At approval'
   : ({ SIGNATURE: 'Your signature', NAME: 'Your full legal name', DATE: 'Filled in when you sign', DAY: 'Day', MONTH: 'Month', YEAR: 'Yr' } as Record<string, string>)[field.kind] ?? '';
 
-const Dots = ({ at }: { at: number }) => <div className="shrink-0 border-b px-4 py-3 lg:px-5 lg:py-4"><p className="text-[13px] font-medium leading-5 text-muted-foreground">Step {at + 1} of 3: <span className="font-semibold text-foreground">{['Read', 'Agree', 'Sign'][at]}</span></p>
-  <div aria-hidden="true" className="mt-2 flex gap-2">{[0, 1, 2].map(index => <span key={index} className={`h-1 flex-1 rounded-full ${index <= at ? 'bg-primary' : 'bg-border'}`} />)}</div></div>;
+const Dots = ({ at, onSee }: { at: number; onSee?: () => void }) => <div className="shrink-0 border-b px-4 py-2 short:py-0 lg:px-5 lg:py-4"><div className="flex items-center justify-between gap-3"><p className="text-[13px] font-medium leading-5 text-muted-foreground">Step {at + 1} of 3: <span className="font-semibold text-foreground">{['Read', 'Agree', 'Sign'][at]}</span></p>
+    {onSee && <button type="button" onClick={onSee} className="shrink-0 py-1 text-[13px] font-medium text-primary underline md:hidden short:inline!">See the document</button>}</div>
+  <div aria-hidden="true" className="mt-2 hidden gap-2 lg:flex">{[0, 1, 2].map(index => <span key={index} className={`h-1 flex-1 rounded-full ${index <= at ? 'bg-primary' : 'bg-border'}`} />)}</div></div>;
 
 /**
  * Read → agree → sign → done, all over the page. What the signer has given (consent, name, signature) stays in `memory` while the
@@ -39,7 +39,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
   const alreadyRead = memory.read.includes(doc.id);
   const [step, setStep] = useState<Step>(alreadyRead && !doc.acknowledgePath ? 'agree' : 'read'), [viewed, setViewed] = useState(false), [atEnd, setAtEnd] = useState(alreadyRead), [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(1), [agreed, setAgreed] = useState(false), [consented, setConsented] = useState(memory.consented), [name, setName] = useState(memory.name), [changing, setChanging] = useState(!memory.signature);
-  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [attempted, setAttempted] = useState(false), [signedDoc, setSignedDoc] = useState(false);
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [attempted, setAttempted] = useState(false), [signedDoc, setSignedDoc] = useState(false), [peek, setPeek] = useState(false), [nameFromBefore] = useState(!!memory.name);
   const nameInput = useRef<HTMLInputElement>(null), signature = memory.signature, now = useMemo(() => new Date(), []);
   const source = useMemo(() => ({ url: signedDoc ? doc.signedUrl : doc.fileUrl, fallbackName: doc.fallbackName }), [signedDoc, doc.signedUrl, doc.fileUrl, doc.fallbackName]);
   const { file, failure, reload } = usePdf(source);
@@ -104,7 +104,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
       {signerFields.length > 0 && <p className="text-sm leading-[22px] text-muted-foreground">The marked spaces are filled in for you when you sign. You only type your name and sign once.</p>}</div>
     <div className={foot}><p aria-live="polite" className="text-[13px] leading-5 text-muted-foreground">{progress}</p><Notice message={error} error /><Button type="button" size="lg" className="w-full" disabled={!readDone} onClick={() => { remember({ read: [...new Set([...memory.read, doc.id])] }); setStep('agree'); }}>Next: agree<ArrowRight aria-hidden="true" className="size-4" /></Button></div>
   </>) : step === 'agree' ? <>
-    <Dots at={1} />
+    <Dots at={1} onSee={() => setPeek(true)} />
     <div className={body}><h3 className="text-[17px] font-semibold leading-6">Do you agree?</h3>
       {!memory.consented && <Checkbox checked={consented} onChange={event => setConsented(event.target.checked)} label={consent} description={consentTranslation ? <span lang="ru">{consentTranslation}</span> : undefined} />}
       <Checkbox checked={agreed} onChange={event => setAgreed(event.target.checked)} label={doc.statement} description={doc.translatedStatement ? <span lang="ru">{doc.translatedStatement}</span> : undefined} />
@@ -112,30 +112,30 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
     <div className={foot}><Button type="button" size="lg" className="w-full" disabled={!agreed || !consented} onClick={() => { setStep('sign'); setAttempted(false); }}>Next: {doc.requiresSignature ? 'sign' : 'confirm'}<ArrowRight aria-hidden="true" className="size-4" /></Button>
       <Button type="button" size="lg" variant="ghost" className="w-full" onClick={() => setStep('read')}>Back to reading</Button></div>
   </> : step === 'sign' ? <>
-    <Dots at={2} />
-    <div className={body}><h3 className="text-[17px] font-semibold leading-6">{doc.requiresSignature ? `Sign the ${doc.short}` : `Confirm the ${doc.short}`}</h3>
-      <Input ref={nameInput} label="Full legal name" hint={memory.name ? `Filled in from your last document. Latin letters, ${nameHint}.` : `Latin letters, ${nameHint}.`} value={name} onChange={event => changeName(event.target.value)} error={nameError} maxLength={100} autoComplete="name" width="full" />
+    <Dots at={2} onSee={() => setPeek(true)} />
+    <div className={`${body} short:grid short:grid-cols-2 short:gap-4 short:space-y-0 short:py-2`}><h3 className="text-[17px] font-semibold leading-6 short:hidden [@media(max-height:600px)]:hidden">{doc.requiresSignature ? `Sign the ${doc.short}` : `Confirm the ${doc.short}`}</h3>
+      <Input ref={nameInput} label="Full legal name" hint={nameFromBefore ? `Filled in from your last document. Latin letters, ${nameHint}.` : `Latin letters, ${nameHint}.`} value={name} onChange={event => changeName(event.target.value)} error={nameError} maxLength={100} autoComplete="name" width="full" />
       {doc.requiresSignature && (signature && !changing ? <div className="space-y-2"><p className="text-sm font-medium">Your signature</p>
-        <div className="relative grid h-28 place-items-center rounded-md border border-input bg-white p-2">
-          {/* eslint-disable-next-line @next/next/no-img-element -- a data URL the signer just made */}
-          <img src={signature.image} alt="Your signature" className="max-h-full max-w-full object-contain" /></div>
-        <Button type="button" size="lg" variant="outline" onClick={() => { setChanging(true); onMemory({ ...memory, name, signature: null }); }}>Change signature</Button></div>
-        : <SignaturePad label="Your signature" onChange={onSignature} disabled={busy} allowTyped typedName={name} touch />)}
-      <dl className="space-y-2 rounded-md bg-muted px-4 py-3 text-[13px] leading-5"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Date</dt><dd className="font-medium">{fieldText('DATE', { at: now })}</dd></div>
+        <SignatureShown image={signature.image} alt="Your signature" onChange={() => { setChanging(true); onMemory({ ...memory, name, signature: null }); }} /></div>
+        : <SignaturePad label="Your signature" onChange={onSignature} disabled={busy} allowTyped typedName={name} compact />)}
+      <dl className="hidden space-y-2 rounded-md bg-muted px-4 py-3 text-[13px] leading-5 lg:block"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Date</dt><dd className="font-medium">{fieldText('DATE', { at: now })}</dd></div>
         {signerFields.length > 0 && <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Places filled in</dt><dd className="text-right font-medium">{signerFields.length}, on {pagesWithFields.length === 1 ? 'page' : 'pages'} {pagesWithFields.join(' and ')}</dd></div>}</dl></div>
-    <div className={foot}><p className="text-xs leading-[18px] text-muted-foreground">Your electronic signature is legally binding, the same as a handwritten one. We record the date, time, your IP address and browser.</p>
-      <Notice message={error} error /><Button type="button" size="lg" className="w-full" disabled={busy} onClick={() => void sign()}><PenLine aria-hidden="true" className="size-4" />{busy ? 'Signing…' : `${doc.requiresSignature ? 'Sign' : 'Confirm'} ${doc.short}`}</Button></div>
+    <div className={`${foot} short:flex short:items-center short:gap-3 short:space-y-0 short:py-2`}><p className="text-xs leading-[18px] text-muted-foreground">Your electronic signature is legally binding, the same as a handwritten one. We record the date, time, your IP address and browser.</p>
+      <Notice message={error} error /><Button type="button" size="lg" className="w-full short:w-auto short:shrink-0" disabled={busy} onClick={() => void sign()}><PenLine aria-hidden="true" className="size-4" />{busy ? 'Signing…' : `${doc.requiresSignature ? 'Sign' : 'Confirm'} ${doc.short}`}</Button></div>
   </> : <>
     <div className={body}><span className="grid size-11 place-items-center rounded-full bg-success-background text-success"><CircleCheck aria-hidden="true" className="size-6" /></span>
       <h3 role="status" className="text-[17px] font-semibold leading-6">{doc.acknowledgePath ? `${doc.short} read` : `${doc.short} ${doc.requiresSignature ? 'signed' : 'confirmed'}`}</h3>
+      {doc.acknowledgePath && <div className="space-y-3 rounded-md bg-brand-subtle p-4"><p className="text-[15px] font-semibold leading-[22px]">Keep this list handy</p>
+        <p className="text-sm leading-[22px]">It says who to contact when a driver has an accident, a breakdown or a load problem. Save it to your phone so it’s there when you need it.</p>
+        <Button type="button" size="lg" className="w-full" disabled={!file} onClick={() => file && downloadBlob(file.blob, 'quick-contact-list.pdf')}><Download aria-hidden="true" className="size-4" />Save the contact list</Button></div>}
       {!doc.acknowledgePath && <><p className="text-sm leading-[22px] text-muted-foreground">{name.trim() ? `Thank you, ${name.trim().split(' ')[0]}. ` : ''}Signed {fieldText('DATE', { at: now })}.{doc.fields.some(field => field.signer === 'COMPANY') ? ' UGEM adds its signature when your manager approves.' : ''}</p>
         <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={!file} onClick={() => file && downloadBlob(file.blob, file.filename)}><Download aria-hidden="true" className="size-4" />Download my copy</Button>
           <PrintButton file={file} variant="outline" size="default" className="max-lg:hidden" /></div></>}
       <ul className="space-y-2 text-sm">{documents.map(item => { const done = item.id === doc.id || item.state === 'done'; return <li key={item.id} className="flex items-center justify-between gap-3">{item.short}{done ? <Badge label={item.acknowledgePath ? 'Read' : 'Signed'} tone="success" /> : <Badge label={item.acknowledgePath ? 'To read' : 'To sign'} tone="warning" />}</li>; })}</ul></div>
     <div className={foot}>{next && <Button type="button" size="lg" className="w-full" onClick={() => onNext(next)}>Next: {next.short}<ArrowRight aria-hidden="true" className="size-4" /></Button>}
-      <Button type="button" size="lg" variant={next ? 'ghost' : 'default'} className="w-full" onClick={onClose}>Back to my application</Button></div>
+      <Button type="button" size="lg" variant={next ? 'ghost' : doc.acknowledgePath ? 'outline' : 'default'} className="w-full" onClick={onClose}>Back to my application</Button></div>
   </>;
   const pages = `${doc.pageCount} ${doc.pageCount === 1 ? 'page' : 'pages'}`;
   return <DocumentModal title={doc.short} meta={step === 'done' ? `${doc.acknowledgePath ? 'Read' : doc.requiresSignature ? 'Signed' : 'Confirmed'} ${fieldText('DATE', { at: now })} · ${pages}` : `${doc.short === doc.title ? '' : `${doc.title} · `}${pages}`} file={file} failure={failure} reload={reload} zoom={zoom} onZoom={setZoom} onClose={onClose} busy={busy} closeLabel={`Close ${doc.short}`}
-    panel={panel} panelGrows={step !== 'read'} pages={file && <PdfPages file={file} zoom={zoom} overlay={overlay} onProgress={onProgress} focus={focus} className="flex-1" />} />;
+    panel={<PeekPanel peek={peek} label={`Back to ${step === 'sign' ? 'signing' : 'agreeing'}`} onBack={() => setPeek(false)}>{panel}</PeekPanel>} panelGrows={step !== 'read' && !peek} pages={file && <PdfPages file={file} zoom={zoom} overlay={overlay} onProgress={onProgress} focus={focus} className="flex-1" />} />;
 }
