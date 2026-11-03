@@ -13,7 +13,7 @@ export default async function TeamDriversPage({ searchParams }: { searchParams: 
   const [drivers, options] = await Promise.all([apiRequest('team/drivers'), apiRequest('team/drivers/options')]);
   // A team lead whose dispatcher record leads no team right now (the API refuses with 403).
   if (drivers.status === 403) return <div className="space-y-6"><PageHeader title="Drivers" />
-    <Card><CardBody><EmptyState title="You don’t lead a team right now" description="Drivers show here while your dispatcher record leads a team. Ask a dispatcher manager if this looks wrong." /></CardBody></Card></div>;
+    <Card><CardBody><EmptyState title="You don’t lead a team right now" description="Drivers show here while your dispatcher record leads a team. Ask a dispatch manager if this looks wrong." /></CardBody></Card></div>;
   if (!drivers.ok || !options.ok) throw new Error('Unable to load drivers');
   const [list, choices] = await Promise.all([readResponse<{ items: DispatchDriverRow[] }>(drivers, 'drivers', dispatchDriverListSchema), readResponse<DispatchDriverOptions>(options, 'dispatchers', dispatchDriverOptionsSchema)]);
   return <DispatchDrivers items={list.items} filters={filters} options={choices} teamLead />;

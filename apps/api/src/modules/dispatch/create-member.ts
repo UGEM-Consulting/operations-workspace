@@ -49,6 +49,16 @@ export function lockTeam(em: EntityManager, id: string) {
  return em.getRepository(Team).findOne({ where: { id }, lock: { mode: 'pessimistic_read' } });
 }
 
+/** Locks someone's catch-up links. Called before their member row: a decision on their paperwork holds the invitation, then the member. */
+export async function lockCatchUpLinks(em: EntityManager, memberId: string) {
+ await em.query(`SELECT id FROM invitations WHERE "catchUpMemberId" = $1 AND "revokedAt" IS NULL ORDER BY id FOR UPDATE`, [memberId]);
+}
+
+/** Started their catch-up paperwork and still had something to do when their time ended. Someone who sent it is waiting for their manager, not for time. */
+export function paperworkTimeEnded(link: { consumedAt: Date | null; status: string; applicantAccessUntil: Date }) {
+ return !!link.consumedAt && ['INVITED', 'DRAFT', 'CHANGES_REQUESTED'].includes(link.status) && link.applicantAccessUntil.getTime() <= Date.now();
+}
+
 /** On notice: nobody new is placed with them and they take on no new role. */
 export async function onNotice(em: EntityManager, memberId: string) {
  const [row] = await em.query(`SELECT 1 FROM member_notices WHERE "memberId" = $1 AND "cancelledAt" IS NULL AND "finishedAt" IS NULL`, [memberId]);

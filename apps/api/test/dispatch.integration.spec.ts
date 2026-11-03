@@ -58,6 +58,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
+    await db.undoLastMigration(); // ExistingDispatchers, with none added here
     await db.query(`DELETE FROM portal_notifications WHERE "removalId" IS NOT NULL; DELETE FROM notification_deliveries WHERE kind LIKE 'IT_REMOVAL%'; DELETE FROM member_notices; DELETE FROM it_removal_activity; DELETE FROM it_removal_tasks; DELETE FROM it_removal_requests; DELETE FROM application_manager_changes; UPDATE it_onboarding_requests SET "cancelledAt" = NULL WHERE "cancelledAt" IS NOT NULL; UPDATE dispatch_members SET "leftReason" = NULL WHERE "leftReason" IS NOT NULL`); await db.undoLastMigration();
     await db.query('TRUNCATE dispatch_events, member_contacts, member_support_links'); await db.query('TRUNCATE drivers CASCADE'); await db.query('TRUNCATE drivers CASCADE'); await db.undoLastMigration(); await db.undoLastMigration(); await db.query('TRUNCATE signed_copies, applicant_photos, company_documents, driver_documents, driver_reports, driver_consent_documents CASCADE'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`); await db.undoLastMigration(); await db.query(`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`); await db.undoLastMigration(); await db.query(`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.undoLastMigration(); await db.query(`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); expect(await latest()).toBe('ManagedLists1792810000000');
     try { await backfilled(); } finally { await db.runMigrations(); }
@@ -74,7 +75,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const long = 'X'.repeat(120);
     await approved(['Zed', 'North'], { mcName: 'Northwind Freight', teamLead: long, jobTitle: 'Dispatcher' });
     await approved(['Zed', 'Lake'], { mcName: 'Lakeside Carriers', teamLead: long, jobTitle: 'Dispatcher' });
-    await db.runMigrations(); expect(await latest()).toBe('DispatcherOffboarding1792950000000');
+    await db.runMigrations(); expect(await latest()).toBe('ExistingDispatchers1792960000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -91,7 +92,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('DispatcherOffboarding1792950000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('ExistingDispatchers1792960000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -326,6 +327,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.manager.patch(`/api/dispatch/teams/${blue.id}`).set(headers).send({ version: 1, leadMemberId: blake.id }).expect(200);
     // The state DispatcherContacts left behind: a backfilled lead moved back to ONBOARDING while still leading.
     await db.query(`UPDATE dispatch_members SET status = 'ONBOARDING' WHERE id = $1`, [avery.id]);
+    await db.undoLastMigration(); // ExistingDispatchers, with none added here
     await db.query(`DELETE FROM portal_notifications WHERE "removalId" IS NOT NULL; DELETE FROM notification_deliveries WHERE kind LIKE 'IT_REMOVAL%'; DELETE FROM member_notices; DELETE FROM it_removal_activity; DELETE FROM it_removal_tasks; DELETE FROM it_removal_requests; DELETE FROM application_manager_changes; UPDATE it_onboarding_requests SET "cancelledAt" = NULL WHERE "cancelledAt" IS NOT NULL; UPDATE dispatch_members SET "leftReason" = NULL WHERE "leftReason" IS NOT NULL`); await db.undoLastMigration(); await db.query('TRUNCATE drivers CASCADE'); await db.undoLastMigration(); await db.undoLastMigration(); await db.query('TRUNCATE signed_copies, applicant_photos, company_documents, driver_documents, driver_reports, driver_consent_documents CASCADE'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); // StorageFolders, DriverConsents and DriverScreening, with no file data here
     expect(await latest()).toBe('ClearInactiveTeamLeads1792890000000');
     await db.undoLastMigration();
@@ -336,11 +338,12 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events WHERE "teamId" = $1', [red.id])).toEqual([{ n: 2 }]);
   });
 
-  it('keeps teams and dispatchers to dispatcher managers and administrators, and refuses to roll back after changes', async () => {
+  it('keeps teams and dispatchers to dispatch managers and administrators, and refuses to roll back after changes', async () => {
     await agents.it.get('/api/dispatch/members').set(headers).expect(403);
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
+    await db.undoLastMigration(); // ExistingDispatchers, with none added here
     await db.query(`DELETE FROM portal_notifications WHERE "removalId" IS NOT NULL; DELETE FROM notification_deliveries WHERE kind LIKE 'IT_REMOVAL%'; DELETE FROM member_notices; DELETE FROM it_removal_activity; DELETE FROM it_removal_tasks; DELETE FROM it_removal_requests; DELETE FROM application_manager_changes; UPDATE it_onboarding_requests SET "cancelledAt" = NULL WHERE "cancelledAt" IS NOT NULL; UPDATE dispatch_members SET "leftReason" = NULL WHERE "leftReason" IS NOT NULL`); await db.undoLastMigration(); await db.query('TRUNCATE drivers CASCADE'); await db.undoLastMigration(); await db.undoLastMigration(); await db.query('TRUNCATE signed_copies, applicant_photos, company_documents, driver_documents, driver_reports, driver_consent_documents CASCADE'); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration(); await db.undoLastMigration();
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard dispatch team changes');
     expect(await latest()).toBe('DispatchTeams1792820000000');

@@ -1,7 +1,8 @@
 import { createItRequest } from '../it/create-request';
 import { createMemberForApproval, createSupportForApproval, supportedDispatcher } from '../dispatch/create-member';
+import { acceptPaperwork } from '../dispatch/existing.service';
 import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
-import { provisioningDetails, requiredApplicantFields } from './application-requirements';
+import { askedAs, provisioningDetails, requiredApplicantFields } from './application-requirements';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { canAccessAssignedApplication } from '../auth/policy';
@@ -35,13 +36,17 @@ export class ReviewService {
   if (user.role !== Role.SYSTEM_ADMIN) query.where('a.assignedManagerId = :manager',{manager:user.id});
   return query;
  }
+ /** The review queues: catch-up paperwork is handled from the Dispatchers page. */
+ private listed(user: User) {
+  return this.scoped(user).andWhere('a.invitationId NOT IN (SELECT i.id FROM invitations i WHERE i."catchUpMemberId" IS NOT NULL)');
+ }
  async summary(user: User) {
-  const counts: { status: ApplicationStatus; count: string }[] = await this.scoped(user).select('a.status','status').addSelect('COUNT(*)','count').groupBy('a.status').getRawMany();
+  const counts: { status: ApplicationStatus; count: string }[] = await this.listed(user).select('a.status','status').addSelect('COUNT(*)','count').groupBy('a.status').getRawMany();
   const count = (status: ApplicationStatus) => Number(counts.find(row => row.status === status)?.count ?? 0);
   return { awaitingReview: count('SUBMITTED')+count('RESUBMITTED'), changesRequested: count('CHANGES_REQUESTED'), resubmitted: count('RESUBMITTED'), approved: count('APPROVED'), rejected: count('REJECTED') };
  }
  async queue(user: User, input: ApplicationQueryDto) {
-  const query = this.scoped(user).innerJoin(Invitation,'i','i.id = a.invitationId').leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION);
+  const query = this.listed(user).innerJoin(Invitation,'i','i.id = a.invitationId').leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION);
   if (input.status === 'AWAITING_REVIEW') query.andWhere('a.status IN (:...statuses)',{statuses:['SUBMITTED','RESUBMITTED']});
   else if (input.status !== 'ALL') query.andWhere('a.status = :status',{status:input.status});
   if (input.search) {
@@ -59,7 +64,7 @@ export class ReviewService {
  }
  async legacyList(user: User) {
   // Preserve the original array API; the review UI uses the paginated queue.
-  const query = this.scoped(user).leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION).addSelect(`COALESCE(${submittedFields}, '{}'::jsonb)`,'submittedFields').orderBy('a.updatedAt','DESC').limit(200);
+  const query = this.listed(user).leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION).addSelect(`COALESCE(${submittedFields}, '{}'::jsonb)`,'submittedFields').orderBy('a.updatedAt','DESC').limit(200);
   const result = await query.getRawAndEntities();
   return result.entities.map((application,index) => ({ ...application,fields:result.raw[index].submittedFields }));
  }
@@ -85,12 +90,13 @@ export class ReviewService {
   const documents=await documentStatus(this.db.manager,id,this.storage.enabled,application.submittedAt);
   const canReview=['SUBMITTED','RESUBMITTED'].includes(application.status);
   // Outstanding corrections can still be rejected (CHANGES_REQUESTED -> REJECTED); approval waits for a resubmission.
-  const canReject=canReview||application.status==='CHANGES_REQUESTED';
+  const catchUp=!!invitation.catchUpMemberId;
+  const canReject=!catchUp&&(canReview||application.status==='CHANGES_REQUESTED');
   const pendingCountersign=documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant;
   // Active list entries for the approval pickers. The decision still carries the chosen names as text, so an older web
   // client without pickers keeps working, and approval matches the text back to these entries.
-  const support=invitation.position==='SUPPORT';
-  const employmentOptions=canReview&&!support?await this.employmentOptions():null;
+  const support=invitation.position==='SUPPORT'&&!catchUp;
+  const employmentOptions=canReview&&!support&&!catchUp?await this.employmentOptions():null;
   // A support's dispatcher, and the dispatchers a manager may pick instead while deciding.
   const supports=support?{supportsMemberId:invitation.supportsMemberId,options:await this.dispatcherOptions(invitation.supportsMemberId)}:null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
@@ -99,16 +105,16 @@ export class ReviewService {
    // The responsible manager sees the company accounts IT created; never IT notes or verification metadata.
    itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,cancelledAt:itRequest.cancelledAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
    // Historical decisions are never second-guessed: missing photos/signatures only matter while the application is open.
-   requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {},invitation.position),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
+   requiredFields:[...requiredApplicantFields(submissions.at(-1)?.fields ?? {},askedAs(invitation)),...(['APPROVED','REJECTED'].includes(application.status)?[]:documents.missing)], itDetails:provisioningDetails(submissions.at(-1)?.fields ?? {}),
    documents:{required:documents.required,photos:{selfie:!!documents.photos.SELFIE,idSelfie:!!documents.photos.ID_SELFIE},
     items:documents.documents.map(({kind,label,requiresSignature,current,applicant,company})=>({kind,label,requiresSignature,current,applicant,company})),
     countersign:canReview&&pendingCountersign?{documentId:pendingCountersign.documentId,title:pendingCountersign.title,version:pendingCountersign.version,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
-   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support, employmentOptions, supports,
+   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support&&!catchUp, employmentOptions, supports, catchUp,
    responsibleManager:responsible?{id:responsible.id,firstName:responsible.firstName,lastName:responsible.lastName}:null, managerChanges, managerOptions };
  }
  /**
-  * Hands an application, with its invitation and any unfinished IT setup, to another active dispatcher manager or
+  * Hands an application, with its invitation and any unfinished IT setup, to another active dispatch manager or
   * administrator (designed and approved 2026-11-02). The current manager or an administrator may do it; the previous
   * manager loses access unless they are an administrator. The applicant isn't told. Finished applications can move too.
   */
@@ -164,17 +170,22 @@ export class ReviewService {
    if (application.version !== input.version) throw new ConflictException('This application changed. Reload before deciding.');
    const nextStatus: ApplicationStatus = input.decisionType === 'APPROVE' ? 'APPROVED' : input.decisionType === 'REJECT' ? 'REJECTED' : 'CHANGES_REQUESTED';
    requireTransition(application.status,nextStatus);
+   // Someone catching up already works here: accepting finishes their paperwork, with no employment, IT setup or new record, and there's nothing to reject.
+   const catchUpMemberId = invitation.catchUpMemberId;
+   if (catchUpMemberId && invitation.revokedAt) throw new ConflictException('This person has left, so their paperwork is closed.');
+   if (catchUpMemberId && input.decisionType === 'REJECT') throw new BadRequestException('Paperwork can be accepted or sent back for changes, not rejected.');
+   if (catchUpMemberId && (input.employment || input.employmentConfirmed || input.supportsMemberId)) throw new BadRequestException('Accepting paperwork doesn’t change where they work.');
    // Supports have no employment of their own and no IT setup; approval confirms the dispatcher they assist.
-   const support = invitation.position === 'SUPPORT';
+   const support = invitation.position === 'SUPPORT' && !catchUpMemberId;
    if (support && (input.employment || input.employmentConfirmed)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
    if (!support && input.supportsMemberId) throw new BadRequestException('Only a support is approved with a dispatcher.');
    if (input.supportsMemberId && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher is confirmed during approval.');
-   if (!support && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
+   if (!support && !catchUpMemberId && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
    // Under the invitation lock, so the applicant cannot upload or sign concurrently.
    const documents = await documentStatus(em,id,this.storage.enabled);
-   const missing: RequestableItem[] = [...requiredApplicantFields(submitted?.fields ?? {},invitation.position),...documents.missing];
+   const missing: RequestableItem[] = [...requiredApplicantFields(submitted?.fields ?? {},askedAs(invitation)),...documents.missing];
    if (input.decisionType === 'APPROVE' && missing.length) throw new BadRequestException(`Required applicant fields must be completed before approval. Request corrections for: ${missing.join(', ')}.`);
    const countersign = input.decisionType === 'APPROVE' ? documents.documents.find(doc=>doc.countersign&&doc.applicant&&!doc.company)?.applicant : undefined;
    if (input.countersignature && !countersign) throw new BadRequestException('No NDA countersignature is needed for this application.');
@@ -209,9 +220,10 @@ export class ReviewService {
     await em.getRepository(ApplicationActivity).save({invitationId:invitation.id,actorId:user.id,event:'NDA_COUNTERSIGNED'});
    }
    // A new IT checklist alerts the IT specialists; sent after the approval commits.
-   if(nextStatus==='APPROVED'&&!support)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation,user.id));
+   if(nextStatus==='APPROVED'&&catchUpMemberId)await acceptPaperwork(em,catchUpMemberId,application.id,submitted?.fields??{},user.id,review.createdAt);
+   if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation,user.id));
    // The approved dispatcher becomes a dispatch member record (no login), placed by the confirmed assignments.
-   if(nextStatus==='APPROVED'&&!support&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
+   if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
    // An approved support becomes an active support record linked to the dispatcher confirmed here (no IT setup).
    if(nextStatus==='APPROVED'&&support){
     const dispatcherId=input.supportsMemberId??invitation.supportsMemberId;
@@ -223,8 +235,9 @@ export class ReviewService {
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});
    // The applicant's chosen channels are queued with the decision and sent only after it commits.
-   await this.updates.queue(em,application,review);
-   return {id:review.id,status:application.status,version:application.version,readyForIt:application.status==='APPROVED'&&!support};
+   // Accepting paperwork sends no message: nothing about their job changed. Asking for changes sends the usual one.
+   if(!(catchUpMemberId&&nextStatus==='APPROVED'))await this.updates.queue(em,application,review);
+   return {id:review.id,status:application.status,version:application.version,readyForIt:application.status==='APPROVED'&&!support&&!catchUpMemberId};
   });
   this.updates.dispatch(result.id);
   this.notifications.dispatch(alerts);

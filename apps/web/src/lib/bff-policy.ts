@@ -44,7 +44,9 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
     (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|leave|last-day|cancel-notice|remove-access|contacts|reassign)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
-    // Cleared drivers: a dispatcher manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
+    // People already working here: check and add them, their paperwork and catch-up links, what a manager recorded.
+    (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||
+    // Cleared drivers: a dispatch manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
     (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||
     // Promotions: a team lead's request or cancellation, and a manager's decision.
     (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path))) ||
@@ -67,6 +69,8 @@ export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
   if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`safety/drivers/${ID}/mvr`, path) || path === 'safety/consents') return 4_400_000;
+  // A list of existing dispatchers, up to 500 rows of text.
+  if (path === 'dispatch/existing/check' || path === 'dispatch/existing/add') return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).
   if (match(`applicant/documents/${ID}/sign`, path) || match(`driver/consents/${ID}/sign`, path) || match(`onboarding/applications/${ID}/reviews`, path) || path === 'staff/signature') return 400_000;
   return 16384;

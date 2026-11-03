@@ -157,7 +157,7 @@ export class DocumentsService {
   await onboardingLimit(this.db,'signed-copy:'+user.id,60,900);
   return this.signedCopy(this.db.manager,application.id,documentId,'staff');
  }
- // A dispatch member's approved application. Every dispatcher manager and administrator may read the dispatcher's
+ // A dispatch member's approved application. Every dispatch manager and administrator may read the dispatcher's
  // record (agreed 2026-10-29); the role check is the controller's @Roles.
  private async memberApplication(memberId: string) {
   const [row] = await this.db.query(`SELECT a.id FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" WHERE d.id = $1 AND a.status = 'APPROVED'`, [memberId]);

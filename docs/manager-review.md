@@ -1,4 +1,4 @@
-# Dispatcher manager review — Milestone 4
+# Dispatch manager review — Milestone 4
 
 ## State and data ownership
 
@@ -43,7 +43,7 @@ The new `/onboarding/review-queue` joins each application's latest submitted rev
 
 ## Responsible manager and hand-over
 
-The responsible manager (invitation managerId and application assignedManagerId, always the same person) can change: the current manager or an administrator hands the application to another active dispatcher manager or administrator with an optional note, kept in application_manager_changes and shown on the History tab. An unfinished IT setup request follows, so its completion notice reaches the new manager. Administrators may create an invitation for another manager. Deactivating a manager, or changing their role away from managing applications, asks who takes over their open records; they move together in that transaction, and finished applications stay with them. Applicants are never told. See AGENTS.md ("Dispatcher offboarding and manager hand-over").
+The responsible manager (invitation managerId and application assignedManagerId, always the same person) can change: the current manager or an administrator hands the application to another active dispatch manager or administrator with an optional note, kept in application_manager_changes and shown on the History tab. An unfinished IT setup request follows, so its completion notice reaches the new manager. Administrators may create an invitation for another manager. Deactivating a manager, or changing their role away from managing applications, asks who takes over their open records; they move together in that transaction, and finished applications stay with them. Applicants are never told. See AGENTS.md ("Dispatcher offboarding and manager hand-over").
 
 ## Migration and verification
 

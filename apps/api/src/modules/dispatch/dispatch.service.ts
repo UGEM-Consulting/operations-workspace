@@ -4,8 +4,9 @@ import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
 import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeActionDto, MoveMemberDto, ReassignSupportDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
-import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberContact, MemberNotice, MemberSupportLink, PromotionRequest, Team } from './dispatch.entity';
-import { lockTeam, onNotice, supportedDispatcher } from './create-member';
+import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberSupportLink, PromotionRequest, Team } from './dispatch.entity';
+import { ApplicationActivity, Invitation } from '../onboarding/entities';
+import { lockCatchUpLinks, lockTeam, onNotice, paperworkTimeEnded, supportedDispatcher } from './create-member';
 import { addDays, usDay } from '../safety/screening-rules';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } from '../it/it.entity';
 import { DriverAssignment } from '../safety/safety.entity';
@@ -34,7 +35,7 @@ export function day(value: string) {
 }
 
 /**
- * Teams and dispatch members (records only, no login). Dispatcher managers and administrators see and manage all of
+ * Teams and dispatch members (records only, no login). Dispatch managers and administrators see and manage all of
  * them. Where a member works is history: a move closes the open assignment and opens a new one, never overwriting.
  * A team lead must be an active dispatcher currently in that team; leaving or moving out of the team clears the lead.
  */
@@ -102,7 +103,7 @@ export class DispatchService {
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'LEFT' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", coalesce(sl."startedAt", a."startedAt") AS since, m.name AS mc, t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
+    jt.name AS "jobTitle", EXISTS (SELECT 1 FROM existing_member_records e WHERE e."memberId" = d.id) AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, m.name AS mc, t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
     n."lastDay"::text AS "lastDay", n."lastDay" < $2::date AS "lastDayPassed",
     CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM driver_assignments da WHERE da."memberId" = d.id AND da."endedAt" IS NULL) END AS "driversToReassign",
@@ -123,7 +124,7 @@ export class DispatchService {
  /**
   * Everything a manager needs about one dispatcher: where they work and their history, the approved application details
   * (the latest submitted revision), the company accounts and IT progress, signed documents, the profile photo and
-  * contacts staff added, and the onboarding timeline (event names and times only). Every dispatcher manager and
+  * contacts staff added, and the onboarding timeline (event names and times only). Every dispatch manager and
   * administrator may read it (agreed 2026-10-29), while the onboarding record itself and the ID selfie stay with the
   * responsible manager and administrators.
   */
@@ -153,6 +154,7 @@ export class DispatchService {
    application ? this.db.query(`SELECT id, event, "createdAt" FROM application_activity WHERE "invitationId" = $1 ORDER BY "createdAt"`, [application.invitationId]) : [],
   ]);
   const canOpenApplication = !!application && (user.role === Role.SYSTEM_ADMIN || application.assignedManagerId === user.id);
+  const existing = await this.existingRecord(user, id);
   // On notice or after they left: IT's removal progress (never IT notes) and what happens to their company email.
   const [removalRow] = await this.db.query(`SELECT r.id, r."dueOn"::text AS "dueOn", r."completedAt", r."emailAfter", r."numberOutcome", r."removeNowAt", r."removeNowReason",
     CASE WHEN f.id IS NULL THEN NULL ELSE f."firstName" || ' ' || f."lastName" END AS "forwardTo",
@@ -193,7 +195,7 @@ export class DispatchService {
    details: application ? { legalFirstName: fields.firstName ?? null, legalLastName: fields.lastName ?? null, preferredAmericanFirstName: fields.preferredAmericanFirstName ?? null,
     preferredAmericanLastName: fields.preferredAmericanLastName ?? null, personalEmail: application.email, personalPhoneNumber: fields.personalPhoneNumber ?? null,
     telegram: fields.telegram ?? null, mcName: fields.mcName ?? null, teamLead: fields.teamLead ?? null, jobTitle: fields.jobTitle ?? null, submittedAt: application.submittedAt } : null,
-   documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE,
+   existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE,
    noticeHistory: notices.filter(row => row.cancelledAt || row.changes.length).map(row => ({ id: row.id, lastDay: row.lastDay, reason: row.reason, recordedBy: row.recorder, createdAt: row.createdAt, cancelledAt: row.cancelledAt, cancelledBy: row.canceller, cancelReason: row.cancelReason, changes: row.changes.map(({ from, to, reason, at }) => ({ from, to, reason, at })) })) };
  }
 
@@ -264,23 +266,27 @@ export class DispatchService {
   let alerts: string[] = [];
   const result = await this.write(async em => {
    const setup = await lockSetupRequest(em, id);
+   await lockCatchUpLinks(em, id);
    const member = await this.lockMember(em, id, dto.version);
    if (await onNotice(em, id)) throw new ConflictException('This dispatcher is already leaving. Change their last day instead.');
    const today = usDay('latest'), lastDay = dto.leftAt.slice(0, 10), name = `${member.firstName} ${member.lastName}`;
    const place = await this.place(em, id);
+   // A dispatcher added by hand always gets a removal; a support only when accounts were recorded for them.
+   const record = setup ? null : await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
+   const accounts = record && (member.position === 'DISPATCHER' || record.companyEmail || record.ringCentralNumber) ? { companyEmail: record.companyEmail, ringCentralNumber: record.ringCentralNumber } : undefined, removes = !!setup || !!accounts;
    if (lastDay > today) {
     if (lastDay > addDays(today, NOTICE_MAX_DAYS)) throw new BadRequestException(`The last day can be up to ${NOTICE_MAX_DAYS} days ahead.`);
     if (setup && !setup.completedAt) throw new BadRequestException('This dispatcher is still in IT setup, so their last day can’t be in the future. Choose today to cancel the setup.');
     await em.getRepository(MemberNotice).save({ memberId: id, lastDay, reason: dto.reason, recordedBy: user.id, changes: [] });
     member.version += 1; await em.save(member);
-    if (setup) alerts = await createRemoval(em, this.alerts, { setup, memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
-    await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: !!setup });
+    if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+    await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
     return { id, version: member.version };
    }
    await this.requireNobodyAssigned(em, member);
    const leftAt = day(dto.leftAt);
-   if (setup) alerts = await createRemoval(em, this.alerts, { setup, memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
-   await this.finishLeaving(em, user, member, leftAt, dto.reason, !!setup);
+   if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+   await this.finishLeaving(em, user, member, leftAt, dto.reason, removes);
    return { id, version: member.version };
   });
   this.alerts.dispatch(alerts);
@@ -324,6 +330,12 @@ export class DispatchService {
   }
   member.status = 'LEFT'; member.leftAt = leftAt; member.leftReason = reason; member.version += 1; await em.save(member);
   const signInOff = await this.endTeamLeadAccount(em, actor, member);
+  // Their paperwork closes, started or not: the applicant session and any decision on it check the revoked link. Accepted paperwork stays as it is.
+  const links: { id: string }[] = await em.query(`SELECT i.id FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id WHERE i."catchUpMemberId" = $1 AND i."revokedAt" IS NULL AND a.status <> 'APPROVED'`, [id]);
+  for (const link of links) {
+   await em.update(Invitation, { id: link.id }, { revokedAt: new Date() });
+   await em.getRepository(ApplicationActivity).save({ invitationId: link.id, event: 'INVITATION_REVOKED', actorId: actor.id });
+  }
   await this.event(em, actor, 'MEMBER_LEFT', { memberId: id }, { leadCleared, reasonGiven: true, itRemoval, signInOff });
  }
  private async openNotice(em: EntityManager, id: string) {
@@ -432,6 +444,7 @@ export class DispatchService {
  }
  private async endNotice(em: EntityManager, memberId: string) {
   await lockSetupRequest(em, memberId);
+  await lockCatchUpLinks(em, memberId);
   const member = await em.getRepository(DispatchMember).findOne({ where: { id: memberId }, lock: { mode: 'pessimistic_write' } });
   const notice = await em.getRepository(MemberNotice).findOne({ where: { memberId, cancelledAt: IsNull(), finishedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
   if (!member || !notice || member.status === 'LEFT' || notice.lastDay >= usDay('earliest')) return false;
@@ -491,6 +504,22 @@ export class DispatchService {
   });
  }
 
+ /** Someone recorded by hand: what a manager recorded, the paper copies, and how far their paperwork has come. */
+ private async existingRecord(user: User, id: string) {
+  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", u."firstName" || ' ' || u."lastName" AS "addedBy"
+   FROM existing_member_records r JOIN users u ON u.id = r."addedBy" WHERE r."memberId" = $1`, [id]);
+  if (!record) return null;
+  const paper = await this.db.query(`SELECT p.kind, p."signedOn"::text AS "signedOn", p."createdAt", u."firstName" || ' ' || u."lastName" AS "recordedBy" FROM member_paper_documents p JOIN users u ON u.id = p."recordedBy" WHERE p."memberId" = $1 ORDER BY p.kind`, [id]);
+  const [link] = await this.db.query(`SELECT i.id, i.email, i."expiresAt", i."openedAt", i."consumedAt", a.id AS "applicationId", a.status, a."assignedManagerId", a."applicantAccessUntil",
+    coalesce((SELECT json_agg(json_build_object('kind', c.kind, 'signedAt', s."signedAt")) FROM document_signatures s JOIN company_documents c ON c.id = s."documentId" WHERE s."applicationId" = a.id AND s."signerRole" = 'APPLICANT'), '[]') AS signed
+   FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id WHERE i."catchUpMemberId" = $1 AND i."revokedAt" IS NULL ORDER BY i."createdAt" DESC LIMIT 1`, [id]);
+  const started = !!link?.consumedAt, mine = !!link && (user.role === Role.SYSTEM_ADMIN || link.assignedManagerId === user.id);
+  const published: { kind: string }[] = await this.db.query(`SELECT DISTINCT kind FROM company_documents`);
+  return { ...record, paper, published: published.map(row => row.kind), catchUp: link ? { expiresAt: link.expiresAt, opened: !!link.openedAt, started, status: link.status, signed: link.signed,
+   // The reference lets someone return with a fresh code, and only their manager needs it.
+   applicationId: started && mine ? link.applicationId : null, reference: started && mine ? link.applicationId : null, canReview: mine,
+   timeEndedAt: paperworkTimeEnded(link) ? link.applicantAccessUntil : null, returnEmail: started && mine ? link.email : null } : null };
+ }
  private async lockMember(em: EntityManager, id: string, version: number) {
   const member = await em.getRepository(DispatchMember).findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
   if (!member) throw new NotFoundException('This dispatcher record no longer exists.');

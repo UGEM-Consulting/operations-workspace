@@ -25,7 +25,7 @@ export interface TeamView {
 
 /**
  * A team lead's own team: its dispatchers and their supports (names and status only), and promotion requests. A team
- * lead asks for a support to become a dispatcher; a dispatcher manager decides.
+ * lead asks for a support to become a dispatcher; a dispatch manager decides.
  */
 export function MyTeam({ data }: { data: TeamView }) {
   const router = useRouter();
@@ -39,7 +39,7 @@ export function MyTeam({ data }: { data: TeamView }) {
     setPending('request'); setError('');
     try {
       await mutate('team/promotions', 'POST', { supportId: requesting.id, reason: String(new FormData(event.currentTarget).get('reason') ?? '') });
-      toast({ title: 'Request sent', description: 'A dispatcher manager will decide.' });
+      toast({ title: 'Request sent', description: 'A dispatch manager will decide.' });
       setRequesting(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to send. Your entries have been kept.')); }
     finally { setPending(null); }
@@ -52,7 +52,7 @@ export function MyTeam({ data }: { data: TeamView }) {
     finally { setPending(null); }
   }
   if (!data.teams.length) return <div className="space-y-6"><PageHeader title="My team" />
-    <Alert tone="info" title="No team yet"><p>Your account isn’t linked to a team you lead. Ask a dispatcher manager to set you as a team’s lead.</p></Alert></div>;
+    <Alert tone="info" title="No team yet"><p>Your account isn’t linked to a team you lead. Ask a dispatch manager to set you as a team’s lead.</p></Alert></div>;
   return <div className="space-y-6">
     <PageHeader title="My team" description="Your team’s dispatchers and the supports who help them. Ask for a support to become a dispatcher when they’re ready." meta={data.teams.map(team => `${team.name} · ${team.mc}`)} />
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
@@ -84,7 +84,7 @@ export function MyTeam({ data }: { data: TeamView }) {
       </Card>
     </div>
     {requesting && <Dialog open onClose={() => setRequesting(null)} busy={pending === 'request'} title={`Request dispatcher access for ${requesting.name}`}
-      description="A dispatcher manager decides. If approved, they become a dispatcher, get their company accounts from IT, and stop being a support."
+      description="A dispatch manager decides. If approved, they become a dispatcher, get their company accounts from IT, and stop being a support."
       actions={<Button type="submit" form="promotion-request">{pending === 'request' ? 'Sending…' : 'Send request'}</Button>}>
       <form id="promotion-request" onSubmit={request} className="space-y-4">
         <Textarea label="Why they’re ready" name="reason" required maxLength={1000} rows={4} hint="What they already handle on their own. The manager sees this." />

@@ -14,7 +14,7 @@ const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastNa
 /**
  * Team leads and promotions. A team lead's account is linked to their dispatcher record; they see and act only for the
  * active teams that record leads, so changing a team's lead changes their access with it. A team lead asks for a support
- * in their team to become a dispatcher; a dispatcher manager or administrator approves (choosing MC, team and job title)
+ * in their team to become a dispatcher; a dispatch manager or administrator approves (choosing MC, team and job title)
  * or declines. Approval ends the support link, makes them an ONBOARDING dispatcher with an MC and team, and creates their
  * IT setup request in the same transaction; they become ACTIVE when IT completes setup, like any approved dispatcher.
  */

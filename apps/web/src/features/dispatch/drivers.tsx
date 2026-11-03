@@ -27,7 +27,7 @@ export interface DispatchDriverOptions { mcs: { id: string; name: string; mcNumb
 
 /**
  * Drivers Safety has cleared, for Dispatch: the ones waiting for an MC and a dispatcher and the ones already working with
- * one. Dispatcher managers and administrators assign anywhere (Dispatch › Drivers); a team lead assigns to dispatchers in
+ * one. Dispatch managers and administrators assign anywhere (Dispatch › Drivers); a team lead assigns to dispatchers in
  * their own teams (`teamLead`, at /team/drivers). Dispatch sees the name, phone, driver type and license class, truck and
  * Cleared status only.
  */

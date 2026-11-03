@@ -8,7 +8,7 @@ export function PageHeader({ eyebrow, title, description, action, badge, meta }:
   return <div className="flex flex-wrap items-end justify-between gap-5"><div className="min-w-0">{eyebrow && <p className="text-xs font-medium text-muted-foreground">{eyebrow}</p>}
     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1"><h1 className="font-sans text-[22px] font-semibold leading-[30px] tracking-[-0.01em]">{title}</h1>{badge}</div>
     {description && <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>}
-    {meta && <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] leading-5 text-muted-foreground">{meta.map((item, index) => <li key={index} className="min-w-0 break-all sm:break-normal">{item}</li>)}</ul>}
+    {meta && <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] leading-5 text-muted-foreground">{meta.map((item, index) => <li key={index} className="min-w-0 [overflow-wrap:anywhere]">{item}</li>)}</ul>}
   </div>{action}</div>;
 }
 const statDots = { neutral: 'bg-muted-foreground', info: 'bg-info', success: 'bg-success', warning: 'bg-warning', danger: 'bg-danger' };

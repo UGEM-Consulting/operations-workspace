@@ -26,7 +26,9 @@ export async function documentStatus(em: EntityManager, applicationId: string, e
  if (!enabled) return { required: false, photos: { SELFIE: null, ID_SELFIE: null }, documents: [], missing: [] as DocumentItem[] };
  // Sequential: the manager may be a single transaction connection.
  const selfie = await photoFor(em,applicationId,'SELFIE',submittedAt), idSelfie = await photoFor(em,applicationId,'ID_SELFIE',submittedAt);
- const current = await currentDocuments(em), signed = await signatures(em,applicationId);
+ const paper: { kind: string }[] = await em.query(`SELECT p.kind FROM dispatcher_applications a JOIN invitations i ON i.id = a."invitationId" JOIN member_paper_documents p ON p."memberId" = i."catchUpMemberId" WHERE a.id = $1`,[applicationId]);
+ // Someone already working here isn't asked again for a document they signed on paper.
+ const current = (await currentDocuments(em)).filter(doc => !paper.some(row => row.kind === doc.kind)), signed = await signatures(em,applicationId);
  const documents = current.map(doc => {
   // The signature on the current version, else the latest earlier one (kept for display and signed copies).
   const applicant = signed.find(row => row.documentId === doc.id && row.signerRole === 'APPLICANT') ?? signed.find(row => row.kind === doc.kind && row.signerRole === 'APPLICANT') ?? null;

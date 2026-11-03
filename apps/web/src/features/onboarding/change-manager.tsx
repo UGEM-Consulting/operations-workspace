@@ -11,7 +11,7 @@ import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 
 export interface ManagerOption { id: string; firstName: string; lastName: string; role: string }
-const roleLabel = (role: string) => role === 'SYSTEM_ADMIN' ? 'Administrator' : 'Dispatcher manager';
+const roleLabel = (role: string) => role === 'SYSTEM_ADMIN' ? 'Administrator' : 'Dispatch manager';
 
 /**
  * More actions on an application (designed as ChangeManagerScreen): hand it to another responsible manager. The new
@@ -44,7 +44,7 @@ export function ChangeManager({ id, current, options, admin }: { id: string; cur
       actions={<Button type="submit" form="change-manager">{pending ? 'Changing…' : 'Change manager'}</Button>}>
       <form id="change-manager" onSubmit={submit} className="space-y-4">
         <Select id="new-manager" label="New responsible manager" name="managerId" value={managerId} onChange={event => setManagerId(event.target.value)} placeholder="Choose a manager" width="full"
-          hint={`Now: ${current}. Active dispatcher managers and administrators.`} options={options.map(option => ({ value: option.id, label: `${option.firstName} ${option.lastName} · ${roleLabel(option.role)}` }))} />
+          hint={`Now: ${current}. Active dispatch managers and administrators.`} options={options.map(option => ({ value: option.id, label: `${option.firstName} ${option.lastName} · ${roleLabel(option.role)}` }))} />
         <Textarea id="manager-note" label={chosen ? `Note for ${chosen.firstName}` : 'Note for the new manager'} name="note" optional rows={2} maxLength={500} hint="Shown on the application’s history. The applicant never sees it." />
         {!admin && <Alert tone="warning"><p>You’ll no longer see this application. The applicant isn’t told; their link and draft don’t change.</p></Alert>}
         <Notice message={error} error />

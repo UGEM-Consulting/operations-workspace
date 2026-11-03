@@ -2,7 +2,7 @@ import { statusLabel } from '@/components/ui/status-badge';
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
-export interface MemberRow { id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface MemberRow { addedByHand?: boolean; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   jobTitle: string | null; since: string | null; mc: string | null; teamId: string | null; team: string | null; lead: boolean; dispatcherId?: string | null; dispatcher?: string | null;
   // On notice (from an API with notice periods): the last day, whether it has passed, who still needs reassigning, IT's removal.
   lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null }
@@ -13,7 +13,15 @@ export interface Assignment { id: string; startedAt: string; endedAt: string | n
 export interface MemberDetails { legalFirstName: string | null; legalLastName: string | null; preferredAmericanFirstName: string | null; preferredAmericanLastName: string | null;
   personalEmail: string | null; personalPhoneNumber: string | null; telegram: string | null; mcName: string | null; teamLead: string | null; jobTitle: string | null; submittedAt: string | null }
 export interface MemberContact { id: string; kind: 'EMAIL' | 'PHONE'; value: string; label: string | null; createdAt: string; addedBy: string | null }
-export interface MemberProfile { id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface PaperworkRow { id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; mc: string | null; team: string | null; dispatcher: string | null; personalEmail: string | null;
+  state: 'FINISHED' | 'NO_EMAIL' | 'TO_CREATE' | 'SENT' | 'OPENED' | 'IN_PROGRESS' | 'CHANGES_REQUESTED' | 'WAITING' | 'TIME_ENDED'; timeEndedAt?: string | null; returnEmail?: string | null; linkExpired: boolean; linkExpiresAt: string | null;
+  nda: { state: 'PAPER' | 'SIGNED' | 'TO_SIGN'; signedOn: string | null }; sop: { state: 'PAPER' | 'SIGNED' | 'TO_SIGN'; signedOn: string | null }; applicationId: string | null; canReview: boolean }
+export interface PaperworkList { items: PaperworkRow[]; counts: { toCreate: number; sent: number; waiting: number; finished: number } }
+/** Someone recorded by hand: what a manager recorded, and how far their paperwork has come. */
+export interface ExistingRecord { sourceName: string | null; companyEmail: string | null; ringCentralNumber: string | null; personalEmail: string | null; personalPhone: string | null; createdAt: string; acceptedAt: string | null; addedBy: string;
+  paper: { kind: string; signedOn: string; createdAt: string; recordedBy: string }[]; published: string[];
+  catchUp: { expiresAt: string; opened: boolean; started: boolean; status: string; signed: { kind: string; signedAt: string }[]; applicationId: string | null; reference: string | null; canReview: boolean; timeEndedAt?: string | null; returnEmail?: string | null } | null }
+export interface MemberProfile { existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
   accounts: { companyEmail: string | null; workPhone: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).

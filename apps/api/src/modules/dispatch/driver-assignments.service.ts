@@ -9,12 +9,12 @@ import { DispatchMember, MemberAssignment } from './dispatch.entity';
 import { day, notBefore } from './dispatch.service';
 import { ledTeams, lockTeam, onNotice } from './create-member';
 
-/** A team lead acts only inside the teams they lead; everyone else here is a dispatcher manager or administrator. */
+/** A team lead acts only inside the teams they lead; everyone else here is a dispatch manager or administrator. */
 type Scope = { teamIds: string[] } | null;
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
 
 /**
- * Cleared drivers for Dispatch: Safety clears a driver, then a dispatcher manager or administrator (anywhere) or a team lead
+ * Cleared drivers for Dispatch: Safety clears a driver, then a dispatch manager or administrator (anywhere) or a team lead
  * (inside their own teams) assigns an MC and a dispatcher working in a team under that MC, from a date, with an optional
  * truck. Changes close the open assignment and add a row, like owners and member moves. Dispatch sees only the name,
  * phone, driver type and license class, truck and Cleared status; never the application, scans, screening or clearance.

@@ -2,9 +2,10 @@ import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { AddContactDto, AssignDriverDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
+import { AddContactDto, AssignDriverDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
+import { ExistingDispatchersService } from './existing.service';
 import { PromotionsService } from './promotions.service';
 import { UpdatesModule } from '../updates/updates.module';
 import { LeavingSweeper } from './leaving-sweeper';
@@ -28,7 +29,19 @@ class DispatchController {
  @Post('members/:id/cancel-notice') cancelNotice(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NoticeActionDto) { return this.dispatch.cancelNotice(req.currentUser, id, dto); }
  @Post('members/:id/remove-access') removeAccess(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NoticeActionDto) { return this.dispatch.removeAccessNow(req.currentUser, id, dto); }
 }
-// Cleared drivers: dispatcher managers and administrators assign any of them to an MC and a dispatcher.
+// Cleared drivers: dispatch managers and administrators assign any of them to an MC and a dispatcher.
+@Controller('dispatch')
+@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
+class ExistingDispatchersController {
+ constructor(private readonly existing: ExistingDispatchersService) {}
+ @Get('existing/options') options() { return this.existing.options(); }
+ @Post('existing/check') check(@Body() dto: ExistingRowsDto) { return this.existing.check(dto.rows); }
+ @Post('existing/add') add(@Req() req: AuthRequest, @Body() dto: ExistingRowsDto) { return this.existing.add(req.currentUser, dto.rows, dto.sourceName); }
+ @Get('paperwork') paperwork(@Req() req: AuthRequest) { return this.existing.paperwork(req.currentUser); }
+ @Post('paperwork/links') links(@Req() req: AuthRequest, @Body() dto: CatchUpLinksDto) { return this.existing.links(req.currentUser, dto.memberIds); }
+ @Post('members/:id/more-time') moreTime(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.existing.moreTime(req.currentUser, id); }
+ @Patch('members/:id/existing') update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateExistingDto) { return this.existing.update(req.currentUser, id, dto); }
+}
 @Controller('dispatch/drivers')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class DispatchDriversController {
@@ -37,7 +50,7 @@ class DispatchDriversController {
  @Get('options') options() { return this.drivers.options(null); }
  @Post(':id/assign') assign(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignDriverDto) { return this.drivers.assign(req.currentUser, false, id, dto); }
 }
-// Promotion decisions for dispatcher managers and administrators.
+// Promotion decisions for dispatch managers and administrators.
 @Controller('dispatch/promotions')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class PromotionsController {
@@ -58,5 +71,5 @@ class TeamLeadController {
  @Post('promotions') async request(@Req() req: AuthRequest, @Body() dto: CreatePromotionDto) { await this.promotions.requireLead(req.currentUser); return this.promotions.request(req.currentUser, dto); }
  @Post('promotions/:id/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.promotions.cancel(req.currentUser, id); }
 }
-@Module({ imports: [UpdatesModule], controllers: [DispatchController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
+@Module({ imports: [UpdatesModule], controllers: [DispatchController, ExistingDispatchersController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, ExistingDispatchersService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
 export class DispatchModule {}

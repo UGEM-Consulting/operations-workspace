@@ -1,11 +1,51 @@
-import { Transform } from 'class-transformer';
-import { IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 const present = (_object: unknown, value: unknown) => value !== undefined;
 
+/** One person from the file or the form. Everything is text here so one bad value reports on its row, not the whole request. */
+export class ExistingRowDto {
+ @IsInt() @Min(1) row!: number;
+ @IsOptional() @IsString() @MaxLength(300) firstName?: string;
+ @IsOptional() @IsString() @MaxLength(300) lastName?: string;
+ @IsOptional() @IsString() @MaxLength(300) position?: string;
+ @IsOptional() @IsString() @MaxLength(300) mc?: string;
+ @IsOptional() @IsString() @MaxLength(300) team?: string;
+ @IsOptional() @IsString() @MaxLength(300) jobTitle?: string;
+ @IsOptional() @IsString() @MaxLength(300) startedOn?: string;
+ @IsOptional() @IsString() @MaxLength(300) companyEmail?: string;
+ @IsOptional() @IsString() @MaxLength(300) ringCentralNumber?: string;
+ @IsOptional() @IsString() @MaxLength(300) personalEmail?: string;
+ @IsOptional() @IsString() @MaxLength(300) personalPhone?: string;
+ @IsOptional() @IsString() @MaxLength(300) supports?: string;
+ // The one-person form picks the dispatcher from a list, so two people with the same name stay apart.
+ @IsOptional() @IsUUID() supportsMemberId?: string;
+ @IsOptional() @IsString() @MaxLength(300) ndaSignedOn?: string;
+ @IsOptional() @IsString() @MaxLength(300) sopSignedOn?: string;
+ @IsOptional() @IsBoolean() differentPerson?: boolean;
+}
+export class ExistingRowsDto {
+ @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => ExistingRowDto) rows!: ExistingRowDto[];
+ // The file's name for the history, when there was one. The file itself is never sent or kept.
+ @IsOptional() @IsString() @MaxLength(200) sourceName?: string;
+}
+export class CatchUpLinksDto {
+ @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100) @IsUUID(undefined, { each: true }) memberIds!: string[];
+}
+const blankOr = (_object: unknown, value: unknown) => value !== undefined && value !== '';
+/** Send only what changed; '' clears a value. */
+export class UpdateExistingDto {
+ @IsInt() @Min(1) version!: number;
+ @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) companyEmail?: string;
+ @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) ringCentralNumber?: string;
+ @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) personalEmail?: string;
+ @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) personalPhone?: string;
+ @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
+ @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
+}
 export class StatusQueryDto {
  @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
 }

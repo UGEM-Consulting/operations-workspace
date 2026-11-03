@@ -1,9 +1,9 @@
-import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -27,6 +27,33 @@ export class DispatchMember {
  @Column('integer', { default: 1 }) version!: number;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+/** Someone already working here when they were recorded: who added them and what a manager knows. acceptedAt is when their paperwork finished. */
+@Entity('existing_member_records')
+export class ExistingMemberRecord {
+ @PrimaryColumn('uuid') memberId!: string;
+ @Column('uuid') addedBy!: string;
+ @Column('varchar', { length: 200, nullable: true }) sourceName!: string | null;
+ @Column('varchar', { length: 254, nullable: true }) companyEmail!: string | null;
+ @Column('varchar', { length: 40, nullable: true }) ringCentralNumber!: string | null;
+ @Column('varchar', { length: 254, nullable: true }) personalEmail!: string | null;
+ @Column('varchar', { length: 40, nullable: true }) personalPhone!: string | null;
+ @Column('timestamptz', { nullable: true }) acceptedAt!: Date | null;
+ @Column('uuid', { nullable: true }) acceptedBy!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+/** An NDA or SOP signed on paper: the copy stays with the company; this records that it exists and who confirmed it. */
+@Entity('member_paper_documents')
+export class MemberPaperDocument {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('varchar') kind!: 'NDA' | 'SOP';
+ @Column('date') signedOn!: string;
+ @Column('uuid') recordedBy!: string;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 
 /** A team works for one MC and may have a lead, who is one of its members. */

@@ -85,6 +85,10 @@ const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, pos
 export const memberListSchema = z.looseObject({ items: z.array(memberRow) });
 const assignment = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, mcId: nullableText, mc: nullableText, teamId: nullableText, team: nullableText });
 const supportLink = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, dispatcherId: text, dispatcher: text });
+/** GET /dispatch/existing/options */
+export const existingOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text })), teams: z.array(z.looseObject({ id: text, name: text, mcId: text })), jobTitles: z.array(z.looseObject({ id: text, name: text })), dispatchers: z.array(z.looseObject({ id: text, name: text })) });
+/** GET /dispatch/paperwork */
+export const paperworkSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, state: text, nda: z.looseObject({ state: text }), sop: z.looseObject({ state: text }) })), counts: z.looseObject({ toCreate: z.number(), sent: z.number(), waiting: z.number(), finished: z.number() }) });
 /** GET /dispatch/members/:id */
 export const memberProfileSchema = z.looseObject({
   id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), joinedAt: text, leftAt: nullableText,
