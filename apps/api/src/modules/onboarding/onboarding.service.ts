@@ -1,5 +1,7 @@
 import { digest, generateVerificationCode } from './verification-code';
+import { LATIN_NAME } from '../documents/documents.dto';
 import { supportedDispatcher } from '../dispatch/create-member';
+import { NO_MC } from '../dispatch/dispatch.entity';
 import { responsibleManager } from './hand-over';
 export { digest } from './verification-code';
 import { EmailService } from '../email/email.service';
@@ -20,7 +22,7 @@ import { canAccessAssignedApplication } from '../auth/policy';
 import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsService } from '../updates/notifications.service';
-import { applicantDocuments, documentStatus } from '../documents/requirements';
+import { applicantDocuments, currentDocuments, documentStatus } from '../documents/requirements';
 type ApplicantDocuments = Awaited<ReturnType<typeof applicantDocuments>>;
 import { BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, VerifyApplicantDto } from './dto';
 export function invitationStatus(invitation: Invitation): string {
@@ -195,13 +197,19 @@ export class OnboardingService {
   // on the submitted revision so saved values remain editable until the applicant resubmits.
   // A team belongs to its MC, so correcting the MC means choosing the team again.
   const teamWithMc: RequestableItem[] = correction?.requestedFields.includes('mcName') && position !== 'SUPPORT' ? ['teamLead'] : [];
-  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...teamWithMc,...requiredApplicantFields(lastSubmission?.fields ?? {},position),...documents.missing])] : [];
+  // A document with an American name field can't be signed with one in another alphabet, so it opens for correcting however the round began.
+  // Based on the submitted revision, like the required fields above, so a name they've corrected stays editable until they resubmit.
+  const submitted = lastSubmission?.fields ?? {}, submittedAmerican = `${submitted.preferredAmericanFirstName?.trim() ?? ''} ${submitted.preferredAmericanLastName?.trim() ?? ''}`.trim();
+  const americanBlocked = !!correction && !!submitted.preferredAmericanFirstName?.trim() && !!submitted.preferredAmericanLastName?.trim() && !LATIN_NAME.test(submittedAmerican)
+   && (await currentDocuments(em)).some(doc => (doc.fields ?? []).some(field => field.kind === 'AMERICAN_NAME'));
+  const americanNames: RequestableItem[] = americanBlocked ? ['preferredAmericanFirstName','preferredAmericanLastName'] : [];
+  const effectiveCorrections: RequestableItem[] = correction ? [...new Set([...correction.requestedFields,...teamWithMc,...americanNames,...requiredApplicantFields(lastSubmission?.fields ?? {},position),...documents.missing])] : [];
   const editableFields: RequestableItem[] = correction ? effectiveCorrections : ['INVITED','DRAFT'].includes(app.status) ? [...CORRECTION_FIELDS,...(documents.required ? DOCUMENT_ITEMS : [])] : [];
   return { correction, effectiveCorrections, editableFields, documents };
  }
  /** What the manager has on file, shown to someone catching up: names only, never MC or DOT numbers. */
  private async onFile(em: EntityManager, memberId: string) {
-  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT m.name AS mc, t.name AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
+  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
    FROM dispatch_members d LEFT JOIN job_titles j ON j.id = d."jobTitleId"
    LEFT JOIN member_support_links l ON l."supportId" = d.id AND l."endedAt" IS NULL LEFT JOIN dispatch_members sd ON sd.id = l."dispatcherId"
    LEFT JOIN member_assignments a ON a."memberId" = coalesce(sd.id, d.id) AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId" WHERE d.id = $1`,[memberId]);

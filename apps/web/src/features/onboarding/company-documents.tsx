@@ -54,7 +54,7 @@ export function CompanyDocuments({ initial }: { initial: DocumentList }) {
     <span className="w-full break-all font-mono text-xs text-muted-foreground">SHA-256 {version.sha256}</span></li>)}</ol>
     : <p className="text-sm text-muted-foreground">Not published. Applicants are not asked to sign it until a version is published.</p>}</div>
   </Card>; })}
-  {publishing && placing && <FieldPlacer file={placing.file} title={placing.title} signerLabel="The new hire" countersign={!!publishingKind?.countersign} initial={publishingKind?.versions[0]?.fields ?? []} onBack={() => setPlacing(null)} onPublish={fields => send(placing.title, placing.file, fields)}/>}
+  {publishing && placing && <FieldPlacer file={placing.file} title={placing.title} signerLabel="The new hire" americanName countersign={!!publishingKind?.countersign} initial={publishingKind?.versions[0]?.fields ?? []} onBack={() => setPlacing(null)} onPublish={fields => send(placing.title, placing.file, fields)}/>}
   {publishing && !placing && <Dialog open title={`Publish ${data.kinds.find(kind => kind.kind === publishing)?.label}`} description="Upload the final PDF (3 MB maximum). It cannot be edited or deleted after publishing; upload a new version instead." onClose={() => setPublishing(null)} busy={busy}
    actions={<Button form="publish-document" type="submit">{busy ? 'Publishing…' : publishingKind?.signature ? 'Next: place the fields' : 'Publish'}</Button>}>
    <form id="publish-document" onSubmit={publish} className="space-y-4">

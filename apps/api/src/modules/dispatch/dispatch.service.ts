@@ -3,8 +3,8 @@ import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
-import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeActionDto, MoveMemberDto, ReassignSupportDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
-import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberSupportLink, PromotionRequest, Team } from './dispatch.entity';
+import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeActionDto, MoveMemberDto, PlaceMemberDto, ReassignSupportDto, StartDateDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
+import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberStartDateChange, MemberSupportLink, NO_MC, PromotionRequest, Team } from './dispatch.entity';
 import { ApplicationActivity, Invitation } from '../onboarding/entities';
 import { lockCatchUpLinks, lockTeam, onNotice, paperworkTimeEnded, supportedDispatcher } from './create-member';
 import { addDays, usDay } from '../safety/screening-rules';
@@ -103,13 +103,14 @@ export class DispatchService {
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'LEFT' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", EXISTS (SELECT 1 FROM existing_member_records e WHERE e."memberId" = d.id) AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, m.name AS mc, t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
+    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN a.id IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
+    coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
     n."lastDay"::text AS "lastDay", n."lastDay" < $2::date AS "lastDayPassed",
     CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM driver_assignments da WHERE da."memberId" = d.id AND da."endedAt" IS NULL) END AS "driversToReassign",
     CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM member_support_links ml WHERE ml."dispatcherId" = d.id AND ml."endedAt" IS NULL) END AS "supportsToReassign",
     CASE WHEN n.id IS NULL OR rm.id IS NULL THEN NULL WHEN rm."completedAt" IS NOT NULL THEN 'COMPLETED' WHEN rm."removeNowAt" IS NULL AND rm."dueOn" > $3::date THEN 'SCHEDULED' ELSE 'IN_PROGRESS' END AS "itRemoval"
-   FROM dispatch_members d LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
+   FROM dispatch_members d LEFT JOIN job_titles jt ON jt.id = d."jobTitleId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
    LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id AND l."endedAt" IS NULL AND d.position = 'SUPPORT' LIMIT 1) sl ON true
    LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = coalesce(sl."dispatcherId", d.id) ORDER BY x."startedAt" DESC, x."createdAt" DESC LIMIT 1) a ON true
@@ -179,14 +180,15 @@ export class DispatchService {
   const current = history.find((row: { endedAt: Date | null }) => row.endedAt === null) ?? null;
   // A support's dispatchers over time (the open row is now, with that dispatcher's MC and team); a dispatcher's supports now.
   const supportHistory = member.position === 'SUPPORT' ? await this.db.query(`SELECT l.id, l."startedAt", l."endedAt", l.reason, d.id AS "dispatcherId",
-    d."firstName" || ' ' || d."lastName" AS dispatcher, d.status AS "dispatcherStatus", m.name AS mc, t.name AS team,
+    d."firstName" || ' ' || d."lastName" AS dispatcher, d.status AS "dispatcherStatus", CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team,
     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
    FROM member_support_links l JOIN dispatch_members d ON d.id = l."dispatcherId" LEFT JOIN users u ON u.id = l."actorId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC`, [id]) : [];
-  const supports = member.position === 'DISPATCHER' ? await this.db.query(`SELECT s.id, s."firstName" || ' ' || s."lastName" AS name, s.status, l."startedAt" AS since
-   FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" WHERE l."dispatcherId" = $1 AND l."endedAt" IS NULL ORDER BY lower(s."firstName")`, [id]) : [];
+  const supports = member.position === 'DISPATCHER' ? await this.db.query(`SELECT s.id, s."firstName" || ' ' || s."lastName" AS name, s.status, l."startedAt" AS since,
+    coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_support_links p WHERE p."supportId" = s.id) > 1 AS "sinceKnown"
+   FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN existing_member_records e ON e."memberId" = s.id WHERE l."dispatcherId" = $1 AND l."endedAt" IS NULL ORDER BY lower(s."firstName")`, [id]) : [];
   return { id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null,
@@ -257,6 +259,69 @@ export class DispatchService {
  }
 
  /**
+  * The first MC and team of someone added with none. Nothing is being moved, so there's no reason to give and no period to end.
+  * Without a date of its own the period follows their start date: that date when it's known, otherwise marked as not recorded.
+  */
+ async placeMember(user: User, id: string, dto: PlaceMemberDto) {
+  return this.write(async em => {
+   const member = await this.lockMember(em, id, dto.version);
+   if (member.position === 'SUPPORT') throw new BadRequestException('Supports work where their dispatcher works. Change their dispatcher instead.');
+   const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
+   if (!record) throw new BadRequestException('Only someone added by hand can start with no MC.');
+   if (await em.getRepository(MemberAssignment).existsBy({ memberId: id })) throw new ConflictException('This dispatcher already has an MC. Move them instead.');
+   if (dto.mcId) await this.activeMc(em, dto.mcId);
+   const teamId = dto.mcId ? dto.teamId ?? null : null;
+   if (teamId) {
+    const team = await lockTeam(em, teamId);
+    if (!team || team.archivedAt || team.mcId !== dto.mcId) throw new BadRequestException('Choose an active team of the selected MC.');
+   }
+   const startedAt = dto.startedAt ? day(dto.startedAt) : member.joinedAt;
+   if (dto.startedAt && record.startDateKnown && startedAt.getTime() < member.joinedAt.getTime() - 36 * 3600_000) throw new BadRequestException('This can’t be before their start date.');
+   await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: 'MC and team set after they were added.', actorId: user.id });
+   record.periodDateKnown = !!dto.startedAt || record.startDateKnown;
+   await em.save(record);
+   member.version += 1; await em.save(member);
+   await this.event(em, user, 'MEMBER_PLACED', { memberId: id }, { fields: ['mcId', 'teamId'], dated: !!dto.startedAt });
+   return { id, version: member.version };
+  });
+ }
+
+ /**
+  * Adds or corrects the start date of someone added by hand. A correction needs a reason. Their first period moves with it when it
+  * has no date of its own or began on their start date; it must still begin before that period ended, so a move stays as it is.
+  */
+ async setStartDate(user: User, id: string, dto: StartDateDto) {
+  const startedAt = day(dto.startedOn);
+  if (startedAt.toISOString().slice(0, 10) !== dto.startedOn) throw new BadRequestException('Choose a valid date.');
+  if (dto.startedOn > usDay('latest')) throw new BadRequestException('The start date can’t be in the future.');
+  if (dto.startedOn < '1980-01-01') throw new BadRequestException('This start date is too long ago.');
+  return this.write(async em => {
+   const member = await this.lockMember(em, id, dto.version);
+   const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
+   if (!record) throw new BadRequestException('Only someone added by hand has a start date to change.');
+   const previousOn = record.startDateKnown ? member.joinedAt.toISOString().slice(0, 10) : null, corrected = previousOn !== null;
+   if (previousOn === dto.startedOn) return { id, version: member.version };
+   if (corrected && !dto.reason) throw new BadRequestException('Say why the start date changed.');
+   // Their first period of either kind: someone promoted began as a support, whatever they are now.
+   const link = await em.getRepository(MemberSupportLink).findOne({ where: { supportId: id }, order: { startedAt: 'ASC', createdAt: 'ASC' }, lock: { mode: 'pessimistic_write' } });
+   const placed = await em.getRepository(MemberAssignment).findOne({ where: { memberId: id }, order: { startedAt: 'ASC', createdAt: 'ASC' }, lock: { mode: 'pessimistic_write' } });
+   const first = link && placed ? (link.startedAt <= placed.startedAt ? link : placed) : link ?? placed;
+   let periodMoved = false;
+   if (first) {
+    const follows = !record.periodDateKnown || (record.startDateKnown && first.startedAt.toISOString().slice(0, 10) === previousOn);
+    if (first.endedAt && startedAt >= first.endedAt) throw new BadRequestException(`This must be before ${first.endedAt.toISOString().slice(0, 10)}, when their first period ended.`);
+    if (follows) { first.startedAt = startedAt; await em.save(first); record.periodDateKnown = true; periodMoved = true; }
+    else if (startedAt > first.startedAt) throw new BadRequestException(`This can’t be after ${first.startedAt.toISOString().slice(0, 10)}, when their first period began.`);
+   }
+   record.startDateKnown = true; await em.save(record);
+   member.joinedAt = startedAt; member.version += 1; await em.save(member);
+   await em.getRepository(MemberStartDateChange).save({ memberId: id, startedOn: dto.startedOn, previousOn, reason: corrected ? dto.reason! : null, actorId: user.id });
+   await this.event(em, user, 'START_DATE_RECORDED', { memberId: id }, { fields: ['startDate'], corrected, periodMoved });
+   return { id, version: member.version };
+  });
+ }
+
+ /**
   * Records a dispatcher's last day. Today or earlier: they leave now (drivers and supports reassigned first). A future day
   * is a notice period: they stay as they are, may be reassigned meanwhile, and the last-day job marks them as left. Someone
   * who had IT setup gets an IT removal checklist (and IT a Telegram alert) in the same transaction. The setup request is
@@ -295,7 +360,9 @@ export class DispatchService {
  /** Where they work now, for what IT sees on the removal. */
  private async place(em: EntityManager, id: string): Promise<{ mcName: string | null; teamName: string | null }> {
   const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
-  if (!current?.mcId) return { mcName: null, teamName: null };
+  // A dispatcher with no period has no MC yet, which IT mustn't read as Independent. A support's MC is their dispatcher's.
+  if (!current) { const member = await em.getRepository(DispatchMember).findOneBy({ id }); return { mcName: member?.position === 'DISPATCHER' ? NO_MC : null, teamName: null }; }
+  if (!current.mcId) return { mcName: null, teamName: null };
   const [row] = await em.query(`SELECT m.name AS mc, t.name AS team FROM mcs m LEFT JOIN teams t ON t.id = $2 WHERE m.id = $1`, [current.mcId, current.teamId]);
   return { mcName: row?.mc ?? null, teamName: row?.team ?? null };
  }
@@ -506,7 +573,7 @@ export class DispatchService {
 
  /** Someone recorded by hand: what a manager recorded, the paper copies, and how far their paperwork has come. */
  private async existingRecord(user: User, id: string) {
-  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", u."firstName" || ' ' || u."lastName" AS "addedBy"
+  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", u."firstName" || ' ' || u."lastName" AS "addedBy"
    FROM existing_member_records r JOIN users u ON u.id = r."addedBy" WHERE r."memberId" = $1`, [id]);
   if (!record) return null;
   const paper = await this.db.query(`SELECT p.kind, p."signedOn"::text AS "signedOn", p."createdAt", u."firstName" || ' ' || u."lastName" AS "recordedBy" FROM member_paper_documents p JOIN users u ON u.id = p."recordedBy" WHERE p."memberId" = $1 ORDER BY p.kind`, [id]);
@@ -515,7 +582,12 @@ export class DispatchService {
    FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id WHERE i."catchUpMemberId" = $1 AND i."revokedAt" IS NULL ORDER BY i."createdAt" DESC LIMIT 1`, [id]);
   const started = !!link?.consumedAt, mine = !!link && (user.role === Role.SYSTEM_ADMIN || link.assignedManagerId === user.id);
   const published: { kind: string }[] = await this.db.query(`SELECT DISTINCT kind FROM company_documents`);
-  return { ...record, paper, published: published.map(row => row.kind), catchUp: link ? { expiresAt: link.expiresAt, opened: !!link.openedAt, started, status: link.status, signed: link.signed,
+  // The one period with no date of its own, of either kind, so it never shows the day they were added.
+  const undated: { id: string }[] = record.periodDateKnown ? [] : await this.db.query(`SELECT id FROM (SELECT id, "startedAt", "createdAt" FROM member_support_links WHERE "supportId" = $1
+    UNION ALL SELECT id, "startedAt", "createdAt" FROM member_assignments WHERE "memberId" = $1) p ORDER BY "startedAt", "createdAt" LIMIT 1`, [id]);
+  const startDateChanges = await this.db.query(`SELECT c.id, c."startedOn"::text AS "startedOn", c."previousOn"::text AS "previousOn", c.reason, c."createdAt", u."firstName" || ' ' || u."lastName" AS "changedBy"
+   FROM member_start_date_changes c JOIN users u ON u.id = c."actorId" WHERE c."memberId" = $1 ORDER BY c."createdAt" DESC`, [id]);
+  return { ...record, paper, startDateChanges, undatedPeriodId: undated[0]?.id ?? null, published: published.map(row => row.kind), catchUp: link ? { expiresAt: link.expiresAt, opened: !!link.openedAt, started, status: link.status, signed: link.signed,
    // The reference lets someone return with a fresh code, and only their manager needs it.
    applicationId: started && mine ? link.applicationId : null, reference: started && mine ? link.applicationId : null, canReview: mine,
    timeEndedAt: paperworkTimeEnded(link) ? link.applicantAccessUntil : null, returnEmail: started && mine ? link.email : null } : null };

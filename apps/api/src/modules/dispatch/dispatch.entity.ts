@@ -1,9 +1,11 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 
+/** Shown wherever an MC goes for someone who has none yet; never the same as Independent, which means they work with no MC. */
+export const NO_MC = 'No MC yet';
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -41,8 +43,23 @@ export class ExistingMemberRecord {
  @Column('varchar', { length: 40, nullable: true }) personalPhone!: string | null;
  @Column('timestamptz', { nullable: true }) acceptedAt!: Date | null;
  @Column('uuid', { nullable: true }) acceptedBy!: string | null;
+ // False while joinedAt is only the day they were added, and while their first MC and team (or dispatcher) period has no date of its own.
+ @Column('boolean', { default: true }) startDateKnown!: boolean;
+ @Column('boolean', { default: true }) periodDateKnown!: boolean;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+/** A start date a manager added or corrected later, with the reason for a correction. */
+@Entity('member_start_date_changes')
+export class MemberStartDateChange {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('date') startedOn!: string;
+ @Column('date', { nullable: true }) previousOn!: string | null;
+ @Column('varchar', { length: 500, nullable: true }) reason!: string | null;
+ @Column('uuid') actorId!: string;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 
 /** An NDA or SOP signed on paper: the copy stays with the company; this records that it exists and who confirmed it. */

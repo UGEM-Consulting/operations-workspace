@@ -5,7 +5,11 @@ export interface TeamList { items: TeamRow[]; counts: { active: number; archived
 export interface MemberRow { addedByHand?: boolean; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   jobTitle: string | null; since: string | null; mc: string | null; teamId: string | null; team: string | null; lead: boolean; dispatcherId?: string | null; dispatcher?: string | null;
   // On notice (from an API with notice periods): the last day, whether it has passed, who still needs reassigning, IT's removal.
-  lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null }
+  lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null;
+  // Added by hand with details missing (from an API with missing details).
+  placed?: boolean; startDateKnown?: boolean; sinceKnown?: boolean }
+/** Someone here who still needs a start date or, for a dispatcher, an MC. */
+export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' && (member.startDateKnown === false || (member.position === 'DISPATCHER' && member.placed === false));
 /** "3 drivers, 1 support", for someone on notice. */
 export const toReassign = (drivers: number, supports: number) => [drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', supports ? `${supports} support${supports === 1 ? '' : 's'}` : ''].filter(Boolean).join(drivers && supports ? ', ' : '') || 'Nobody';
 export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number } }
@@ -19,6 +23,7 @@ export interface PaperworkRow { id: string; firstName: string; lastName: string;
 export interface PaperworkList { items: PaperworkRow[]; counts: { toCreate: number; sent: number; waiting: number; finished: number } }
 /** Someone recorded by hand: what a manager recorded, and how far their paperwork has come. */
 export interface ExistingRecord { sourceName: string | null; companyEmail: string | null; ringCentralNumber: string | null; personalEmail: string | null; personalPhone: string | null; createdAt: string; acceptedAt: string | null; addedBy: string;
+  startDateKnown?: boolean; periodDateKnown?: boolean; undatedPeriodId?: string | null; startDateChanges?: { id: string; startedOn: string; previousOn: string | null; reason: string | null; createdAt: string; changedBy: string }[];
   paper: { kind: string; signedOn: string; createdAt: string; recordedBy: string }[]; published: string[];
   catchUp: { expiresAt: string; opened: boolean; started: boolean; status: string; signed: { kind: string; signedAt: string }[]; applicationId: string | null; reference: string | null; canReview: boolean; timeEndedAt?: string | null; returnEmail?: string | null } | null }
 export interface MemberProfile { existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
@@ -34,7 +39,7 @@ export interface MemberProfile { existing?: ExistingRecord | null; id: string; f
   // From an API with full dispatcher details; absent on an older one.
   canOpenApplication?: boolean; details?: MemberDetails | null; documents?: { id: string; kind: string; title: string; version: number; signedAt: string }[]; photo?: boolean; idPhoto?: boolean; contacts?: MemberContact[]; activity?: { id: string; event: string; createdAt: string }[];
   // A support's dispatcher now and before (with that dispatcher's MC and team); a dispatcher's supports now.
-  supportOf?: SupportLink | null; supportHistory?: SupportLink[]; supports?: { id: string; name: string; status: MemberStatus; since: string }[] }
+  supportOf?: SupportLink | null; supportHistory?: SupportLink[]; supports?: { id: string; name: string; status: MemberStatus; since: string; sinceKnown?: boolean }[] }
 export interface SupportLink { id: string; startedAt: string; endedAt: string | null; reason: string | null; dispatcherId: string; dispatcher: string; dispatcherStatus: MemberStatus; mc: string | null; team: string | null; changedBy: string | null }
 export const statusBadge: Record<MemberStatus, { label: string; tone: 'info' | 'success' | 'neutral' }> = {
   ONBOARDING: { label: 'Onboarding', tone: 'info' }, ACTIVE: { label: 'Active', tone: 'success' }, LEFT: { label: 'Left', tone: 'neutral' } };

@@ -99,7 +99,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect(status(10).status).toBe('PROBLEM');
     expect(body.choices.find((item: Row) => item.field === 'mc')).toMatchObject({ text: 'Northwind Frieght', rows: [3, 4] });
     expect(body.choices.find((item: Row) => item.field === 'team')).toMatchObject({ text: 'Chen', mc: 'Northwind Freight', rows: [5] });
-    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0 });
+    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0 });
     expect((await db.query(`SELECT count(*)::integer AS n FROM dispatch_members`))[0].n).toBe(0);
     // Refused without saving: a row with the same email as an earlier one.
     const twice = await check([base(2, 'One', { companyEmail: 'same@example.test' }), base(3, 'Two', { companyEmail: 'SAME@example.test' })]);
@@ -118,7 +118,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect((await db.query(`SELECT count(*)::integer AS n FROM it_onboarding_requests`))[0].n).toBe(0);
     // Events hold no values.
     const [event] = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'EXISTING_ADDED' AND "memberId" = $1`, [id]);
-    expect(event.metadata).toEqual({ source: 'file', paper: 1 });
+    expect(event.metadata).toEqual({ source: 'file', paper: 1, noStartDate: false, noMc: false });
     // The same people again, however the file spells them.
     const again = await check([base(2, 'Someone', { companyEmail: 'RILEY@example.test' }), base(3, 'Else', { personalEmail: 'riley.home@example.test' }), base(4, 'Phone', { personalPhone: '(202) 555-0147' }), base(5, 'riley')]);
     expect(again.body.counts.already).toBe(4);
@@ -388,6 +388,221 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     const [removal] = await db.query(`SELECT "dueOn"::text AS "dueOn", profile FROM it_removal_requests WHERE "memberId" = $1`, [id]);
     expect(removal).toMatchObject({ dueOn: inDays(10), profile: { companyEmail: 'sky@example.test', noSetupRecord: true } });
     expect((await db.query(`SELECT kind FROM notification_deliveries`)).map((row: Row) => row.kind)).toContain('IT_REMOVAL_SCHEDULED');
+  });
+  describe('details not known yet', () => {
+    const missing = (row: number, name: string, extra: Row = {}) => base(row, name, { mc: '', team: '', startedOn: '', ...extra });
+    const page = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    const list = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as Row[];
+    const place = (id: string, version: number, body: Row, status = 201) => agents.manager.post(`/api/dispatch/members/${id}/place`).set(headers).send({ version, ...body }).expect(status);
+    const setStart = (id: string, version: number, body: Row, status = 201) => agents.manager.post(`/api/dispatch/members/${id}/start-date`).set(headers).send({ version, ...body }).expect(status);
+    const mcId = async (name: string) => (await db.query(`SELECT id FROM mcs WHERE name = $1`, [name]))[0].id as string;
+
+    it('counts rows with no start date or MC as ready, and says how many, but a date that can’t be read is still a problem', async () => {
+      const { body } = await check([missing(2, 'Blank'), base(3, 'Undated', { startedOn: '' }), missing(4, 'Typo', { startedOn: 'Marhc 2024' }), missing(5, 'Team', { team: 'Red team' }), missing(6, 'Typed', { mc: 'No MC yet' })]);
+      expect(body.rows.map((row: Row) => row.status)).toEqual(['READY', 'READY', 'PROBLEM', 'READY', 'READY']);
+      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1 });
+    });
+    it('still needs a job title for a dispatcher', async () => {
+      expect((await check([missing(2, 'Untitled', { jobTitle: '' })])).body.rows[0]).toMatchObject({ status: 'PROBLEM', problems: ['Job title is empty.'] });
+    });
+    it('lets a team bring its MC, by its name or its lead’s name, and asks about a team it can’t find', async () => {
+      const { body } = await add([missing(2, 'Teamed', { team: 'red TEAM', startedOn: '2024-03-04' })]);
+      const profile = await page(body.members[0].id);
+      expect(profile.current).toMatchObject({ mc: 'Northwind Freight', team: 'Red team' });
+      expect(profile.existing).toMatchObject({ startDateKnown: true, periodDateKnown: true });
+      await db.query(`UPDATE teams SET "leadMemberId" = $1 WHERE name = 'Red team'`, [body.members[0].id]);
+      expect((await add([missing(2, 'Led', { team: 'Teamed Fictional' })])).body.added).toBe(1);
+      const unknown = await check([missing(2, 'Lost', { team: 'Chen' })]);
+      expect(unknown.body.rows[0].status).toBe('CHOICE');
+      expect(unknown.body.choices).toEqual([{ field: 'team', text: 'Chen', rows: [2] }]);
+    });
+    it('never treats someone with no MC as Independent, and gives them no period', async () => {
+      const id = (await add([missing(2, 'Nomc')])).body.members[0].id;
+      const profile = await page(id);
+      expect(profile).toMatchObject({ status: 'ACTIVE', current: null, history: [], existing: { startDateKnown: false, periodDateKnown: true } });
+      expect((await list()).find(row => row.id === id)).toMatchObject({ placed: false, mc: 'No MC yet', startDateKnown: false });
+      const [event] = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'EXISTING_ADDED' AND "memberId" = $1`, [id]);
+      expect(event.metadata).toMatchObject({ noStartDate: true, noMc: true });
+      const solo = (await add([base(2, 'Solo', { mc: 'Independent', team: '' })])).body.members[0].id;
+      expect((await list()).find(row => row.id === solo)).toMatchObject({ placed: true, mc: null });
+    });
+    it('keeps a second upload from adding someone with no MC twice', async () => {
+      await add([missing(2, 'Nomc')]);
+      const again = await check([base(2, 'Nomc'), missing(3, 'nomc')]);
+      expect(again.body.rows.map((row: Row) => [row.status, row.sameName])).toEqual([['ALREADY', true], ['ALREADY', true]]);
+      expect((await check([base(2, 'Nomc', { differentPerson: true })])).body.rows[0].status).toBe('READY');
+      const file = await check([missing(2, 'Twice'), base(3, 'Twice', { startedOn: '' })]);
+      expect(file.body.rows[1]).toMatchObject({ status: 'PROBLEM', sameName: true });
+      expect((await check([base(2, 'Already')])).body.rows[0].status).toBe('READY');
+      await add([base(2, 'Already')]);
+      expect((await check([missing(2, 'Already')])).body.rows[0]).toMatchObject({ status: 'ALREADY', sameName: true });
+    });
+    it('sets the first MC and team without a reason, once, following the start date when it has no date', async () => {
+      const id = (await add([missing(2, 'Place')])).body.members[0].id, northwind = await mcId('Northwind Freight');
+      const [team] = await db.query(`SELECT id FROM teams WHERE name = 'Red team'`);
+      await place(id, 99, { mcId: northwind }, 409);
+      await place(id, 1, { mcId: await mcId('Lakeside Carriers'), teamId: team.id }, 400);
+      await place(id, 1, { mcId: northwind, teamId: team.id });
+      const profile = await page(id);
+      expect(profile.current).toMatchObject({ mc: 'Northwind Freight', team: 'Red team' });
+      expect(profile.existing.periodDateKnown).toBe(false);
+      expect((await list()).find(row => row.id === id)).toMatchObject({ placed: true, sinceKnown: false });
+      await place(id, profile.version, { mcId: northwind }, 409);
+      // Their start date, when found, is the first period's date too.
+      await setStart(id, profile.version, { startedOn: '2023-05-01' });
+      const dated = await page(id);
+      expect(new Date(dated.history[0].startedAt).toISOString()).toBe('2023-05-01T12:00:00.000Z');
+      expect(dated.existing).toMatchObject({ startDateKnown: true, periodDateKnown: true, startDateChanges: [{ startedOn: '2023-05-01', previousOn: null, reason: null }] });
+      const [event] = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'MEMBER_PLACED' AND "memberId" = $1`, [id]);
+      expect(event.metadata).toEqual({ fields: ['mcId', 'teamId'], dated: false });
+    });
+    it('keeps a period’s own date, and refuses a date before a known start', async () => {
+      const northwind = await mcId('Northwind Freight');
+      const known = (await add([base(2, 'Known', { mc: '', team: '' })])).body.members[0].id;
+      await place(known, 1, { mcId: northwind, startedAt: '2020-01-01' }, 400);
+      await place(known, 1, { mcId: northwind, startedAt: '2024-06-01' });
+      const profile = await page(known);
+      expect(new Date(profile.history[0].startedAt).toISOString()).toBe('2024-06-01T12:00:00.000Z');
+      expect(profile.existing.periodDateKnown).toBe(true);
+      // A start date can't then be later than when that period began.
+      await setStart(known, profile.version, { startedOn: '2025-01-01', reason: 'Payroll says so.' }, 400);
+      await setStart(known, profile.version, { startedOn: '2024-01-15', reason: 'Payroll says so.' });
+      const corrected = await page(known);
+      expect(new Date(corrected.history[0].startedAt).toISOString()).toBe('2024-06-01T12:00:00.000Z');
+      expect(new Date(corrected.joinedAt).toISOString()).toBe('2024-01-15T12:00:00.000Z');
+    });
+    it('corrects a start date with a reason, moves the first period with it, and leaves a move alone', async () => {
+      const id = await addOne('Correct');
+      let profile = await page(id);
+      await setStart(id, profile.version, { startedOn: '2024-02-19' }, 400);
+      await setStart(id, profile.version, { startedOn: '2099-01-01', reason: 'Future' }, 400);
+      await setStart(id, profile.version, { startedOn: '2024-02-30', reason: 'No such day' }, 400);
+      await setStart(id, profile.version, { startedOn: '1970-01-01', reason: 'Too long ago' }, 400);
+      await setStart(id, profile.version, { startedOn: '2024-02-19', reason: 'The file had the date of their first paycheck.' });
+      profile = await page(id);
+      expect(new Date(profile.history[0].startedAt).toISOString()).toBe('2024-02-19T12:00:00.000Z');
+      expect(profile.existing.startDateChanges[0]).toMatchObject({ startedOn: '2024-02-19', previousOn: '2024-03-04', reason: 'The file had the date of their first paycheck.' });
+      await agents.manager.post(`/api/dispatch/members/${id}/move`).set(headers).send({ version: profile.version, mcId: await mcId('Lakeside Carriers'), startedAt: '2025-06-02', reason: 'Needed there' }).expect(201);
+      profile = await page(id);
+      await setStart(id, profile.version, { startedOn: '2025-07-01', reason: 'After the move' }, 400);
+      await setStart(id, profile.version, { startedOn: '2024-01-08', reason: 'Payroll' });
+      profile = await page(id);
+      expect(profile.history.map((row: Row) => new Date(row.startedAt as string).toISOString().slice(0, 10))).toEqual(['2025-06-02', '2024-01-08']);
+      const events = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'START_DATE_RECORDED' AND "memberId" = $1`, [id]);
+      expect(JSON.stringify(events)).not.toContain('2024');
+      expect(events[0].metadata).toMatchObject({ fields: ['startDate'], corrected: true, periodMoved: true });
+    });
+    it('gives a support with no start date a date through their dispatcher link', async () => {
+      const dispatcher = (await add([missing(2, 'Lead')])).body.members[0].id;
+      const support = (await add([{ row: 2, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supportsMemberId: dispatcher }])).body.members[0].id;
+      let profile = await page(support);
+      expect(profile.supportOf).toMatchObject({ dispatcher: 'Lead Fictional', mc: 'No MC yet' });
+      expect(profile.existing).toMatchObject({ startDateKnown: false, periodDateKnown: false });
+      await place(support, profile.version, { mcId: await mcId('Northwind Freight') }, 400);
+      await setStart(support, profile.version, { startedOn: '2025-01-13' });
+      profile = await page(support);
+      expect(new Date(profile.supportOf.startedAt).toISOString()).toBe('2025-01-13T12:00:00.000Z');
+    });
+    it('lets someone with no MC or start date leave and get a paperwork link', async () => {
+      const id = (await add([missing(2, 'Leaver', { personalEmail: 'leaver.home@example.test' })])).body.members[0].id;
+      expect((await link(id)).url).toBeTruthy();
+      expect((await agents.manager.get('/api/dispatch/paperwork').set(headers).expect(200)).body.items.find((row: Row) => row.id === id).mc).toBe('No MC yet');
+      const profile = await page(id);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: profile.version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved away' }).expect(201);
+      const left = await page(id);
+      expect(left.status).toBe('LEFT');
+      await setStart(id, left.version, { startedOn: '2024-01-01' }, 409);
+    });
+    it('is only for someone added by hand, and only for staff who manage dispatchers', async () => {
+      await agents.it.post(`/api/dispatch/members/${randomUUID()}/place`).set(headers).send({ version: 1, mcId: null }).expect(403);
+      await agents.it.post(`/api/dispatch/members/${randomUUID()}/start-date`).set(headers).send({ version: 1, startedOn: '2024-01-01' }).expect(403);
+      const [approved] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Approved','Fictional','DISPATCHER','ACTIVE',now()) RETURNING id`);
+      await place(approved.id, 1, { mcId: null }, 400);
+      await setStart(approved.id, 1, { startedOn: '2024-01-01' }, 400);
+    });
+    it('moves a promoted support’s undated support period, not their later one', async () => {
+      const dispatcher = (await add([base(2, 'Lead')])).body.members[0].id;
+      const id = (await add([{ row: 2, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supportsMemberId: dispatcher }])).body.members[0].id;
+      const [{ id: linkId, startedAt }] = await db.query(`SELECT id, "startedAt" FROM member_support_links WHERE "supportId" = $1`, [id]);
+      expect((await page(id)).existing.undatedPeriodId).toBe(linkId);
+      // As a promotion leaves them: the support link ended, and a dispatcher period from then on.
+      const promoted = new Date(new Date(startedAt).getTime() + 3600000);
+      await db.query(`UPDATE member_support_links SET "endedAt" = $2 WHERE id = $1`, [linkId, promoted]);
+      await db.query(`UPDATE dispatch_members SET position = 'DISPATCHER' WHERE id = $1`, [id]);
+      const [{ id: placedId }] = await db.query(`INSERT INTO member_assignments ("memberId","mcId","teamId","startedAt",reason) VALUES ($1,$2,NULL,$3,'Promoted') RETURNING id`, [id, await mcId('Northwind Freight'), promoted]);
+      const before = await page(id);
+      expect(before.existing.undatedPeriodId).toBe(linkId);
+      await setStart(id, before.version, { startedOn: '2025-01-13' });
+      const [link] = await db.query(`SELECT "startedAt", "endedAt" FROM member_support_links WHERE id = $1`, [linkId]);
+      const [placed] = await db.query(`SELECT "startedAt" FROM member_assignments WHERE id = $1`, [placedId]);
+      expect(new Date(link.startedAt).toISOString()).toBe('2025-01-13T12:00:00.000Z');
+      expect(new Date(placed.startedAt).getTime()).toBe(promoted.getTime());
+      expect(new Date(link.endedAt).getTime()).toBeLessThanOrEqual(new Date(placed.startedAt).getTime());
+      expect((await page(id)).existing.undatedPeriodId).toBeNull();
+    });
+    it('doesn’t call a blank MC with an unfound team the same as Independent', async () => {
+      await add([base(2, 'Solo', { mc: 'Independent', team: '' })]);
+      const row = (await check([missing(2, 'Solo', { team: 'Chen' })])).body.rows[0];
+      expect(row).toMatchObject({ status: 'CHOICE', sameName: false });
+      const file = (await check([base(2, 'Twin', { mc: 'Independent', team: '' }), missing(3, 'Twin', { team: 'Chen' })])).body.rows;
+      expect(file[1]).toMatchObject({ status: 'CHOICE', sameName: false });
+      // Once chosen, the MC is known and the usual check applies.
+      await add([base(2, 'Chosen')]);
+      expect((await check([missing(2, 'Chosen', { team: 'Red team' })])).body.rows[0]).toMatchObject({ status: 'ALREADY', sameName: true });
+    });
+    it('settles on the team a name names, even when it is also another team’s lead', async () => {
+      const northwind = await mcId('Northwind Freight');
+      const [lead] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Red','team','DISPATCHER','ACTIVE',now()) RETURNING id`);
+      await db.query(`INSERT INTO teams (name,"nameKey","mcId","leadMemberId") VALUES ('Blue team','blue team',$1,$2)`, [northwind, lead.id]);
+      const { body } = await add([missing(2, 'Named', { team: 'Red team' })]);
+      expect((await page(body.members[0].id)).current.team).toBe('Red team');
+      const withMc = (await add([base(2, 'Withmc', { team: 'Red team' })])).body.members[0].id;
+      expect((await page(withMc)).current.team).toBe('Red team');
+    });
+    it('shows no MC to come for a support who has left, and still knows who was added by hand', async () => {
+      const dispatcher = (await add([base(2, 'Lead')])).body.members[0].id;
+      const id = (await add([{ row: 2, firstName: 'Gone', lastName: 'Fictional', position: 'Support', supportsMemberId: dispatcher, startedOn: '2024-03-04' }])).body.members[0].id;
+      expect((await list()).find(row => row.id === id)).toMatchObject({ addedByHand: true, mc: 'Northwind Freight' });
+      const profile = await page(id);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: profile.version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved away' }).expect(201);
+      expect((await list()).find(row => row.id === id)).toMatchObject({ placed: false, mc: null, addedByHand: true });
+      const [approved] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Approved','Fictional','DISPATCHER','ACTIVE',now()) RETURNING id`);
+      expect((await list()).find(row => row.id === approved.id)).toMatchObject({ addedByHand: false });
+    });
+    it('tells IT someone had no MC yet, not that they were Independent', async () => {
+      const nomc = (await add([missing(2, 'Nomc', { companyEmail: 'nomc@example.test' })])).body.members[0].id, solo = (await add([base(2, 'Solo', { mc: 'Independent', team: '' })])).body.members[0].id;
+      for (const id of [nomc, solo]) { const { version } = await page(id); await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved away' }).expect(201); }
+      const profile = async (id: string) => (await db.query(`SELECT profile FROM it_removal_requests WHERE "memberId" = $1`, [id]))[0].profile;
+      expect((await profile(nomc)).mcName).toBe('No MC yet');
+      expect((await profile(solo)).mcName).toBeNull();
+    });
+    it('makes a promotion choose an MC when the dispatcher has none, and hides an unrecorded date from the team lead', async () => {
+      const [mc] = [await mcId('Northwind Freight')];
+      const placedLead = (await add([base(2, 'Lead')])).body.members[0].id, unplaced = (await add([missing(2, 'Unplaced')])).body.members[0].id;
+      const support = (await add([{ row: 2, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supportsMemberId: unplaced }])).body.members[0].id;
+      await db.query(`INSERT INTO promotion_requests ("supportId","requestedBy",reason) VALUES ($1,$2,'Ready')`, [support, users.manager.id]);
+      const rows = (await agents.manager.get('/api/dispatch/promotions').set(headers).expect(200)).body.items;
+      expect(rows[0]).toMatchObject({ supportId: support, dispatcherPlaced: false, mcId: null });
+      // The team lead's page: a support linked to a dispatcher in their team, added with no date.
+      const undated = (await add([{ row: 2, firstName: 'Undated', lastName: 'Fictional', position: 'Support', supportsMemberId: placedLead }])).body.members[0].id;
+      const dated = (await add([{ row: 2, firstName: 'Dated', lastName: 'Fictional', position: 'Support', supportsMemberId: placedLead, startedOn: '2024-03-04' }])).body.members[0].id;
+      const lead = await db.getRepository(User).save({ firstName: 'Fictional', lastName: 'Lead', email: 'existing.lead@example.test', role: Role.TEAM_LEAD, status: UserStatus.ACTIVE, passwordHash: await hashPassword(password) });
+      await db.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [lead.id, placedLead]);
+      await db.query(`UPDATE teams SET "leadMemberId" = $1 WHERE "mcId" = $2`, [placedLead, mc]);
+      const agent = request.agent(app.getHttpServer());
+      await agent.post('/api/auth/login').set(headers).send({ email: lead.email, password }).expect(200);
+      const team = (await agent.get('/api/team').set(headers).expect(200)).body;
+      const supports = team.teams.flatMap((item: { supports?: Row[]; members?: { supports?: Row[] }[] }) => item.supports ?? item.members?.flatMap(row => row.supports ?? []) ?? []).concat(team.supports ?? []);
+      expect(supports.find((row: Row) => row.id === undated)).toMatchObject({ sinceKnown: false });
+      expect(supports.find((row: Row) => row.id === dated)).toMatchObject({ sinceKnown: true });
+    });
+    it('refuses a rollback while missing details or their history are kept', async () => {
+      await add([missing(2, 'Kept')]);
+      const runner = db.createQueryRunner();
+      const { MissingDetails1792980000000: Migration } = await import('../src/database/migrations/1792980000000-MissingDetails');
+      await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard missing details or start date history');
+      await runner.release();
+    });
   });
   it('refuses a rollback while existing records are kept', async () => {
     await addOne('Riley');

@@ -34,8 +34,9 @@ export class PromotionsService {
    FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" JOIN teams t ON t.id = a."teamId" LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
    WHERE a."teamId" = ANY($1) AND a."endedAt" IS NULL AND d.status <> 'LEFT' AND d.position = 'DISPATCHER' ORDER BY lower(d."firstName"), lower(d."lastName")`, [ids]) : [];
   const supports = dispatchers.length ? await this.db.query(`SELECT s.id, ${name('s')} AS name, s.status, l."dispatcherId", l."startedAt" AS since,
+    coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_support_links x WHERE x."supportId" = s.id) > 1 AS "sinceKnown",
     (SELECT json_build_object('id', p.id, 'createdAt', p."createdAt") FROM promotion_requests p WHERE p."supportId" = s.id AND p.status = 'PENDING') AS pending
-   FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId"
+   FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN existing_member_records e ON e."memberId" = s.id
    WHERE l."dispatcherId" = ANY($1) AND l."endedAt" IS NULL AND s.status <> 'LEFT' ORDER BY lower(s."firstName")`, [dispatchers.map((row: { id: string }) => row.id)]) : [];
   // Only for people still in their teams: a support assisting one of their dispatchers, or a promoted support now one.
   const requests = ids.length ? await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p."createdAt", p."decidedAt", ${name('s')} AS support
@@ -74,7 +75,7 @@ export class PromotionsService {
  async list(status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED' | 'ALL' = 'ALL') {
   const items = await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p.version, p."createdAt", p."decidedAt", p."itRequestId",
     s.id AS "supportId", ${name('s')} AS support, d.id AS "dispatcherId", ${name('d')} AS dispatcher,
-    m.id AS "mcId", m.name AS mc, t.id AS "teamId", t.name AS team,
+    m.id AS "mcId", m.name AS mc, a.id IS NOT NULL AS "dispatcherPlaced", t.id AS "teamId", t.name AS team,
     CASE WHEN r.id IS NULL THEN NULL ELSE ${name('r')} END AS "requestedBy", CASE WHEN x.id IS NULL THEN NULL ELSE ${name('x')} END AS "decidedBy"
    FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId"
    LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = s.id ORDER BY l."startedAt" DESC LIMIT 1) l ON true

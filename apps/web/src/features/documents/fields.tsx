@@ -2,16 +2,17 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
-export type FieldKind = 'SIGNATURE' | 'NAME' | 'DATE' | 'DAY' | 'MONTH' | 'YEAR' | 'TITLE';
+export type FieldKind = 'SIGNATURE' | 'NAME' | 'AMERICAN_NAME' | 'DATE' | 'DAY' | 'MONTH' | 'YEAR' | 'TITLE';
 export type FieldSigner = 'SIGNER' | 'COMPANY';
 /** A place to fill in, as fractions of the page as shown, from its top left. */
 export interface DocumentField { page: number; x: number; y: number; width: number; height: number; kind: FieldKind; signer: FieldSigner }
 
 // The date on a form is the day it was signed in the US Eastern zone, the same rule as the API's copies.
 const part = (at: Date, options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', ...options }).format(at);
-export function fieldText(kind: FieldKind, values: { name?: string; title?: string; at: Date }): string {
+export function fieldText(kind: FieldKind, values: { name?: string; american?: string; title?: string; at: Date }): string {
   switch (kind) {
     case 'NAME': return values.name ?? '';
+    case 'AMERICAN_NAME': return values.american ?? '';
     case 'TITLE': return values.title ?? '';
     case 'DATE': return part(values.at, { month: 'long', day: 'numeric', year: 'numeric' });
     case 'DAY': return part(values.at, { day: 'numeric' });
@@ -20,7 +21,7 @@ export function fieldText(kind: FieldKind, values: { name?: string; title?: stri
     default: return '';
   }
 }
-export const fieldLabels: Record<FieldKind, string> = { SIGNATURE: 'Signature', NAME: 'Full legal name', DATE: 'Date signed', DAY: 'Day', MONTH: 'Month', YEAR: 'Year (2 digits)', TITLE: 'Title' };
+export const fieldLabels: Record<FieldKind, string> = { SIGNATURE: 'Signature', NAME: 'Full legal name', AMERICAN_NAME: 'American name', DATE: 'Date signed', DAY: 'Day', MONTH: 'Month', YEAR: 'Year (2 digits)', TITLE: 'Title' };
 
 const box = (field: DocumentField): CSSProperties => ({ left: `${field.x * 100}%`, top: `${field.y * 100}%`, width: `${field.width * 100}%`, height: `${field.height * 100}%` });
 const INK = '#14215c';

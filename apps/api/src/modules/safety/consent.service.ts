@@ -42,7 +42,7 @@ export class ConsentService {
   const file = decodePdf(dto.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
   // Acknowledged forms still take a typed name; only a signed one has somewhere to sign. Nobody countersigns.
-  const fields = checkedFields(dto.fields, pageCount, { signature: CONSENT_RULES[dto.kind].signature, typedName: true, countersign: false });
+  const fields = checkedFields(dto.fields, pageCount, { signature: CONSENT_RULES[dto.kind].signature, typedName: true, countersign: false, americanName: false });
   const id = randomUUID(), stored = { id, kind: dto.kind, storageLayout: CURRENT_LAYOUT };
   await this.storage.put(driverConsentKey(stored), file, 'application/pdf');
   try {

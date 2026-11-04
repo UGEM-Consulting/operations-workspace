@@ -41,7 +41,7 @@ export class DocumentsService {
   const file = decodePdf(input.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
   // The contact list is read with one button, so nobody fills anything in on it.
-  const rules = DOCUMENT_RULES[input.kind], fields = checkedFields(input.fields,pageCount,{signature:rules.signature,typedName:rules.signature,countersign:rules.countersign});
+  const rules = DOCUMENT_RULES[input.kind], fields = checkedFields(input.fields,pageCount,{signature:rules.signature,typedName:rules.signature,countersign:rules.countersign,americanName:rules.signature});
   const id = randomUUID(), stored = {id,kind:input.kind,storageLayout:CURRENT_LAYOUT};
   await this.storage.put(documentKey(stored),file,'application/pdf');
   try {
@@ -125,13 +125,18 @@ export class DocumentsService {
   await onboardingLimit(this.db,'sign:'+applicationId,20,900);
   const image = input.signature ? decodeSignature(input.signature) : null;
   if (image) await assertSignatureEmbeds(image);
-  return this.editableTransaction(req,'documents','Documents cannot be signed now.',async em => {
+  return this.editableTransaction(req,'documents','Documents cannot be signed now.',async (em,application) => {
    const doc = (await currentDocuments(em)).find(current => current.id === documentId);
    if (!doc) throw new ConflictException('A newer version of this document was published. Reload and review it before signing.');
+   // Taken from the application here, never from the request, and kept on the signature: a blank on a signed copy can't be fixed afterward.
+   const answers = application.fields as Record<string,string|undefined>, american = `${answers.preferredAmericanFirstName?.trim() ?? ''} ${answers.preferredAmericanLastName?.trim() ?? ''}`.trim();
+   const showsAmerican = (doc.fields ?? []).some(field => field.kind === 'AMERICAN_NAME');
+   if (showsAmerican && (!answers.preferredAmericanFirstName?.trim() || !answers.preferredAmericanLastName?.trim())) throw new BadRequestException('Add your American name in Personal information first.');
+   if (showsAmerican && !LATIN_NAME.test(american)) throw new BadRequestException('Your American name needs Latin letters. Correct it in Personal information first.');
    if (DOCUMENT_RULES[doc.kind].signature && !image) throw new BadRequestException('Draw your signature.');
    if (!(await em.getRepository(DocumentView).existsBy({applicationId,documentId}))) throw new BadRequestException('Open and read the full document before signing. If you already opened it, reload this page and open it again.');
    if (await em.getRepository(DocumentSignature).existsBy({applicationId,documentId,signerRole:'APPLICANT'})) throw new ConflictException('You have already signed this document.');
-   await em.getRepository(DocumentSignature).insert({applicationId,documentId,signerRole:'APPLICANT',signerUserId:null,typedName:input.typedName,
+   await em.getRepository(DocumentSignature).insert({applicationId,documentId,signerRole:'APPLICANT',signerUserId:null,typedName:input.typedName,signerAmericanName:showsAmerican ? american : null,
     signatureImage:DOCUMENT_RULES[doc.kind].signature ? image : null,signatureMethod:DOCUMENT_RULES[doc.kind].signature ? input.signatureMethod ?? 'DRAWN' : null,consent:ESIGN_CONSENT,...applicantStatement(doc),documentSha256:doc.sha256,...client});
    return DOCUMENT_RULES[doc.kind].signature ? 'DOCUMENT_SIGNED' : 'DOCUMENT_ACKNOWLEDGED';
   });

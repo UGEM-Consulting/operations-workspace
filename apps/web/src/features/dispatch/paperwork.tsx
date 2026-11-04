@@ -95,11 +95,12 @@ export function PaperworkTable({ list, search }: { list: PaperworkList; search: 
 }
 
 /** The dispatcher's page, for someone added by hand: create their link. */
-export function CatchUpButton({ member }: { member: MemberProfile }) {
+/** Creates someone's catch-up link from a button or a menu item: what to call it, how to start it, and the result to show. */
+export function useCatchUpLink(member: MemberProfile) {
   const router = useRouter(), links = useLinks();
-  return <><Button disabled={links.busy} onClick={() => void links.create([member.id])}><Link2 aria-hidden="true" className="size-4" />{links.busy ? 'Creating…' : member.existing?.catchUp && !member.existing.catchUp.started ? 'Create a new link' : 'Create catch-up link'}</Button>
-    {links.error && <span role="alert" className="text-[13px] text-danger">{links.error}</span>}
-    {links.results && <LinksDialog results={links.results} onClose={() => { links.setResults(null); router.refresh(); }} />}</>;
+  return { label: links.busy ? 'Creating…' : member.existing?.catchUp && !member.existing.catchUp.started ? 'Create a new link' : 'Create catch-up link', busy: links.busy, create: () => void links.create([member.id]),
+    result: <>{links.error && <span role="alert" className="text-[13px] text-danger">{links.error}</span>}
+      {links.results && <LinksDialog results={links.results} onClose={() => { links.setResults(null); router.refresh(); }} />}</> };
 }
 
 /** Someone who started and ran out of time. The workspace doesn't message them, so the manager tells them. */
