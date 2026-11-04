@@ -1,5 +1,6 @@
 export interface EmploymentAssignments { mcName: string; teamLead: string; jobTitle: string; }
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import type { SupportType } from '../dispatch/dispatch.entity';
 export const APPLICATION_STATUSES = ['INVITED', 'DRAFT', 'SUBMITTED', 'CHANGES_REQUESTED', 'RESUBMITTED', 'APPROVED', 'REJECTED'] as const;
 export type ApplicationStatus = typeof APPLICATION_STATUSES[number];
 export const CORRECTION_FIELDS = ['firstName', 'lastName', 'personalPhoneNumber', 'workPhoneNumber', 'preferredAmericanFirstName', 'preferredAmericanLastName', 'telegram', 'mcName', 'teamLead', 'jobTitle'] as const;
@@ -24,6 +25,8 @@ export class Invitation {
  // DISPATCHER (default) or SUPPORT, who assists one dispatcher (the manager's choice, confirmed at approval).
  @Column('varchar', { default: 'DISPATCHER' }) position!: 'DISPATCHER' | 'SUPPORT';
  @Column('uuid', { nullable: true }) supportsMemberId!: string | null;
+ // What someone with position SUPPORT is called: SUPPORT or UPDATER. The manager's choice, confirmed at approval.
+ @Column('varchar', { default: 'SUPPORT' }) supportType!: SupportType;
  // A catch-up link: this is someone already working here, bringing their paperwork up to date. Never an application for a job.
  @Column('uuid', { nullable: true }) catchUpMemberId!: string | null;
  @Column() telegramRequired!: boolean;

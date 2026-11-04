@@ -3,7 +3,7 @@ import { EntityManager, IsNull } from 'typeorm';
 import type { ApplicationFields, DispatcherApplication } from '../onboarding/entities';
 import { EmploymentAssignments } from '../onboarding/entities';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
-import { DispatchMember, MemberAssignment, MemberSupportLink, Team } from './dispatch.entity';
+import { DispatchMember, MemberAssignment, MemberSupportLink, Team, SupportType } from './dispatch.entity';
 
 /**
  * Called only inside the approval transaction: the approved dispatcher becomes a member record (no login), ONBOARDING
@@ -80,12 +80,12 @@ export async function supportedDispatcher(em: EntityManager, id: string) {
  * Called only inside the approval transaction for a support invitation: the support becomes an ACTIVE member record
  * (no IT setup) linked to the dispatcher they assist. Supports have no MC, team or job title of their own.
  */
-export async function createSupportForApproval(em: EntityManager, application: DispatcherApplication, fields: ApplicationFields, dispatcherId: string, approvedAt: Date) {
+export async function createSupportForApproval(em: EntityManager, application: DispatcherApplication, fields: ApplicationFields, dispatcherId: string, approvedAt: Date, supportType: SupportType = 'SUPPORT') {
  await supportedDispatcher(em, dispatcherId);
  const first = fields.preferredAmericanFirstName?.trim() || fields.firstName?.trim() || 'Support';
  const last = fields.preferredAmericanLastName?.trim() || fields.lastName?.trim() || '';
  const member = await em.getRepository(DispatchMember).save({ applicationId: application.id, firstName: first.slice(0, 100), lastName: last.slice(0, 100),
-  position: 'SUPPORT', status: 'ACTIVE', jobTitleId: null, joinedAt: approvedAt });
+  position: 'SUPPORT', supportType, status: 'ACTIVE', jobTitleId: null, joinedAt: approvedAt });
  await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
  return member;
 }

@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
+import { SUPPORT_TYPES, type SupportType } from './dispatch.entity';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 const present = (_object: unknown, value: unknown) => value !== undefined;
@@ -81,6 +82,11 @@ export class StartDateDto {
  @IsInt() @Min(1) version!: number;
  @Matches(/^\d{4}-\d{2}-\d{2}$/) startedOn!: string;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
+/** What a support is called: only the name changes. */
+export class SupportTypeDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(SUPPORT_TYPES) supportType!: SupportType;
 }
 export class ReassignSupportDto {
  @IsInt() @Min(1) version!: number;

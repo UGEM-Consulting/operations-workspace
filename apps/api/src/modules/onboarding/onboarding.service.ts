@@ -57,8 +57,9 @@ export class OnboardingService {
  async create(user: User, input: CreateInvitationDto) {
   if (input.email && this.fictionalOnly && !input.email.endsWith('@example.test')) throw new BadRequestException('Outside production, invitations accept only fictional example.test addresses.');
   const support = input.position === 'SUPPORT';
-  if (support && !input.supportsMemberId) throw new BadRequestException('Choose the dispatcher this support will assist.');
+  if (support && !input.supportsMemberId) throw new BadRequestException(`Choose the dispatcher this ${input.supportType === 'UPDATER' ? 'updater' : 'support'} will assist.`);
   if (!support && input.supportsMemberId) throw new BadRequestException('Only a support invitation names a dispatcher.');
+  if (!support && input.supportType) throw new BadRequestException('Only a support invitation says support or updater.');
   if (support && (input.mcName || input.teamLead || input.jobTitle)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
   if (input.managerId && input.managerId !== user.id && user.role !== Role.SYSTEM_ADMIN) throw new ForbiddenException('Only administrators create invitations for another manager.');
   await this.limit('create:'+user.id,30);
@@ -67,7 +68,7 @@ export class OnboardingService {
    if (support) await supportedDispatcher(em, input.supportsMemberId!);
    const manager = input.managerId ? (await responsibleManager(em, input.managerId)).id : user.id;
    const inv = await em.getRepository(Invitation).save({ email: null, expectedEmail: input.email ?? null, mcName: input.mcName ?? null, teamLead: input.teamLead ?? null, jobTitle: input.jobTitle ?? null,
-    position: support ? 'SUPPORT' : 'DISPATCHER', supportsMemberId: support ? input.supportsMemberId! : null,
+    position: support ? 'SUPPORT' : 'DISPATCHER', supportsMemberId: support ? input.supportsMemberId! : null, supportType: input.supportType ?? 'SUPPORT',
     telegramRequired: input.telegramRequired, managerId: manager, tokenHash: digest(token), expiresAt: new Date(Date.now()+input.expirationDays*86400000) });
    await em.getRepository(DispatcherApplication).save({ invitationId: inv.id, assignedManagerId: manager, status: 'INVITED', fields: support ? {} : {mcName:input.mcName ?? '',teamLead:input.teamLead ?? '',jobTitle:input.jobTitle ?? 'Dispatcher'}, applicantAccessUntil: inv.expiresAt });
    await this.activity(em,inv.id,'INVITATION_CREATED',user.id);
@@ -82,8 +83,11 @@ export class OnboardingService {
   const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? { catchUpMemberId: IsNull() } : { managerId: user.id, catchUpMemberId: IsNull() }, order: { createdAt: 'DESC' }, take: 200 });
   // A support invitation shows the dispatcher they will assist.
   const ids = [...new Set(rows.map(row => row.supportsMemberId).filter((id): id is string => !!id))];
+  // Once someone is a member, what they're called is on their record: a change or a promotion never reaches the invitation.
+  const members: { invitationId: string; position: string; supportType: string }[] = rows.length ? await this.db.query(`SELECT a."invitationId", d.position, d."supportType" FROM dispatcher_applications a JOIN dispatch_members d ON d."applicationId" = a.id WHERE a."invitationId" = ANY($1)`, [rows.map(row => row.id)]) : [];
+  const memberOf = new Map(members.map(({ invitationId, position, supportType }) => [invitationId, { position, supportType }]));
   const names: Record<string,string> = ids.length ? Object.fromEntries((await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name FROM dispatch_members WHERE id = ANY($1)`, [ids])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
-  return rows.map(row => ({ ...row, status: invitationStatus(row), supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null }));
+  return rows.map(row => ({ ...row, status: invitationStatus(row), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null }));
  }
  async revoke(user: User, id: string) {
   await this.db.transaction(async em => {
@@ -222,7 +226,7 @@ export class OnboardingService {
   const { correction, effectiveCorrections, editableFields } = await this.editable(em,app,documents,askedAs(inv));
   // Explicit projection: no internal review comments, reviewer identity or histories to applicants.
   return { application:{id:app.id,invitationId:app.invitationId,status:app.status,fields:app.fields,version:app.version,updatedAt:app.updatedAt,submittedAt:app.submittedAt},
-   invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired,position:inv.position,catchUp:inv.catchUpMemberId?await this.onFile(em,inv.catchUpMemberId):null},
+   invitation:{id:inv.id,email:inv.email,mcName:inv.mcName,teamLead:inv.teamLead,jobTitle:inv.jobTitle,telegramRequired:inv.telegramRequired,position:inv.position,supportType:inv.supportType,catchUp:inv.catchUpMemberId?await this.onFile(em,inv.catchUpMemberId):null},
    correction:correction ? {id:correction.id,reason:correction.reason,requestedFields:effectiveCorrections,createdAt:correction.createdAt} : null,
    editableFields, canEdit:editableFields.length>0, accessUntil:app.applicantAccessUntil, documents,
    // The choices for the employment step; a support has none, and neither does a closed application.

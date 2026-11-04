@@ -4,8 +4,11 @@ import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn
 export const NO_MC = 'No MC yet';
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
+/** Two names for one position: a support or an updater is tied to one dispatcher and treated alike. Only what they're called differs. */
+export const SUPPORT_TYPES = ['SUPPORT', 'UPDATER'] as const;
+export type SupportType = typeof SUPPORT_TYPES[number];
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -18,6 +21,7 @@ export class DispatchMember {
  @Column('varchar', { length: 100 }) firstName!: string;
  @Column('varchar', { length: 100 }) lastName!: string;
  @Column('varchar', { default: 'DISPATCHER' }) position!: Position;
+ @Column('varchar', { default: 'SUPPORT' }) supportType!: SupportType;
  @Column('varchar', { default: 'ACTIVE' }) status!: MemberStatus;
  @Column('uuid', { nullable: true }) jobTitleId!: string | null;
  // The team lead's sign-in account, when this dispatcher has one (at most one record per account).

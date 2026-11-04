@@ -97,11 +97,13 @@ export class ReviewService {
   // Active list entries for the approval pickers. The decision still carries the chosen names as text, so an older web
   // client without pickers keeps working, and approval matches the text back to these entries.
   const support=invitation.position==='SUPPORT'&&!catchUp;
+  // Once someone is a member, what they're called is on their record: a change or a promotion never reaches the invitation.
+  const [member]:{position:string;supportType:string}[]=await this.db.query('SELECT position,"supportType" FROM dispatch_members WHERE "applicationId"=$1',[application.id]);
   const employmentOptions=canReview&&!support&&!catchUp?await this.employmentOptions():null;
   // A support's dispatcher, and the dispatchers a manager may pick instead while deciding.
-  const supports=support?{supportsMemberId:invitation.supportsMemberId,options:await this.dispatcherOptions(invitation.supportsMemberId)}:null;
+  const supports=support?{supportsMemberId:invitation.supportsMemberId,supportType:invitation.supportType,options:await this.dispatcherOptions(invitation.supportsMemberId)}:null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
-  return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, submissions, activity,
+  return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, member:member??null, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
    // The responsible manager sees the company accounts IT created; never IT notes or verification metadata.
    itOnboarding:itRequest?{id:itRequest.id,status:itStatus(itRequest,itTasks),completedAt:itRequest.completedAt,cancelledAt:itRequest.cancelledAt,companyEmail:itRequest.companyEmail,workPhoneNumber:itRequest.assignedRingCentralPhoneNumber}:null,
@@ -183,6 +185,7 @@ export class ReviewService {
    const support = invitation.position === 'SUPPORT' && !catchUpMemberId;
    if (support && (input.employment || input.employmentConfirmed)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
    if (!support && input.supportsMemberId) throw new BadRequestException('Only a support is approved with a dispatcher.');
+   if (input.supportType && (!support || input.decisionType !== 'APPROVE')) throw new BadRequestException('Support or updater is confirmed when approving a support.');
    if (input.supportsMemberId && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher is confirmed during approval.');
    if (!support && !catchUpMemberId && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
@@ -234,8 +237,9 @@ export class ReviewService {
     const dispatcherId=input.supportsMemberId??invitation.supportsMemberId;
     if(!dispatcherId)throw new BadRequestException('Choose the dispatcher this support will assist.');
     await supportedDispatcher(em,dispatcherId);
-    if(dispatcherId!==invitation.supportsMemberId){invitation.supportsMemberId=dispatcherId;await em.save(invitation);}
-    await createSupportForApproval(em,application,submitted?.fields??{},dispatcherId,review.createdAt);
+    const supportType=input.supportType??invitation.supportType;
+    if(dispatcherId!==invitation.supportsMemberId||supportType!==invitation.supportType){invitation.supportsMemberId=dispatcherId;invitation.supportType=supportType;await em.save(invitation);}
+    await createSupportForApproval(em,application,submitted?.fields??{},dispatcherId,review.createdAt,supportType);
    }
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});

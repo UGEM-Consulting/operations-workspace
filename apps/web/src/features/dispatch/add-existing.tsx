@@ -16,10 +16,11 @@ import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow } from './existing-csv';
+import { supportName } from './types';
 
 export interface ExistingOptions { mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
 type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
-interface Checked { rows: { row: number; name: string; position: string; status: Status; problems: string[]; sameName: boolean }[]; choices: { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number } }
+interface Checked { rows: { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean }[]; choices: { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number } }
 interface Added { added: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
 const STEPS = ['Upload the file', 'Check the rows', 'Add dispatchers'];
 const key = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -110,7 +111,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
     {lookAt.length > 0 && <Card><CardHeader title="Rows to look at" actions={<Button size="sm" variant="outline" onClick={() => download('rows-to-correct.csv', existingCsv(leftOut))}><Download aria-hidden="true" className="size-4" />Download these rows</Button>} />
       <Table className="mt-3 border-t border-border" caption="Rows with a problem or already recorded" rows={lookAt} rowKey={row => String(row.row)} columns={[
         { key: 'row', label: 'Row', nowrap: true, cell: row => row.row },
-        { key: 'person', label: 'Person', primary: true, cell: row => <Person name={row.name || 'No name'} secondary={row.position === 'SUPPORT' ? 'Support' : 'Dispatcher'} /> },
+        { key: 'person', label: 'Person', primary: true, cell: row => <Person name={row.name || 'No name'} secondary={row.position === 'SUPPORT' ? supportName(row) : 'Dispatcher'} /> },
         { key: 'why', label: 'What’s wrong', cell: row => <>{row.problems.join(' ')}{row.sameName && <Button size="sm" variant="ghost" className="ml-1" disabled={busy} onClick={() => void check(rows.map(item => item.row === row.row ? { ...item, differentPerson: true } : item))}>They’re different people</Button>}</> },
         { key: 'status', label: 'Status', cell: row => <Badge label={labels[row.status]} tone={tones[row.status]} /> }]} /></Card>}
     {(checked.counts.choice > 0 || checked.counts.problem > 0) && <Alert tone="info" title="You don’t have to fix everything now"><p>You can add the rows that are ready, then correct the others and upload them again. A row already added shows as Already here.</p></Alert>}
@@ -136,7 +137,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
           <Button variant="outline" onClick={() => download('existing-dispatchers-template.csv', TEMPLATE)}><Download aria-hidden="true" className="size-4" />Download template</Button>
         </CardBody></Card>
       <Card><CardHeader title="What goes in the file" /><CardBody className="space-y-3">
-        <DescriptionList layout="rows" items={[{ label: 'Name', value: 'First and last name, as they use it at work' }, { label: 'Position', value: 'Dispatcher or Support' }, { label: 'Where they work', value: 'Job title, and MC and team if you know them. A team brings its MC. A support names their dispatcher instead' },
+        <DescriptionList layout="rows" items={[{ label: 'Name', value: 'First and last name, as they use it at work' }, { label: 'Position', value: 'Dispatcher, Support or Updater' }, { label: 'Where they work', value: 'Job title, and MC and team if you know them. A team brings its MC. A support or updater names their dispatcher instead' },
           { label: 'Started on', value: 'Their start date here, if you know it. You can add it on their page later' }, { label: 'Accounts', value: 'Company email and RingCentral number, if you know them' }, { label: 'Contact', value: 'Personal email and phone, if you know them. The catch-up link needs the email' },
           { label: 'NDA and SOP', value: 'The date signed on paper. Leave it empty and they sign in the workspace' }]} />
         <p className="text-[13px] text-muted-foreground">No SSNs, ID numbers, birth dates or pay.</p></CardBody></Card>
@@ -148,7 +149,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
 /** One person at a time, with the same rules as the file. */
 function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClose: () => void; onAdded: (id: string) => void }) {
   const [position, setPosition] = useState('Dispatcher'), [mc, setMc] = useState(''), [nda, setNda] = useState('SIGN'), [sop, setSop] = useState('SIGN'), [busy, setBusy] = useState(false), [error, setError] = useState(''), [sameName, setSameName] = useState(false);
-  const chosenMc = options.mcs.find(item => item.name === mc), support = position === 'Support';
+  const chosenMc = options.mcs.find(item => item.name === mc), support = position !== 'Dispatcher';
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
@@ -168,8 +169,8 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
     actions={<Button form="add-existing" type="submit" disabled={busy}><Plus aria-hidden="true" className="size-4" />{busy ? 'Adding…' : 'Add dispatcher'}</Button>}>
     <form id="add-existing" onSubmit={submit} className="space-y-5"><fieldset disabled={busy} className="min-w-0 space-y-5">
       <div className="grid gap-4 sm:grid-cols-2"><Input name="firstName" label="First name" hint="As they use it at work." required maxLength={100} width="full" /><Input name="lastName" label="Last name" hint="As they use it at work." required maxLength={100} width="full" /></div>
-      <div className="grid gap-4 sm:grid-cols-2"><Select name="position" label="Position" value={position} onChange={event => setPosition(event.target.value)} options={['Dispatcher', 'Support']} width="full" /><Input name="startedOn" label="Started on" optional type="date" width="full" hint="If you don’t know it, add it on their page later." /></div>
-      {support ? <Select name="supports" label="Dispatcher they assist" required placeholder="Choose a dispatcher" width="full" options={options.dispatchers.map(item => ({ value: item.id, label: item.mc ? `${item.name} · ${item.mc}` : item.name }))} hint="Supports work where their dispatcher works." />
+      <div className="grid gap-4 sm:grid-cols-2"><Select name="position" label="Position" value={position} onChange={event => setPosition(event.target.value)} options={['Dispatcher', 'Support', 'Updater']} width="full" /><Input name="startedOn" label="Started on" optional type="date" width="full" hint="If you don’t know it, add it on their page later." /></div>
+      {support ? <Select name="supports" label="Dispatcher they assist" required placeholder="Choose a dispatcher" width="full" options={options.dispatchers.map(item => ({ value: item.id, label: item.mc ? `${item.name} · ${item.mc}` : item.name }))} hint="They work where their dispatcher works." />
         : <><div className="grid gap-4 sm:grid-cols-2"><Select name="mc" label="MC" required value={mc} placeholder="Choose an MC" width="full" onChange={event => setMc(event.target.value)} options={[{ value: INDEPENDENT, label: INDEPENDENT }, { value: NO_MC, label: NO_MC }, ...options.mcs.map(item => ({ value: item.name, label: item.name }))]} />
           <Select name="team" label="Team" width="full" placeholder={mc === INDEPENDENT ? 'Independent has no team' : mc === NO_MC ? 'Set with their MC later' : mc ? 'No team yet' : 'Choose an MC first'} disabled={!chosenMc} options={options.teams.filter(item => item.mcId === chosenMc?.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))} /></div>
           <Select name="jobTitle" label="Job title" required placeholder="Choose a job title" options={options.jobTitles.map(item => ({ value: item.name, label: item.name }))} /></>}

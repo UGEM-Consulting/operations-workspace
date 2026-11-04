@@ -20,6 +20,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { INVITATION_DEFAULTS } from '@/lib/navigation';
 import { Invitation, readApi, type DispatcherOption } from './types';
 import { EmploymentPicker, type Employment, type EmploymentOptions } from './employment-picker';
+import { supportName, supportWord } from '@/features/dispatch/types';
 const NO_EMPLOYMENT: Employment = { mcName: '', teamLead: '', jobTitle: '' };
 const PATH='/onboarding/invitations';
 // Invitation states in the manager's words; the badges use the same labels as the tabs.
@@ -42,7 +43,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
  const [pending,setPending]=useState<'create'|'revoke'|null>(null),[error,setError]=useState('');
  const [url,setUrl]=useState(''),[linkId,setLinkId]=useState(''),[linkOpen,setLinkOpen]=useState(false),[copied,setCopied]=useState(false),[copyMessage,setCopyMessage]=useState('');
  const [revoking,setRevoking]=useState<Invitation|null>(null),[revokeError,setRevokeError]=useState('');
- const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'>('DISPATCHER'),[supportsId,setSupportsId]=useState(''),[managerId,setManagerId]=useState('');
+ const [position,setPosition]=useState<'DISPATCHER'|'SUPPORT'|'UPDATER'>('DISPATCHER'),[supportsId,setSupportsId]=useState(''),[managerId,setManagerId]=useState('');
  const [optionsOpen,setOptionsOpen]=useState(false),[employment,setEmployment]=useState<Employment>(NO_EMPLOYMENT),[email,setEmail]=useState(''),[days,setDays]=useState(7),[linkDays,setLinkDays]=useState(7);
  useEffect(()=>{if(!url||copied)return;const warn=(event:BeforeUnloadEvent)=>event.preventDefault();window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[url,copied]);
  // Sidebar, breadcrumb and notification links navigate inside the app, which beforeunload never sees: the shell asks this guard.
@@ -57,9 +58,9 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
   setPending('create');setError('');
   try {
    // A support names the dispatcher they will assist and has no employment of their own; a dispatcher sends no position, as before.
-   const support=withOptions&&position==='SUPPORT';
-   if(support&&!supportsId){toast({tone:'danger',title:'Choose a dispatcher',description:'Pick the dispatcher this support will assist.'});setPending(null);return;}
-   const assignments=support?{position:'SUPPORT',supportsMemberId:supportsId}:withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
+   const support=withOptions&&position!=='DISPATCHER';
+   if(support&&!supportsId){toast({tone:'danger',title:'Choose a dispatcher',description:`Pick the dispatcher this ${supportWord({supportType:position})} will assist.`});setPending(null);return;}
+   const assignments=support?{position:'SUPPORT',supportsMemberId:supportsId,...(position==='UPDATER'?{supportType:'UPDATER'}:{})}:withOptions?Object.fromEntries(Object.entries(employment).filter(([,value])=>value)):{};
    // Only another manager is sent, so an older API (which refuses the field) still creates the administrator's own invitations.
    const result=await mutate<{id:string;url:string}>('onboarding/invitations','POST',{...(withOptions&&email.trim()?{email:email.trim()}:{}),...assignments,...(withOptions&&managerId?{managerId}:{}),expirationDays:expiry});
    setUrl(result.url);setLinkId(result.id);setLinkDays(expiry);setCopied(false);setCopyMessage('');setOptionsOpen(false);setEmail('');setEmployment(NO_EMPLOYMENT);setPosition('DISPATCHER');setSupportsId('');setManagerId('');setLinkOpen(true);
@@ -87,7 +88,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
    <Table caption="Invitations in your scope" className="border-t border-border" rows={visible} rowKey={row=>row.id} columns={[
     {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<Person name={row.email} secondary="Verified email" avatar={false}/>
      :<Person name={row.status==='PENDING'?'Not opened yet':'Not claimed yet'} secondary={row.expectedEmail?`For ${row.expectedEmail}`:'Anyone with the link'} avatar={false}/>},
-    {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>row.position==='SUPPORT'?`Support for ${row.supports?.name??'a dispatcher'}`:[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||'Applicant provides'},
+    {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>(row.member??row).position==='SUPPORT'?`${supportName(row.member??row)} for ${row.supports?.name??'a dispatcher'}`:[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||(row.member?'Dispatcher':'Applicant provides')},
     {key:'status',label:'Status',cell:row=><InvitationBadge status={row.status}/>},
     {key:'created',label:'Created',nowrap:true,muted:true,hideBelow:'lg',cell:row=><LocalTime iso={row.createdAt} format="date"/>},
     {key:'expires',label:'Expires',nowrap:true,muted:true,hideBelow:'md',cell:row=>row.status==='COMPLETED'?'Used':<LocalTime iso={row.expiresAt} format="date"/>},
@@ -103,9 +104,9 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
      options={[{value:'',label:`Me (${me||'you'})`},...managers.map(manager=>({value:manager.id,label:manager.name}))]}
      hint={managerId?`Shown to administrators only. ${managers.find(manager=>manager.id===managerId)?.name} reviews the application and gets the setup notice.`:'Shown to administrators only. The responsible manager reviews the application and gets the setup notice.'}/>}
     <Input label="Applicant’s personal email" optional name="expectedEmail" type="email" value={email} onChange={event=>setEmail(event.target.value)} maxLength={254} placeholder="name@example.com" hint="If you add one, only that person can use the link. Otherwise the first applicant to verify their email claims it." width="full"/>
-    {dispatchers&&<Select label="Position" name="position" value={position} onChange={event=>setPosition(event.target.value as 'DISPATCHER'|'SUPPORT')} width="sm"
-     options={[{value:'DISPATCHER',label:'Dispatcher'},{value:'SUPPORT',label:'Support (updater)'}]} hint={position==='SUPPORT'?'Supports assist one dispatcher. They skip the employment questions and need no IT setup.':undefined}/>}
-    {dispatchers&&position==='SUPPORT'&&<Select label="Supports" name="supportsMemberId" value={supportsId} onChange={event=>setSupportsId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
+    {dispatchers&&<Select label="Position" name="position" value={position} onChange={event=>setPosition(event.target.value as 'DISPATCHER'|'SUPPORT'|'UPDATER')} width="full"
+     options={[{value:'DISPATCHER',label:'Dispatcher'},{value:'SUPPORT',label:'Support'},{value:'UPDATER',label:'Updater'}]} hint={position==='DISPATCHER'?undefined:`${supportName({supportType:position})}s assist one dispatcher. They skip the employment questions and need no IT setup.`}/>}
+    {dispatchers&&position!=='DISPATCHER'&&<Select label="Dispatcher they assist" name="supportsMemberId" value={supportsId} onChange={event=>setSupportsId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
      options={dispatchers.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')}))} hint={dispatchers.length?undefined:'There are no dispatcher records yet.'}/>}
     {options&&position==='DISPATCHER'&&<fieldset className="space-y-3 border-t border-border pt-4"><legend className="float-left mb-1 w-full text-sm font-medium">Employment</legend>
      <p className="text-[13px] leading-5 text-muted-foreground">Pre-fills the applicant’s answers. You confirm them again at approval.</p>

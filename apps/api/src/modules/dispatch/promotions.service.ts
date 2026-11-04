@@ -33,7 +33,7 @@ export class PromotionsService {
   const dispatchers = ids.length ? await this.db.query(`SELECT d.id, ${name('d')} AS name, d.status, a."teamId", jt.name AS "jobTitle", (t."leadMemberId" = d.id) AS lead
    FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" JOIN teams t ON t.id = a."teamId" LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
    WHERE a."teamId" = ANY($1) AND a."endedAt" IS NULL AND d.status <> 'LEFT' AND d.position = 'DISPATCHER' ORDER BY lower(d."firstName"), lower(d."lastName")`, [ids]) : [];
-  const supports = dispatchers.length ? await this.db.query(`SELECT s.id, ${name('s')} AS name, s.status, l."dispatcherId", l."startedAt" AS since,
+  const supports = dispatchers.length ? await this.db.query(`SELECT s.id, ${name('s')} AS name, s."supportType", s.status, l."dispatcherId", l."startedAt" AS since,
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_support_links x WHERE x."supportId" = s.id) > 1 AS "sinceKnown",
     (SELECT json_build_object('id', p.id, 'createdAt', p."createdAt") FROM promotion_requests p WHERE p."supportId" = s.id AND p.status = 'PENDING') AS pending
    FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN existing_member_records e ON e."memberId" = s.id
@@ -49,8 +49,8 @@ export class PromotionsService {
  async request(user: User, dto: CreatePromotionDto) {
   return this.write(async em => {
    const support = await this.supportInScope(em, user, dto.supportId);
-   if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support can be promoted.');
-   if (await onNotice(em, dto.supportId)) throw new ConflictException('This support is leaving, so they can’t be promoted.');
+   if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support or updater can be promoted.');
+   if (await onNotice(em, dto.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted.');
    const request = await em.getRepository(PromotionRequest).save({ supportId: dto.supportId, requestedBy: user.id, reason: dto.reason });
    await this.event(em, user, 'PROMOTION_REQUESTED', dto.supportId, { requestId: request.id });
    return { id: request.id };
@@ -74,7 +74,7 @@ export class PromotionsService {
 
  async list(status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED' | 'ALL' = 'ALL') {
   const items = await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p.version, p."createdAt", p."decidedAt", p."itRequestId",
-    s.id AS "supportId", ${name('s')} AS support, d.id AS "dispatcherId", ${name('d')} AS dispatcher,
+    s.id AS "supportId", ${name('s')} AS support, s."supportType", d.id AS "dispatcherId", ${name('d')} AS dispatcher,
     m.id AS "mcId", m.name AS mc, a.id IS NOT NULL AS "dispatcherPlaced", t.id AS "teamId", t.name AS team,
     CASE WHEN r.id IS NULL THEN NULL ELSE ${name('r')} END AS "requestedBy", CASE WHEN x.id IS NULL THEN NULL ELSE ${name('x')} END AS "decidedBy"
    FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId"
@@ -103,7 +103,7 @@ export class PromotionsService {
    const request = await em.getRepository(PromotionRequest).findOneOrFail({ where: { id }, lock: { mode: 'pessimistic_write' } });
    if (request.version !== dto.version) throw new ConflictException('Someone else changed this request. Reload and try again.');
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
-   if (dto.decision !== 'DECLINE' && await onNotice(em, request.supportId)) throw new ConflictException('This support is leaving, so they can’t be promoted. Cancel their notice first.');
+   if (dto.decision !== 'DECLINE' && await onNotice(em, request.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted. Cancel their notice first.');
    const now = new Date();
    if (dto.decision === 'DECLINE') {
     if (!dto.note?.trim()) throw new BadRequestException('Say why the request is declined.');
@@ -112,8 +112,8 @@ export class PromotionsService {
     await this.event(em, user, 'PROMOTION_DECLINED', request.supportId, { requestId: id });
     return { id, status: request.status };
    }
-   if (!support || support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('This person is no longer an active support.');
-   if (!support.applicationId) throw new ConflictException('Promotion needs the support’s approved application for their IT setup.');
+   if (!support || support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('This person is no longer an active support or updater.');
+   if (!support.applicationId) throw new ConflictException('Promotion needs their approved application for their IT setup.');
    // Where they will work: an active MC (or Independent, with no team), a team of that MC, and a job title.
    const mc = dto.mcId ? await em.getRepository(Mc).findOneBy({ id: dto.mcId }) : null;
    if (dto.mcId && (!mc || mc.archivedAt)) throw new BadRequestException('Choose an active MC.');
@@ -125,14 +125,14 @@ export class PromotionsService {
    // The support's own approval and latest submitted answers carry their IT profile (names, phones, personal email).
    const application = await em.getRepository(DispatcherApplication).findOneByOrFail({ id: support.applicationId });
    const approval = await em.getRepository(ApplicationReview).findOne({ where: { applicationId: application.id, decisionType: 'APPROVE' }, order: { createdAt: 'DESC' } });
-   if (!approval) throw new ConflictException('Promotion needs the support’s approved application for their IT setup.');
+   if (!approval) throw new ConflictException('Promotion needs their approved application for their IT setup.');
    const invitation = await em.getRepository(Invitation).findOneByOrFail({ id: application.invitationId });
    const submitted = await em.getRepository(ApplicationSubmission).findOne({ where: { applicationId: application.id }, order: { version: 'DESC' } });
    const link = await em.getRepository(MemberSupportLink).findOneBy({ supportId: support.id, endedAt: IsNull() });
    // Same instant for the end of the support link and the start of the dispatcher assignment (after the link began).
    const at = link && link.startedAt.getTime() >= now.getTime() ? new Date(link.startedAt.getTime() + 1) : now;
    if (link) { link.endedAt = at; await em.save(link); }
-   Object.assign(support, { position: 'DISPATCHER', status: 'ONBOARDING', jobTitleId: title.id, version: support.version + 1 });
+   Object.assign(support, { position: 'DISPATCHER', supportType: 'SUPPORT', status: 'ONBOARDING', jobTitleId: title.id, version: support.version + 1 });
    await em.save(support);
    await em.getRepository(MemberAssignment).save({ memberId: support.id, mcId: mc?.id ?? null, teamId: team?.id ?? null, startedAt: at, reason: 'Promoted from support to dispatcher.', actorId: user.id });
    const itRequest = await createItRequest(em, application, approval, submitted?.fields ?? {}, invitation, user.id,
@@ -159,7 +159,7 @@ export class PromotionsService {
   const [support] = await em.query(`SELECT s.id, s.position, s.status, a."teamId" FROM dispatch_members s
    JOIN member_support_links l ON l."supportId" = s.id AND l."endedAt" IS NULL
    LEFT JOIN member_assignments a ON a."memberId" = l."dispatcherId" AND a."endedAt" IS NULL WHERE s.id = $1${lock ? ' FOR UPDATE OF s' : ''}`, [supportId]);
-  if (!support || !teams.includes(support.teamId)) throw new NotFoundException('This support isn’t in your team.');
+  if (!support || !teams.includes(support.teamId)) throw new NotFoundException('This person isn’t in your team.');
   return support as { id: string; position: string; status: string; teamId: string };
  }
 
@@ -167,7 +167,7 @@ export class PromotionsService {
   try { return await this.db.transaction(work); }
   catch (error) {
    const driver = error instanceof QueryFailedError ? error.driverError as { code?: string; constraint?: string } : null;
-   if (driver?.code === '23505' && driver.constraint === 'UQ_promotion_requests_open') throw new ConflictException('There is already an open request for this support.');
+   if (driver?.code === '23505' && driver.constraint === 'UQ_promotion_requests_open') throw new ConflictException('There is already an open request for this person.');
    if (driver?.code === '23505') throw new ConflictException('This record changed at the same time. Reload and try again.');
    throw error;
   }

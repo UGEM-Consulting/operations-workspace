@@ -604,6 +604,112 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await runner.release();
     });
   });
+  describe('support and updater', () => {
+    const page = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    const list = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as Row[];
+    const helper = (row: number, first: string, position: string) => ({ row, firstName: first, lastName: 'Fictional', position, supports: 'Lead Fictional', startedOn: '2024-03-04' });
+
+    it('takes Updater in the file, treats it as a support, and catches a typo', async () => {
+      const { body } = await check([base(2, 'Lead'), helper(3, 'Sky', 'Support'), helper(4, 'Ann', 'updater'), helper(5, 'Bo', 'Update')]);
+      expect(body.rows[1]).toMatchObject({ status: 'READY', position: 'SUPPORT', supportType: 'SUPPORT' });
+      expect(body.rows[2]).toMatchObject({ status: 'READY', position: 'SUPPORT', supportType: 'UPDATER' });
+      expect(body.rows[3]).toMatchObject({ status: 'PROBLEM', problems: ['Position “Update” should be Dispatcher, Support or Updater.'] });
+      expect((await check([{ ...helper(2, 'Mc', 'Updater'), mc: 'Northwind Freight' }])).body.rows[0].problems).toContain('An updater has no MC, team or job title of their own. Leave them empty.');
+      const added = (await add([base(2, 'Lead'), helper(3, 'Ann', 'Updater')])).body;
+      const id = added.members.find((row: Row) => row.row === 3).id;
+      const profile = await page(id);
+      expect(profile).toMatchObject({ position: 'SUPPORT', supportType: 'UPDATER', jobTitle: null, supportOf: { dispatcher: 'Lead Fictional', mc: 'Northwind Freight', team: 'Red team' }, supportTypeChanges: [] });
+      expect((await list()).find(row => row.id === id)).toMatchObject({ position: 'SUPPORT', supportType: 'UPDATER', mc: 'Northwind Freight' });
+      const lead = await page(added.members.find((row: Row) => row.row === 2).id);
+      expect(lead.supportType).toBe('SUPPORT');
+      expect(lead.supports).toMatchObject([{ id, supportType: 'UPDATER' }]);
+    });
+    it('says one thing about a position it can’t read, and offers no job title to choose', async () => {
+      const blank = await check([{ row: 2, firstName: 'Bo', lastName: 'Fictional', position: 'Update' }]);
+      expect(blank.body.rows[0]).toMatchObject({ status: 'PROBLEM', problems: ['Position “Update” should be Dispatcher, Support or Updater.'] });
+      expect(blank.body.choices.filter((item: Row) => item.field === 'jobTitle')).toEqual([]);
+      const typed = await check([{ row: 2, firstName: 'Bo', lastName: 'Fictional', position: 'Update', jobTitle: 'Nothing like it' }]);
+      expect(typed.body.rows[0].status).toBe('PROBLEM');
+      expect(typed.body.choices.filter((item: Row) => item.field === 'jobTitle')).toEqual([]);
+      // A dispatcher still needs a job title, written or left empty.
+      expect((await check([{ row: 2, firstName: 'Cy', lastName: 'Fictional', position: 'Dispatcher', mc: 'Independent' }])).body.rows[0].problems).toEqual(['Job title is empty.']);
+      expect((await check([{ row: 2, firstName: 'Di', lastName: 'Fictional', mc: 'Independent', jobTitle: 'Nothing like it' }])).body.choices).toMatchObject([{ field: 'jobTitle', text: 'Nothing like it' }]);
+    });
+    it('names an updater in what the file is told', async () => {
+      const rows = (await check([{ row: 2, firstName: 'An', lastName: 'Fictional', position: 'Updater' }, { row: 3, firstName: 'Su', lastName: 'Fictional', position: 'Support' }, helper(4, 'Lo', 'Updater')])).body.rows;
+      expect(rows[0].problems).toEqual(['An updater needs the dispatcher they assist.']);
+      expect(rows[1].problems).toEqual(['A support needs the dispatcher they assist.']);
+      expect(rows[2].problems).toEqual(['Assists “Lead Fictional”, who isn’t in this file or the workspace.']);
+    });
+    it('changes between the two without touching anything else, and keeps the change', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky', 'Support')])).body;
+      const id = added.members.find((row: Row) => row.row === 3).id, leadId = added.members.find((row: Row) => row.row === 2).id;
+      const change = (member: string, version: number, supportType: string, status = 201) => agents.manager.post(`/api/dispatch/members/${member}/support-type`).set(headers).send({ version, supportType }).expect(status);
+      await agents.it.post(`/api/dispatch/members/${id}/support-type`).set(headers).send({ version: 1, supportType: 'UPDATER' }).expect(403);
+      await change(id, 99, 'UPDATER', 409);
+      await change(id, 1, 'MANAGER', 400);
+      await change(leadId, 1, 'UPDATER', 400);
+      const before = await page(id);
+      await change(id, before.version, 'UPDATER');
+      const after = await page(id);
+      expect(after).toMatchObject({ supportType: 'UPDATER', position: 'SUPPORT', supportOf: { dispatcherId: leadId }, supportTypeChanges: [{ to: 'UPDATER' }] });
+      // Choosing what they already are changes nothing.
+      await change(id, after.version, 'UPDATER');
+      expect((await page(id)).version).toBe(after.version);
+      const [event] = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'SUPPORT_TYPE_CHANGED' AND "memberId" = $1`, [id]);
+      expect(event.metadata).toEqual({ fields: ['supportType'], to: 'UPDATER' });
+    });
+    it('invites someone as an updater, and refuses it on a dispatcher invitation', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id;
+      await agents.manager.post('/api/onboarding/invitations').set(headers).send({ supportType: 'UPDATER' }).expect(400);
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({ position: 'SUPPORT', supportType: 'UPDATER', supportsMemberId: lead }).expect(201);
+      const rows = (await agents.manager.get('/api/onboarding/invitations').set(headers).expect(200)).body as Row[];
+      expect(rows.find(row => row.id === made.body.id)).toMatchObject({ position: 'SUPPORT', supportType: 'UPDATER', member: null });
+      // Applying as a support does, with no employment questions, and what they're called can change at approval.
+      const { agent, applicationId } = await open(made.body.url, 'updater.fictional@example.test');
+      expect((await agent.get('/api/applicant/application').set(headers).expect(200)).body.invitation.supportType).toBe('UPDATER');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      const detail = (await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body;
+      expect(detail.supports).toMatchObject({ supportType: 'UPDATER', supportsMemberId: lead });
+      expect(detail.member).toBeNull();
+      const review = { version: 2, decisionType: 'APPROVE', confirmed: true, supportsMemberId: lead };
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ ...review, supportType: 'MANAGER' }).expect(400);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send(review).expect(201);
+      const member = (await list()).find(row => row.dispatcherId === lead);
+      expect(member).toMatchObject({ position: 'SUPPORT', supportType: 'UPDATER', status: 'ACTIVE', mc: 'Northwind Freight' });
+      expect((await db.query(`SELECT count(*)::integer AS n FROM it_onboarding_requests`))[0].n).toBe(0);
+      // Their record decides from here: a change shows on the application and the invitations list, and the invitation keeps what was chosen.
+      await agents.manager.post(`/api/dispatch/members/${member!.id}/support-type`).set(headers).send({ version: (member as Row).version, supportType: 'SUPPORT' }).expect(201);
+      expect((await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body).toMatchObject({ invitation: { supportType: 'UPDATER' }, member: { position: 'SUPPORT', supportType: 'SUPPORT' } });
+      const after = (await agents.manager.get('/api/onboarding/invitations').set(headers).expect(200)).body as Row[];
+      expect(after.find(row => row.id === made.body.id)).toMatchObject({ supportType: 'UPDATER', member: { position: 'SUPPORT', supportType: 'SUPPORT' } });
+    });
+    it('lets a manager change it at approval, and a promotion ends it', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id;
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({ position: 'SUPPORT', supportsMemberId: lead }).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'changed.fictional@example.test');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'REQUEST_CHANGES', reason: 'Check your phone', requestedFields: ['personalPhoneNumber'], supportType: 'UPDATER' }).expect(400);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, supportsMemberId: lead, supportType: 'UPDATER' }).expect(201);
+      const member = (await list()).find(row => row.dispatcherId === lead)!;
+      expect(member.supportType).toBe('UPDATER');
+      const [{ id: requestId }] = await db.query(`INSERT INTO promotion_requests ("supportId",reason) VALUES ($1,'Ready') RETURNING id`, [member.id]);
+      const [title] = await db.query(`SELECT id FROM job_titles LIMIT 1`);
+      await agents.manager.post(`/api/dispatch/promotions/${requestId}/decide`).set(headers).send({ version: 1, decision: 'APPROVE', mcId: null, teamId: null, jobTitleId: title.id }).expect(201);
+      expect((await page(member.id as string))).toMatchObject({ position: 'DISPATCHER', supportType: 'SUPPORT' });
+      // A person promoted to dispatcher no longer reads as an updater on what they applied through.
+      expect((await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body.member).toMatchObject({ position: 'DISPATCHER' });
+    });
+    it('refuses a rollback while there are updaters', async () => {
+      await add([base(2, 'Lead'), helper(3, 'Ann', 'Updater')]);
+      const runner = db.createQueryRunner();
+      const { SupportTypes1793000000000: Migration } = await import('../src/database/migrations/1793000000000-SupportTypes');
+      await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard updaters');
+      await runner.release();
+    });
+  });
   it('refuses a rollback while existing records are kept', async () => {
     await addOne('Riley');
     const runner = db.createQueryRunner();

@@ -17,10 +17,10 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { PROMOTION_DEFAULTS } from '@/lib/navigation';
-import type { Choice, TeamRow } from './types';
+import { aSupport, supportName, type Choice, type TeamRow } from './types';
 
 export interface PromotionRow { id: string; status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED'; reason: string; note: string | null; version: number; createdAt: string; decidedAt: string | null;
-  itRequestId: string | null; supportId: string; support: string; dispatcherId: string | null; dispatcher: string | null; mcId: string | null; mc: string | null; dispatcherPlaced?: boolean; teamId: string | null; team: string | null;
+  itRequestId: string | null; supportId: string; support: string; supportType?: string; dispatcherId: string | null; dispatcher: string | null; mcId: string | null; mc: string | null; dispatcherPlaced?: boolean; teamId: string | null; team: string | null;
   requestedBy: string | null; decidedBy: string | null }
 
 const INDEPENDENT = 'INDEPENDENT';
@@ -55,15 +55,15 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
     finally { setPending(false); }
   }
   return <div className="space-y-6">
-    <PageHeader title="Promotions" description="Team leads’ requests for a support to become a dispatcher. Approving starts their IT setup." />
+    <PageHeader title="Promotions" description="Team leads’ requests for a support or updater to become a dispatcher. Approving starts their IT setup." />
     <Card>
-      <FilterBar path="/dispatch/promotions" filters={filters} defaults={PROMOTION_DEFAULTS} searchLabel="Search support, dispatcher or team" statuses={[
+      <FilterBar path="/dispatch/promotions" filters={filters} defaults={PROMOTION_DEFAULTS} searchLabel="Search name, dispatcher or team" statuses={[
         { key: 'PENDING', label: 'Waiting', count: searched.filter(row => row.status === 'PENDING').length },
         { key: 'APPROVED', label: 'Approved', count: searched.filter(row => row.status === 'APPROVED').length },
         { key: 'DECLINED', label: 'Declined', count: searched.filter(row => row.status === 'DECLINED').length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption="Promotion requests" className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
-        { key: 'support', label: 'Support', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.supportId}`} className="block rounded-sm hover:underline"><Person name={row.support} secondary={row.dispatcher ? `Supports ${row.dispatcher}` : undefined} /></Link> },
+        { key: 'support', label: 'Person', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.supportId}`} className="block rounded-sm hover:underline"><Person name={row.support} secondary={row.dispatcher ? `${supportName(row)} for ${row.dispatcher}` : supportName(row)} /></Link> },
         { key: 'team', label: 'Team', hideBelow: 'md', cell: row => row.team ? <>{row.team}<span className="block text-[13px] text-muted-foreground">{row.mc}</span></> : <span className="text-muted-foreground">{row.mc ?? (row.dispatcherPlaced === false ? 'No MC yet' : 'Independent')}</span> },
         { key: 'reason', label: 'Why', hideBelow: 'lg', cell: row => <><p className="line-clamp-2 text-sm">{row.reason}</p><p className="text-[13px] text-muted-foreground">by {row.requestedBy ?? 'a team lead'} · <LocalTime iso={row.createdAt} format="date" /></p></> },
         { key: 'status', label: 'Status', cell: row => <StatusBadge status={row.status} /> },
@@ -75,7 +75,7 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
     </Card>
     {deciding && <Dialog open onClose={() => setDeciding(null)} busy={pending} tone={deciding.decision === 'DECLINE' ? 'danger' : undefined}
       title={deciding.decision === 'APPROVE' ? `Make ${deciding.row.support} a dispatcher` : `Decline the request for ${deciding.row.support}?`}
-      description={deciding.decision === 'APPROVE' ? 'They stop being a support, become a dispatcher in Onboarding and get an IT setup request. They become Active when IT finishes.' : 'The team lead sees your note.'}
+      description={deciding.decision === 'APPROVE' ? `They stop being ${aSupport(deciding.row)}, become a dispatcher in Onboarding and get an IT setup request. They become Active when IT finishes.` : 'The team lead sees your note.'}
       actions={<Button type="submit" form="promotion-decision" variant={deciding.decision === 'DECLINE' ? 'destructive' : 'default'}>{pending ? 'Saving…' : deciding.decision === 'APPROVE' ? 'Approve' : 'Decline'}</Button>}>
       <form id="promotion-decision" onSubmit={decide} className="space-y-4">
         <div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Why they’re ready</p><p className="mt-1 whitespace-pre-wrap text-muted-foreground">{deciding.row.reason}</p></div>

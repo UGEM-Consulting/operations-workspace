@@ -2,7 +2,7 @@ import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { PlaceMemberDto, StartDateDto, AddContactDto, AssignDriverDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
+import { PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
 import { ExistingDispatchersService } from './existing.service';
@@ -22,6 +22,7 @@ class DispatchController {
  @Post('members/:id/contacts') addContact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AddContactDto) { return this.dispatch.addContact(req.currentUser, id, dto); }
  @Post('members/:id/contacts/:contactId/remove') removeContact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('contactId', ParseUUIDPipe) contactId: string) { return this.dispatch.removeContact(req.currentUser, id, contactId); }
  @Patch('members/:id') updateMember(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateMemberDto) { return this.dispatch.updateMember(req.currentUser, id, dto); }
+ @Post('members/:id/support-type') supportType(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SupportTypeDto) { return this.dispatch.setSupportType(req.currentUser, id, dto); }
  @Post('members/:id/place') place(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: PlaceMemberDto) { return this.dispatch.placeMember(req.currentUser, id, dto); }
  @Post('members/:id/start-date') startDate(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: StartDateDto) { return this.dispatch.setStartDate(req.currentUser, id, dto); }
  @Post('members/:id/move') move(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: MoveMemberDto) { return this.dispatch.move(req.currentUser, id, dto); }
