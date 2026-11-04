@@ -18,6 +18,7 @@ import { shortName } from '@/features/documents/signed-documents';
 import { EmploymentPicker, pickedEmployment, type EmploymentOptions } from './employment-picker';
 import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments, type SupportChoice } from './types';
 import { Select } from '@/components/ui/field';
+import { supportName, supportWord } from '@/features/dispatch/types';
 type Action='APPROVE'|'REQUEST_CHANGES'|'REJECT';
 type Employment={mcName:string;teamLead:string;jobTitle:string};
 const titles:Record<Action,string>={APPROVE:'Approve application',REQUEST_CHANGES:'Request corrections',REJECT:'Reject application'};
@@ -44,12 +45,12 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
  const signedOn=signedRecord?new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'America/New_York'}).format(new Date(signedRecord.signedAt)):'';
  // The title goes on the record only when the form asked for it and the approver saw it.
  const titleAsked=!!countersign?.fields?.some(field=>field.signer==='COMPANY'&&field.kind==='TITLE');
- const [supportsId,setSupportsId]=useState(supports?.supportsMemberId??'');
+ const [supportsId,setSupportsId]=useState(supports?.supportsMemberId??''),[supportType,setSupportType]=useState<'SUPPORT'|'UPDATER'>(supports?.supportType??'SUPPORT');
  const dispatcher=supports?.options.find(option=>option.id===supportsId);
  function approve(){
   if(catchUpName){setRailError('');open('APPROVE');return;}
   if(supports){
-   if(!supportsId){setRailError('Choose the dispatcher this support will assist.');return;}
+   if(!supportsId){setRailError(`Choose the dispatcher this ${supportWord({supportType})} will assist.`);return;}
    if(!employmentConfirmed){setRailError('Confirm the dispatcher first.');return;}
    setRailError('');open('APPROVE');return;
   }
@@ -65,7 +66,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   if(action==='APPROVE'&&countersign&&!countersigned){setError('Read and countersign the NDA first.');return;}
   setBusy(true);setError('');
   try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',...(supports||catchUpName?{}:{employmentConfirmed}),
-   ...(action==='APPROVE'&&supports?{supportsMemberId:supportsId}:{}),
+   ...(action==='APPROVE'&&supports?{supportsMemberId:supportsId,...(supportType!==(supports.supportType??'SUPPORT')?{supportType}:{})}:{}),
    ...(action==='APPROVE'&&!supports&&!catchUpName?{employment:{mcName:employment.mcName.trim(),teamLead:employment.teamLead.trim(),jobTitle:employment.jobTitle.trim()}}:{}),
    ...(action==='APPROVE'&&countersign?{countersignature:{...(useSaved?{useSavedSignature:true}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method}),agreed:true,...(titleAsked&&countersignTitle.trim()?{title:countersignTitle.trim()}:{})}}:{})});
    // Only once the approval has gone through, and a failed save never affects it.
@@ -94,9 +95,10 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
      <fieldset className="space-y-4" disabled={blocked}>
       <legend className="sr-only">{supports?'The dispatcher this support assists':'Final employment assignments'}</legend>
       {supports?<>
-       <Select label="Supports" name="supportsMemberId" value={supportsId} onChange={event=>{setSupportsId(event.target.value);setEmploymentConfirmed(false);}} placeholder="Choose a dispatcher" required width="full"
+       <Select label="Position" name="supportType" value={supportType} onChange={event=>setSupportType(event.target.value as 'SUPPORT'|'UPDATER')} width="full" options={[{value:'SUPPORT',label:'Support'},{value:'UPDATER',label:'Updater'}]}/>
+       <Select label="Dispatcher they assist" name="supportsMemberId" value={supportsId} onChange={event=>{setSupportsId(event.target.value);setEmploymentConfirmed(false);}} placeholder="Choose a dispatcher" required width="full"
         options={supports.options.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')+(option.leaving?' (leaving)':option.status==='ONBOARDING'?' (onboarding)':'')}))}
-        hint="Supports work where their dispatcher works; they have no MC, team or job title of their own."/>
+        hint="They work where their dispatcher works, with no MC, team or job title of their own."/>
        <Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label="This is the dispatcher they will assist."/>
       </>:options?<EmploymentPicker options={options} original={initial} onChange={next=>{setEmployment(next);setEmploymentConfirmed(false);}} disabled={blocked}/>
        :employmentFields.map(field=><Input key={field} label={fieldLabels[field]} name={field} value={employment[field]} onChange={event=>{const value=event.target.value;setEmployment(current=>({...current,[field]:value}));setEmploymentConfirmed(false);}} required maxLength={field==='jobTitle'?100:150} width="full"/>)}
@@ -114,7 +116,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   actions={<Button form="review-decision" type="submit" variant={action==='REJECT'?'destructive':'default'}>{busy?'Recording decision…':catchUpName?(action==='APPROVE'?'Accept paperwork':'Ask for changes'):titles[action]}</Button>}>
   <form id="review-decision" onSubmit={decide} className="space-y-5">
    <PendingHint pending={busy}/>
-   {action==='APPROVE'&&supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Support for {dispatcher?.name ?? 'the chosen dispatcher'}</p><p className="mt-1 text-muted-foreground">{[dispatcher?.mc??'Independent',dispatcher?.team].filter(Boolean).join(' · ')}. No IT setup.</p></div>}
+   {action==='APPROVE'&&supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">{supportName({supportType})} for {dispatcher?.name ?? 'the chosen dispatcher'}</p><p className="mt-1 text-muted-foreground">{[dispatcher?.mc??'Independent',dispatcher?.team].filter(Boolean).join(' · ')}. No IT setup.</p></div>}
    {action==='APPROVE'&&!supports&&!catchUpName&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Final assignments</p><p className="mt-1 text-muted-foreground">{employment.mcName.trim()} · {employment.teamLead.trim()} · {employment.jobTitle.trim()}</p></div>}
    {action==='APPROVE'&&countersign&&<div className="space-y-3 rounded-md border border-border p-4"><p className="text-[15px] font-semibold">Countersign the NDA for the company</p>
     {countersigned?<p className="flex items-center gap-2 text-sm text-success"><CircleCheck aria-hidden="true" className="size-4"/>Ready. It’s added when you approve.</p>:<p className="text-sm text-muted-foreground">Read the signed {countersign.title} and sign it for UGEM.</p>}

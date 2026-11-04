@@ -14,12 +14,12 @@ import { Badge, StatusBadge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { memberBadge, type MemberStatus } from './types';
+import { memberBadge, supportName, type MemberStatus } from './types';
 
 export interface TeamView {
   teams: { id: string; name: string; mc: string }[];
   dispatchers: { id: string; name: string; status: MemberStatus; teamId: string; jobTitle: string | null; lead: boolean }[];
-  supports: { id: string; name: string; status: MemberStatus; dispatcherId: string; since: string; sinceKnown?: boolean; pending: { id: string; createdAt: string } | null }[];
+  supports: { id: string; name: string; status: MemberStatus; dispatcherId: string; since: string; sinceKnown?: boolean; supportType?: string; pending: { id: string; createdAt: string } | null }[];
   requests: { id: string; status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED'; reason: string; note: string | null; createdAt: string; decidedAt: string | null; support: string }[];
 }
 
@@ -54,7 +54,7 @@ export function MyTeam({ data }: { data: TeamView }) {
   if (!data.teams.length) return <div className="space-y-6"><PageHeader title="My team" />
     <Alert tone="info" title="No team yet"><p>Your account isn’t linked to a team you lead. Ask a dispatch manager to set you as a team’s lead.</p></Alert></div>;
   return <div className="space-y-6">
-    <PageHeader title="My team" description="Your team’s dispatchers and the supports who help them. Ask for a support to become a dispatcher when they’re ready." meta={data.teams.map(team => `${team.name} · ${team.mc}`)} />
+    <PageHeader title="My team" description="Your team’s dispatchers and the supports and updaters who help them. Ask for one to become a dispatcher when they’re ready." meta={data.teams.map(team => `${team.name} · ${team.mc}`)} />
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">
         {data.teams.map(team => <Card key={team.id}>
@@ -66,7 +66,7 @@ export function MyTeam({ data }: { data: TeamView }) {
                 <Badge {...memberBadge(dispatcher.status)} />
               </div>
               {data.supports.filter(support => support.dispatcherId === dispatcher.id).map(support => <div key={support.id} className="ml-11 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted px-3 py-2">
-                <span className="min-w-0 text-sm"><span className="font-medium">{support.name}</span><span className="block text-[13px] text-muted-foreground">Support{support.sinceKnown !== false && <> since <LocalTime iso={support.since} format="date" /></>}</span></span>
+                <span className="min-w-0 text-sm"><span className="font-medium">{support.name}</span><span className="block text-[13px] text-muted-foreground">{supportName(support)}{support.sinceKnown !== false && <> since <LocalTime iso={support.since} format="date" /></>}</span></span>
                 {support.pending ? <span className="flex items-center gap-2"><Badge label="Requested" tone="info" /><Button size="sm" variant="ghost" disabled={!!pending} onClick={() => void cancel(support.pending!.id)}>{pending === support.pending.id ? 'Cancelling…' : 'Cancel'}<span className="sr-only"> the request for {support.name}</span></Button></span>
                   : <Button size="sm" variant="outline" onClick={() => { setRequesting(support); setError(''); }}><TrendingUp aria-hidden="true" className="size-4" />Request dispatcher access<span className="sr-only"> for {support.name}</span></Button>}
               </div>)}

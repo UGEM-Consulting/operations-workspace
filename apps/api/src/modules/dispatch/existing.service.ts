@@ -14,7 +14,7 @@ import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.ent
 import { createRemoval } from '../it/removal';
 import { NotificationsService } from '../updates/notifications.service';
 import { lockCatchUpLinks, lockTeam, paperworkTimeEnded, supportedDispatcher } from './create-member';
-import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, NO_MC, Team } from './dispatch.entity';
+import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, NO_MC, Position, SupportType, Team } from './dispatch.entity';
 import { ExistingRowDto, UpdateExistingDto } from './dispatch.dto';
 
 const IMPORT_LOCK = 42002037, LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
@@ -32,6 +32,14 @@ export function fileDate(value: string): string | null {
  if (parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== date) return null;
  return parsed.toISOString().slice(0, 10);
 }
+/** The position column, read in one place. Empty means Dispatcher; anything it can't read is a problem on its row, and still counts as Dispatcher until it's corrected. */
+function readPosition(value: string): { position: Position; supportType: SupportType; known: boolean } {
+ const key = value.toLowerCase();
+ if (key === 'support' || key === 'updater') return { position: 'SUPPORT', supportType: key === 'updater' ? 'UPDATER' : 'SUPPORT', known: true };
+ return { position: 'DISPATCHER', supportType: 'SUPPORT', known: !key || key === 'dispatcher' };
+}
+const aSupport = (type: SupportType) => type === 'UPDATER' ? 'an updater' : 'a support';
+const capitalized = (text: string) => text[0].toUpperCase() + text.slice(1);
 /** A team by its own name, or failing that by its lead's: a name that matches one team and another team's lead means the team it names. */
 function matchingTeams<T extends { name: string; lead: string | null }>(teams: T[], text: string) {
  const key = listNameKey(text), named = teams.filter(item => listNameKey(item.name) === key);
@@ -41,7 +49,7 @@ function matchingTeams<T extends { name: string; lead: string | null }>(teams: T
 const midday = (date: string) => new Date(`${date}T12:00:00Z`);
 
 export type RowStatus = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
-export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; status: RowStatus; problems: string[]; sameName: boolean;
+export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; supportType: SupportType; status: RowStatus; problems: string[]; sameName: boolean;
  mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean }
 export interface Choice { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; rows: number[] }
 
@@ -101,12 +109,12 @@ export class ExistingDispatchersService {
   };
   const seenCompany = new Map<string, number>(), seenPersonal = new Map<string, number>(), seenPhone = new Map<string, number>(), seenName = new Map<string, number>(), seenAnyName = new Map<string, number>(), seenNoMc = new Map<string, number>();
   const results: RowResult[] = rows.map(row => {
-   const first = text(row.firstName), last = text(row.lastName), problems: string[] = [], position = /^support$/i.test(text(row.position)) ? 'SUPPORT' as const : 'DISPATCHER' as const;
+   const first = text(row.firstName), last = text(row.lastName), problems: string[] = [], { position, supportType, known: positionKnown } = readPosition(text(row.position));
    const name = `${first} ${last}`.trim();
    let status: RowStatus = 'READY', mcId: string | null = null, teamId: string | null = null, jobTitleId: string | null = null, already = '', sameName = false, noMc = false, mcFromTeam = false;
    if (!first || !last) problems.push('First and last name are both needed.');
    if (first.length > 100 || last.length > 100) problems.push('Names can be up to 100 characters.');
-   if (text(row.position) && !/^(dispatcher|support)$/i.test(text(row.position))) problems.push(`Position “${text(row.position)}” should be Dispatcher or Support.`);
+   if (!positionKnown) problems.push(`Position “${text(row.position)}” should be Dispatcher, Support or Updater.`);
    const started = text(row.startedOn), startedOn = started ? fileDate(started) : null;
    // An empty start date is fine: it can be added on their page later. A date that can't be read is a mistake to fix.
    if (started && !startedOn) problems.push(`Started on “${started}” isn’t a date.`);
@@ -160,8 +168,9 @@ export class ExistingDispatchersService {
     }
     if (independent && teamText && ![INDEPENDENT, NOT_LISTED_TEAM].map(listNameKey).includes(listNameKey(teamText))) problems.push('An Independent dispatcher has no team.');
     jobTitleId = known.titles.get(listNameKey(titleText)) ?? null;
-    if (!titleText) problems.push('Job title is empty.');
-    else if (!jobTitleId) choice({ field: 'jobTitle', text: titleText }, row.row);
+    // A position it can't read says so once: it may not be a dispatcher at all, so nothing is asked about a job title until it's corrected.
+    if (positionKnown && !titleText) problems.push('Job title is empty.');
+    else if (positionKnown && !jobTitleId) choice({ field: 'jobTitle', text: titleText }, row.row);
     // A blank MC with a team we can't find is still to be chosen, so it can't match anyone's MC yet: least of all Independent's, which is also blank.
     const mcPending = !named && !noMc && !mcFromTeam, mcName = independent ? null : mc?.name ?? teamMc ?? mcText, nameKey = listNameKey(name);
     // Someone with no MC yet could be anyone of that name, so setting their MC with a second upload can't add them twice.
@@ -179,14 +188,14 @@ export class ExistingDispatchersService {
      if (noMc && !seenNoMc.has(nameKey)) seenNoMc.set(nameKey, row.row);
     }
    } else {
-    if (text(row.mc) || text(row.team) || text(row.jobTitle)) problems.push('A support has no MC, team or job title of their own. Leave them empty.');
+    if (text(row.mc) || text(row.team) || text(row.jobTitle)) problems.push(`${capitalized(aSupport(supportType))} has no MC, team or job title of their own. Leave them empty.`);
     if (!already && !row.differentPerson && known.members.some(item => item.position === 'SUPPORT' && listNameKey(item.name) === listNameKey(name))) {
-     already = 'Same name as a support in the workspace. Left out unless you say they’re different people.'; sameName = true;
+     already = 'Same name as a support or updater in the workspace. Left out unless you say they’re different people.'; sameName = true;
     }
     if (name) sameInFile(`SUPPORT|${listNameKey(name)}`, 'name');
    }
    if (already) { status = 'ALREADY'; problems.unshift(already); }
-   return { row: row.row, name, position, status, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsRow: null, startedOn, noMc, mcFromTeam };
+   return { row: row.row, name, position, supportType, status, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsRow: null, startedOn, noMc, mcFromTeam };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
@@ -196,27 +205,27 @@ export class ExistingDispatchersService {
    if (result.position !== 'SUPPORT' || result.status === 'ALREADY') return;
    if (row.supportsMemberId) {
     const picked = known.members.find(item => item.id === row.supportsMemberId && item.position === 'DISPATCHER');
-    if (!picked) { result.problems.push('Choose a current dispatcher for this support.'); result.status = 'PROBLEM'; }
+    if (!picked) { result.problems.push(`Choose a current dispatcher for ${aSupport(result.supportType)}.`); result.status = 'PROBLEM'; }
     else if (picked.leaving) { result.problems.push(`“${picked.name}” is leaving. Choose another dispatcher.`); result.status = 'PROBLEM'; }
     else result.supportsMemberId = picked.id;
     return;
    }
    const wanted = listNameKey(text(row.supports));
-   if (!wanted) { result.problems.push('A support needs the dispatcher they assist.'); result.status = 'PROBLEM'; return; }
+   if (!wanted) { result.problems.push(`${capitalized(aSupport(result.supportType))} needs the dispatcher they assist.`); result.status = 'PROBLEM'; return; }
    const here = known.members.filter(item => item.position === 'DISPATCHER' && listNameKey(item.name) === wanted);
    const inFile = results.filter(item => item.position === 'DISPATCHER' && listNameKey(item.name) === wanted && item.status !== 'ALREADY');
-   if (here.length + inFile.length > 1) { result.problems.push(`More than one dispatcher is called “${text(row.supports)}”. Use Add one person for this support and choose their dispatcher from the list.`); result.status = 'PROBLEM'; }
+   if (here.length + inFile.length > 1) { result.problems.push(`More than one dispatcher is called “${text(row.supports)}”. Use Add one person for ${result.supportType === 'UPDATER' ? 'this updater' : 'this support'} and choose their dispatcher from the list.`); result.status = 'PROBLEM'; }
    else if (here[0]?.leaving) { result.problems.push(`“${text(row.supports)}” is leaving. Choose another dispatcher.`); result.status = 'PROBLEM'; }
    else if (here[0]) result.supportsMemberId = here[0].id;
    else if (inFile[0]?.status === 'READY') result.supportsRow = inFile[0].row;
    else if (inFile[0]) { result.problems.push(`“${text(row.supports)}” in row ${inFile[0].row} isn’t ready yet.`); if (result.status === 'READY') result.status = 'CHOICE'; }
-   else { result.problems.push(`Supports “${text(row.supports)}”, who isn’t in this file or the workspace.`); result.status = 'PROBLEM'; }
+   else { result.problems.push(`${result.supportType === 'UPDATER' ? 'Assists' : 'Supports'} “${text(row.supports)}”, who isn’t in this file or the workspace.`); result.status = 'PROBLEM'; }
   });
   return { results, choices: [...choices.values()] };
  }
  async check(rows: ExistingRowDto[]) {
   const { results, choices } = this.evaluate(rows, await this.known(this.db.manager));
-  return { rows: results.map(({ row, name, position, status, problems, sameName }) => ({ row, name, position, status, problems, sameName })), choices, counts: this.counts(results) };
+  return { rows: results.map(({ row, name, position, supportType, status, problems, sameName }) => ({ row, name, position, supportType, status, problems, sameName })), choices, counts: this.counts(results) };
  }
  private counts(results: RowResult[]) {
   const count = (status: RowStatus) => results.filter(row => row.status === status).length;
@@ -243,12 +252,12 @@ export class ExistingDispatchersService {
      locked.set(result.teamId, team);
     }
     const [first, ...rest] = result.name.split(' ');
-    const member = await em.getRepository(DispatchMember).save({ applicationId: null, firstName: text(row.firstName) || first, lastName: text(row.lastName) || rest.join(' '), position: result.position, status: 'ACTIVE', jobTitleId: result.jobTitleId, joinedAt: startedAt });
+    const member = await em.getRepository(DispatchMember).save({ applicationId: null, firstName: text(row.firstName) || first, lastName: text(row.lastName) || rest.join(' '), position: result.position, supportType: result.supportType, status: 'ACTIVE', jobTitleId: result.jobTitleId, joinedAt: startedAt });
     if (result.position === 'DISPATCHER') { if (hasPeriod) await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: result.mcId, teamId: result.teamId, startedAt, reason: 'Added as an existing dispatcher.', actorId: user.id }); }
     else {
      const dispatcherId = result.supportsMemberId ?? added.get(result.supportsRow!);
      if (!dispatcherId) throw new ConflictException('A dispatcher changed while this was being added. Check the rows again.');
-     await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt, reason: 'Added as an existing support.', actorId: user.id });
+     await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt, reason: result.supportType === 'UPDATER' ? 'Added as an existing updater.' : 'Added as an existing support.', actorId: user.id });
     }
     await em.getRepository(ExistingMemberRecord).save({ memberId: member.id, addedBy: user.id, sourceName: sourceName?.trim().slice(0, 200) || null,
      companyEmail: text(row.companyEmail).toLowerCase() || null, ringCentralNumber: text(row.ringCentralNumber) || null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null, startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod });
@@ -266,9 +275,9 @@ export class ExistingDispatchersService {
  }
  /** Everyone added by hand who hasn't left, with what is outstanding. */
  async paperwork(user: User) {
-  const rows: { id: string; firstName: string; lastName: string; position: string; mc: string | null; team: string | null; dispatcher: string | null; personalEmail: string | null; acceptedAt: Date | null;
+  const rows: { id: string; firstName: string; lastName: string; position: string; supportType: string; mc: string | null; team: string | null; dispatcher: string | null; personalEmail: string | null; acceptedAt: Date | null;
    paper: { kind: string; signedOn: string }[]; signed: string[]; invitationId: string | null; expiresAt: Date | null; openedAt: Date | null; consumedAt: Date | null; applicationId: string | null; applicationStatus: string | null; managerId: string | null; accessUntil: Date | null; returnEmail: string | null }[] = await this.db.query(`
-   SELECT d.id, d."firstName", d."lastName", d.position, CASE WHEN x.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
+   SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", CASE WHEN x.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
     coalesce((SELECT json_agg(json_build_object('kind', p.kind, 'signedOn', p."signedOn"::text)) FROM member_paper_documents p WHERE p."memberId" = d.id), '[]') AS paper,
     coalesce((SELECT json_agg(DISTINCT c.kind) FROM document_signatures s JOIN company_documents c ON c.id = s."documentId" WHERE s."applicationId" = a.id AND s."signerRole" = 'APPLICANT'), '[]') AS signed,
     i.id AS "invitationId", i."expiresAt", i."openedAt", i."consumedAt", a.id AS "applicationId", a.status AS "applicationStatus", a."assignedManagerId" AS "managerId", a."applicantAccessUntil" AS "accessUntil", i.email AS "returnEmail"
@@ -283,7 +292,7 @@ export class ExistingDispatchersService {
    const timeEnded = !!row.accessUntil && !!row.applicationStatus && paperworkTimeEnded({ consumedAt: row.consumedAt, status: row.applicationStatus, applicantAccessUntil: row.accessUntil });
    const state = row.acceptedAt ? 'FINISHED' : !row.invitationId || expired ? (row.personalEmail ? 'TO_CREATE' : 'NO_EMAIL') : !row.consumedAt ? (row.openedAt ? 'OPENED' : 'SENT') : timeEnded ? 'TIME_ENDED'
     : ['SUBMITTED', 'RESUBMITTED'].includes(row.applicationStatus ?? '') ? 'WAITING' : row.applicationStatus === 'CHANGES_REQUESTED' ? 'CHANGES_REQUESTED' : 'IN_PROGRESS';
-   return { id: row.id, firstName: row.firstName, lastName: row.lastName, position: row.position, mc: row.mc, team: row.team, dispatcher: row.dispatcher, personalEmail: row.personalEmail, state, linkExpired: expired,
+   return { id: row.id, firstName: row.firstName, lastName: row.lastName, position: row.position, supportType: row.supportType, mc: row.mc, team: row.team, dispatcher: row.dispatcher, personalEmail: row.personalEmail, state, linkExpired: expired,
     linkExpiresAt: row.expiresAt, nda: this.docState('NDA', row), sop: this.docState('SOP', row), applicationId: row.consumedAt && canReview ? row.applicationId : null, canReview,
     timeEndedAt: timeEnded ? row.accessUntil : null, returnEmail: row.consumedAt && canReview ? row.returnEmail : null };
   });
@@ -318,7 +327,7 @@ export class ExistingDispatchersService {
     if (user.role !== Role.SYSTEM_ADMIN && open.some(item => item.managerId !== user.id && item.expiresAt > new Date())) { refuse('Another manager has sent their link. Ask that manager or an administrator.'); continue; }
     for (const earlier of open) { earlier.revokedAt = new Date(); await em.save(earlier); await em.getRepository(ApplicationActivity).save({ invitationId: earlier.id, event: 'INVITATION_REVOKED', actorId: user.id }); }
     const token = randomBytes(32).toString('hex'), expiresAt = new Date(Date.now() + LINK_DAYS * 86400000);
-    const invitation = await em.getRepository(Invitation).save({ email: null, expectedEmail: record.personalEmail, mcName: null, teamLead: null, jobTitle: null, position: member.position, supportsMemberId: null,
+    const invitation = await em.getRepository(Invitation).save({ email: null, expectedEmail: record.personalEmail, mcName: null, teamLead: null, jobTitle: null, position: member.position, supportType: member.supportType, supportsMemberId: null,
      catchUpMemberId: memberId, telegramRequired: false, managerId: user.id, tokenHash: digest(token), expiresAt });
     await em.getRepository(DispatcherApplication).save({ invitationId: invitation.id, assignedManagerId: user.id, status: 'INVITED', applicantAccessUntil: expiresAt,
      fields: { preferredAmericanFirstName: member.firstName, preferredAmericanLastName: member.lastName, ...(record.personalPhone ? { personalPhoneNumber: record.personalPhone } : {}) } });

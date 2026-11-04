@@ -66,7 +66,7 @@ describe('offboarding and manager hand-over through the BFF', () => {
     for (const path of ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links']) { assert.equal(allowedEndpoint('POST', path), true, path); assert.equal(allowedEndpoint('DELETE', path), false, path); }
     for (const path of ['dispatch/existing/options', 'dispatch/paperwork']) assert.equal(allowedEndpoint('GET', path), false, path);
     assert.equal(allowedEndpoint('PATCH', `dispatch/members/${ID}/existing`), true);
-    for (const action of ['place', 'start-date']) { assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action); assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/${action}`), false, action); }
+    for (const action of ['place', 'start-date', 'support-type']) { assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action); assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/${action}`), false, action); }
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/more-time`), true);
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/more-time`), false);
     assert.equal(bodyLimit('dispatch/existing/add'), 1_000_000);

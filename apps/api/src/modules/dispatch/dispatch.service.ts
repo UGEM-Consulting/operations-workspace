@@ -3,7 +3,7 @@ import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
-import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeActionDto, MoveMemberDto, PlaceMemberDto, ReassignSupportDto, StartDateDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
+import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeActionDto, MoveMemberDto, PlaceMemberDto, ReassignSupportDto, StartDateDto, SupportTypeDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberStartDateChange, MemberSupportLink, NO_MC, PromotionRequest, Team } from './dispatch.entity';
 import { ApplicationActivity, Invitation } from '../onboarding/entities';
 import { lockCatchUpLinks, lockTeam, onNotice, paperworkTimeEnded, supportedDispatcher } from './create-member';
@@ -102,7 +102,7 @@ export class DispatchService {
  }
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'LEFT' | 'ALL' = 'ALL') {
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d.status, d.version, d."joinedAt", d."leftAt",
+  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", d.status, d.version, d."joinedAt", d."leftAt",
     jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN a.id IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
@@ -186,10 +186,13 @@ export class DispatchService {
    LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC`, [id]) : [];
-  const supports = member.position === 'DISPATCHER' ? await this.db.query(`SELECT s.id, s."firstName" || ' ' || s."lastName" AS name, s.status, l."startedAt" AS since,
+  const supports = member.position === 'DISPATCHER' ? await this.db.query(`SELECT s.id, s."firstName" || ' ' || s."lastName" AS name, s."supportType", s.status, l."startedAt" AS since,
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_support_links p WHERE p."supportId" = s.id) > 1 AS "sinceKnown"
    FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN existing_member_records e ON e."memberId" = s.id WHERE l."dispatcherId" = $1 AND l."endedAt" IS NULL ORDER BY lower(s."firstName")`, [id]) : [];
-  return { id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, status: member.status, version: member.version,
+  // Who changed what they're called, and when. Support or updater is no one's private detail, so the event can say which.
+  const supportTypeChanges = member.position === 'SUPPORT' ? await this.db.query(`SELECT e.id, e.metadata->>'to' AS "to", e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
+   FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event = 'SUPPORT_TYPE_CHANGED' ORDER BY e."createdAt" DESC`, [id]) : [];
+  return { id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null,
    // The onboarding record itself stays with its responsible manager and administrators.
@@ -232,7 +235,7 @@ export class DispatchService {
  async move(user: User, id: string, dto: MoveMemberDto) {
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
-   if (member.position === 'SUPPORT') throw new BadRequestException('Supports work where their dispatcher works. Change their dispatcher instead.');
+   if (member.position === 'SUPPORT') throw new BadRequestException('Supports and updaters work where their dispatcher works. Change their dispatcher instead.');
    let startedAt = day(dto.startedAt);
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
    if (dto.mcId) await this.activeMc(em, dto.mcId);
@@ -258,6 +261,18 @@ export class DispatchService {
   });
  }
 
+ /** Support or updater: only the name changes, so their dispatcher, MC and team stay as they are. */
+ async setSupportType(user: User, id: string, dto: SupportTypeDto) {
+  return this.write(async em => {
+   const member = await this.lockMember(em, id, dto.version);
+   if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support or an updater can change between the two.');
+   if (member.supportType === dto.supportType) return { id, version: member.version };
+   member.supportType = dto.supportType; member.version += 1; await em.save(member);
+   await this.event(em, user, 'SUPPORT_TYPE_CHANGED', { memberId: id }, { fields: ['supportType'], to: dto.supportType });
+   return { id, version: member.version };
+  });
+ }
+
  /**
   * The first MC and team of someone added with none. Nothing is being moved, so there's no reason to give and no period to end.
   * Without a date of its own the period follows their start date: that date when it's known, otherwise marked as not recorded.
@@ -265,7 +280,7 @@ export class DispatchService {
  async placeMember(user: User, id: string, dto: PlaceMemberDto) {
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
-   if (member.position === 'SUPPORT') throw new BadRequestException('Supports work where their dispatcher works. Change their dispatcher instead.');
+   if (member.position === 'SUPPORT') throw new BadRequestException('Supports and updaters work where their dispatcher works. Change their dispatcher instead.');
    const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
    if (!record) throw new BadRequestException('Only someone added by hand can start with no MC.');
    if (await em.getRepository(MemberAssignment).existsBy({ memberId: id })) throw new ConflictException('This dispatcher already has an MC. Move them instead.');
@@ -373,7 +388,7 @@ export class DispatchService {
  private async requireNobodyAssigned(em: EntityManager, member: DispatchMember) {
   const { supports, drivers } = await this.stillAssigned(em, member);
   // Their supports would be left assisting no one; a manager moves them to another dispatcher first.
-  if (supports) throw new ConflictException('This dispatcher still has supports. Reassign their supports to another dispatcher first.');
+  if (supports) throw new ConflictException('This dispatcher still has supports or updaters. Reassign them to another dispatcher first.');
   if (drivers) throw new ConflictException('This dispatcher still has drivers. Reassign their drivers to another dispatcher first.');
  }
  /** Ends their place in the team and marks the record as left: the same for leaving now and at the end of a notice. */
@@ -543,11 +558,11 @@ export class DispatchService {
  async reassignSupport(user: User, id: string, dto: ReassignSupportDto) {
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
-   if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support has a dispatcher to change.');
+   if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support or an updater has a dispatcher to change.');
    let startedAt = day(dto.startedAt);
    await supportedDispatcher(em, dto.dispatcherId);
    const current = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
-   if (current?.dispatcherId === dto.dispatcherId) throw new BadRequestException('The support already assists this dispatcher.');
+   if (current?.dispatcherId === dto.dispatcherId) throw new BadRequestException('They already assist this dispatcher.');
    if (current) startedAt = notBefore(startedAt, current.startedAt, 'The change can’t start before the current dispatcher did.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberSupportLink).save({ supportId: id, dispatcherId: dto.dispatcherId, startedAt, reason: dto.reason, actorId: user.id });

@@ -24,6 +24,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { PageCrumb } from '@/components/shell-context';
 import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { fieldLabels, FieldName, itemLabels, ReviewDetail } from '@/features/onboarding/types';
+import { aSupport, supportName } from '@/features/dispatch/types';
 
 export const metadata = { title: 'Application' };
 /**
@@ -97,7 +98,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  </CardBody></Card>;
 
  return <div className="space-y-6"><PageCrumb label={name}/>
-  <PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><StatusBadge status={app.status}/>{data.invitation.position==='SUPPORT'&&<Badge label="Support" tone="info"/>}</span>}
+  <PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><StatusBadge status={app.status}/>{(data.member??data.invitation).position==='SUPPORT'&&<Badge label={supportName(data.member??data.invitation)} tone="info"/>}</span>}
    meta={[<span key="ref" className="font-mono">{app.id}</span>,app.submittedAt?<>Last submitted <LocalTime iso={app.submittedAt}/></>:'Not submitted yet',...(responsible?[`Responsible manager: ${responsible}${yours?' (you)':''}`]:[])]}
    action={<span className="flex flex-wrap items-center gap-2"><CopyButton text={app.id} label="Copy reference"/>
     {data.managerOptions&&responsible&&<ChangeManager id={id} current={responsible} options={data.managerOptions} admin={identity.user.role==='SYSTEM_ADMIN'}/>}</span>}/>
@@ -109,7 +110,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
     {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">
-     <p>{data.invitation.position==='SUPPORT'?'Approving adds them as a support for the dispatcher you confirm. Supports need no IT setup.':'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>
+     <p>{data.invitation.position==='SUPPORT'?`Approving adds them as ${aSupport(data.invitation)} for the dispatcher you confirm. Supports and updaters need no IT setup.`:'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>
      <p>The applicant gets a short email or Telegram update with the outcome only; your reasons and notes are never included.</p>
     </CardBody></Card>}
    </aside>

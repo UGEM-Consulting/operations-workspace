@@ -976,6 +976,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.undoLastMigration(); // SupportTypes, with none here
     await db.undoLastMigration(); // DocumentAmericanName, with none here
     await db.undoLastMigration(); // MissingDetails, with none here
     await db.undoLastMigration(); // DocumentFields, with none placed here
@@ -1021,6 +1022,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DocumentAmericanName1792990000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SupportTypes1793000000000');
   });
 });

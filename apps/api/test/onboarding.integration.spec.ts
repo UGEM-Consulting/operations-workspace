@@ -626,7 +626,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // Requests: only for supports in the team, one open at a time; a decline needs a note.
   await teamLead.post('/api/team/promotions').set(headers).send({supportId:outsider,reason:'Not in my team'}).expect(404);
   const first=(await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Ready to dispatch on their own.'}).expect(201)).body;
-  expect((await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Again'}).expect(409)).body.message).toBe('There is already an open request for this support.');
+  expect((await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Again'}).expect(409)).body.message).toBe('There is already an open request for this person.');
   expect((await manager.get('/api/workspace/counts').set(headers).expect(200)).body.navigation.promotions).toBe(1);
   await manager.post(`/api/dispatch/promotions/${first.id}/decide`).set(headers).send({version:1,decision:'DECLINE'}).expect(400);
   await manager.post(`/api/dispatch/promotions/${first.id}/decide`).set(headers).send({version:1,decision:'DECLINE',note:'Needs another month.'}).expect(201);
@@ -635,7 +635,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const today=new Date().toISOString().slice(0,10);
   const [{version:supportVersion}]=await db.query('SELECT version FROM dispatch_members WHERE id=$1',[support.id]);
   await manager.post(`/api/dispatch/members/${support.id}/reassign`).set(headers).send({version:supportVersion,dispatcherId:outsider,startedAt:today,reason:'Covering elsewhere'}).expect(201);
-  expect((await teamLead.post(`/api/team/promotions/${second.id}/cancel`).set(headers).send({}).expect(404)).body.message).toBe('This support isn’t in your team.');
+  expect((await teamLead.post(`/api/team/promotions/${second.id}/cancel`).set(headers).send({}).expect(404)).body.message).toBe('This person isn’t in your team.');
   expect((await teamLead.get('/api/team').set(headers).expect(200)).body.requests).toEqual([]);
   await manager.post(`/api/dispatch/members/${support.id}/reassign`).set(headers).send({version:supportVersion+1,dispatcherId:helper,startedAt:today,reason:'Back with Helper'}).expect(201);
   expect((await teamLead.get('/api/team').set(headers).expect(200)).body.requests.map((row:{status:string})=>row.status)).toEqual(['PENDING','DECLINED']);

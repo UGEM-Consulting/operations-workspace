@@ -2,6 +2,7 @@ import { INTERNATIONAL_PHONE_PATTERN } from './application-requirements';
 import { VERIFICATION_CODE_PATTERN } from './verification-code';
 import { APPLICATION_STATUSES, REQUESTABLE_ITEMS, ApplicationStatus, RequestableItem, DecisionType } from './entities';
 import { CountersignatureDto } from '../documents/documents.dto';
+import { SUPPORT_TYPES, type SupportType } from '../dispatch/dispatch.entity';
 import { Type, Transform } from 'class-transformer';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, Equals, IsBoolean, IsEmail, IsInt, IsObject, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 const optional = () => ValidateIf((_object: unknown, value: unknown) => value !== undefined);
@@ -13,6 +14,7 @@ export class CreateInvitationDto {
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(100) jobTitle?: string;
  // A support skips the employment questions and has no IT setup; supportsMemberId is the dispatcher they assist.
  @optional() @IsIn(['DISPATCHER','SUPPORT']) position?: 'DISPATCHER' | 'SUPPORT';
+ @optional() @IsIn(SUPPORT_TYPES) supportType?: SupportType;
  @optional() @IsUUID() supportsMemberId?: string;
  @IsInt() @Min(1) @Max(30) expirationDays = 7;
  @IsBoolean() telegramRequired = false;
@@ -61,8 +63,9 @@ export class EmploymentAssignmentsDto {
  @trim() @IsString() @MinLength(1) @MaxLength(100) jobTitle!: string;
 }
 export class ReviewDto {
- // Approving a support: the dispatcher they assist (defaults to the one on the invitation).
+ // Approving a support: the dispatcher they assist (defaults to the one on the invitation), and what they're called.
  @optional() @IsUUID() supportsMemberId?: string;
+ @optional() @IsIn(SUPPORT_TYPES) supportType?: SupportType;
  @IsInt() @Min(0) version!: number;
  @IsIn(['APPROVE','REQUEST_CHANGES','REJECT']) decisionType!: DecisionType;
  @optional() @trim() @IsString() @MaxLength(2000) reason?: string;
