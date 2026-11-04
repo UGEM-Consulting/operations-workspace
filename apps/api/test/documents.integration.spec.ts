@@ -27,7 +27,8 @@ import { SignatureMethod1792750000000 } from '../src/database/migrations/1792750
 import { SavedStaffSignatures1792780000000 } from '../src/database/migrations/1792780000000-SavedStaffSignatures';
 import { cleanJpeg } from '../src/modules/documents/images';
 import { DocumentFields1792970000000 } from '../src/database/migrations/1792970000000-DocumentFields';
-import { fieldText, fillFields, type DocumentField } from '../src/modules/documents/fields';
+import { DocumentAmericanName1792990000000 } from '../src/database/migrations/1792990000000-DocumentAmericanName';
+import { checkedFields, fieldText, fillFields, type DocumentField } from '../src/modules/documents/fields';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 const integration=process.env.TEST_DATABASE_URL?describe:describe.skip;
 // Fictional test files: a real PDF, structurally valid JPEG photos (with fictional EXIF to strip) and PNG signatures.
@@ -218,7 +219,9 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   // Newer migrations go first, each after removing the records its rollback refuses to discard.
   const cleanup:Record<string,string>={DriverDocuments1792880000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,DriverApplications1792870000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,SafetyDrivers1792860000000:`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`,TeamLeads1792850000000:`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`,SupportMembers1792840000000:`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`,DispatcherContacts1792830000000:'TRUNCATE member_contacts',DispatchTeams1792820000000:'TRUNCATE dispatch_events',ManagedLists1792810000000:'TRUNCATE list_events',OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
-  expect(await latestMigration()).toBe('DocumentFields1792970000000');
+  expect(await latestMigration()).toBe('DocumentAmericanName1792990000000');
+  await db.undoLastMigration(); // DocumentAmericanName, with none here
+  await db.undoLastMigration(); // MissingDetails, with none here
   await db.undoLastMigration(); // DocumentFields, with none placed here
   await db.undoLastMigration(); // ExistingDispatchers, with none added here
   await db.undoLastMigration(); // DispatcherOffboarding, with nothing offboarded here
@@ -486,6 +489,95 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   // An image that fails the structural check is never decoded.
   const doc=await PDFDocument.create();doc.addPage([612,792]);
   expect(await fillFields(doc,[field(1,'SIGNATURE')],[{signerRole:'APPLICANT',typedName:'A B',signedAt:at,signatureImage:Buffer.from('not a png')}])).toBe(0);
+ });
+ describe('American name on a document',()=>{
+  const row=async(id:string)=>(await db.query(`SELECT "signerAmericanName" FROM document_signatures WHERE "applicationId"=$1 AND "signerRole"='APPLICANT'`,[id]))[0]?.signerAmericanName;
+  const sign=(agent:Agent,id:string,extra:Record<string,unknown>={})=>agent.post(`/api/applicant/documents/${id}/sign`).set(headers).send({typedName:'Fictional Applicant',consent:true,agreed:true,signature:signature(),...extra});
+  const version=async(agent:Agent)=>(await agent.get('/api/applicant/application').set(headers).expect(200)).body.application.version as number;
+  const draft=async(agent:Agent,first:string)=>{const current=await version(agent);await agent.patch('/api/applicant/draft').set(headers).send({version:current,preferredAmericanFirstName:first}).expect(200);};
+  it('is only for the new hire, and only on documents they sign',async()=>{
+   const file=await pdf(1);
+   await publish('NDA',file,[field(1,'AMERICAN_NAME','COMPANY')]).expect(400);
+   await publish('CONTACT_LIST',file,[field(1,'AMERICAN_NAME')]).expect(400);
+   expect(()=>checkedFields([field(1,'AMERICAN_NAME')],1,{signature:true,typedName:true,countersign:false,americanName:false})).toThrow('American name');
+   expect((await publish('SOP',file,[field(1,'AMERICAN_NAME')]).expect(201)).body.fields).toEqual([field(1,'AMERICAN_NAME')]);
+  },30000);
+  it('needs one before signing, takes it from the application, and keeps it when the application changes',async()=>{
+   await publish('SOP',await pdf(1),[field(1,'NAME'),field(1,'AMERICAN_NAME','SIGNER',0.6),field(1,'SIGNATURE','SIGNER',0.7)]).expect(201);
+   const {agent,id}=await applicant();
+   const doc=(await agent.get('/api/applicant/application').set(headers).expect(200)).body.documents.items.find((item:{kind:string})=>item.kind==='SOP').id;
+   await agent.post(`/api/applicant/documents/${doc}/view`).set(headers).send({}).expect(201);
+   await draft(agent,'');
+   expect((await sign(agent,doc).expect(400)).body.message).toContain('Add your American name');
+   await draft(agent,'Алекс');
+   expect((await sign(agent,doc).expect(400)).body.message).toContain('Latin letters');
+   await draft(agent,'Alex');
+   // It can't be supplied in the request.
+   await sign(agent,doc,{signerAmericanName:'Someone Else'}).expect(400);
+   await sign(agent,doc).expect(201);
+   expect(await row(id)).toBe('Alex Demo');
+   await draft(agent,'Changed');
+   expect(await row(id)).toBe('Alex Demo');
+   const copy=(await agent.get(`/api/applicant/documents/${doc}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body as Buffer;
+   const text=pdfText(copy);
+   expect(text).toContain('American name on this document, from their application: Alex Demo');
+   expect(text).not.toContain('Changed');
+  },60000);
+  it('leaves a document without the field as it was',async()=>{
+   await publish('SOP',await pdf(1),[field(1,'NAME')]).expect(201);
+   const {agent,id}=await applicant();
+   const doc=(await agent.get('/api/applicant/application').set(headers).expect(200)).body.documents.items.find((item:{kind:string})=>item.kind==='SOP').id;
+   await agent.post(`/api/applicant/documents/${doc}/view`).set(headers).send({}).expect(201);
+   await draft(agent,'');
+   await sign(agent,doc).expect(201);
+   expect(await row(id)).toBeNull();
+  },30000);
+  it('opens the American name in a correction round when a document needs it in Latin letters',async()=>{
+   await publish('NDA',await pdf(1)).expect(201);await publish('SOP',await pdf(1)).expect(201);await publish('CONTACT_LIST',await pdf(1)).expect(201);
+   const {agent,id}=await applicant();
+   await draft(agent,'Алекс');
+   await completeDocuments(agent);
+   const current=await version(agent);
+   await agent.post('/api/applicant/submit').set(headers).send({version:current,...answers,preferredAmericanFirstName:'Алекс',accurate:true}).expect(201);
+   const reviewVersion=(await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body.application.version;
+   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:reviewVersion,decisionType:'REQUEST_CHANGES',reason:'Please check your phone.',requestedFields:['personalPhoneNumber']}).expect(201);
+   let view=(await agent.get('/api/applicant/application').set(headers).expect(200)).body;
+   // Nothing needs it yet, so it stays locked as the manager left it.
+   expect(view.editableFields).not.toContain('preferredAmericanFirstName');
+   const sop=(await publish('SOP',await pdf(1),[field(1,'AMERICAN_NAME')]).expect(201)).body;
+   view=(await agent.get('/api/applicant/application').set(headers).expect(200)).body;
+   expect(view.editableFields).toEqual(expect.arrayContaining(['preferredAmericanFirstName','preferredAmericanLastName','documents']));
+   await agent.post(`/api/applicant/documents/${sop.id}/view`).set(headers).send({}).expect(201);
+   expect((await sign(agent,sop.id).expect(400)).body.message).toContain('Latin letters');
+   await draft(agent,'Alex');
+   // It stays open until they resubmit, and they can now sign.
+   view=(await agent.get('/api/applicant/application').set(headers).expect(200)).body;
+   expect(view.editableFields).toContain('preferredAmericanFirstName');
+   await sign(agent,sop.id).expect(201);
+   expect((await db.query(`SELECT "signerAmericanName" FROM document_signatures WHERE "documentId"=$1`,[sop.id]))[0].signerAmericanName).toBe('Alex Demo');
+  },60000);
+  it('keeps the whole of the longest American name',async()=>{
+   await publish('SOP',await pdf(1),[field(1,'AMERICAN_NAME')]).expect(201);
+   const {agent,id}=await applicant();
+   const doc=(await agent.get('/api/applicant/application').set(headers).expect(200)).body.documents.items.find((item:{kind:string})=>item.kind==='SOP').id;
+   await agent.post(`/api/applicant/documents/${doc}/view`).set(headers).send({}).expect(201);
+   const current=await version(agent);
+   await agent.patch('/api/applicant/draft').set(headers).send({version:current,preferredAmericanFirstName:'A'.repeat(100),preferredAmericanLastName:'B'.repeat(100)}).expect(200);
+   await sign(agent,doc).expect(201);
+   expect(await row(id)).toBe(`${'A'.repeat(100)} ${'B'.repeat(100)}`);
+  },30000);
+  it('writes the name on its line, and leaves a blank alone on an older row',async()=>{
+   const doc=await PDFDocument.create();doc.addPage([612,792]);
+   const at=new Date();
+   expect(await fillFields(doc,[field(1,'AMERICAN_NAME')],[{signerRole:'APPLICANT',typedName:'A B',signerAmericanName:'Alex Demo',signedAt:at,signatureImage:null}])).toBe(1);
+   expect(await fillFields(doc,[field(1,'AMERICAN_NAME')],[{signerRole:'APPLICANT',typedName:'A B',signedAt:at,signatureImage:null}])).toBe(0);
+  });
+  it('refuses a rollback while a version has the field',async()=>{
+   await publish('SOP',await pdf(1),[field(1,'AMERICAN_NAME')]).expect(201);
+   const runner=db.createQueryRunner();
+   await expect(new DocumentAmericanName1792990000000().down(runner)).rejects.toThrow('Cannot discard American names on documents');
+   await runner.release();
+  });
  });
  it('refuses to roll back while fields, titles or one-button reads exist',async()=>{
   await publish('NDA',await pdf(1),[field(1,'NAME')]).expect(201);

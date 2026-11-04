@@ -2,14 +2,14 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ban, Building2, Calendar, Ellipsis, FileText, Mail, Phone, Plus, RotateCcw, Route, UserMinus, Users } from 'lucide-react';
+import { Ban, Building2, Calendar, Ellipsis, FileText, Link2, Mail, Phone, Plus, RotateCcw, Route, UserMinus, Users, type LucideIcon } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog } from '@/components/ui/dialog';
-import { DropdownMenu } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, type MenuEntry } from '@/components/ui/dropdown-menu';
 import { Alert, Notice } from '@/components/ui/alert';
 import { Avatar } from '@/components/ui/avatar';
 import { DescriptionList } from '@/components/ui/description-list';
@@ -25,16 +25,16 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { middayIso } from '@/lib/navigation';
-import { CatchUpButton, ExistingAccountsCard, ExistingPaperworkCard } from './paperwork';
+import { ExistingAccountsCard, ExistingPaperworkCard, useCatchUpLink } from './paperwork';
 import { Choice, fullName, memberBadge, MemberProfile, TeamRow, toReassign } from './types';
 
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
 const memberPhotos = (id: string, selfie: boolean, idSelfie: boolean, name: string): ViewablePhoto[] => [...(selfie ? [{ src: selfieUrl(id), title: `Selfie · ${name}`, alt: `Selfie of ${name}` }] : []), ...(idSelfie ? [{ src: idSelfieUrl(id), title: `Selfie holding an ID · ${name}`, meta: 'Check that the face and name match the ID.', alt: `Selfie of ${name} holding an ID` }] : [])];
 
-type Action = 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact';
+type Action = 'place' | 'startDate' | 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact';
 // The Eastern date, as the API uses to tell a notice from leaving today; the browser's own date could promise the wrong one.
 const today = (at = Date.now()) => new Date(at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-const NOTICE_MAX_DAYS = 90;
+const NOTICE_MAX_DAYS = 90, INDEPENDENT = 'INDEPENDENT';
 const noticeLimit = () => today(Date.now() + NOTICE_MAX_DAYS * 86400_000);
 const LastDay = ({ day }: { day: string }) => <LocalTime iso={middayIso(day)} format="date" />;
 // One reachable way to contact the dispatcher: where it came from, and a copy button.
@@ -76,6 +76,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     setPending('form'); setError('');
     try {
       if (action === 'reassign') await mutate(`dispatch/members/${member.id}/reassign`, 'POST', { version: member.version, dispatcherId: form.dispatcherId, startedAt: form.startedAt, reason: form.reason });
+      else if (action === 'place') await mutate(`dispatch/members/${member.id}/place`, 'POST', { version: member.version, mcId: form.mcId === INDEPENDENT ? null : form.mcId, teamId: form.teamId || null, ...(form.startedAt ? { startedAt: form.startedAt } : {}) });
+      else if (action === 'startDate') await mutate(`dispatch/members/${member.id}/start-date`, 'POST', { version: member.version, startedOn: form.startedOn, ...(form.reason?.trim() ? { reason: form.reason } : {}) });
       else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId || null, teamId: form.teamId || null, startedAt: form.startedAt, reason: form.reason });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
       else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) ? { emailAfter } : {}) });
@@ -84,7 +86,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       else if (action === 'removeNow') await mutate(`dispatch/members/${member.id}/remove-access`, 'POST', { version: member.version, reason: form.reason });
       else if (action === 'title') await mutate(`dispatch/members/${member.id}`, 'PATCH', { version: member.version, jobTitleId: form.jobTitleId || null });
       else await mutate(`dispatch/members/${member.id}/contacts`, 'POST', { kind, value: form.value, ...(form.label?.trim() ? { label: form.label } : {}) });
-      toast({ title: action === 'reassign' ? 'Dispatcher changed' : action === 'move' ? `${name} moved` : action === 'leave' ? (lastDay > today() ? `Notice recorded for ${name}` : `${name} marked as left`) : action === 'lastDay' ? 'Last day changed' : action === 'cancel' ? 'Notice cancelled' : action === 'removeNow' ? 'IT was asked to remove access now' : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
+      toast({ title: action === 'place' ? 'MC and team saved' : action === 'startDate' ? 'Start date saved' : action === 'reassign' ? 'Dispatcher changed' : action === 'move' ? `${name} moved` : action === 'leave' ? (lastDay > today() ? `Notice recorded for ${name}` : `${name} marked as left`) : action === 'lastDay' ? 'Last day changed' : action === 'cancel' ? 'Notice cancelled' : action === 'removeNow' ? 'IT was asked to remove access now' : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(null); }
@@ -100,12 +102,26 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const progress = accounts?.total ? <Progress label="IT setup" value={accounts.done ?? 0} max={accounts.total} /> : null;
   // Someone with IT setup (finished or not) gets an IT removal checklist when marked as left; supports never had accounts.
   const existing = member.existing ?? null;
+  // Added with details missing: no MC yet is never shown as Independent, and the day they were added never as their start date.
+  const noMc = !!existing && !support && !current && !member.history.length, startKnown = existing?.startDateKnown !== false, undated = existing?.undatedPeriodId ?? null;
+  const when = (row: { id: string; startedAt: string }) => row.id === undated ? 'Started on a date not recorded' : <LocalTime iso={row.startedAt} format="date" />;
+  const startAction = { label: startKnown ? 'Correct start date' : 'Add start date', icon: Calendar, onSelect: () => start('startDate') };
   // Added by hand: a dispatcher always gets a checklist, a support only when accounts were recorded for them.
   const recordedAccounts = existing && (!support || existing.companyEmail || existing.ringCentralNumber) ? { companyEmail: existing.companyEmail, ringCentralNumber: existing.ringCentralNumber } : null;
   const removesAccess = (!support && !!accounts) || !!recordedAccounts, removal = member.removal ?? null;
   const removalOpen = !!removal && !removal.completedAt, notice = member.notice ?? null, onNotice = open && !!notice;
   const drivers = member.driversToReassign ?? [], supportsLeft = member.supports ?? [], reassign = toReassign(drivers.length, supportsLeft.length), anyoneLeft = drivers.length + supportsLeft.length > 0;
   const noticeDay = lastDay > today();
+  // One main button, the next thing this record needs; everything else waits in More actions, with what ends things last.
+  const catchUp = useCatchUpLink(member), needsLink = !!existing && !existing.acceptedAt && !!existing.personalEmail && !existing.catchUp?.started;
+  const actions: Record<'lastDay' | 'reassign' | 'place' | 'link' | 'move', { label: string; icon: LucideIcon; onClick: () => void; outline?: boolean }> = {
+    lastDay: { label: 'Change last day', icon: Calendar, outline: true, onClick: () => start('lastDay') }, reassign: { label: 'Change dispatcher', icon: Route, onClick: () => start('reassign') },
+    place: { label: 'Set MC and team', icon: Route, onClick: () => start('place') }, link: { label: catchUp.label, icon: Link2, onClick: catchUp.create }, move: { label: 'Move to another MC or team', icon: Route, onClick: () => start('move') } };
+  const mainKey = onNotice ? 'lastDay' : support ? 'reassign' : noMc ? 'place' : needsLink ? 'link' : 'move', main = actions[mainKey];
+  const others = [...(needsLink ? ['link' as const] : []), ...(support ? ['reassign' as const] : noMc ? ['place' as const] : !onNotice ? ['move' as const] : [])].filter(key => key !== mainKey);
+  const ending = onNotice ? [{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') }, ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]
+    : [{ label: 'Mark as leaving', icon: UserMinus, danger: true, onSelect: () => start('leave') }];
+  const more: MenuEntry[] = [...others.map(key => ({ label: actions[key].label, icon: actions[key].icon, onSelect: actions[key].onClick })), ...(existing ? [startAction] : []), ...(others.length || existing ? [{ separator: true as const }] : []), ...ending];
   const emailNow = removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
     ? (removal.emailAfter === 'FORWARD' ? `suspended and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : 'suspended') : null;
   return <div className="space-y-6">
@@ -115,17 +131,13 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         <PrivateImage src={selfieUrl(member.id)} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></PhotoButton> : <Avatar name={name} size="lg" />}
       <div className="min-w-0 flex-1"><PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><Badge label={badge.label} tone={badge.tone} />{existing && <Badge label="Added by hand" tone="neutral" />}{notice && <Badge label={notice.passed ? 'Last day passed' : `Leaving ${new Date(middayIso(notice.lastDay)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`} tone={notice.passed ? 'danger' : 'warning'} />}</span>}
         meta={[support ? (supportOf ? <>Support for {supportOf.dispatcher} · {where(supportOf)}</> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No dispatcher')
-          : current ? <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No MC or team',
+          : current ? (current.id === undated ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : noMc ? 'No MC yet' : 'No MC or team',
           member.leadOf ? `Team lead of ${member.leadOf.name}` : member.position === 'SUPPORT' ? 'Support' : member.jobTitle?.name ?? 'Dispatcher',
-          notice ? <>Last day <LastDay day={notice.lastDay} /></> : existing ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
-        action={open && <div className="flex flex-wrap gap-2 max-sm:w-full max-sm:[&>*]:w-full">
-          {existing && !existing.acceptedAt && existing.personalEmail && !existing.catchUp?.started && <CatchUpButton member={member} />}
-          {onNotice ? <><Button variant="outline" onClick={() => start('lastDay')}><Calendar aria-hidden="true" className="size-4" />Change last day</Button>
-            <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={[{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') },
-              ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]} /></>
-            : <Button variant="outline" onClick={() => start('leave')}><UserMinus aria-hidden="true" className="size-4" />Mark as leaving</Button>}
-          {support ? <Button onClick={() => start('reassign')}><Route aria-hidden="true" className="size-4" />Change dispatcher</Button>
-            : !onNotice && <Button onClick={() => start('move')}><Route aria-hidden="true" className="size-4" />Move to another MC or team</Button>}</div>} /></div>
+          notice ? <>Last day <LastDay day={notice.lastDay} /></> : existing ? (startKnown ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : 'Start date not recorded') : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
+        action={open && <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
+          <Button className="max-sm:flex-1" variant={main.outline ? 'outline' : 'default'} disabled={catchUp.busy && mainKey === 'link'} onClick={main.onClick}><main.icon aria-hidden="true" className="size-4" />{main.label}</Button>
+          {more.length > 0 && <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={more} />}
+          {catchUp.result}</div>} /></div>
     </div>
     {notice && (notice.passed ? <Alert tone="danger" title="Their last day has passed"><p>{anyoneLeft ? `${reassign} still assigned, so this record stays Leaving until they’re reassigned, then it becomes Left automatically. ` : 'They’ll be marked as left within a few minutes. '}IT’s removal of their access doesn’t wait for this.</p></Alert>
       : anyoneLeft ? <Alert tone="warning" title={<>{reassign} to reassign by <LastDay day={notice.lastDay} /></>}><p>{name} can’t be marked as left while anyone is still with them. IT removes their access at the end of that day either way.</p></Alert>
@@ -205,17 +217,19 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
                 ...(row.cancelledAt ? [{ id: `${row.id}-cancelled`, title: `Notice cancelled${row.cancelledBy ? ` by ${row.cancelledBy}` : ''}`, meta: <LocalTime iso={row.cancelledAt} />, body: row.cancelReason ?? undefined }] : []),
                 ...[...row.changes].reverse().map((change, index) => ({ id: `${row.id}-${index}`, title: <>Last day changed to <LastDay day={change.to} /></>, meta: <>From <LastDay day={change.from} /> · <LocalTime iso={change.at} /></>, body: change.reason })),
                 { id: row.id, title: `Notice recorded${row.recordedBy ? ` by ${row.recordedBy}` : ''}`, meta: <LocalTime iso={row.createdAt} />, body: row.reason }])} /></CardBody></Card>}
+            {!!existing?.startDateChanges?.length && <Card><CardHeader title="Start date" description="Dates added or corrected after they were recorded." />
+              <CardBody><Timeline items={existing.startDateChanges.map(row => ({ id: row.id, title: <>{row.previousOn ? 'Corrected' : 'Added'}: <LastDay day={row.startedOn} /></>, meta: <>{row.previousOn ? <>Was <LastDay day={row.previousOn} /> · </> : null}{row.changedBy} · <LocalTime iso={row.createdAt} format="date" /></>, body: row.reason ?? undefined }))} /></CardBody></Card>}
             {support && <Card>
               <CardHeader title="Dispatcher history" description="Every dispatcher this support has assisted. Changes are recorded, never overwritten." />
               <CardBody><Timeline items={(member.supportHistory ?? []).map(row => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const, icon: <Users aria-hidden="true" />,
                 title: `${row.dispatcher}${row.dispatcherStatus === 'LEFT' ? ' (left)' : ''}`,
-                meta: <><LocalTime iso={row.startedAt} format="date" /> – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.changedBy ? ` · by ${row.changedBy}` : ''}</>, body: row.reason ?? undefined }))} /></CardBody>
+                meta: <>{when(row)} – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.changedBy ? ` · by ${row.changedBy}` : ''}</>, body: row.reason ?? undefined }))} /></CardBody>
             </Card>}
             {!support && <Card>
               <CardHeader title="MC and team history" description="Every MC and team this dispatcher has worked for. Moves are recorded, never overwritten." />
-              <CardBody><Timeline items={member.history.map((row, index) => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
+              <CardBody>{noMc && <p className="text-sm text-muted-foreground">No MC yet. {member.firstName} can’t be given drivers or lead a team until they have one.</p>}<Timeline items={member.history.map((row, index) => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
                 icon: index < member.history.length - 1 && member.history[index + 1].mcId === row.mcId ? <Users aria-hidden="true" /> : <Building2 aria-hidden="true" />,
-                title: where(row), meta: <><LocalTime iso={row.startedAt} format="date" /> – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
+                title: where(row), meta: <>{when(row)} – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
                 body: row.reason ?? undefined }))} /></CardBody>
             </Card>}
                   {member.activity && member.activity.length > 0 && <Card><CardHeader title="Onboarding" description="From the invitation to IT setup." />
@@ -224,26 +238,30 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           }} />
       </div>
       <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
+        {open && existing && (noMc || !startKnown) && <Card><CardHeader title="Still to fill in" />
+          <CardBody className="space-y-3"><DescriptionList layout="rows" items={[...(noMc ? [{ label: 'MC and team', value: null, emptyLabel: 'No MC yet' }] : []), ...(!startKnown ? [{ label: 'Started', value: null, emptyLabel: 'Not recorded' }] : [])]} />
+            <p className="text-[13px] leading-5 text-muted-foreground">Add {noMc && !startKnown ? 'these' : 'this'} when you know {noMc && !startKnown ? 'them' : 'it'}. Paperwork links, contact details and leaving don’t wait.</p>
+            {!startKnown && <Button variant="outline" className="w-full" onClick={() => start('startDate')}><Calendar aria-hidden="true" className="size-4" />Add start date</Button>}</CardBody></Card>}
         {support ? <Card>
           <CardHeader title="Now" />
           <CardBody><DescriptionList layout="rows" items={[
             { label: 'Supports', value: supportOf ? <Link href={`/dispatch/dispatchers/${supportOf.dispatcherId}`} className="text-primary underline-offset-4 hover:underline">{supportOf.dispatcher}</Link> : null, emptyLabel: 'No dispatcher' },
             { label: 'MC', value: supportOf ? supportOf.mc ?? 'Independent' : null, emptyLabel: '—' },
             { label: 'Team', value: supportOf?.team, emptyLabel: 'No team' },
-            { label: 'Since', value: supportOf ? <LocalTime iso={supportOf.startedAt} format="date" /> : null, emptyLabel: '—' }]} /></CardBody>
+            { label: 'Since', value: supportOf ? (supportOf.id === undated ? 'Not recorded' : <LocalTime iso={supportOf.startedAt} format="date" />) : null, emptyLabel: '—' }]} /></CardBody>
         </Card> : <Card>
           <CardHeader title="Now" actions={open && <Button variant="ghost" size="sm" onClick={() => start('title')}>Change job title</Button>} />
           <CardBody><DescriptionList layout="rows" items={[
-            { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : current ? 'Independent' : null, emptyLabel: 'None' },
+            { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : current ? 'Independent' : null, emptyLabel: noMc ? 'No MC yet' : 'None' },
             { label: 'Team', value: current?.team, emptyLabel: 'No team' },
             { label: 'Job title', value: member.jobTitle?.name, emptyLabel: 'Not set' },
-            { label: 'Since', value: current ? <LocalTime iso={current.startedAt} format="date" /> : null, emptyLabel: '—' }]} /></CardBody>
+            { label: 'Since', value: current ? (current.id === undated ? 'Not recorded' : <LocalTime iso={current.startedAt} format="date" />) : null, emptyLabel: '—' }]} /></CardBody>
         </Card>}
         {!support && !!member.supports?.length && <Card>
           <CardHeader title="Supports" description="Updaters who assist this dispatcher." />
           <ul className="mt-3 divide-y divide-border border-t border-border">{member.supports.map(row => <li key={row.id} className="flex items-center justify-between gap-3 px-4 py-3 sm:px-5">
             <Link href={`/dispatch/dispatchers/${row.id}`} className="min-w-0 text-sm font-medium text-primary underline-offset-4 hover:underline">{row.name}</Link>
-            <span className="shrink-0 text-[13px] text-muted-foreground">since <LocalTime iso={row.since} format="date" /></span></li>)}</ul>
+            {row.sinceKnown !== false && <span className="shrink-0 text-[13px] text-muted-foreground">since <LocalTime iso={row.since} format="date" /></span>}</li>)}</ul>
         </Card>}
         {removal?.scheduled && <Card>
           <CardHeader title="IT access" actions={<Badge label="Scheduled" tone="info" />} />
@@ -279,10 +297,21 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       </div>
     </div>
     {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' || action === 'removeNow' ? 'danger' : undefined} size={action === 'leave' && removesAccess ? 'lg' : undefined} closeLabel={action === 'cancel' ? 'Keep notice' : undefined}
-      title={action === 'reassign' ? `Change ${name}’s dispatcher` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
-      description={action === 'reassign' ? 'They start assisting the new dispatcher on the start date; the current one stays in the history.' : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
-      actions={<Button type="submit" form="member-action" variant={action === 'leave' || action === 'removeNow' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'reassign' ? 'Change dispatcher' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? (noticeDay ? 'Record notice' : 'Mark as left') : action === 'lastDay' ? 'Change last day' : action === 'cancel' ? 'Cancel notice' : action === 'removeNow' ? 'Remove access now' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
+      title={action === 'place' ? `Set ${name}’s MC and team` : action === 'startDate' ? `${startKnown ? 'Correct' : 'Add'} ${name}’s start date` : action === 'reassign' ? `Change ${name}’s dispatcher` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
+      description={action === 'place' ? 'Where they work now. They can be given drivers once they have a team.' : action === 'startDate' ? (startKnown ? `Now ${new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}. Their first period in the history changes with it; later moves stay as they are.` : 'Their start date here, from payroll or an offer letter.') : action === 'reassign' ? 'They start assisting the new dispatcher on the start date; the current one stays in the history.' : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
+      actions={<Button type="submit" form="member-action" variant={action === 'leave' || action === 'removeNow' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'place' ? 'Save MC and team' : action === 'startDate' ? 'Save start date' : action === 'reassign' ? 'Change dispatcher' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? (noticeDay ? 'Record notice' : 'Mark as left') : action === 'lastDay' ? 'Change last day' : action === 'cancel' ? 'Cancel notice' : action === 'removeNow' ? 'Remove access now' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
+        {action === 'place' && <>
+          {/* Nothing chosen to begin with: an MC nobody picked must never become Independent. */}
+          <div className="grid gap-4 sm:grid-cols-2"><Select label="MC" name="mcId" required placeholder="Choose an MC" value={mcId} onChange={event => setMcId(event.target.value)} width="full" options={[{ value: INDEPENDENT, label: 'Independent' }, ...mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))]} />
+            <Select key={mcId} label="Team" optional name="teamId" disabled={!teamChoices.length} placeholder={mcId === INDEPENDENT ? 'Independent has no team' : mcId ? 'No team yet' : 'Choose an MC first'} width="full" options={teamChoices.map(team => ({ value: team.id, label: team.lead ? `${team.name} · ${team.lead.name}` : team.name }))} /></div>
+          <Input label="Working there since" optional name="startedAt" type="date" max={today()} width="full" hint="Leave empty if you don’t know. It then follows their start date." />
+        </>}
+        {action === 'startDate' && <>
+          <Input label="Started on" name="startedOn" type="date" required max={today()} min="1980-01-01" defaultValue={startKnown ? member.joinedAt.slice(0, 10) : undefined} width={startKnown ? 'full' : 'sm'} hint="Today or earlier." />
+          {startKnown ? <Textarea label="Why it changed" name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
+            : current && <Alert tone="info"><p>Their time at {where(current)} starts on this date too.</p></Alert>}
+        </>}
         {action === 'reassign' && <>
           {dispatchersFailed && <Alert tone="danger"><p>Couldn’t load dispatchers. Reload the page.</p></Alert>}
           <Select label="New dispatcher" name="dispatcherId" required placeholder="Choose a dispatcher" width="full"

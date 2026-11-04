@@ -69,6 +69,19 @@ export class MoveMemberDto {
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher is moving.' }) @MaxLength(500) reason!: string;
 }
+/** Their first MC and team, for someone added with none. startedAt is optional: left out, the period follows their start date. */
+export class PlaceMemberDto {
+ @IsInt() @Min(1) version!: number;
+ @ValidateIf((_object: unknown, value: unknown) => value !== null) @IsUUID() mcId!: string | null;
+ @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
+ @IsOptional() @IsDateString({ strict: true }) startedAt?: string;
+}
+/** A start date a manager found, or a correction of one, which needs a reason. */
+export class StartDateDto {
+ @IsInt() @Min(1) version!: number;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/) startedOn!: string;
+ @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
 export class ReassignSupportDto {
  @IsInt() @Min(1) version!: number;
  @IsUUID() dispatcherId!: string;

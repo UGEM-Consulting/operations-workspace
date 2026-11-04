@@ -8,7 +8,7 @@ import { mutate } from '@/lib/client-api';
 import { DocumentViewer, type ViewableDocument } from '@/features/documents/document-modal';
 import { downloadBlob } from '@/features/documents/pdf';
 import { PhotoButton, type ViewablePhoto } from '@/features/documents/photo-modal';
-import { emptyMemory, SigningModal, type SignableDocument, type SigningMemory } from '@/features/documents/signing-modal';
+import { SigningModal, type SignableDocument, type SigningMemory } from '@/features/documents/signing-modal';
 import { photoForUpload } from './photo';
 import { ApplicantRecord } from './types';
 const PHOTOS = [
@@ -17,7 +17,7 @@ const PHOTOS = [
 ] as const;
 type Photo = typeof PHOTOS[number];
 /** The "Documents & signatures" step: two required photos, then each company document read and signed in a modal. */
-export function ApplicantDocuments({ record, onRecord, busy }: { record: ApplicantRecord; onRecord: (record: ApplicantRecord) => void; busy: boolean }) {
+export function ApplicantDocuments({ record, onRecord, busy, memory, onMemory, onEditNames }: { record: ApplicantRecord; onRecord: (record: ApplicantRecord) => void; busy: boolean; memory: SigningMemory; onMemory: (memory: SigningMemory) => void; onEditNames: () => void }) {
  const docs = record.documents;
  const [working, setWorking] = useState(''), [photoVersion, setPhotoVersion] = useState(0);
  const disabled = busy || !!working;
@@ -31,7 +31,7 @@ export function ApplicantDocuments({ record, onRecord, busy }: { record: Applica
   </section>
   {docs.items.length > 0 && <section className="space-y-4" aria-labelledby="documents-heading">
    <h3 id="documents-heading" className="font-semibold">Documents *</h3>
-   <DocumentRows record={record} onRecord={onRecord} disabled={disabled} canSign={canSign}/>
+   <DocumentRows record={record} onRecord={onRecord} disabled={disabled} canSign={canSign} memory={memory} onMemory={onMemory} onEditNames={onEditNames}/>
   </section>}
  </div>;
 }
@@ -100,9 +100,11 @@ function PhotoCard({ photo, record, onRecord, disabled, setWorking, version, onU
  </div>;
 }
 /** One row per document and one clear next action. Everything happens in the modal, with nothing to come back to. */
-function DocumentRows({ record, onRecord, disabled, canSign }: { record: ApplicantRecord; onRecord: (record: ApplicantRecord) => void; disabled: boolean; canSign: boolean }) {
- const docs = record.documents;
- const [memory, setMemory] = useState<SigningMemory>(emptyMemory), [openId, setOpenId] = useState(''), [viewing, setViewing] = useState(-1);
+function DocumentRows({ record, onRecord, disabled, canSign, memory, onMemory, onEditNames }: { record: ApplicantRecord; onRecord: (record: ApplicantRecord) => void; disabled: boolean; canSign: boolean; memory: SigningMemory; onMemory: (memory: SigningMemory) => void; onEditNames: () => void }) {
+ const docs = record.documents, answers = record.application.fields as Record<string, string | undefined>;
+ const [openId, setOpenId] = useState(''), [viewing, setViewing] = useState(-1);
+ const joined = (first?: string, last?: string) => first?.trim() && last?.trim() ? `${first.trim()} ${last.trim()}` : '';
+ const names = { legal: joined(answers.firstName, answers.lastName), american: joined(answers.preferredAmericanFirstName, answers.preferredAmericanLastName) };
  const signable: SignableDocument[] = docs.items.map(doc => ({ id: doc.id, title: doc.title, short: doc.kind === 'CONTACT_LIST' ? 'Quick Contact List' : doc.kind, pageCount: doc.pageCount, requiresSignature: doc.requiresSignature, statement: doc.statement, translatedStatement: doc.translatedStatement,
   fields: doc.fields ?? [], fileUrl: `/api/backend/applicant/documents/${doc.id}/file`, signedUrl: `/api/backend/applicant/documents/${doc.id}/signed`, viewPath: `applicant/documents/${doc.id}/view`, signPath: `applicant/documents/${doc.id}/sign`,
   ...(doc.requiresSignature ? {} : { acknowledgePath: `applicant/documents/${doc.id}/acknowledge` }), state: doc.signed?.documentId === doc.id ? 'done' : 'todo', fallbackName: `${doc.kind.toLowerCase()}.pdf` }));
@@ -121,7 +123,7 @@ function DocumentRows({ record, onRecord, disabled, canSign }: { record: Applica
      : canSign ? <div className="flex flex-wrap justify-end gap-2">{doc.signed && <Button type="button" size="sm" variant="ghost" onClick={() => setViewing(copy)}>{doc.requiresSignature ? 'View signed copy' : 'View'}<span className="sr-only"> {item.short}, earlier version</span></Button>}<Button type="button" size="sm" variant={nextId === doc.id ? 'default' : 'outline'} disabled={disabled} onClick={() => setOpenId(doc.id)}>{doc.requiresSignature ? 'Read and sign' : 'Read'}<span className="sr-only"> {item.short}</span></Button></div>
       : doc.signed && <Button type="button" size="sm" variant="ghost" onClick={() => setViewing(copy)}>View<span className="sr-only"> {item.short}</span></Button>}
    </article>; })}
-  {open && <SigningModal key={open.id} doc={open} documents={signable} consent={docs.consent.text} consentTranslation={docs.consent.translation} memory={memory} onMemory={setMemory} nameHint="as on your ID"
+  {open && <SigningModal key={open.id} doc={open} documents={signable} consent={docs.consent.text} consentTranslation={docs.consent.translation} memory={memory} onMemory={onMemory} nameHint="as on your ID" names={names} onEditNames={() => { setOpenId(''); onEditNames(); }}
    onSigned={result => onRecord(result as ApplicantRecord)} onNext={next => setOpenId(next.id)} onClose={() => setOpenId('')}/>}
   {viewing >= 0 && <DocumentViewer documents={copies} index={viewing} onClose={() => setViewing(-1)}/>}
  </>;

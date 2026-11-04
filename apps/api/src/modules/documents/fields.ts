@@ -3,7 +3,7 @@ import { IsIn, IsInt, IsNumber, Max, Min } from 'class-validator';
 import { degrees, PDFDocument, PDFFont, PDFImage, PDFPage, rgb, StandardFonts } from 'pdf-lib';
 import { inspectSignaturePng } from './images';
 
-export const FIELD_KINDS = ['SIGNATURE', 'NAME', 'DATE', 'DAY', 'MONTH', 'YEAR', 'TITLE'] as const;
+export const FIELD_KINDS = ['SIGNATURE', 'NAME', 'AMERICAN_NAME', 'DATE', 'DAY', 'MONTH', 'YEAR', 'TITLE'] as const;
 export const FIELD_SIGNERS = ['SIGNER', 'COMPANY'] as const;
 export const MAX_FIELDS = 60;
 export type FieldKind = typeof FIELD_KINDS[number];
@@ -21,8 +21,8 @@ export class DocumentFieldDto implements DocumentField {
  @IsIn(FIELD_SIGNERS) signer!: FieldSigner;
 }
 
-/** What a kind of document allows. A form nobody types into has no fields; only the company signs a Title. */
-export function checkedFields(input: DocumentFieldDto[] | undefined, pageCount: number, rules: { signature: boolean; typedName: boolean; countersign: boolean }): DocumentField[] {
+/** What a kind of document allows. A form nobody types into has no fields; only the company signs a Title; only a new hire has an American name. */
+export function checkedFields(input: DocumentFieldDto[] | undefined, pageCount: number, rules: { signature: boolean; typedName: boolean; countersign: boolean; americanName: boolean }): DocumentField[] {
  const fields = input ?? [];
  if (fields.length && !rules.typedName) throw new BadRequestException('This document has no fields to fill in.');
  for (const field of fields) {
@@ -30,6 +30,7 @@ export function checkedFields(input: DocumentFieldDto[] | undefined, pageCount: 
   if (field.x + field.width > 1.001 || field.y + field.height > 1.001) throw new BadRequestException('A field runs off its page.');
   if (field.signer === 'COMPANY' && !rules.countersign) throw new BadRequestException('Nobody countersigns this document.');
   if (field.kind === 'TITLE' && field.signer !== 'COMPANY') throw new BadRequestException('Only the company’s signer has a title field.');
+  if (field.kind === 'AMERICAN_NAME' && (field.signer !== 'SIGNER' || !rules.americanName)) throw new BadRequestException('Only a new hire has an American name field.');
   if (field.kind === 'SIGNATURE' && !rules.signature) throw new BadRequestException('This document isn’t signed.');
  }
  return fields.map(({ page, x, y, width, height, kind, signer }) => ({ page, x, y, width, height, kind, signer }));
@@ -37,9 +38,10 @@ export function checkedFields(input: DocumentFieldDto[] | undefined, pageCount: 
 
 // The date shown on a form is the day it was signed in the US Eastern zone, like dates picked in the workspace.
 const part = (at: Date, options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', ...options }).format(at);
-export function fieldText(kind: FieldKind, signature: { typedName: string; signedAt: Date; signerTitle?: string | null }): string {
+export function fieldText(kind: FieldKind, signature: { typedName: string; signedAt: Date; signerTitle?: string | null; signerAmericanName?: string | null }): string {
  switch (kind) {
   case 'NAME': return signature.typedName;
+  case 'AMERICAN_NAME': return signature.signerAmericanName ?? '';
   case 'TITLE': return signature.signerTitle ?? '';
   case 'DATE': return part(signature.signedAt, { month: 'long', day: 'numeric', year: 'numeric' });
   case 'DAY': return part(signature.signedAt, { day: 'numeric' });
@@ -49,7 +51,7 @@ export function fieldText(kind: FieldKind, signature: { typedName: string; signe
  }
 }
 
-export interface FillSignature { signerRole: 'APPLICANT' | 'COMPANY'; typedName: string; signedAt: Date; signerTitle?: string | null; signatureImage: Buffer | null }
+export interface FillSignature { signerRole: 'APPLICANT' | 'COMPANY'; typedName: string; signedAt: Date; signerTitle?: string | null; signerAmericanName?: string | null; signatureImage: Buffer | null }
 const INK = rgb(0.08, 0.13, 0.36);
 const CENTRED: FieldKind[] = ['DAY', 'MONTH', 'YEAR'];
 const latin = (text: string) => text.replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');

@@ -20,6 +20,7 @@ import { ApiError, APPLICANT_SESSION_EXPIRED_EVENT, errorMessage, mutate, readAp
 import { applicantSessionExpiry, clearApplicantSession } from '@/lib/applicant-session';
 import { ApplicantEmployment, startingJobTitle } from './applicant-employment';
 import { ApplicantRecord, fieldLabels, FieldName, itemLabels } from './types';
+import { emptyMemory, type SigningMemory } from '@/features/documents/signing-modal';
 import { ApplicantDocuments, ReviewAttachments } from './applicant-documents';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { ApplicantUpdates } from './applicant-updates';
@@ -68,6 +69,8 @@ function StepState({state}:{state:'complete'|'attention'|null}) {
 function Form({ initial }: { initial: ApplicantRecord }) {
  const router=useRouter(),toast=useToast();
  const [record,setRecord]=useState(initial),[step,setStep]=useState(0),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+ // Kept here, not on the documents step, so going back to correct a name loses nothing they've given.
+ const [signing,setSigning]=useState<SigningMemory>(emptyMemory);
  const [failed,setFailed]=useState(false),[leaving,setLeaving]=useState(false),[referenceMessage,setReferenceMessage]=useState('');
  const [conflict,setConflict]=useState(false),[reverify,setReverify]=useState(false),[verifiedAt,setVerifiedAt]=useState(0),[submitAttempted,setSubmitAttempted]=useState(false);
  // Someone already working here brings their records up to date: where they work is shown, not asked.
@@ -195,7 +198,7 @@ function Form({ initial }: { initial: ApplicantRecord }) {
  {step===1&&support&&!catchUp&&<p className="text-sm leading-6 text-muted-foreground">You’re joining as a support (updater), working with one of our dispatchers. Your manager sets your assignment, so there’s nothing to fill in here. Continue to the next step.</p>}
  {step===1&&!support&&record.employmentOptions&&<ApplicantEmployment options={record.employmentOptions} prefilled={!!(record.invitation.mcName||record.invitation.teamLead||record.invitation.jobTitle)} values={{mcName:watched.mcName??'',teamLead:watched.teamLead??'',jobTitle:watched.jobTitle??''}} errors={{mcName:errors.mcName?.message,teamLead:errors.teamLead?.message,jobTitle:errors.jobTitle?.message}} editable={editable} requested={requested} hint={correctionHint} register={name=>{const {ref,name:field,onBlur}=register(name);return {ref,name:field,onBlur};}} onChange={(name,value)=>setValue(name,value,{shouldDirty:true,shouldValidate:!!errors[name]})}/>}
  {step===1&&!support&&!record.employmentOptions&&<><p className="text-sm text-muted-foreground">Enter your employment details. Your manager will confirm the final assignments before approval. IT will assign your work phone number when setting up RingCentral.</p><div className="grid gap-4">{employmentFields.map(name=><div key={name} className="grid gap-2">{field(name,{required:true,maxLength:name==='jobTitle'?100:150})}{name!=='jobTitle'&&<Checkbox label="Independent" checked={watched[name]==='Independent'} disabled={!editable(name)} onChange={event=>setValue(name,event.target.checked?'Independent':'',{shouldDirty:true,shouldValidate:!!errors[name]})}/>}</div>)}</div></>}
- {DOCUMENTS_STEP.includes(steps[step])&&<ApplicantDocuments record={record} onRecord={setRecord} busy={busy}/>}
+ {DOCUMENTS_STEP.includes(steps[step])&&<ApplicantDocuments record={record} onRecord={setRecord} busy={busy} memory={signing} onMemory={setSigning} onEditNames={()=>goTo(0)}/>}
  {step===reviewStep&&<>{record.documents.missing.length>0&&<Alert tone="warning"><p>Still needed: {record.documents.missing.map(item=>itemLabels[item]).join(', ')}.</p></Alert>}<DescriptionList items={reviewItems}/>{record.documents.required&&<ReviewAttachments record={record}/>}{!catchUp&&<ApplicantUpdates email={record.invitation.email}/>}<Checkbox {...register('accurate')} label="I confirm that the information is accurate." error={!!errors.accurate} aria-describedby={errors.accurate?'accurate-error':undefined} className="border-t border-border pt-5"/>{errors.accurate&&<p id="accurate-error" className="text-sm text-danger">{errors.accurate.message}</p>}</>}
  {message&&<Alert tone={failed?(conflict?'warning':'danger'):'success'} role={failed?'alert':'status'} action={conflict?<Button type="button" size="sm" variant="outline" onClick={()=>void reloadLatest()}>Reload latest</Button>:undefined}><p>{message}</p>{conflict&&<p className="text-[13px] text-muted-foreground">Reload latest replaces your unsaved entries with the saved version.</p>}</Alert>}
  <p role="status" className="text-sm text-muted-foreground">{busy?'Saving your information…':isDirty?'You have unsaved changes.':'No unsaved changes.'}</p><PendingHint pending={busy}/>

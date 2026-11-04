@@ -14,7 +14,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PaperworkTable } from '@/features/dispatch/paperwork';
-import { fullName, memberBadge, toReassign, type MemberList, type PaperworkList } from '@/features/dispatch/types';
+import { fullName, memberBadge, missingDetails, toReassign, type MemberList, type PaperworkList } from '@/features/dispatch/types';
 export const metadata = { title: 'Dispatchers' };
 /** Dispatch › Dispatchers: every dispatch member record (no login), with where they work now. */
 export default async function DispatchersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -32,7 +32,8 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
   const searched = data.items.filter(member => `${fullName(member)} ${member.mc ?? 'independent'} ${member.team ?? ''} ${member.jobTitle ?? ''}`.toLowerCase().includes(search));
   // Leaving: on notice, the soonest last day first. They also still count as Active (or Onboarding) until they've left.
   const leavingNow = filters.status === 'LEAVING', leaving = searched.filter(member => member.lastDay).sort((a, b) => a.lastDay!.localeCompare(b.lastDay!));
-  const visible = leavingNow ? leaving : searched.filter(member => filters.status === 'ALL' || member.status === filters.status);
+  const missingNow = filters.status === 'MISSING', missing = searched.filter(missingDetails);
+  const visible = leavingNow ? leaving : missingNow ? missing : searched.filter(member => filters.status === 'ALL' || member.status === filters.status);
   const passed = data.items.filter(member => member.lastDayPassed);
   const filtered = filters.search !== '' || filters.status !== MEMBER_DEFAULTS.status;
   return <div className="space-y-6">
@@ -45,19 +46,22 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
         { key: 'ACTIVE', label: 'Active', count: searched.filter(member => member.status === 'ACTIVE').length },
         { key: 'LEAVING', label: 'Leaving', count: leaving.length },
         { key: 'LEFT', label: 'Left', count: searched.filter(member => member.status === 'LEFT').length },
-        ...(paperwork ? [{ key: 'PAPERWORK', label: 'Paperwork', count: paperwork.items.filter(row => row.state !== 'FINISHED').length }] : []),
+        ...(paperwork ? [{ key: 'PAPERWORK', label: 'Paperwork', count: paperwork.items.filter(row => row.state !== 'FINISHED').length }, { key: 'MISSING', label: 'Missing details', count: missing.length }] : []),
         { key: 'ALL', label: 'All', count: searched.length }]} />
       {paperworkNow ? <PaperworkTable list={paperwork} search={filters.search} /> : <Table caption="Dispatchers" className="border-t border-border" rows={visible} rowKey={member => member.id} columns={[
         { key: 'name', label: 'Dispatcher', primary: true, cell: member => <Link href={`/dispatch/dispatchers/${member.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={fullName(member)} secondary={member.lead ? 'Team lead' : member.position === 'SUPPORT' ? `Support for ${member.dispatcher ?? 'a dispatcher'}` : 'Dispatcher'} /></Link> },
-        { key: 'mc', label: 'MC', cell: member => member.mc ?? <span className="text-muted-foreground">Independent</span> },
+        { key: 'mc', label: 'MC', cell: member => member.mc ?? <span className="text-muted-foreground">{member.placed === false ? '—' : 'Independent'}</span> },
         ...(leavingNow ? [
           { key: 'lastDay', label: 'Last day', nowrap: true, cell: (member: MemberList['items'][number]) => <LocalTime iso={middayIso(member.lastDay!)} format="date" /> },
           { key: 'reassign', label: 'To reassign', cell: (member: MemberList['items'][number]) => toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0) },
           { key: 'it', label: 'IT removal', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.itRemoval ? <Badge label={member.itRemoval === 'SCHEDULED' ? 'Scheduled' : member.itRemoval === 'COMPLETED' ? 'Completed' : 'In progress'} tone={member.itRemoval === 'COMPLETED' ? 'success' : 'info'} /> : <span className="text-muted-foreground">No accounts</span> },
+        ] : missingNow ? [
+          { key: 'team', label: 'Team', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">—</span> },
+          { key: 'started', label: 'Started', nowrap: true, cell: (member: MemberList['items'][number]) => member.startDateKnown === false ? <span className="text-muted-foreground">Not recorded</span> : <LocalTime iso={member.joinedAt} format="date" /> },
         ] : [
           { key: 'team', label: 'Team', hideBelow: 'md' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">No team</span> },
           { key: 'title', label: 'Job title', hideBelow: 'lg' as const, muted: true, cell: (member: MemberList['items'][number]) => member.jobTitle ?? 'Not set' },
-          { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'xl' as const, cell: (member: MemberList['items'][number]) => <LocalTime iso={member.since} format="date" /> },
+          { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'xl' as const, cell: (member: MemberList['items'][number]) => member.sinceKnown === false ? 'Not recorded' : <LocalTime iso={member.since} format="date" /> },
         ]),
         { key: 'status', label: 'Status', cell: member => member.lastDayPassed ? <Badge label="Last day passed" tone="danger" /> : member.lastDay ? <Badge label="Leaving" tone="warning" /> : <Badge {...memberBadge(member.status)} /> },
       ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />

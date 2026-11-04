@@ -56,6 +56,8 @@ export class DocumentSignature {
  @Column('varchar',{length:200}) typedName!:string;
  // A countersigner's job title, for a form's Title field.
  @Column('varchar',{length:100,nullable:true}) signerTitle!:string|null;
+ // The American name from their application at the moment they signed a version with that field; a later change never reaches a signed copy.
+ @Column('varchar',{length:201,nullable:true}) signerAmericanName!:string|null;
  @Column('bytea',{nullable:true,select:false}) signatureImage!:Buffer|null;
  // DRAWN or TYPED (adopted from the typed name); null on rows before the column existed (drawn) and on acknowledgements.
  @Column('varchar',{nullable:true}) signatureMethod!:SignatureMethod|null;

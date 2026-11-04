@@ -9,12 +9,12 @@ import { DocumentModal } from './document-modal';
 import { FieldMark, fieldLabels, fieldText, type DocumentField, type FieldKind, type FieldSigner } from './fields';
 import { PdfPages, usePdf } from './pdf';
 
-const SIZES: Record<FieldKind, { width: number; height: number }> = { SIGNATURE: { width: 0.3, height: 0.02 }, NAME: { width: 0.3, height: 0.018 }, DATE: { width: 0.24, height: 0.018 }, DAY: { width: 0.03, height: 0.018 }, MONTH: { width: 0.09, height: 0.018 }, YEAR: { width: 0.03, height: 0.018 }, TITLE: { width: 0.3, height: 0.018 } };
+const SIZES: Record<FieldKind, { width: number; height: number }> = { SIGNATURE: { width: 0.3, height: 0.02 }, NAME: { width: 0.3, height: 0.018 }, AMERICAN_NAME: { width: 0.3, height: 0.018 }, DATE: { width: 0.24, height: 0.018 }, DAY: { width: 0.03, height: 0.018 }, MONTH: { width: 0.09, height: 0.018 }, YEAR: { width: 0.03, height: 0.018 }, TITLE: { width: 0.3, height: 0.018 } };
 const clamp = (value: number, low: number, high: number) => Math.min(Math.max(value, low), high);
 const SIGNER_KINDS: FieldKind[] = ['SIGNATURE', 'NAME', 'DATE', 'DAY', 'MONTH', 'YEAR'];
 const COMPANY_KINDS: FieldKind[] = ['SIGNATURE', 'NAME', 'TITLE', 'DATE'];
 const companyLabels: Partial<Record<FieldKind, string>> = { NAME: 'Name', DATE: 'Date' };
-const sample = { name: 'Riley Santos', title: 'Dispatch manager', at: new Date() };
+const sample = { name: 'Riley Santos', american: 'Riley Santos', title: 'Dispatch manager', at: new Date() };
 
 function Palette({ heading, kinds, signer, onStart, onChoose }: { heading: string; kinds: FieldKind[]; signer: FieldSigner; onStart: (event: React.PointerEvent, kind: FieldKind, signer: FieldSigner) => void; onChoose: (kind: FieldKind, signer: FieldSigner) => void }) {
   return <div className="space-y-2"><p className="text-[13px] font-semibold">{heading}</p>
@@ -26,7 +26,7 @@ function Palette({ heading, kinds, signer, onStart, onChoose }: { heading: strin
  * page in view; drag to move, drag the corner or hold Alt with the arrow keys to resize, arrow keys nudge the selected one, Delete removes it. The last version's
  * layout is offered first. Publishing with none signs as before, with a certificate page only.
  */
-export function FieldPlacer({ file: pdfFile, title, signerLabel, signature = true, countersign = false, initial, onPublish, onBack }: { file: File; title: string; signerLabel: string; signature?: boolean; countersign?: boolean; initial: DocumentField[];
+export function FieldPlacer({ file: pdfFile, title, signerLabel, signature = true, countersign = false, americanName = false, initial, onPublish, onBack }: { file: File; title: string; signerLabel: string; signature?: boolean; countersign?: boolean; /** New hires have one; drivers don't. */ americanName?: boolean; initial: DocumentField[];
   onPublish: (fields: DocumentField[]) => Promise<void>; onBack: () => void }) {
   const source = useMemo(() => ({ file: pdfFile }), [pdfFile]), { file, failure, reload } = usePdf(source);
   const pageCount = file?.sizes.length ?? 1;
@@ -92,18 +92,18 @@ export function FieldPlacer({ file: pdfFile, title, signerLabel, signature = tru
     catch (failed) { setError(errorMessage(failed, 'Unable to publish. Please try again.')); }
     finally { setBusy(false); }
   }
-  const signerKinds = signature ? SIGNER_KINDS : SIGNER_KINDS.filter(kind => kind !== 'SIGNATURE');
+  const signerKinds = SIGNER_KINDS.filter(kind => signature || kind !== 'SIGNATURE').flatMap(kind => kind === 'NAME' && americanName ? ['NAME' as const, 'AMERICAN_NAME' as const] : [kind]);
   const counts = (number: number) => inRange.filter(field => field.page === number).length;
   const panel = <>
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 max-lg:max-h-[38dvh] lg:p-5">
-      <div><h3 className="text-[17px] font-semibold leading-6">Place the fields</h3><p className="mt-1 text-[13px] leading-5 text-muted-foreground">Drag each one onto its line, or choose it to add it to the page in view. {signerLabel} only types a name and signs once; every place fills in from that.</p></div>
+      <div><h3 className="text-[17px] font-semibold leading-6">Place the fields</h3><p className="mt-1 text-[13px] leading-5 text-muted-foreground">Drag each one onto its line, or choose it to add it to the page in view. {signerLabel} only {americanName ? 'checks their name' : 'types a name'} and signs once; every place fills in from that.</p></div>
       <Palette heading={`${signerLabel} fills`} kinds={signerKinds} signer="SIGNER" onStart={startPalette} onChoose={choose} />
       {countersign && <Palette heading="UGEM fills at approval" kinds={COMPANY_KINDS} signer="COMPANY" onStart={startPalette} onChoose={choose} />}
       {selected >= 0 && fields[selected] && <Button type="button" size="sm" variant="outline" onClick={() => remove(selected)}><Trash2 aria-hidden="true" className="size-4" />Remove selected field</Button>}
       {file && <ol className="space-y-1 text-[13px]">{file.sizes.map((_, index) => <li key={index} className={cn('flex justify-between rounded-sm px-2 py-1', page === index + 1 ? 'bg-brand-subtle font-medium' : 'text-muted-foreground')}>Page {index + 1}<span>{counts(index + 1) ? `${counts(index + 1)} ${counts(index + 1) === 1 ? 'field' : 'fields'}` : ''}</span></li>)}</ol>}
     </div>
     <div className="shrink-0 space-y-3 border-t p-4 lg:px-5">
-      {inRange.length ? <p className="text-[13px] leading-5 text-muted-foreground">{inRange.filter(field => field.signer === 'SIGNER').length} places for {signerLabel.toLowerCase()}{countersign ? `, ${inRange.filter(field => field.signer === 'COMPANY').length} for UGEM` : ''}.</p>
+      {inRange.length ? <p className="text-[13px] leading-5 text-muted-foreground">{inRange.filter(field => field.signer === 'SIGNER').length} {inRange.filter(field => field.signer === 'SIGNER').length === 1 ? 'place' : 'places'} for {signerLabel.toLowerCase()}{countersign ? `, ${inRange.filter(field => field.signer === 'COMPANY').length} for UGEM` : ''}.</p>
         : <Alert tone="warning"><p>With no fields, signed copies have only the certificate page and the form’s lines stay blank.</p></Alert>}
       <Notice message={error} error />
       <div className="flex gap-2"><Button type="button" variant="outline" className="flex-1" aria-pressed={preview} onClick={() => setPreview(value => !value)}>{preview ? <EyeOff aria-hidden="true" className="size-4" /> : <Eye aria-hidden="true" className="size-4" />}{preview ? 'Edit' : 'Preview'}</Button>

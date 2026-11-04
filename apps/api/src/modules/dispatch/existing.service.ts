@@ -14,7 +14,7 @@ import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.ent
 import { createRemoval } from '../it/removal';
 import { NotificationsService } from '../updates/notifications.service';
 import { lockCatchUpLinks, lockTeam, paperworkTimeEnded, supportedDispatcher } from './create-member';
-import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, Team } from './dispatch.entity';
+import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, NO_MC, Team } from './dispatch.entity';
 import { ExistingRowDto, UpdateExistingDto } from './dispatch.dto';
 
 const IMPORT_LOCK = 42002037, LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
@@ -32,17 +32,22 @@ export function fileDate(value: string): string | null {
  if (parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== date) return null;
  return parsed.toISOString().slice(0, 10);
 }
+/** A team by its own name, or failing that by its lead's: a name that matches one team and another team's lead means the team it names. */
+function matchingTeams<T extends { name: string; lead: string | null }>(teams: T[], text: string) {
+ const key = listNameKey(text), named = teams.filter(item => listNameKey(item.name) === key);
+ return named.length ? named : teams.filter(item => listNameKey(item.lead ?? '') === key);
+}
 /** Stored at midday UTC, as dates picked in forms are, so it shows as the same day in every US time zone. */
 const midday = (date: string) => new Date(`${date}T12:00:00Z`);
 
 export type RowStatus = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; status: RowStatus; problems: string[]; sameName: boolean;
- mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsRow: number | null; startedOn: string | null }
+ mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean }
 export interface Choice { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; rows: number[] }
 
 interface Known {
  mcs: Map<string, { id: string; name: string }>; teams: { id: string; name: string; mcId: string; lead: string | null }[]; titles: Map<string, string>;
- members: { id: string; name: string; position: string; mc: string | null; leaving: boolean }[];
+ members: { id: string; name: string; position: string; mc: string | null; placed: boolean; leaving: boolean }[];
  companyEmails: Set<string>; personalEmails: Set<string>; phones: Set<string>;
 }
 /**
@@ -62,7 +67,7 @@ export class ExistingDispatchersService {
    this.db.query(`SELECT t.id, t.name, t."mcId", CASE WHEN l.id IS NULL THEN NULL ELSE l."firstName" || ' ' || l."lastName" END AS lead
     FROM teams t LEFT JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE t."archivedAt" IS NULL ORDER BY t."nameKey"`),
    this.db.query(`SELECT id, name FROM job_titles WHERE "archivedAt" IS NULL ORDER BY "nameKey"`)]);
-  const dispatchers = await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, m.name AS mc FROM dispatch_members d
+  const dispatchers = await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc FROM dispatch_members d
    LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId"
    WHERE d.position = 'DISPATCHER' AND d.status <> 'LEFT' AND NOT EXISTS (SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
    ORDER BY lower(d."firstName"), lower(d."lastName")`);
@@ -73,7 +78,7 @@ export class ExistingDispatchersService {
   const teams = await em.query(`SELECT t.id, t.name, t."mcId", CASE WHEN l.id IS NULL THEN NULL ELSE l."firstName" || ' ' || l."lastName" END AS lead
    FROM teams t LEFT JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE t."archivedAt" IS NULL`);
   const titles: { id: string; name: string }[] = await em.query(`SELECT id, name FROM job_titles WHERE "archivedAt" IS NULL`);
-  const members: Known['members'] = await em.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.position, m.name AS mc,
+  const members: Known['members'] = await em.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.position, m.name AS mc, a.id IS NOT NULL AS placed,
     EXISTS (SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AS leaving
    FROM dispatch_members d LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" WHERE d.status <> 'LEFT'`);
   // Everyone current: added by hand, set up by IT, or an applicant's verified email and phone.
@@ -94,19 +99,19 @@ export class ExistingDispatchersService {
    const found = choices.get(key) ?? { ...entry, rows: [] };
    found.rows.push(row); choices.set(key, found);
   };
-  const seenCompany = new Map<string, number>(), seenPersonal = new Map<string, number>(), seenPhone = new Map<string, number>(), seenName = new Map<string, number>();
+  const seenCompany = new Map<string, number>(), seenPersonal = new Map<string, number>(), seenPhone = new Map<string, number>(), seenName = new Map<string, number>(), seenAnyName = new Map<string, number>(), seenNoMc = new Map<string, number>();
   const results: RowResult[] = rows.map(row => {
    const first = text(row.firstName), last = text(row.lastName), problems: string[] = [], position = /^support$/i.test(text(row.position)) ? 'SUPPORT' as const : 'DISPATCHER' as const;
    const name = `${first} ${last}`.trim();
-   let status: RowStatus = 'READY', mcId: string | null = null, teamId: string | null = null, jobTitleId: string | null = null, already = '', sameName = false;
+   let status: RowStatus = 'READY', mcId: string | null = null, teamId: string | null = null, jobTitleId: string | null = null, already = '', sameName = false, noMc = false, mcFromTeam = false;
    if (!first || !last) problems.push('First and last name are both needed.');
    if (first.length > 100 || last.length > 100) problems.push('Names can be up to 100 characters.');
    if (text(row.position) && !/^(dispatcher|support)$/i.test(text(row.position))) problems.push(`Position “${text(row.position)}” should be Dispatcher or Support.`);
    const started = text(row.startedOn), startedOn = started ? fileDate(started) : null;
-   if (!started) problems.push('Started on is empty.');
-   else if (!startedOn) problems.push(`Started on “${started}” isn’t a date.`);
-   else if (startedOn > today) problems.push('Started on can’t be in the future.');
-   else if (startedOn < '1980-01-01') problems.push(`Started on “${started}” is too long ago.`);
+   // An empty start date is fine: it can be added on their page later. A date that can't be read is a mistake to fix.
+   if (started && !startedOn) problems.push(`Started on “${started}” isn’t a date.`);
+   else if (startedOn && startedOn > today) problems.push('Started on can’t be in the future.');
+   else if (startedOn && startedOn < '1980-01-01') problems.push(`Started on “${started}” is too long ago.`);
    for (const [label, value] of [['NDA', text(row.ndaSignedOn)], ['SOP', text(row.sopSignedOn)]] as const) {
     if (!value) continue;
     const date = fileDate(value);
@@ -136,23 +141,43 @@ export class ExistingDispatchersService {
    };
    if (position === 'DISPATCHER') {
     const mcText = text(row.mc), teamText = text(row.team), titleText = text(row.jobTitle), independent = listNameKey(mcText) === listNameKey(INDEPENDENT);
-    const mc = known.mcs.get(listNameKey(mcText));
-    if (!mcText) problems.push('MC is empty. Use Independent if they have none.');
-    else if (!independent && !mc) choice({ field: 'mc', text: mcText }, row.row);
+    const named = listNameKey(mcText) !== listNameKey(NO_MC) && !!mcText, wantsTeam = !!teamText && listNameKey(teamText) !== listNameKey(NOT_LISTED_TEAM);
+    const mc = named ? known.mcs.get(listNameKey(mcText)) : undefined;
+    let teamMc: string | null = null;
+    if (named && !independent && !mc) choice({ field: 'mc', text: mcText }, row.row);
     mcId = mc?.id ?? null;
-    if (mc && teamText && listNameKey(teamText) !== listNameKey(NOT_LISTED_TEAM)) {
-     const key = listNameKey(teamText), team = known.teams.find(item => item.mcId === mc.id && (listNameKey(item.name) === key || listNameKey(item.lead ?? '') === key));
+    if (!named) {
+     // Every team belongs to one MC, so a team with no MC brings its MC. "No MC yet" says to leave them out of any team for now.
+     const teams = !mcText && wantsTeam ? matchingTeams(known.teams, teamText) : [];
+     const owner = teams.length === 1 ? [...known.mcs.values()].find(item => item.id === teams[0].mcId) : undefined;
+     if (owner) { mcId = owner.id; teamId = teams[0].id; teamMc = owner.name; mcFromTeam = true; }
+     else if (!mcText && wantsTeam) choice({ field: 'team', text: teamText }, row.row);
+     else noMc = true;
+    }
+    if (mc && wantsTeam) {
+     const team = matchingTeams(known.teams.filter(item => item.mcId === mc.id), teamText)[0];
      if (team) teamId = team.id; else choice({ field: 'team', text: teamText, mc: mc.name }, row.row);
     }
     if (independent && teamText && ![INDEPENDENT, NOT_LISTED_TEAM].map(listNameKey).includes(listNameKey(teamText))) problems.push('An Independent dispatcher has no team.');
     jobTitleId = known.titles.get(listNameKey(titleText)) ?? null;
     if (!titleText) problems.push('Job title is empty.');
     else if (!jobTitleId) choice({ field: 'jobTitle', text: titleText }, row.row);
-    const mcName = independent ? null : mc?.name ?? mcText;
-    if (!already && !row.differentPerson && known.members.some(item => item.position === 'DISPATCHER' && listNameKey(item.name) === listNameKey(name) && listNameKey(item.mc ?? '') === listNameKey(mcName ?? ''))) {
+    // A blank MC with a team we can't find is still to be chosen, so it can't match anyone's MC yet: least of all Independent's, which is also blank.
+    const mcPending = !named && !noMc && !mcFromTeam, mcName = independent ? null : mc?.name ?? teamMc ?? mcText, nameKey = listNameKey(name);
+    // Someone with no MC yet could be anyone of that name, so setting their MC with a second upload can't add them twice.
+    const sameNames = known.members.filter(item => item.position === 'DISPATCHER' && listNameKey(item.name) === nameKey);
+    if (!already && !row.differentPerson && sameNames.some(item => !item.placed || noMc)) {
+     already = 'Same name as someone in the workspace, and one of them has no MC yet. Left out unless you say they’re different people. To set an MC, use their page.'; sameName = true;
+    } else if (!already && !row.differentPerson && !mcPending && sameNames.some(item => listNameKey(item.mc ?? '') === listNameKey(mcName ?? ''))) {
      already = 'Same name and MC as someone in the workspace. Left out unless you say they’re different people.'; sameName = true;
     }
-    if (name) sameInFile(`DISPATCHER|${listNameKey(name)}|${listNameKey(mcName ?? '')}`, 'name and MC');
+    if (name) {
+     const earlier = noMc ? seenAnyName.get(nameKey) : seenNoMc.get(nameKey);
+     if (earlier !== undefined && !already && !row.differentPerson) { problems.push(`Same name as row ${earlier}, and one of them has no MC yet. Left out unless you say they’re different people.`); sameName = true; }
+     else if (!mcPending) sameInFile(`DISPATCHER|${nameKey}|${listNameKey(mcName ?? '')}`, 'name and MC');
+     if (!seenAnyName.has(nameKey)) seenAnyName.set(nameKey, row.row);
+     if (noMc && !seenNoMc.has(nameKey)) seenNoMc.set(nameKey, row.row);
+    }
    } else {
     if (text(row.mc) || text(row.team) || text(row.jobTitle)) problems.push('A support has no MC, team or job title of their own. Leave them empty.');
     if (!already && !row.differentPerson && known.members.some(item => item.position === 'SUPPORT' && listNameKey(item.name) === listNameKey(name))) {
@@ -161,7 +186,7 @@ export class ExistingDispatchersService {
     if (name) sameInFile(`SUPPORT|${listNameKey(name)}`, 'name');
    }
    if (already) { status = 'ALREADY'; problems.unshift(already); }
-   return { row: row.row, name, position, status, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsRow: null, startedOn };
+   return { row: row.row, name, position, status, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsRow: null, startedOn, noMc, mcFromTeam };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
@@ -195,7 +220,8 @@ export class ExistingDispatchersService {
  }
  private counts(results: RowResult[]) {
   const count = (status: RowStatus) => results.filter(row => row.status === status).length;
-  return { ready: count('READY'), choice: count('CHOICE'), problem: count('PROBLEM'), already: count('ALREADY') };
+  const ready = results.filter(row => row.status === 'READY');
+  return { ready: count('READY'), choice: count('CHOICE'), problem: count('PROBLEM'), already: count('ALREADY'), noStartDate: ready.filter(row => !row.startedOn).length, noMc: ready.filter(row => row.noMc).length, mcFromTeam: ready.filter(row => row.mcFromTeam).length };
  }
  /** Adds the rows that are ready, checked again under one lock so two uploads can't both add the same person. */
  async add(user: User, rows: ExistingRowDto[], sourceName?: string) {
@@ -209,7 +235,8 @@ export class ExistingDispatchersService {
    for (const id of [...new Set(ready.flatMap(row => row.supportsMemberId ?? []))].sort()) await supportedDispatcher(em, id);
    // Dispatchers first: a support in the same file links to them.
    for (const result of [...ready.filter(row => row.position === 'DISPATCHER'), ...ready.filter(row => row.position === 'SUPPORT')]) {
-    const row = byRow.get(result.row)!, startedAt = midday(result.startedOn!);
+    // With no start date, joinedAt and any first period keep the day they were added, marked as not recorded so it never shows as real.
+    const row = byRow.get(result.row)!, startedAt = midday(result.startedOn ?? usDay('latest')), hasPeriod = !result.noMc;
     if (result.teamId && !locked.has(result.teamId)) {
      const team = await lockTeam(em, result.teamId);
      if (!team || team.archivedAt || team.mcId !== result.mcId) throw new ConflictException('A team changed while this was being added. Check the rows again.');
@@ -217,20 +244,20 @@ export class ExistingDispatchersService {
     }
     const [first, ...rest] = result.name.split(' ');
     const member = await em.getRepository(DispatchMember).save({ applicationId: null, firstName: text(row.firstName) || first, lastName: text(row.lastName) || rest.join(' '), position: result.position, status: 'ACTIVE', jobTitleId: result.jobTitleId, joinedAt: startedAt });
-    if (result.position === 'DISPATCHER') await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: result.mcId, teamId: result.teamId, startedAt, reason: 'Added as an existing dispatcher.', actorId: user.id });
+    if (result.position === 'DISPATCHER') { if (hasPeriod) await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: result.mcId, teamId: result.teamId, startedAt, reason: 'Added as an existing dispatcher.', actorId: user.id }); }
     else {
      const dispatcherId = result.supportsMemberId ?? added.get(result.supportsRow!);
      if (!dispatcherId) throw new ConflictException('A dispatcher changed while this was being added. Check the rows again.');
      await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt, reason: 'Added as an existing support.', actorId: user.id });
     }
     await em.getRepository(ExistingMemberRecord).save({ memberId: member.id, addedBy: user.id, sourceName: sourceName?.trim().slice(0, 200) || null,
-     companyEmail: text(row.companyEmail).toLowerCase() || null, ringCentralNumber: text(row.ringCentralNumber) || null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null });
+     companyEmail: text(row.companyEmail).toLowerCase() || null, ringCentralNumber: text(row.ringCentralNumber) || null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null, startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod });
     let paper = 0;
     for (const [kind, value] of [['NDA', text(row.ndaSignedOn)], ['SOP', text(row.sopSignedOn)]] as const) {
      if (!value) continue;
      await em.getRepository(MemberPaperDocument).save({ memberId: member.id, kind, signedOn: fileDate(value)!, recordedBy: user.id }); paper += 1;
     }
-    await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_ADDED', actorId: user.id, metadata: { source: sourceName ? 'file' : 'form', paper } });
+    await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_ADDED', actorId: user.id, metadata: { source: sourceName ? 'file' : 'form', paper, noStartDate: !result.startedOn, noMc: result.noMc } });
     added.set(result.row, member.id);
    }
    return { added: added.size, members: [...added.entries()].map(([row, id]) => ({ row, id })),
@@ -241,7 +268,7 @@ export class ExistingDispatchersService {
  async paperwork(user: User) {
   const rows: { id: string; firstName: string; lastName: string; position: string; mc: string | null; team: string | null; dispatcher: string | null; personalEmail: string | null; acceptedAt: Date | null;
    paper: { kind: string; signedOn: string }[]; signed: string[]; invitationId: string | null; expiresAt: Date | null; openedAt: Date | null; consumedAt: Date | null; applicationId: string | null; applicationStatus: string | null; managerId: string | null; accessUntil: Date | null; returnEmail: string | null }[] = await this.db.query(`
-   SELECT d.id, d."firstName", d."lastName", d.position, m.name AS mc, t.name AS team, CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
+   SELECT d.id, d."firstName", d."lastName", d.position, CASE WHEN x.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
     coalesce((SELECT json_agg(json_build_object('kind', p.kind, 'signedOn', p."signedOn"::text)) FROM member_paper_documents p WHERE p."memberId" = d.id), '[]') AS paper,
     coalesce((SELECT json_agg(DISTINCT c.kind) FROM document_signatures s JOIN company_documents c ON c.id = s."documentId" WHERE s."applicationId" = a.id AND s."signerRole" = 'APPLICANT'), '[]') AS signed,
     i.id AS "invitationId", i."expiresAt", i."openedAt", i."consumedAt", a.id AS "applicationId", a.status AS "applicationStatus", a."assignedManagerId" AS "managerId", a."applicantAccessUntil" AS "accessUntil", i.email AS "returnEmail"

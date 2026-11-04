@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Check, CircleCheck, Download, PenLine } from 'lucide-react';
-import { Notice } from '@/components/ui/alert';
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Download, PenLine } from 'lucide-react';
+import { Alert, Notice } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Input } from '@/components/ui/field';
 import { Badge } from '@/components/ui/status-badge';
@@ -21,7 +21,7 @@ export const emptyMemory: SigningMemory = { consented: false, name: '', signatur
 type Step = 'read' | 'agree' | 'sign' | 'done';
 
 const markLabel = (field: DocumentField) => field.signer === 'COMPANY' ? ({ SIGNATURE: 'Your manager signs at approval', NAME: 'Manager’s name', TITLE: 'Manager’s title', DATE: 'Date of approval' } as Record<string, string>)[field.kind] ?? 'At approval'
-  : ({ SIGNATURE: 'Your signature', NAME: 'Your full legal name', DATE: 'Filled in when you sign', DAY: 'Day', MONTH: 'Month', YEAR: 'Yr' } as Record<string, string>)[field.kind] ?? '';
+  : ({ SIGNATURE: 'Your signature', NAME: 'Your full legal name', AMERICAN_NAME: 'Your American name', DATE: 'Filled in when you sign', DAY: 'Day', MONTH: 'Month', YEAR: 'Yr' } as Record<string, string>)[field.kind] ?? '';
 
 const Dots = ({ at, onSee }: { at: number; onSee?: () => void }) => <div className="shrink-0 border-b px-4 py-2 short:py-0 lg:px-5 lg:py-4"><div className="flex items-center justify-between gap-3"><p className="text-[13px] font-medium leading-5 text-muted-foreground">Step {at + 1} of 3: <span className="font-semibold text-foreground">{['Read', 'Agree', 'Sign'][at]}</span></p>
     {onSee && <button type="button" onClick={onSee} className="shrink-0 py-1 text-[13px] font-medium text-primary underline md:hidden short:inline!">See the document</button>}</div>
@@ -32,14 +32,16 @@ const Dots = ({ at, onSee }: { at: number; onSee?: () => void }) => <div classNa
  * page is open, so the next document only asks for what's new, and closing never loses it. Signing still needs the recorded view, the
  * unticked statement and every other check on the API; reaching the last page is checked here.
  */
-export function SigningModal({ doc, documents, consent, consentTranslation, memory, onMemory, nameHint, onSigned, onNext, onClose, onFailure }: {
+export function SigningModal({ doc, documents, consent, consentTranslation, memory, onMemory, nameHint, names, onEditNames, onSigned, onNext, onClose, onFailure }: {
   doc: SignableDocument; documents: SignableDocument[]; consent: string; consentTranslation?: string | null; memory: SigningMemory; onMemory: (memory: SigningMemory) => void; nameHint: string;
+  /** A new hire's names from their application: the legal name starts the box, and the American name goes on a document with that field. */
+  names?: { legal: string; american: string }; onEditNames?: () => void;
   onSigned: (result: unknown) => void; onNext: (doc: SignableDocument) => void; onClose: () => void; onFailure?: (failure: unknown) => boolean;
 }) {
   const alreadyRead = memory.read.includes(doc.id);
   const [step, setStep] = useState<Step>(alreadyRead && !doc.acknowledgePath ? 'agree' : 'read'), [viewed, setViewed] = useState(false), [atEnd, setAtEnd] = useState(alreadyRead), [page, setPage] = useState(1);
-  const [zoom, setZoom] = useState(1), [agreed, setAgreed] = useState(false), [consented, setConsented] = useState(memory.consented), [name, setName] = useState(memory.name), [changing, setChanging] = useState(!memory.signature);
-  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [attempted, setAttempted] = useState(false), [signedDoc, setSignedDoc] = useState(false), [peek, setPeek] = useState(false), [nameFromBefore] = useState(!!memory.name);
+  const [zoom, setZoom] = useState(1), [agreed, setAgreed] = useState(false), [consented, setConsented] = useState(memory.consented), [name, setName] = useState(memory.name || (names && LATIN_NAME.test(names.legal) ? names.legal : '')), [changing, setChanging] = useState(!memory.signature);
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [attempted, setAttempted] = useState(false), [signedDoc, setSignedDoc] = useState(false), [peek, setPeek] = useState(false);
   const nameInput = useRef<HTMLInputElement>(null), signature = memory.signature, now = useMemo(() => new Date(), []);
   const source = useMemo(() => ({ url: signedDoc ? doc.signedUrl : doc.fileUrl, fallbackName: doc.fallbackName }), [signedDoc, doc.signedUrl, doc.fileUrl, doc.fallbackName]);
   const { file, failure, reload } = usePdf(source);
@@ -59,6 +61,10 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
   const remember = (next: Partial<SigningMemory>) => onMemory({ ...memory, ...next });
   const onSignature = useCallback((image: string | null, method: SignatureMethod) => onMemory({ ...memory, name, signature: image ? { image, method } : null }), [memory, name, onMemory]);
   const nameValid = LATIN_NAME.test(name.trim());
+  const showsAmerican = doc.fields.some(field => field.kind === 'AMERICAN_NAME'), american = names?.american ?? '', americanMissing = showsAmerican && !american, americanNotLatin = showsAmerican && !!american && !LATIN_NAME.test(american), cantSign = americanMissing || americanNotLatin;
+  const [nameHintShown] = useState(() => memory.name ? `Filled in from your last document. Latin letters, ${nameHint}.`
+    : names && LATIN_NAME.test(names.legal) ? 'From your application. Change it if it doesn’t match your ID.'
+    : names?.legal ? 'Your application’s name isn’t in Latin letters. Type it as on your ID.' : `Latin letters, ${nameHint}.`);
   const nameError = attempted && !nameValid ? (name.trim() ? `Use Latin letters (A–Z) only, ${nameHint}.` : 'Type your full legal name.') : '';
   // An adopted signature is the typed name in a script: a different name needs adopting again.
   function changeName(value: string) {
@@ -70,13 +76,14 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
   const overlay = (number: number, width: number, height: number) => step === 'done' ? null : doc.fields.filter(field => field.page === number).map((field, index) => {
     const mine = field.signer === 'SIGNER' && step === 'sign';
     if (mine && field.kind === 'SIGNATURE' && signature) return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} image={signature.image} />;
-    if (mine && field.kind !== 'SIGNATURE') { const text = fieldText(field.kind, { name: name.trim(), at: now }); if (text) return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} text={text} />; }
+    if (mine && field.kind !== 'SIGNATURE') { const text = fieldText(field.kind, { name: name.trim(), american, at: now }); if (text) return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} text={text} />; }
     return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} label={markLabel(field)} active={step === 'sign' && field.signer === 'SIGNER' && field.kind === 'SIGNATURE'} />;
   });
   const signerFields = doc.fields.filter(field => field.signer === 'SIGNER'), pagesWithFields = [...new Set(signerFields.map(field => field.page))];
   const remaining = documents.filter(item => item.id !== doc.id && item.state === 'todo'), next = remaining[0];
   async function sign() {
     setAttempted(true); setError('');
+    if (cantSign) return;
     if (!nameValid) { nameInput.current?.focus(); return; }
     if (doc.requiresSignature && !signature) { setError('Draw or adopt your signature first.'); return; }
     setBusy(true);
@@ -101,7 +108,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
     <div className="hidden lg:block"><Dots at={0} /></div>
     <div className={`${body} hidden lg:block`}><h3 className="text-[17px] font-semibold leading-6">Read the whole document</h3>
       <p className="text-sm leading-[22px] text-muted-foreground">Scroll through to the last page. You can close this and come back.</p>
-      {signerFields.length > 0 && <p className="text-sm leading-[22px] text-muted-foreground">The marked spaces are filled in for you when you sign. You only type your name and sign once.</p>}</div>
+      {signerFields.length > 0 && <p className="text-sm leading-[22px] text-muted-foreground">The marked spaces are filled in for you when you sign. You only {names ? 'check' : 'type'} your name and sign once.</p>}</div>
     <div className={foot}><p aria-live="polite" className="text-[13px] leading-5 text-muted-foreground">{progress}</p><Notice message={error} error /><Button type="button" size="lg" className="w-full" disabled={!readDone} onClick={() => { remember({ read: [...new Set([...memory.read, doc.id])] }); setStep('agree'); }}>Next: agree<ArrowRight aria-hidden="true" className="size-4" /></Button></div>
   </>) : step === 'agree' ? <>
     <Dots at={1} onSee={() => setPeek(true)} />
@@ -114,14 +121,18 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
   </> : step === 'sign' ? <>
     <Dots at={2} onSee={() => setPeek(true)} />
     <div className={`${body} short:grid short:grid-cols-2 short:gap-4 short:space-y-0 short:py-2`}><h3 className="text-[17px] font-semibold leading-6 short:hidden [@media(max-height:600px)]:hidden">{doc.requiresSignature ? `Sign the ${doc.short}` : `Confirm the ${doc.short}`}</h3>
-      <Input ref={nameInput} label="Full legal name" hint={nameFromBefore ? `Filled in from your last document. Latin letters, ${nameHint}.` : `Latin letters, ${nameHint}.`} value={name} onChange={event => changeName(event.target.value)} error={nameError} maxLength={100} autoComplete="name" width="full" />
+      {cantSign ? <div className="space-y-3 short:col-span-2"><Alert tone="warning" title={americanMissing ? 'Add your American name first' : 'Your American name needs Latin letters'}><p>{americanMissing ? 'This document shows your American name. Add it in Personal information, then come back. Nothing you’ve done here is lost.' : 'Signed copies print Latin letters only. Correct it in Personal information, then come back. Nothing you’ve done here is lost.'}</p></Alert>
+        {onEditNames && <Button type="button" variant="outline" className="w-full" onClick={onEditNames}><ArrowLeft aria-hidden="true" className="size-4" />Go to Personal information</Button>}</div> : <>
+      {showsAmerican && <div className="space-y-0.5 rounded-md border bg-muted p-3 short:col-span-2"><p className="text-[13px] font-medium leading-[18px] text-muted-foreground">American name on this document</p><p className="break-words text-[15px] font-semibold leading-[22px]">{american}</p>
+        <p className="text-xs leading-[18px] text-muted-foreground short:hidden">From your application. To change it, go back to Personal information.</p></div>}
+      <Input ref={nameInput} label="Full legal name" hint={nameHintShown} value={name} onChange={event => changeName(event.target.value)} error={nameError} maxLength={100} autoComplete="name" width="full" />
       {doc.requiresSignature && (signature && !changing ? <div className="space-y-2"><p className="text-sm font-medium">Your signature</p>
         <SignatureShown image={signature.image} alt="Your signature" onChange={() => { setChanging(true); onMemory({ ...memory, name, signature: null }); }} /></div>
-        : <SignaturePad label="Your signature" onChange={onSignature} disabled={busy} allowTyped typedName={name} compact />)}
+        : <SignaturePad label="Your signature" onChange={onSignature} disabled={busy} allowTyped typedName={name} compact />)}</>}
       <dl className="hidden space-y-2 rounded-md bg-muted px-4 py-3 text-[13px] leading-5 lg:block"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Date</dt><dd className="font-medium">{fieldText('DATE', { at: now })}</dd></div>
         {signerFields.length > 0 && <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Places filled in</dt><dd className="text-right font-medium">{signerFields.length}, on {pagesWithFields.length === 1 ? 'page' : 'pages'} {pagesWithFields.join(' and ')}</dd></div>}</dl></div>
     <div className={`${foot} short:flex short:items-center short:gap-3 short:space-y-0 short:py-2`}><p className="text-xs leading-[18px] text-muted-foreground">Your electronic signature is legally binding, the same as a handwritten one. We record the date, time, your IP address and browser.</p>
-      <Notice message={error} error /><Button type="button" size="lg" className="w-full short:w-auto short:shrink-0" disabled={busy} onClick={() => void sign()}><PenLine aria-hidden="true" className="size-4" />{busy ? 'Signing…' : `${doc.requiresSignature ? 'Sign' : 'Confirm'} ${doc.short}`}</Button></div>
+      <Notice message={error} error /><Button type="button" size="lg" className="w-full short:w-auto short:shrink-0" disabled={busy || cantSign} onClick={() => void sign()}><PenLine aria-hidden="true" className="size-4" />{busy ? 'Signing…' : `${doc.requiresSignature ? 'Sign' : 'Confirm'} ${doc.short}`}</Button></div>
   </> : <>
     <div className={body}><span className="grid size-11 place-items-center rounded-full bg-success-background text-success"><CircleCheck aria-hidden="true" className="size-6" /></span>
       <h3 role="status" className="text-[17px] font-semibold leading-6">{doc.acknowledgePath ? `${doc.short} read` : `${doc.short} ${doc.requiresSignature ? 'signed' : 'confirmed'}`}</h3>

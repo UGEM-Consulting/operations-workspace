@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import * as RadixTabs from '@radix-ui/react-tabs';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 export interface TabItem { key: string; label: string; count?: number; href?: string }
@@ -33,8 +33,14 @@ export function Tabs({ items, value, defaultValue, onValueChange, label, panels,
 export function TabLinks({ items, value, label, variant = 'underline', className }: {
   items: (TabItem & { href: string })[]; value: string; label: string; variant?: 'underline' | 'segmented'; className?: string;
 }) {
-  const segmented = variant === 'segmented';
-  return <nav aria-label={label} className={cn(segmented ? segmentList : underlineList, className)}>
+  const segmented = variant === 'segmented', nav = useRef<HTMLElement>(null);
+  // On a phone the tabs scroll sideways, so the chosen one is brought into view instead of sitting cut off at the edge.
+  useEffect(() => {
+    const list = nav.current, active = list?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!list || !active) return;
+    if (active.offsetLeft < list.scrollLeft || active.offsetLeft + active.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = active.offsetLeft - (list.clientWidth - active.offsetWidth) / 2;
+  }, [value]);
+  return <nav ref={nav} aria-label={label} className={cn(segmented ? segmentList : underlineList, 'relative', className)}>
     {items.map(item => {
       const active = item.key === value;
       return <Link key={item.key} href={item.href} aria-current={active ? 'page' : undefined} data-active={active} className={segmented ? segmentTab : underlineTab}>

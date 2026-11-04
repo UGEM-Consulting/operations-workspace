@@ -3,7 +3,7 @@ import { type DocumentField, fillFields } from './fields';
 import { inspectSignaturePng } from './images';
 export interface CertificateSignature {
  signerRole:'APPLICANT'|'COMPANY';typedName:string;signedAt:Date;ipAddress:string|null;userAgent:string|null;signatureMethod?:'DRAWN'|'TYPED'|null;fromSavedSignature?:boolean;
- statement:string;translatedStatement:string|null;consent:string|null;signatureImage:Buffer|null;firstViewedAt:Date|null;signerTitle?:string|null;
+ statement:string;translatedStatement:string|null;consent:string|null;signatureImage:Buffer|null;firstViewedAt:Date|null;signerTitle?:string|null;signerAmericanName?:string|null;
 }
 export interface CertificateDocument {title:string;version:number;sha256:string;fields?:DocumentField[];}
 /** Validates an uploaded company document: an unencrypted, readable PDF. Returns its page count. */
@@ -52,6 +52,7 @@ export async function executedDocument(original: Buffer, doc: CertificateDocumen
   space(140);
   write(signature.signerRole === 'APPLICANT' ? 'Signer' : 'Countersigner on behalf of the company', { size: 12, font: bold });
   write(`Name: ${signature.typedName}`);
+  if (signature.signerAmericanName) write(`American name on this document, from their application: ${signature.signerAmericanName}`);
   if (signature.signerTitle) write(`Title: ${signature.signerTitle}`);
   write(`Signed: ${signature.signedAt.toISOString()} (UTC)`);
   if (signature.firstViewedAt) write(`Signer first opened the full document from the signing page: ${signature.firstViewedAt.toISOString()} (UTC)`);
