@@ -9,7 +9,8 @@ import { documentLabels, type DocumentKind } from './types';
 export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; owner: { name: string } | null; expired: boolean }
 export interface DueReview { driverId: string; firstName: string; lastName: string; owner: string | null; lastReviewedOn: string | null; dueOn: string; notQualified: boolean; overdue: boolean }
 export interface DueTest { driverId: string; firstName: string; lastName: string; kind: 'DRUG' | 'ALCOHOL'; result: string; testedOn: string; owner: string | null }
-export interface DueList { today: string; warningDays: number; items: DueReview[]; tests?: DueTest[] }
+export interface DueIncident { incidentId: string; driverId: string; firstName: string; lastName: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; owner: string | null }
+export interface DueList { today: string; warningDays: number; items: DueReview[]; tests?: DueTest[]; incidents?: DueIncident[] }
 export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[] }
 
 const day = (value: string) => new Date(`${value}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
@@ -43,6 +44,14 @@ export function ExpiringDocuments({ data, reviews }: { data: ExpiringList; revie
         columns={[
           { key: 'driver', label: 'Test follow-up', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'test', label: 'Latest result', cell: item => <>{item.kind === 'DRUG' ? 'Drug' : 'Alcohol'} · {day(item.testedOn)} <Badge label={item.result === 'REFUSED' ? 'Refused' : 'Not negative'} tone="danger" /></> },
+          { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner ?? '—' },
+        ]} />
+    </Card>}
+    {reviews.incidents && reviews.incidents.length > 0 && <Card>
+      <Table<DueIncident> caption="Incidents that need a decision" rows={reviews.incidents} rowKey={item => item.incidentId}
+        columns={[
+          { key: 'driver', label: 'Open incidents', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
+          { key: 'what', label: 'What', cell: item => <>{item.kind === 'ACCIDENT' ? 'Accident' : 'Violation'} · {day(item.occurredOn)} <Badge label={item.kind === 'ACCIDENT' ? 'Preventability open' : 'Pending'} tone="warning" /></> },
           { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>}

@@ -155,7 +155,8 @@ export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), ca
   kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
 
 export const dueReviewsSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, owner: nullableText, lastReviewedOn: nullableText, dueOn: text, notQualified: z.boolean(), overdue: z.boolean() })),
-  tests: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, kind: z.enum(['DRUG', 'ALCOHOL']), result: text, testedOn: text, owner: nullableText })).optional().catch(undefined) });
+  tests: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, kind: z.enum(['DRUG', 'ALCOHOL']), result: text, testedOn: text, owner: nullableText })).optional().catch(undefined),
+  incidents: z.array(z.looseObject({ incidentId: text, driverId: text, firstName: text, lastName: text, kind: z.enum(['ACCIDENT', 'VIOLATION', 'INSPECTION']), occurredOn: text, owner: nullableText })).optional().catch(undefined) });
 export const expiringSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ documentId: text, driverId: text, kind: text, expiresOn: text, firstName: text, lastName: text, status: text, owner: z.looseObject({ name: text }).nullable().catch(null), expired: z.boolean() })) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */

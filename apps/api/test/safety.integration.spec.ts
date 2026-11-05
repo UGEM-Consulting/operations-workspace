@@ -536,6 +536,59 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(JSON.stringify(await events(id))).not.toMatch(/NOT_NEGATIVE|Fictional collection site|wrong driver/);
   });
 
+  it('records accidents, violations and inspections of cleared drivers, settles open ones once and lets only the manager void', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const incident = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/incidents`).set(headers)
+      .send({ version, kind: 'ACCIDENT', occurredOn: day, state: 'tx', summary: 'Fictional rear-end contact at a dock', preventable: 'UNDETERMINED', injuries: false, fatalities: false, towAway: false, ...body });
+    await incident(agents.manager, 1).expect(409);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [id, users.staff.id]);
+    const attention = async () => (await agents.lead.get('/api/safety/due').set(headers).expect(200)).body.incidents;
+    await incident(agents.lead, 2).expect(403);
+    await incident(agents.staff2, 2).expect(403);
+    await incident(agents.dispatch, 2).expect(403);
+    // Input: a kind, a real past date after clearance, a summary, and only the fields of that kind.
+    await incident(agents.manager, 2, { kind: 'CRASH' }).expect(400);
+    await incident(agents.manager, 2, { occurredOn: addDays(day, 1) }).expect(400);
+    await incident(agents.manager, 2, { occurredOn: addDays(day, -60) }).expect(400);
+    await incident(agents.manager, 2, { summary: ' ' }).expect(400);
+    await incident(agents.manager, 2, { state: 'ZZ' }).expect(400);
+    await incident(agents.manager, 2, { towAway: undefined }).expect(400);
+    await incident(agents.manager, 2, { policeReport: 'R-1' }).expect(400);
+    await incident(agents.manager, 2, { kind: 'VIOLATION', disposition: undefined }).expect(400);
+    await incident(agents.manager, 2, { kind: 'INSPECTION', outOfService: false, violationCount: 99 }).expect(400);
+    await incident(agents.manager, 1).expect(409);
+    expect((await incident(agents.staff, 2).expect(201)).body.version).toBe(3);
+    await incident(agents.manager, 3, { kind: 'VIOLATION', disposition: 'PENDING', summary: 'Fictional speeding citation', preventable: undefined, injuries: undefined, fatalities: undefined, towAway: undefined }).expect(201);
+    await incident(agents.manager, 4, { kind: 'INSPECTION', outOfService: false, violationCount: 0, summary: 'Fictional level 2 inspection, clean', preventable: undefined, injuries: undefined, fatalities: undefined, towAway: undefined }).expect(201);
+    // Open accidents and pending violations wait on the Safety list until settled; a clean inspection never does.
+    expect((await attention()).map((row: { kind: string }) => row.kind).sort()).toEqual(['ACCIDENT', 'VIOLATION']);
+    const items = (await driver(id)).incidents.items as { id: string; kind: string }[];
+    const accident = items.find(row => row.kind === 'ACCIDENT')!.id, violation = items.find(row => row.kind === 'VIOLATION')!.id, inspection = items.find(row => row.kind === 'INSPECTION')!.id;
+    const settle = (agent: Agent, version: number, incidentId: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/incidents/${incidentId}/settle`).set(headers).send({ version, ...body });
+    await settle(agents.lead, 5, accident, { preventable: 'NO' }).expect(403);
+    await settle(agents.manager, 5, accident, {}).expect(400);
+    await settle(agents.manager, 5, accident, { preventable: 'NO', disposition: 'DISMISSED' }).expect(400);
+    await settle(agents.manager, 5, violation, { preventable: 'NO' }).expect(409);
+    await settle(agents.manager, 5, inspection, { disposition: 'DISMISSED' }).expect(409);
+    await settle(agents.staff, 5, accident, { preventable: 'NO' }).expect(201);
+    await settle(agents.manager, 6, accident, { preventable: 'YES' }).expect(409);
+    await settle(agents.manager, 6, violation, { disposition: 'CONVICTED' }).expect(201);
+    expect(await attention()).toEqual([]);
+    expect((await driver(id)).incidents.items.find((row: { id: string }) => row.id === accident)).toMatchObject({ preventable: 'NO', settledAt: expect.any(String) });
+    // Only the manager voids, with a reason; the entry stays in the record.
+    const voidIt = (agent: Agent, version: number, reason = 'Recorded against the wrong driver') => agent.post(`/api/safety/drivers/${id}/incidents/${inspection}/void`).set(headers).send({ version, reason });
+    await voidIt(agents.staff, 7).expect(403);
+    await voidIt(agents.manager, 7, ' ').expect(400);
+    await voidIt(agents.manager, 7).expect(201);
+    await voidIt(agents.manager, 8).expect(409);
+    expect((await driver(id)).incidents.items.find((row: { id: string }) => row.id === inspection)).toMatchObject({ voidedAt: expect.any(String), voidReason: 'Recorded against the wrong driver' });
+    // Events hold the kind only: no summary, notes, dates or outcomes.
+    expect((await events(id)).filter(row => row.event.startsWith('INCIDENT_')).map(row => row.metadata).slice(0, 2)).toEqual([{ kind: 'ACCIDENT' }, { kind: 'VIOLATION' }]);
+    expect(JSON.stringify(await events(id))).not.toMatch(/rear-end|speeding|CONVICTED|wrong driver/);
+  });
+
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
@@ -1123,6 +1176,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'INCIDENT_RECORDED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded driver incidents');
+    await db.query(`DELETE FROM driver_events WHERE event = 'INCIDENT_RECORDED'`);
+    await db.undoLastMigration(); // DriverIncidents, with none here
     await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'TEST_RECORDED', '{}')`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded drug and alcohol test results');
     await db.query(`DELETE FROM driver_events WHERE event = 'TEST_RECORDED'`);
@@ -1185,6 +1242,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverTesting1793060000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverIncidents1793070000000');
   });
 });

@@ -27,7 +27,10 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with yearly reviews.
   annualReviews?: AnnualReviews;
   // From an API with ongoing drug and alcohol testing.
-  testing?: { items: TestRow[] } }
+  testing?: { items: TestRow[] };
+  // From an API with accidents, violations and inspections.
+  incidents?: { items: IncidentRow[] } }
+export interface IncidentRow { id: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; state: string | null; summary: string; note: string | null; preventable: 'YES' | 'NO' | 'UNDETERMINED' | null; injuries: boolean | null; fatalities: boolean | null; towAway: boolean | null; disposition: 'PENDING' | 'CONVICTED' | 'DISMISSED' | null; outOfService: boolean | null; violationCount: number | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface TestRow { id: string; kind: 'DRUG' | 'ALCOHOL'; reason: string; testedOn: string; result: 'NEGATIVE' | 'NOT_NEGATIVE' | 'CANCELLED' | 'REFUSED'; note: string | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }
 export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean }

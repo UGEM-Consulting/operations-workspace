@@ -13,6 +13,7 @@ import { ScreeningService } from '../safety/screening.service';
 import { SafetyService } from '../safety/safety.service';
 import { AnnualReviewService } from '../safety/annual-review.service';
 import { TestingService } from '../safety/testing.service';
+import { IncidentService } from '../safety/incident.service';
 import { SAFETY_ROLES } from '../safety/driver-records';
 
 /**
@@ -22,7 +23,7 @@ import { SAFETY_ROLES } from '../safety/driver-records';
 @Controller('workspace')
 @Roles(...STAFF)
 class WorkspaceController {
-  constructor(private readonly reviews: ReviewService, private readonly it: ItService, private readonly promotions: PromotionsService, private readonly screening: ScreeningService, private readonly safety: SafetyService, private readonly annual: AnnualReviewService, private readonly testing: TestingService) {}
+  constructor(private readonly reviews: ReviewService, private readonly it: ItService, private readonly promotions: PromotionsService, private readonly screening: ScreeningService, private readonly safety: SafetyService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService) {}
   @Get('counts')
   async counts(@Req() req: AuthRequest) {
     const user = req.currentUser;
@@ -34,7 +35,7 @@ class WorkspaceController {
     if (openIt !== null) navigation.it = openIt;
     if (promotions !== null) navigation.promotions = promotions;
     if (drivers !== null) navigation.drivers = drivers;
-    if (SAFETY_ROLES.includes(user.role)) navigation.expiring = await this.safety.expiringCount() + (await this.annual.due()).items.length + (await this.testing.attention()).length;
+    if (SAFETY_ROLES.includes(user.role)) navigation.expiring = await this.safety.expiringCount() + (await this.annual.due()).items.length + (await this.testing.attention()).length + (await this.incidents.attention()).length;
     return { navigation, unreadNotifications: unread };
   }
 }
