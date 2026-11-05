@@ -4,9 +4,10 @@ import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
 import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeActionDto, MoveMemberDto, PlaceMemberDto, ReassignSupportDto, StartDateDto, SupportTypeDto, UpdateMemberDto, UpdateTeamDto, validPhone } from './dispatch.dto';
-import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberStartDateChange, MemberSupportLink, NO_MC, PromotionRequest, Team } from './dispatch.entity';
+import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberStartDateChange, MemberSupportLink, NO_MC, positionLabel, PromotionRequest, Team } from './dispatch.entity';
 import { ApplicationActivity, Invitation } from '../onboarding/entities';
-import { lockCatchUpLinks, lockTeam, onNotice, paperworkTimeEnded, supportedDispatcher } from './create-member';
+import { sharedSignIns } from './account-details';
+import { lockCatchUpLinks, lockTeam, memberPlace, onNotice, paperworkTimeEnded, supportedDispatcher, supportedTeam } from './create-member';
 import { addDays, usDay } from '../safety/screening-rules';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } from '../it/it.entity';
 import { DriverAssignment } from '../safety/safety.entity';
@@ -49,7 +50,8 @@ export class DispatchService {
     json_build_object('id', m.id, 'name', m.name) AS mc,
     CASE WHEN l.id IS NULL THEN NULL ELSE json_build_object('id', l.id, 'name', l."firstName" || ' ' || l."lastName") END AS lead,
     (SELECT count(*)::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = t.id AND a."endedAt" IS NULL AND d.status = 'ACTIVE') AS members,
-    (SELECT count(*)::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = t.id AND a."endedAt" IS NULL AND d.status = 'ONBOARDING') AS onboarding
+    (SELECT count(*)::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = t.id AND a."endedAt" IS NULL AND d.status = 'ONBOARDING') AS onboarding,
+    (SELECT count(*)::integer FROM member_support_links l JOIN dispatch_members d ON d.id = l."supportId" WHERE l."teamId" = t.id AND l."endedAt" IS NULL AND d.status <> 'LEFT') AS "wholeTeam"
    FROM teams t JOIN mcs m ON m.id = t."mcId" LEFT JOIN dispatch_members l ON l.id = t."leadMemberId"
    WHERE ($1 = 'ALL' OR ($1 = 'ACTIVE') = (t."archivedAt" IS NULL)) ORDER BY m."nameKey", t."nameKey"`, [status]);
   const [counts] = await this.db.query(`SELECT count(*) FILTER (WHERE "archivedAt" IS NULL)::integer AS active, count(*) FILTER (WHERE "archivedAt" IS NOT NULL)::integer AS archived FROM teams`);
@@ -77,7 +79,7 @@ export class DispatchService {
    const fields: string[] = [];
    if (dto.name !== undefined && dto.name !== team.name) { team.name = dto.name; team.nameKey = listNameKey(dto.name); fields.push('name'); }
    if (dto.mcId !== undefined && dto.mcId !== team.mcId) {
-    if (members.length) throw new ConflictException('Move this team’s dispatchers first; a team keeps its MC while it has dispatchers.');
+    if (members.length) throw new ConflictException(members.some(row => row.position === 'DISPATCHER') ? 'Move this team’s dispatchers first; a team keeps its MC while it has dispatchers.' : 'Change who this team’s supports and updaters assist first; a team keeps its MC while they assist it.');
     await this.activeMc(em, dto.mcId); team.mcId = dto.mcId; fields.push('mcId');
    }
    if (dto.leadMemberId !== undefined && dto.leadMemberId !== team.leadMemberId) {
@@ -89,7 +91,7 @@ export class DispatchService {
    }
    const archive = dto.archived === undefined || dto.archived === (team.archivedAt !== null) ? null : dto.archived;
    if (archive) {
-    if (members.length) throw new ConflictException('A team can only be archived once it has no dispatchers.');
+    if (members.length) throw new ConflictException(members.some(row => row.position === 'DISPATCHER') ? 'A team can only be archived once it has no dispatchers.' : 'People assist this whole team. Change who they assist first.');
     team.archivedAt = new Date(); team.leadMemberId = null;
    } else if (archive === false) { await this.activeMc(em, team.mcId); team.archivedAt = null; }
    if (!fields.length && archive === null) return { id, version: team.version };
@@ -103,8 +105,8 @@ export class DispatchService {
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'LEFT' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN a.id IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
-    coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", t.id AS "teamId", t.name AS team, (t."leadMemberId" = d.id) IS TRUE AS lead,
+    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a.id IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a.id IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
+    coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", coalesce(st.id, t.id) AS "teamId", coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
     n."lastDay"::text AS "lastDay", n."lastDay" < $2::date AS "lastDayPassed",
     CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM driver_assignments da WHERE da."memberId" = d.id AND da."endedAt" IS NULL) END AS "driversToReassign",
@@ -112,7 +114,7 @@ export class DispatchService {
     CASE WHEN n.id IS NULL OR rm.id IS NULL THEN NULL WHEN rm."completedAt" IS NOT NULL THEN 'COMPLETED' WHEN rm."removeNowAt" IS NULL AND rm."dueOn" > $3::date THEN 'SCHEDULED' ELSE 'IN_PROGRESS' END AS "itRemoval"
    FROM dispatch_members d LEFT JOIN job_titles jt ON jt.id = d."jobTitleId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
    LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id AND l."endedAt" IS NULL AND d.position = 'SUPPORT' LIMIT 1) sl ON true
-   LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId"
+   LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId" LEFT JOIN teams st ON st.id = sl."teamId" LEFT JOIN mcs sm ON sm.id = st."mcId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = coalesce(sl."dispatcherId", d.id) ORDER BY x."startedAt" DESC, x."createdAt" DESC LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    LEFT JOIN member_notices n ON n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL
@@ -143,7 +145,7 @@ export class DispatchService {
    member.jobTitleId ? this.db.getRepository(JobTitle).findOneBy({ id: member.jobTitleId }) : null,
    this.db.getRepository(Team).findOneBy({ leadMemberId: id }),
    // The company accounts IT recorded and how far setup is; never IT notes or verification metadata.
-   application ? this.db.query(`SELECT r."companyEmail", r."assignedRingCentralPhoneNumber" AS "workPhone", r."completedAt", r."cancelledAt",
+   application ? this.db.query(`SELECT r."companyEmail", r."assignedRingCentralPhoneNumber" AS "workPhone", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."cancelledAt",
      count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total
     FROM it_onboarding_requests r LEFT JOIN it_onboarding_tasks t ON t."requestId" = r.id WHERE r."applicationId" = $1 GROUP BY r.id`, [application.id]) : [],
    application ? this.db.query(`SELECT DISTINCT ON (d.id) d.id, d.kind, d.title, d.version, s."signedAt" FROM document_signatures s JOIN company_documents d ON d.id = s."documentId"
@@ -178,11 +180,12 @@ export class DispatchService {
   const account = member.accountUserId && member.status !== 'LEFT' ? await this.db.getRepository(UserEntity).findOneBy({ id: member.accountUserId }) : null;
   const fields = (application?.fields ?? {}) as Record<string, string | undefined>;
   const current = history.find((row: { endedAt: Date | null }) => row.endedAt === null) ?? null;
-  // A support's dispatchers over time (the open row is now, with that dispatcher's MC and team); a dispatcher's supports now.
+  // Who a support has assisted over time (the open row is now, with that dispatcher's or team's MC and team); a dispatcher's supports now.
   const supportHistory = member.position === 'SUPPORT' ? await this.db.query(`SELECT l.id, l."startedAt", l."endedAt", l.reason, d.id AS "dispatcherId",
-    d."firstName" || ' ' || d."lastName" AS dispatcher, d.status AS "dispatcherStatus", CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team,
+    CASE WHEN d.id IS NULL THEN NULL ELSE d."firstName" || ' ' || d."lastName" END AS dispatcher, d.status AS "dispatcherStatus", lt.id AS "wholeTeamId", lt.name AS "wholeTeam",
+    CASE WHEN lt.id IS NOT NULL THEN lm.name WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(lt.name, t.name) AS team,
     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
-   FROM member_support_links l JOIN dispatch_members d ON d.id = l."dispatcherId" LEFT JOIN users u ON u.id = l."actorId"
+   FROM member_support_links l LEFT JOIN dispatch_members d ON d.id = l."dispatcherId" LEFT JOIN teams lt ON lt.id = l."teamId" LEFT JOIN mcs lm ON lm.id = lt."mcId" LEFT JOIN users u ON u.id = l."actorId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC`, [id]) : [];
@@ -192,7 +195,9 @@ export class DispatchService {
   // Who changed what they're called, and when. Support or updater is no one's private detail, so the event can say which.
   const supportTypeChanges = member.position === 'SUPPORT' ? await this.db.query(`SELECT e.id, e.metadata->>'to' AS "to", e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
    FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event = 'SUPPORT_TYPE_CHANGED' ORDER BY e."createdAt" DESC`, [id]) : [];
-  return { id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  // Anyone else using their load board sign-ins, so nobody closes the wrong account.
+  const signIns = { dat: it[0]?.datEmail ?? existing?.datEmail ?? null, truckstop: it[0]?.truckstopEmail ?? existing?.truckstopEmail ?? null };
+  return { sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null,
    // The onboarding record itself stays with its responsible manager and administrators.
@@ -350,22 +355,23 @@ export class DispatchService {
    const member = await this.lockMember(em, id, dto.version);
    if (await onNotice(em, id)) throw new ConflictException('This dispatcher is already leaving. Change their last day instead.');
    const today = usDay('latest'), lastDay = dto.leftAt.slice(0, 10), name = `${member.firstName} ${member.lastName}`;
-   const place = await this.place(em, id);
-   // A dispatcher added by hand always gets a removal; a support only when accounts were recorded for them.
-   const record = setup ? null : await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
-   const accounts = record && (member.position === 'DISPATCHER' || record.companyEmail || record.ringCentralNumber) ? { companyEmail: record.companyEmail, ringCentralNumber: record.ringCentralNumber } : undefined, removes = !!setup || !!accounts;
+   const place = await memberPlace(em, id);
+   // A dispatcher added by hand always gets a removal; a support only when accounts were recorded for them. Someone added by hand
+   // and promoted has IT setup too: what IT recorded comes first, and what a manager recorded before that still reaches IT.
+   const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
+   const accounts = record && (setup || member.position === 'DISPATCHER' || record.companyEmail || record.ringCentralNumber || record.datEmail || record.truckstopEmail) ? { companyEmail: record.companyEmail, ringCentralNumber: record.ringCentralNumber, ringCentralExtension: record.ringCentralExtension, datEmail: record.datEmail, truckstopEmail: record.truckstopEmail } : undefined, removes = !!setup || !!accounts;
    if (lastDay > today) {
     if (lastDay > addDays(today, NOTICE_MAX_DAYS)) throw new BadRequestException(`The last day can be up to ${NOTICE_MAX_DAYS} days ahead.`);
     if (setup && !setup.completedAt) throw new BadRequestException('This dispatcher is still in IT setup, so their last day can’t be in the future. Choose today to cancel the setup.');
     await em.getRepository(MemberNotice).save({ memberId: id, lastDay, reason: dto.reason, recordedBy: user.id, changes: [] });
     member.version += 1; await em.save(member);
-    if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+    if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
     await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
     return { id, version: member.version };
    }
    await this.requireNobodyAssigned(em, member);
    const leftAt = day(dto.leftAt);
-   if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+   if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
    await this.finishLeaving(em, user, member, leftAt, dto.reason, removes);
    return { id, version: member.version };
   });
@@ -373,14 +379,6 @@ export class DispatchService {
   return result;
  }
  /** Where they work now, for what IT sees on the removal. */
- private async place(em: EntityManager, id: string): Promise<{ mcName: string | null; teamName: string | null }> {
-  const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
-  // A dispatcher with no period has no MC yet, which IT mustn't read as Independent. A support's MC is their dispatcher's.
-  if (!current) { const member = await em.getRepository(DispatchMember).findOneBy({ id }); return { mcName: member?.position === 'DISPATCHER' ? NO_MC : null, teamName: null }; }
-  if (!current.mcId) return { mcName: null, teamName: null };
-  const [row] = await em.query(`SELECT m.name AS mc, t.name AS team FROM mcs m LEFT JOIN teams t ON t.id = $2 WHERE m.id = $1`, [current.mcId, current.teamId]);
-  return { mcName: row?.mc ?? null, teamName: row?.team ?? null };
- }
  private async stillAssigned(em: EntityManager, member: DispatchMember) {
   return { supports: member.position === 'DISPATCHER' && await em.getRepository(MemberSupportLink).existsBy({ dispatcherId: member.id, endedAt: IsNull() }),
    drivers: await em.getRepository(DriverAssignment).existsBy({ memberId: member.id, endedAt: IsNull() }) };
@@ -398,7 +396,7 @@ export class DispatchService {
   const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
   if (current) leftAt = notBefore(leftAt, current.startedAt, 'The leaving date can’t be before the current MC and team started.');
   if (current) { current.endedAt = leftAt; await em.save(current); }
-  // A support leaving stops assisting their dispatcher on the same day.
+  // A support leaving stops assisting their dispatcher or team on the same day.
   const link = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
   if (link) leftAt = notBefore(leftAt, link.startedAt, 'The leaving date can’t be before they started with their dispatcher.');
   if (link) { link.endedAt = leftAt; await em.save(link); }
@@ -554,20 +552,22 @@ export class DispatchService {
   return true;
  }
 
- /** A support starts assisting another dispatcher: the current link ends on the start date and stays in the history. */
+ /** A support starts assisting another dispatcher or a whole team: the current link ends on the start date and stays in the history. */
  async reassignSupport(user: User, id: string, dto: ReassignSupportDto) {
+  if (!!dto.dispatcherId === !!dto.teamId) throw new BadRequestException('Choose a dispatcher or a team.');
   return this.write(async em => {
    const member = await this.lockMember(em, id, dto.version);
-   if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support or an updater has a dispatcher to change.');
+   if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support or an updater has someone to assist.');
    let startedAt = day(dto.startedAt);
-   await supportedDispatcher(em, dto.dispatcherId);
+   if (dto.dispatcherId) await supportedDispatcher(em, dto.dispatcherId); else await supportedTeam(em, dto.teamId!);
    const current = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
-   if (current?.dispatcherId === dto.dispatcherId) throw new BadRequestException('They already assist this dispatcher.');
-   if (current) startedAt = notBefore(startedAt, current.startedAt, 'The change can’t start before the current dispatcher did.');
+   if (dto.dispatcherId && current?.dispatcherId === dto.dispatcherId) throw new BadRequestException('They already assist this dispatcher.');
+   if (dto.teamId && current?.teamId === dto.teamId) throw new BadRequestException('They already assist this team.');
+   if (current) startedAt = notBefore(startedAt, current.startedAt, 'The change can’t start before their current one did.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
-   await em.getRepository(MemberSupportLink).save({ supportId: id, dispatcherId: dto.dispatcherId, startedAt, reason: dto.reason, actorId: user.id });
+   await em.getRepository(MemberSupportLink).save({ supportId: id, dispatcherId: dto.dispatcherId ?? null, teamId: dto.teamId ?? null, startedAt, reason: dto.reason, actorId: user.id });
    member.version += 1; await em.save(member);
-   await this.event(em, user, 'SUPPORT_REASSIGNED', { memberId: id }, { fields: ['dispatcherId'] });
+   await this.event(em, user, 'SUPPORT_REASSIGNED', { memberId: id }, { fields: [dto.teamId ? 'teamId' : 'dispatcherId'], assists: dto.teamId ? 'TEAM' : 'DISPATCHER' });
    return { id, version: member.version };
   });
  }
@@ -588,7 +588,7 @@ export class DispatchService {
 
  /** Someone recorded by hand: what a manager recorded, the paper copies, and how far their paperwork has come. */
  private async existingRecord(user: User, id: string) {
-  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", u."firstName" || ' ' || u."lastName" AS "addedBy"
+  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r.telegram, r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", u."firstName" || ' ' || u."lastName" AS "addedBy"
    FROM existing_member_records r JOIN users u ON u.id = r."addedBy" WHERE r."memberId" = $1`, [id]);
   if (!record) return null;
   const paper = await this.db.query(`SELECT p.kind, p."signedOn"::text AS "signedOn", p."createdAt", u."firstName" || ' ' || u."lastName" AS "recordedBy" FROM member_paper_documents p JOIN users u ON u.id = p."recordedBy" WHERE p."memberId" = $1 ORDER BY p.kind`, [id]);
@@ -621,9 +621,10 @@ export class DispatchService {
   team.leadMemberId = null; team.version += 1; await em.save(team);
   return true;
  }
- // Everyone in the team now, including dispatchers still in IT setup (a team with them keeps its MC and stays open).
+ // Everyone in the team now, including dispatchers still in IT setup and anyone assisting the whole team (a team with them keeps its MC and stays open).
  private async teamMembers(em: EntityManager, teamId: string): Promise<{ id: string; position: string; status: string }[]> {
-  return em.query(`SELECT d.id, d.position, d.status FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND d.status <> 'LEFT'`, [teamId]);
+  return em.query(`SELECT d.id, d.position, d.status FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND d.status <> 'LEFT'
+   UNION ALL SELECT d.id, d.position, d.status FROM member_support_links l JOIN dispatch_members d ON d.id = l."supportId" WHERE l."teamId" = $1 AND l."endedAt" IS NULL AND d.status <> 'LEFT'`, [teamId]);
  }
  private async activeMc(em: EntityManager, id: string) {
   const mc = await em.getRepository(Mc).findOneBy({ id });

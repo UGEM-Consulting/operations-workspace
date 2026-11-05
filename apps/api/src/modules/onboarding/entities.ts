@@ -22,9 +22,10 @@ export class Invitation {
  @Column('varchar', { nullable: true }) mcName!: string | null;
  @Column('varchar', { nullable: true }) teamLead!: string | null;
  @Column('varchar', { nullable: true }) jobTitle!: string | null;
- // DISPATCHER (default) or SUPPORT, who assists one dispatcher (the manager's choice, confirmed at approval).
+ // DISPATCHER (default) or SUPPORT, who assists one dispatcher or one whole team (the manager's choice, confirmed at approval).
  @Column('varchar', { default: 'DISPATCHER' }) position!: 'DISPATCHER' | 'SUPPORT';
  @Column('uuid', { nullable: true }) supportsMemberId!: string | null;
+ @Column('uuid', { nullable: true }) supportsTeamId!: string | null;
  // What someone with position SUPPORT is called: SUPPORT or UPDATER. The manager's choice, confirmed at approval.
  @Column('varchar', { default: 'SUPPORT' }) supportType!: SupportType;
  // A catch-up link: this is someone already working here, bringing their paperwork up to date. Never an application for a job.

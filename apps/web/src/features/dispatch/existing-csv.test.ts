@@ -35,8 +35,9 @@ describe('reading the file', () => {
   });
   it('reads back its own template', () => {
     const rows = readExistingFile(TEMPLATE).rows ?? [];
-    assert.equal(rows.length, 2);
+    assert.equal(rows.length, 3);
     assert.equal(rows[1].supports, 'Riley Santos');
+    assert.equal(rows[2].team, 'Avery team');
     assert.equal(rows[0].ndaSignedOn, '2024-03-04');
     assert.ok(rows.every(row => !row.personalEmail || row.personalEmail.endsWith('@example.test')));
   });

@@ -10,11 +10,12 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { digest } from '../onboarding/verification-code';
 import { usDay } from '../safety/screening-rules';
 import { Role, type User } from '../users/user.entity';
-import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
+import { ItOnboardingRequest, ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
 import { createRemoval } from '../it/removal';
 import { NotificationsService } from '../updates/notifications.service';
-import { lockCatchUpLinks, lockTeam, paperworkTimeEnded, supportedDispatcher } from './create-member';
-import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, NO_MC, Position, SupportType, Team } from './dispatch.entity';
+import { EXTENSION, signInsInUse, telegramUsername } from './account-details';
+import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
+import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, NO_MC, Position, positionLabel, SupportType, Team } from './dispatch.entity';
 import { ExistingRowDto, UpdateExistingDto } from './dispatch.dto';
 
 const IMPORT_LOCK = 42002037, LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
@@ -50,8 +51,9 @@ const midday = (date: string) => new Date(`${date}T12:00:00Z`);
 
 export type RowStatus = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; supportType: SupportType; status: RowStatus; problems: string[]; sameName: boolean;
- mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean }
-export interface Choice { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; rows: number[] }
+ mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean; sharesSignIn: boolean }
+// forSupports: the same team text on support and updater rows is its own choice, because they need a real team.
+export interface Choice { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; forSupports?: boolean; rows: number[] }
 
 interface Known {
  mcs: Map<string, { id: string; name: string }>; teams: { id: string; name: string; mcId: string; lead: string | null }[]; titles: Map<string, string>;
@@ -100,10 +102,10 @@ export class ExistingDispatchersService {
    companyEmails: new Set([...values(row => row.company)].map(value => value.toLowerCase())), personalEmails: new Set([...values(row => row.personal)].map(value => value.toLowerCase())), phones: new Set([...values(row => row.phone)].map(digits)) };
  }
  /** Checks every row against the lists and the people already here. Pure: nothing is written. */
- private evaluate(rows: ExistingRowDto[], known: Known) {
+ private evaluate(rows: ExistingRowDto[], known: Known, signIns: Set<string>) {
   const today = usDay('latest'), choices = new Map<string, Choice>();
   const choice = (entry: Omit<Choice, 'rows'>, row: number) => {
-   const key = `${entry.field}|${listNameKey(entry.mc ?? '')}|${listNameKey(entry.text)}`;
+   const key = `${entry.field}|${entry.forSupports ? 'supports' : ''}|${listNameKey(entry.mc ?? '')}|${listNameKey(entry.text)}`;
    const found = choices.get(key) ?? { ...entry, rows: [] };
    found.rows.push(row); choices.set(key, found);
   };
@@ -111,7 +113,7 @@ export class ExistingDispatchersService {
   const results: RowResult[] = rows.map(row => {
    const first = text(row.firstName), last = text(row.lastName), problems: string[] = [], { position, supportType, known: positionKnown } = readPosition(text(row.position));
    const name = `${first} ${last}`.trim();
-   let status: RowStatus = 'READY', mcId: string | null = null, teamId: string | null = null, jobTitleId: string | null = null, already = '', sameName = false, noMc = false, mcFromTeam = false;
+   let status: RowStatus = 'READY', mcId: string | null = null, teamId: string | null = null, jobTitleId: string | null = null, supportsTeamId: string | null = null, already = '', sameName = false, noMc = false, mcFromTeam = false;
    if (!first || !last) problems.push('First and last name are both needed.');
    if (first.length > 100 || last.length > 100) problems.push('Names can be up to 100 characters.');
    if (!positionKnown) problems.push(`Position “${text(row.position)}” should be Dispatcher, Support or Updater.`);
@@ -133,6 +135,14 @@ export class ExistingDispatchersService {
     else if (this.fictionalOnly && !value.endsWith('@example.test')) problems.push(`Outside production, ${label.toLowerCase()} must be a fictional example.test address.`);
    }
    for (const [label, value] of [['RingCentral number', number], ['Personal phone', phone]] as const) if (value && (value.length > 40 || !INTERNATIONAL_PHONE_PATTERN.test(value))) problems.push(`${label} “${value}” should have 7 to 15 digits.`);
+   if (text(row.telegram) && !telegramUsername(text(row.telegram))) problems.push('Telegram should be a username, like @alexmoreno.');
+   if (text(row.ringCentralExtension) && !EXTENSION.test(text(row.ringCentralExtension))) problems.push('The extension should be digits, up to 6.');
+   // Never repeats what was in the cell: it may be a password.
+   for (const [label, value] of [['DAT', text(row.datEmail).toLowerCase()], ['Truckstop', text(row.truckstopEmail).toLowerCase()]] as const) {
+    if (!value) continue;
+    if (!EMAIL.test(value) || value.length > 254) problems.push(`The ${label} sign-in isn’t an email address. This column takes the sign-in email only, never a password.`);
+    else if (this.fictionalOnly && !value.endsWith('@example.test')) problems.push(`Outside production, the ${label} sign-in must be a fictional example.test address.`);
+   }
    if (company && known.companyEmails.has(company)) already = 'Already in the workspace with this company email. This row is left out.';
    else if (personal && known.personalEmails.has(personal)) already = 'Already in the workspace with this personal email. This row is left out.';
    else if (phone && known.phones.has(digits(phone))) already = 'Already in the workspace with this personal phone. This row is left out.';
@@ -188,14 +198,23 @@ export class ExistingDispatchersService {
      if (noMc && !seenNoMc.has(nameKey)) seenNoMc.set(nameKey, row.row);
     }
    } else {
-    if (text(row.mc) || text(row.team) || text(row.jobTitle)) problems.push(`${capitalized(aSupport(supportType))} has no MC, team or job title of their own. Leave them empty.`);
+    // A team and no dispatcher means the whole team. With a dispatcher named, any team in the row is ignored: they work where their dispatcher works.
+    const noMcText = listNameKey(text(row.mc)) === listNameKey(NO_MC), teamText = text(row.team), namesDispatcher = !!text(row.supports) || !!row.supportsMemberId;
+    if ((text(row.mc) && !noMcText) || text(row.jobTitle)) problems.push(`${capitalized(aSupport(supportType))} has no MC or job title of their own. Leave them empty.`);
+    if (row.supportsTeamId && namesDispatcher) problems.push('Choose a dispatcher or a team, not both.');
+    if (row.supportsTeamId) {
+     if (known.teams.some(item => item.id === row.supportsTeamId)) supportsTeamId = row.supportsTeamId; else problems.push(`Choose an active team for ${aSupport(supportType)}.`);
+    } else if (!namesDispatcher && teamText) {
+     const teams = matchingTeams(known.teams, teamText);
+     if (teams.length === 1) supportsTeamId = teams[0].id; else choice({ field: 'team', text: teamText, forSupports: true }, row.row);
+    }
     if (!already && !row.differentPerson && known.members.some(item => item.position === 'SUPPORT' && listNameKey(item.name) === listNameKey(name))) {
      already = 'Same name as a support or updater in the workspace. Left out unless you say they’re different people.'; sameName = true;
     }
     if (name) sameInFile(`SUPPORT|${listNameKey(name)}`, 'name');
    }
    if (already) { status = 'ALREADY'; problems.unshift(already); }
-   return { row: row.row, name, position, supportType, status, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsRow: null, startedOn, noMc, mcFromTeam };
+   return { row: row.row, name, position, supportType, status, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsTeamId, supportsRow: null, startedOn, noMc, mcFromTeam, sharesSignIn: false };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
@@ -211,7 +230,10 @@ export class ExistingDispatchersService {
     return;
    }
    const wanted = listNameKey(text(row.supports));
-   if (!wanted) { result.problems.push(`${capitalized(aSupport(result.supportType))} needs the dispatcher they assist.`); result.status = 'PROBLEM'; return; }
+   if (!wanted) {
+    if (result.supportsTeamId || choices.has(`team|supports||${listNameKey(text(row.team))}`)) return;
+    result.problems.push('Name the dispatcher they assist, or the team if they assist everyone on it.'); result.status = 'PROBLEM'; return;
+   }
    const here = known.members.filter(item => item.position === 'DISPATCHER' && listNameKey(item.name) === wanted);
    const inFile = results.filter(item => item.position === 'DISPATCHER' && listNameKey(item.name) === wanted && item.status !== 'ALREADY');
    if (here.length + inFile.length > 1) { result.problems.push(`More than one dispatcher is called “${text(row.supports)}”. Use Add one person for ${result.supportType === 'UPDATER' ? 'this updater' : 'this support'} and choose their dispatcher from the list.`); result.status = 'PROBLEM'; }
@@ -221,23 +243,28 @@ export class ExistingDispatchersService {
    else if (inFile[0]) { result.problems.push(`“${text(row.supports)}” in row ${inFile[0].row} isn’t ready yet.`); if (result.status === 'READY') result.status = 'CHOICE'; }
    else { result.problems.push(`${result.supportType === 'UPDATER' ? 'Assists' : 'Supports'} “${text(row.supports)}”, who isn’t in this file or the workspace.`); result.status = 'PROBLEM'; }
   });
+  // A sign-in used by someone else here or in this file. Allowed, and worth saying before anything is saved. A row that won't be added shares nothing.
+  const signInsOf = (row: ExistingRowDto) => [text(row.datEmail).toLowerCase(), text(row.truckstopEmail).toLowerCase()].filter(Boolean);
+  const timesInFile = new Map<string, number>();
+  rows.forEach((row, index) => { if (['READY', 'CHOICE'].includes(results[index].status)) for (const email of new Set(signInsOf(row))) timesInFile.set(email, (timesInFile.get(email) ?? 0) + 1); });
+  rows.forEach((row, index) => { results[index].sharesSignIn = signInsOf(row).some(email => signIns.has(email) || (timesInFile.get(email) ?? 0) > 1); });
   return { results, choices: [...choices.values()] };
  }
  async check(rows: ExistingRowDto[]) {
-  const { results, choices } = this.evaluate(rows, await this.known(this.db.manager));
+  const { results, choices } = this.evaluate(rows, await this.known(this.db.manager), await signInsInUse(this.db.manager));
   return { rows: results.map(({ row, name, position, supportType, status, problems, sameName }) => ({ row, name, position, supportType, status, problems, sameName })), choices, counts: this.counts(results) };
  }
  private counts(results: RowResult[]) {
   const count = (status: RowStatus) => results.filter(row => row.status === status).length;
   const ready = results.filter(row => row.status === 'READY');
-  return { ready: count('READY'), choice: count('CHOICE'), problem: count('PROBLEM'), already: count('ALREADY'), noStartDate: ready.filter(row => !row.startedOn).length, noMc: ready.filter(row => row.noMc).length, mcFromTeam: ready.filter(row => row.mcFromTeam).length };
+  return { ready: count('READY'), choice: count('CHOICE'), problem: count('PROBLEM'), already: count('ALREADY'), noStartDate: ready.filter(row => !row.startedOn).length, noMc: ready.filter(row => row.noMc).length, mcFromTeam: ready.filter(row => row.mcFromTeam).length, wholeTeam: ready.filter(row => row.supportsTeamId).length, sharedSignIn: ready.filter(row => row.sharesSignIn).length };
  }
  /** Adds the rows that are ready, checked again under one lock so two uploads can't both add the same person. */
  async add(user: User, rows: ExistingRowDto[], sourceName?: string) {
   await onboardingLimit(this.db, 'existing-add:' + user.id, 60, 3600);
   return this.db.transaction(async em => {
    await em.query('SELECT pg_advisory_xact_lock($1)', [IMPORT_LOCK]);
-   const known = await this.known(em), { results } = this.evaluate(rows, known);
+   const known = await this.known(em), { results } = this.evaluate(rows, known, await signInsInUse(em));
    const ready = results.filter(row => row.status === 'READY'), byRow = new Map(rows.map(row => [row.row, row])), added = new Map<number, string>();
    const locked = new Map<string, Team>();
    // Read FOR SHARE and checked again, members before teams: leaving doesn't take the import lock, and refuses while supports are linked.
@@ -246,21 +273,23 @@ export class ExistingDispatchersService {
    for (const result of [...ready.filter(row => row.position === 'DISPATCHER'), ...ready.filter(row => row.position === 'SUPPORT')]) {
     // With no start date, joinedAt and any first period keep the day they were added, marked as not recorded so it never shows as real.
     const row = byRow.get(result.row)!, startedAt = midday(result.startedOn ?? usDay('latest')), hasPeriod = !result.noMc;
-    if (result.teamId && !locked.has(result.teamId)) {
-     const team = await lockTeam(em, result.teamId);
-     if (!team || team.archivedAt || team.mcId !== result.mcId) throw new ConflictException('A team changed while this was being added. Check the rows again.');
-     locked.set(result.teamId, team);
+    const placedIn = result.teamId ?? result.supportsTeamId;
+    if (placedIn && !locked.has(placedIn)) {
+     const team = await lockTeam(em, placedIn);
+     if (!team || team.archivedAt || (result.teamId && team.mcId !== result.mcId)) throw new ConflictException('A team changed while this was being added. Check the rows again.');
+     locked.set(placedIn, team);
     }
     const [first, ...rest] = result.name.split(' ');
     const member = await em.getRepository(DispatchMember).save({ applicationId: null, firstName: text(row.firstName) || first, lastName: text(row.lastName) || rest.join(' '), position: result.position, supportType: result.supportType, status: 'ACTIVE', jobTitleId: result.jobTitleId, joinedAt: startedAt });
     if (result.position === 'DISPATCHER') { if (hasPeriod) await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: result.mcId, teamId: result.teamId, startedAt, reason: 'Added as an existing dispatcher.', actorId: user.id }); }
     else {
-     const dispatcherId = result.supportsMemberId ?? added.get(result.supportsRow!);
-     if (!dispatcherId) throw new ConflictException('A dispatcher changed while this was being added. Check the rows again.');
-     await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt, reason: result.supportType === 'UPDATER' ? 'Added as an existing updater.' : 'Added as an existing support.', actorId: user.id });
+     const dispatcherId = result.supportsTeamId ? null : result.supportsMemberId ?? added.get(result.supportsRow!) ?? null;
+     if (!dispatcherId && !result.supportsTeamId) throw new ConflictException('A dispatcher changed while this was being added. Check the rows again.');
+     await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, teamId: result.supportsTeamId, startedAt, reason: result.supportType === 'UPDATER' ? 'Added as an existing updater.' : 'Added as an existing support.', actorId: user.id });
     }
     await em.getRepository(ExistingMemberRecord).save({ memberId: member.id, addedBy: user.id, sourceName: sourceName?.trim().slice(0, 200) || null,
-     companyEmail: text(row.companyEmail).toLowerCase() || null, ringCentralNumber: text(row.ringCentralNumber) || null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null, startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod });
+     companyEmail: text(row.companyEmail).toLowerCase() || null, ringCentralNumber: text(row.ringCentralNumber) || null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null,
+     telegram: telegramUsername(text(row.telegram)), ringCentralExtension: text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null, startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod });
     let paper = 0;
     for (const [kind, value] of [['NDA', text(row.ndaSignedOn)], ['SOP', text(row.sopSignedOn)]] as const) {
      if (!value) continue;
@@ -275,14 +304,14 @@ export class ExistingDispatchersService {
  }
  /** Everyone added by hand who hasn't left, with what is outstanding. */
  async paperwork(user: User) {
-  const rows: { id: string; firstName: string; lastName: string; position: string; supportType: string; mc: string | null; team: string | null; dispatcher: string | null; personalEmail: string | null; acceptedAt: Date | null;
+  const rows: { id: string; firstName: string; lastName: string; position: string; supportType: string; mc: string | null; team: string | null; wholeTeam: string | null; dispatcher: string | null; personalEmail: string | null; acceptedAt: Date | null;
    paper: { kind: string; signedOn: string }[]; signed: string[]; invitationId: string | null; expiresAt: Date | null; openedAt: Date | null; consumedAt: Date | null; applicationId: string | null; applicationStatus: string | null; managerId: string | null; accessUntil: Date | null; returnEmail: string | null }[] = await this.db.query(`
-   SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", CASE WHEN x.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
+   SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", CASE WHEN st.id IS NOT NULL THEN sm.name WHEN x.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
     coalesce((SELECT json_agg(json_build_object('kind', p.kind, 'signedOn', p."signedOn"::text)) FROM member_paper_documents p WHERE p."memberId" = d.id), '[]') AS paper,
     coalesce((SELECT json_agg(DISTINCT c.kind) FROM document_signatures s JOIN company_documents c ON c.id = s."documentId" WHERE s."applicationId" = a.id AND s."signerRole" = 'APPLICANT'), '[]') AS signed,
     i.id AS "invitationId", i."expiresAt", i."openedAt", i."consumedAt", a.id AS "applicationId", a.status AS "applicationStatus", a."assignedManagerId" AS "managerId", a."applicantAccessUntil" AS "accessUntil", i.email AS "returnEmail"
    FROM existing_member_records r JOIN dispatch_members d ON d.id = r."memberId"
-   LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id AND l."endedAt" IS NULL LIMIT 1) sl ON true LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId"
+   LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id AND l."endedAt" IS NULL LIMIT 1) sl ON true LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId" LEFT JOIN teams st ON st.id = sl."teamId" LEFT JOIN mcs sm ON sm.id = st."mcId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = coalesce(sl."dispatcherId", d.id) AND x."endedAt" IS NULL LIMIT 1) x ON true LEFT JOIN mcs m ON m.id = x."mcId" LEFT JOIN teams t ON t.id = x."teamId"
    LEFT JOIN LATERAL (SELECT * FROM invitations v WHERE v."catchUpMemberId" = d.id AND v."revokedAt" IS NULL ORDER BY v."createdAt" DESC LIMIT 1) i ON true LEFT JOIN dispatcher_applications a ON a."invitationId" = i.id
    WHERE d.status <> 'LEFT' ORDER BY lower(d."firstName"), lower(d."lastName") LIMIT 1000`);
@@ -292,7 +321,7 @@ export class ExistingDispatchersService {
    const timeEnded = !!row.accessUntil && !!row.applicationStatus && paperworkTimeEnded({ consumedAt: row.consumedAt, status: row.applicationStatus, applicantAccessUntil: row.accessUntil });
    const state = row.acceptedAt ? 'FINISHED' : !row.invitationId || expired ? (row.personalEmail ? 'TO_CREATE' : 'NO_EMAIL') : !row.consumedAt ? (row.openedAt ? 'OPENED' : 'SENT') : timeEnded ? 'TIME_ENDED'
     : ['SUBMITTED', 'RESUBMITTED'].includes(row.applicationStatus ?? '') ? 'WAITING' : row.applicationStatus === 'CHANGES_REQUESTED' ? 'CHANGES_REQUESTED' : 'IN_PROGRESS';
-   return { id: row.id, firstName: row.firstName, lastName: row.lastName, position: row.position, supportType: row.supportType, mc: row.mc, team: row.team, dispatcher: row.dispatcher, personalEmail: row.personalEmail, state, linkExpired: expired,
+   return { id: row.id, firstName: row.firstName, lastName: row.lastName, position: row.position, supportType: row.supportType, mc: row.mc, team: row.team, wholeTeam: row.wholeTeam, dispatcher: row.dispatcher, personalEmail: row.personalEmail, state, linkExpired: expired,
     linkExpiresAt: row.expiresAt, nda: this.docState('NDA', row), sop: this.docState('SOP', row), applicationId: row.consumedAt && canReview ? row.applicationId : null, canReview,
     timeEndedAt: timeEnded ? row.accessUntil : null, returnEmail: row.consumedAt && canReview ? row.returnEmail : null };
   });
@@ -330,7 +359,7 @@ export class ExistingDispatchersService {
     const invitation = await em.getRepository(Invitation).save({ email: null, expectedEmail: record.personalEmail, mcName: null, teamLead: null, jobTitle: null, position: member.position, supportType: member.supportType, supportsMemberId: null,
      catchUpMemberId: memberId, telegramRequired: false, managerId: user.id, tokenHash: digest(token), expiresAt });
     await em.getRepository(DispatcherApplication).save({ invitationId: invitation.id, assignedManagerId: user.id, status: 'INVITED', applicantAccessUntil: expiresAt,
-     fields: { preferredAmericanFirstName: member.firstName, preferredAmericanLastName: member.lastName, ...(record.personalPhone ? { personalPhoneNumber: record.personalPhone } : {}) } });
+     fields: { preferredAmericanFirstName: member.firstName, preferredAmericanLastName: member.lastName, ...(record.personalPhone ? { personalPhoneNumber: record.personalPhone } : {}), ...(record.telegram ? { telegram: record.telegram } : {}) } });
     await em.getRepository(ApplicationActivity).save({ invitationId: invitation.id, event: 'INVITATION_CREATED', actorId: user.id });
     await em.getRepository(DispatchEvent).save({ memberId, teamId: null, event: 'CATCH_UP_LINK_CREATED', actorId: user.id, metadata: { replaced: open.length > 0 } });
     results.push({ memberId, name, email: record.personalEmail, url: `${origin}/apply#${token}` });
@@ -379,7 +408,7 @@ export class ExistingDispatchersService {
    const known = await this.known(em), changed: string[] = [];
    const others = await em.query(`SELECT "companyEmail" AS company, "personalEmail" AS personal, "personalPhone" AS phone FROM existing_member_records WHERE "memberId" = $1`, [id]);
    for (const own of others) { known.companyEmails.delete(own.company ?? ''); known.personalEmails.delete(own.personal ?? ''); known.phones.delete(digits(own.phone ?? '')); }
-   const set = (field: 'companyEmail' | 'ringCentralNumber' | 'personalEmail' | 'personalPhone', value: string | undefined) => { if (value !== undefined && value !== (record[field] ?? '')) { record[field] = value || null; changed.push(field); } };
+   const set = (field: 'companyEmail' | 'ringCentralNumber' | 'personalEmail' | 'personalPhone' | 'telegram' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail', value: string | undefined) => { if (value !== undefined && value !== (record[field] ?? '')) { record[field] = value || null; changed.push(field); } };
    for (const [field, used, label] of [['companyEmail', known.companyEmails, 'company email'], ['personalEmail', known.personalEmails, 'personal email']] as const) {
     const value = dto[field]?.toLowerCase();
     if (value && this.fictionalOnly && !value.endsWith('@example.test')) throw new BadRequestException(`Outside production, the ${label} must be a fictional example.test address.`);
@@ -388,6 +417,14 @@ export class ExistingDispatchersService {
    }
    if (dto.personalPhone && known.phones.has(digits(dto.personalPhone))) throw new ConflictException('Someone in the workspace already has this personal phone.');
    set('ringCentralNumber', dto.ringCentralNumber); set('personalPhone', dto.personalPhone);
+   if (dto.telegram && !telegramUsername(dto.telegram)) throw new BadRequestException('Telegram should be a username, like @alexmoreno.');
+   set('telegram', dto.telegram && telegramUsername(dto.telegram)!); set('ringCentralExtension', dto.ringCentralExtension);
+   // A sign-in may be shared, so unlike the other emails it's never refused for being on someone else's record.
+   for (const [field, label] of [['datEmail', 'DAT'], ['truckstopEmail', 'Truckstop']] as const) {
+    const value = dto[field]?.toLowerCase();
+    if (value && this.fictionalOnly && !value.endsWith('@example.test')) throw new BadRequestException(`Outside production, the ${label} sign-in must be a fictional example.test address.`);
+    set(field, value);
+   }
    const signed: { kind: string }[] = dto.ndaSignedOn === undefined && dto.sopSignedOn === undefined ? [] : await em.query(`SELECT DISTINCT c.kind FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id
      JOIN document_signatures s ON s."applicationId" = a.id AND s."signerRole" = 'APPLICANT' JOIN company_documents c ON c.id = s."documentId" WHERE i."catchUpMemberId" = $1`, [id]);
    for (const [kind, value] of [['NDA', dto.ndaSignedOn], ['SOP', dto.sopSignedOn]] as const) {
@@ -402,7 +439,7 @@ export class ExistingDispatchersService {
    if (!changed.length) return { id, version: member.version };
    member.version += 1; await em.save(member); await em.save(record);
    if (changed.includes('personalEmail')) await this.moveUnusedLink(em, user, id, record.personalEmail);
-   const accounts = changed.filter(field => field === 'companyEmail' || field === 'ringCentralNumber');
+   const accounts = changed.filter(field => ['companyEmail', 'ringCentralNumber', 'ringCentralExtension', 'datEmail', 'truckstopEmail'].includes(field));
    if (accounts.length) alerts = await this.correctRemoval(em, user, member, record, accounts);
    await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields: changed } });
    return { id, version: member.version };
@@ -424,21 +461,25 @@ export class ExistingDispatchersService {
   */
  private async correctRemoval(em: EntityManager, user: User, member: DispatchMember, record: ExistingMemberRecord, fields: string[]) {
   const removal = await em.getRepository(ItRemovalRequest).findOne({ where: { memberId: member.id, cancelledAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
-  const { companyEmail, ringCentralNumber } = record;
+  const { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail } = record;
   if (!removal) {
    const notice = await em.getRepository(MemberNotice).findOneBy({ memberId: member.id, cancelledAt: IsNull(), finishedAt: IsNull() });
-   if (!notice || (!companyEmail && !ringCentralNumber)) return [];
-   return createRemoval(em, this.alerts, { setup: null, accounts: { companyEmail, ringCentralNumber }, memberId: member.id, name: `${member.firstName} ${member.lastName}`, dueOn: notice.lastDay, scheduled: true, emailAfter: 'SUSPEND', actorId: user.id, mcName: null, teamName: null });
+   if (!notice || (!companyEmail && !ringCentralNumber && !datEmail && !truckstopEmail)) return [];
+   return createRemoval(em, this.alerts, { setup: null, accounts: { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail }, position: positionLabel(member), memberId: member.id, name: `${member.firstName} ${member.lastName}`, dueOn: notice.lastDay, scheduled: true, emailAfter: 'SUSPEND', actorId: user.id, ...await memberPlace(em, member.id) });
   }
-  // Someone with IT setup: IT works from what it set up, not from this record.
-  if (!removal.profile.noSetupRecord) return [];
+  // Someone with IT setup: what IT recorded comes first, so a correction only reaches IT where IT recorded nothing.
+  const setup = removal.setupRequestId ? await em.getRepository(ItOnboardingRequest).findOneBy({ id: removal.setupRequestId }) : null;
+  const next: Record<string, string | null> = { companyEmail: setup?.companyEmail ?? companyEmail, ringCentralNumber: setup?.assignedRingCentralPhoneNumber ?? ringCentralNumber, ringCentralExtension: setup?.ringCentralExtension ?? ringCentralExtension, datEmail: setup?.datEmail ?? datEmail, truckstopEmail: setup?.truckstopEmail ?? truckstopEmail };
+  const profile = removal.profile as unknown as Record<string, string | null | undefined>, changed = fields.filter(field => (profile[field] ?? null) !== next[field]);
+  if (!changed.length) return [];
   if (removal.completedAt) throw new ConflictException('IT has already finished removing their access. Tell IT about this account directly.');
-  removal.profile = { ...removal.profile, companyEmail, ringCentralNumber };
+  removal.profile = { ...removal.profile, ...next };
   // Forwarding needs a mailbox, and what happens to a number is decided for that number.
-  if (!companyEmail) { removal.emailAfter = 'SUSPEND'; removal.forwardTo = null; }
-  if (fields.includes('ringCentralNumber')) removal.numberOutcome = null;
+  if (!next.companyEmail) { removal.emailAfter = 'SUSPEND'; removal.forwardTo = null; }
+  if (changed.includes('ringCentralNumber')) removal.numberOutcome = null;
   removal.version += 1; await em.save(removal);
-  const steps = [...(fields.includes('companyEmail') && companyEmail ? ['GOOGLE_WORKSPACE'] : []), ...(fields.includes('ringCentralNumber') && ringCentralNumber ? ['RINGCENTRAL'] : [])];
+  const steps = [...(changed.includes('companyEmail') && next.companyEmail ? ['GOOGLE_WORKSPACE'] : []), ...(changed.includes('ringCentralNumber') && next.ringCentralNumber ? ['RINGCENTRAL'] : []),
+   ...((changed.includes('datEmail') && next.datEmail) || (changed.includes('truckstopEmail') && next.truckstopEmail) ? ['BUSINESS_SOFTWARE'] : [])];
   let reopened = false;
   for (const task of steps.length ? await em.getRepository(ItRemovalTask).find({ where: { requestId: removal.id, key: In(steps), status: 'COMPLETED' } }) : []) {
    task.status = 'PENDING'; task.updatedBy = user.id; await em.save(task); reopened = true;

@@ -32,6 +32,10 @@ export class ItOnboardingRequest {
  @Column('integer',{default:0}) version!:number;
  @Column('varchar',{nullable:true}) assignedRingCentralPhoneNumber!:string|null;
  @Column('varchar',{length:254,nullable:true}) companyEmail!:string|null;
+ // Recorded during setup, and never needed to finish it. Load board fields hold a sign-in email, never a password.
+ @Column('varchar',{length:6,nullable:true}) ringCentralExtension!:string|null;
+ @Column('varchar',{length:254,nullable:true}) datEmail!:string|null;
+ @Column('varchar',{length:254,nullable:true}) truckstopEmail!:string|null;
  @Column('timestamptz',{nullable:true}) workPhoneVerifiedAt!:Date|null;
  @Column('uuid',{nullable:true}) workPhoneVerifiedBy!:string|null;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
@@ -93,7 +97,7 @@ export const REMOVAL_CHECKLIST: readonly {key:string;label:string;description:st
  {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Suspend the account and sign it out everywhere.'},
  {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Remove them from the Dispatch group.'},
  {key:'RINGCENTRAL',label:'RingCentral',description:'Remove the user, including SMS and call recording. Record what happens to the number.'},
- {key:'BUSINESS_SOFTWARE',label:'Business software',description:'Remove their access to every business app they had. List the apps in notes; never store credentials.'},
+ {key:'BUSINESS_SOFTWARE',label:'Business software',description:'Remove their access to every business app they had, including any load board sign-ins listed here. List the apps in notes; never store credentials.'},
  {key:'SHARED_PASSWORDS',label:'Shared passwords',description:'Change any shared password they knew, such as load board or carrier portal logins.'},
  {key:'EQUIPMENT',label:'Equipment',description:'Record the laptop and headset as returned, or Not needed when they used their own.',optional:true},
 ];
@@ -101,7 +105,7 @@ export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return 
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
-export interface RemovalProfile {displayName:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
 @Entity('it_removal_requests')
 export class ItRemovalRequest {
  @PrimaryGeneratedColumn('uuid') id!:string;

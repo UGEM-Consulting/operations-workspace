@@ -1,11 +1,14 @@
 /** One person from the file or the form, as the API takes it: text, checked by the API row by row. */
 export interface ExistingRow {
   row: number; firstName?: string; lastName?: string; position?: string; mc?: string; team?: string; jobTitle?: string; startedOn?: string; companyEmail?: string; ringCentralNumber?: string;
-  personalEmail?: string; personalPhone?: string; supports?: string; supportsMemberId?: string; ndaSignedOn?: string; sopSignedOn?: string; differentPerson?: boolean;
+  personalEmail?: string; personalPhone?: string; supports?: string; supportsMemberId?: string; supportsTeamId?: string; ndaSignedOn?: string; sopSignedOn?: string; differentPerson?: boolean;
+  telegram?: string; ringCentralExtension?: string; datEmail?: string; truckstopEmail?: string;
 }
-type Field = Exclude<keyof ExistingRow, 'row' | 'differentPerson' | 'supportsMemberId'>;
+type Field = Exclude<keyof ExistingRow, 'row' | 'differentPerson' | 'supportsMemberId' | 'supportsTeamId'>;
 export const COLUMNS: readonly [string, Field][] = [['first_name', 'firstName'], ['last_name', 'lastName'], ['position', 'position'], ['mc', 'mc'], ['team', 'team'], ['job_title', 'jobTitle'], ['started_on', 'startedOn'],
-  ['company_email', 'companyEmail'], ['ringcentral_number', 'ringCentralNumber'], ['personal_email', 'personalEmail'], ['personal_phone', 'personalPhone'], ['supports', 'supports'], ['nda_signed_on', 'ndaSignedOn'], ['sop_signed_on', 'sopSignedOn']];
+  ['company_email', 'companyEmail'], ['ringcentral_number', 'ringCentralNumber'], ['personal_email', 'personalEmail'], ['personal_phone', 'personalPhone'], ['supports', 'supports'], ['nda_signed_on', 'ndaSignedOn'], ['sop_signed_on', 'sopSignedOn'], ['telegram', 'telegram'], ['ringcentral_ext', 'ringCentralExtension'], ['dat_email', 'datEmail'], ['truckstop_email', 'truckstopEmail']];
+// Added later, so an older file without them still works.
+const OPTIONAL_COLUMNS = ['telegram', 'ringcentral_ext', 'dat_email', 'truckstop_email'];
 export const MAX_ROWS = 500;
 
 /** Reads CSV text: quoted fields, doubled quotes, commas and line breaks inside quotes, and CRLF line endings. */
@@ -40,13 +43,13 @@ const key = (value: string) => value.trim().toLowerCase().replace(/[\s-]+/g, '_'
 export function readExistingFile(text: string): { rows: ExistingRow[]; error?: undefined } | { rows?: undefined; error: string } {
   const [heading, ...lines] = parseRows(text);
   if (!heading) return { error: 'This file is empty.' };
-  const positions = heading.cells.map(key), missing = COLUMNS.map(([name]) => name).filter(name => !positions.includes(name));
+  const positions = heading.cells.map(key), missing = COLUMNS.map(([name]) => name).filter(name => !positions.includes(name) && !OPTIONAL_COLUMNS.includes(name));
   if (missing.length) return { error: `This file is missing these columns: ${missing.join(', ')}. Use the template.` };
   if (!lines.length) return { error: 'This file has a heading but no people.' };
   if (lines.length > MAX_ROWS) return { error: `This file has ${lines.length} rows. Upload up to ${MAX_ROWS} at a time.` };
   return { rows: lines.map(({ number, cells }) => {
     const row: ExistingRow = { row: number };
-    for (const [name, field] of COLUMNS) { const cell = cells[positions.indexOf(name)]?.trim(); if (cell) row[field] = cell.slice(0, 300); }
+    for (const [name, field] of COLUMNS) { const cell = positions.includes(name) ? cells[positions.indexOf(name)]?.trim() : ''; if (cell) row[field] = cell.slice(0, 300); }
     return row;
   }) };
 }
@@ -60,4 +63,5 @@ export function existingCsv(rows: ExistingRow[]) {
 }
 export const TEMPLATE = existingCsv([
   { row: 2, firstName: 'Riley', lastName: 'Santos', position: 'Dispatcher', mc: 'Northwind Freight', team: 'Avery team', jobTitle: 'Dispatcher', startedOn: '2024-03-04', companyEmail: 'riley.santos@example.test', ringCentralNumber: '+1 469 555 0142', personalEmail: 'riley.home@example.test', personalPhone: '+1 202 555 0147', ndaSignedOn: '2024-03-04' },
-  { row: 3, firstName: 'Sky', lastName: 'Martin', position: 'Support', startedOn: '2025-01-13', personalEmail: 'sky.home@example.test', supports: 'Riley Santos' }]);
+  { row: 3, firstName: 'Sky', lastName: 'Martin', position: 'Support', startedOn: '2025-01-13', personalEmail: 'sky.home@example.test', supports: 'Riley Santos' },
+  { row: 4, firstName: 'Alex', lastName: 'Moreno', position: 'Updater', team: 'Avery team', personalEmail: 'alex.home@example.test' }]);

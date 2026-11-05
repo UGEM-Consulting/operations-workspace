@@ -42,7 +42,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const router=useRouter();
  const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[taskError,setTaskError]=useState('');
- const [account,setAccount]=useState(''),[verified,setVerified]=useState(false);
+ const [account,setAccount]=useState(''),[verified,setVerified]=useState(false),[extension,setExtension]=useState(''),[dat,setDat]=useState(''),[truckstop,setTruckstop]=useState('');
  // A setup cancelled because the dispatcher left is read-only too; their removal checklist takes over.
  const {request,tasks}=data,profile=request.profile,cancelled=!!request.cancelledAt,closed=!!request.completedAt||cancelled,busy=!!pending;
  const completed=tasks.filter(taskDone).length;
@@ -53,7 +53,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const recorded=(key:string)=>key==='GOOGLE_WORKSPACE'?request.companyEmail??'':key==='RINGCENTRAL'?request.assignedRingCentralPhoneNumber??'':'';
  const legacyPhone=!!profile.workPhoneNumber?.trim();
  async function refresh(){setPending('refresh');try{setData(await readApi<ItDetail>(`it/onboarding/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh.')});}finally{setPending(null);}}
- function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setTaskError('');setAccount(recorded(task.key));setVerified(!!request.workPhoneVerifiedAt);}
+ function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setTaskError('');setAccount(recorded(task.key));setVerified(!!request.workPhoneVerifiedAt);setExtension(request.ringCentralExtension??'');setDat(request.datEmail??'');setTruckstop(request.truckstopEmail??'');}
  async function update(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(!editing||busy)return;
   const values=new FormData(event.currentTarget),notes=String(values.get('notes')??'');
@@ -64,16 +64,20 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
    // The account is saved first (its own versioned change), then the task with the version it returns.
    let version=request.version;
    const accountChanged=!!field&&(account.trim()!==recorded(editing.key)||(editing.key==='RINGCENTRAL'&&legacyPhone&&verified!==!!request.workPhoneVerifiedAt));
-   if(accountChanged){
+   // Sent only when changed and only with these tasks, and never needed to finish setup.
+   const extras={...(editing.key==='RINGCENTRAL'&&extension.trim()!==(request.ringCentralExtension??'')?{ringCentralExtension:extension.trim()}:{}),
+    ...(editing.key==='BUSINESS_SOFTWARE'&&dat.trim().toLowerCase()!==(request.datEmail??'')?{datEmail:dat.trim()}:{}),...(editing.key==='BUSINESS_SOFTWARE'&&truckstop.trim().toLowerCase()!==(request.truckstopEmail??'')?{truckstopEmail:truckstop.trim()}:{})};
+   const extrasChanged=Object.keys(extras).length>0;
+   if(accountChanged||extrasChanged){
     const saved=await mutate<ItDetail>(`it/onboarding/${request.id}/contact`,'PATCH',{version,workPhoneVerified:editing.key==='RINGCENTRAL'?verified:!!request.workPhoneVerifiedAt,
-     ...(editing.key==='GOOGLE_WORKSPACE'?{companyEmail:account.trim()}:{assignedRingCentralPhoneNumber:account.trim()})});
+     ...(!accountChanged?{}:editing.key==='GOOGLE_WORKSPACE'?{companyEmail:account.trim()}:{assignedRingCentralPhoneNumber:account.trim()}),...extras});
     setData(saved);version=saved.request.version;
    }
-   const updated=taskStatus===editing.status&&notes===editing.notes&&accountChanged?null:await mutate<ItDetail>(`it/onboarding/${request.id}/tasks/${editing.key}`,'PATCH',{version,status:taskStatus,notes});
+   const updated=taskStatus===editing.status&&notes===editing.notes&&(accountChanged||extrasChanged)?null:await mutate<ItDetail>(`it/onboarding/${request.id}/tasks/${editing.key}`,'PATCH',{version,status:taskStatus,notes});
    if(updated)setData(updated);setEditing(null);
    // Finishing changes the IT tasks count in the sidebar, which comes from the server layout.
    if(updated?.request.completedAt)router.refresh();
-   toast(updated?.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has a new portal notification.'}:{title:accountChanged&&!updated?`${field!.label} saved`:'Checklist task updated'});
+   toast(updated?.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has been notified.'}:{title:accountChanged&&!updated?`${field!.label} saved`:'Checklist task updated'});
   }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
  }
  const name=profile.proposedDisplayName??'Approved dispatcher';
@@ -115,9 +119,11 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
      // Recorded in the Google Workspace and RingCentral tasks; the manager sees these on the employee details.
      {label:'Company email',value:request.companyEmail,emptyLabel:'Set in the Google Workspace task'},
      {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber,mono:true,emptyLabel:'Set in the RingCentral task'},
+     ...(request.ringCentralExtension?[{label:'Extension',value:request.ringCentralExtension,mono:true}]:[]),
+     ...(request.datEmail?[{label:'DAT sign-in',value:<span className="break-all">{request.datEmail}</span>}]:[]),...(request.truckstopEmail?[{label:'Truckstop sign-in',value:<span className="break-all">{request.truckstopEmail}</span>}]:[]),
      ...(legacyPhone?[{label:'Older application work phone',value:<span className="flex flex-wrap items-center gap-2"><span className="font-mono text-[13px]">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></span>}]:[])]}/>
    </CardBody></Card>
-   <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they do not create accounts or send messages. Never enter passwords or tokens in notes.</p>
+   <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they don’t create accounts or send messages. Don’t put passwords in notes.</p>
   </div>
  </div>
  {editing&&<Dialog open onClose={()=>setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual setup work." busy={pending==='task'} actions={<Button form="it-task-editor" type="submit">{pending==='task'?'Saving…':completing?'Complete onboarding':'Save task'}</Button>}>
@@ -125,10 +131,14 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  {field&&<Input label={field.label} name="account" type={field.type} required={!allowed(taskStatus)||!!recorded(editing.key)} optional={allowed(taskStatus)&&!recorded(editing.key)} maxLength={field.max} value={account}
   onChange={event=>{setAccount(event.target.value);if(!event.target.value.trim()&&!allowed(taskStatus))setTaskStatus(allowed(editing.status)?editing.status:'IN_PROGRESS');}}
   placeholder={field.placeholder} autoComplete="off" width="md" hint={field.hint??'The manager sees it on the employee details.'}/>}
+ {editing.key==='RINGCENTRAL'&&<Input label="Extension" optional name="extension" inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} value={extension} onChange={event=>setExtension(event.target.value)} autoComplete="off" width="sm" hint="Digits only."/>}
  {editing.key==='RINGCENTRAL'&&legacyPhone&&<Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label={`I verified the older application work phone (${profile.workPhoneNumber}).`}/>}
  <Select label="Status" name="status" value={taskStatus} hint={field&&locked?`Enter the ${field.prompt} to mark it completed.`:undefined} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm"
-  options={taskOutcomes.filter(status=>(status!=='NOT_NEEDED'||editing.optional)&&(!locked||allowed(status))).map(status=>({value:status,label:statusLabel(status)}))}/><Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
- {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager receives a portal notification. It needs the company email and RingCentral number recorded in their tasks.</p><Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
+  options={taskOutcomes.filter(status=>(status!=='NOT_NEEDED'||editing.optional)&&(!locked||allowed(status))).map(status=>({value:status,label:statusLabel(status)}))}/>
+ {editing.key==='BUSINESS_SOFTWARE'&&<><div className="grid gap-4 sm:grid-cols-2"><Input label="DAT sign-in email" optional name="dat" type="email" maxLength={254} value={dat} onChange={event=>setDat(event.target.value)} autoComplete="off" width="full"/><Input label="Truckstop sign-in email" optional name="truckstop" type="email" maxLength={254} value={truckstop} onChange={event=>setTruckstop(event.target.value)} autoComplete="off" width="full"/></div>
+  <p className="text-[13px] leading-5 text-muted-foreground">The email only. Never a password, here or in notes.</p></>}
+ <Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Don’t put passwords in notes."/>
+ {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager is notified. It needs the company email and RingCentral number recorded in their tasks.</p><Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
  <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>{taskError&&<p className="text-sm text-muted-foreground">If someone else updated this request, close this dialog and refresh its status before trying again.</p>}</form>
  </Dialog>}
 

@@ -20,6 +20,7 @@ import { useToast } from '@/components/ui/toast';
 import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
+import { SignIn } from '@/features/dispatch/sign-in';
 import { readApi } from '@/features/onboarding/types';
 import { type ItTask, type NumberOutcome, type RemovalDetail, taskDone, taskOutcomes, type TaskOutcome } from './types';
 
@@ -43,6 +44,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[outcome,setOutcome]=useState<NumberOutcome|''>(''),[taskError,setTaskError]=useState('');
  const {request,tasks}=data,profile=request.profile,cancelled=!!request.cancelledAt,closed=!!request.completedAt||cancelled,scheduled=request.scheduled&&!cancelled,busy=!!pending;
+ const shared=data.sharedSignIns??{dat:[],truckstop:[]},sharedPeople=[...new Set([...shared.dat,...shared.truckstop].map(person=>person.name))],sharedBoards=[...(shared.dat.length?['DAT']:[]),...(shared.truckstop.length?['Truckstop']:[])].join(' and ');
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
  const needsOutcome=editing?.key==='RINGCENTRAL'&&!!profile.ringCentralNumber;
@@ -59,7 +61,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
    const updated=await mutate<RemovalDetail>(`it/removals/${request.id}/tasks/${editing.key}`,'PATCH',{version:request.version,status:taskStatus,notes,...(needsOutcome&&outcome?{numberOutcome:outcome}:{})});
    setData(updated);setEditing(null);
    if(updated.request.completedAt)router.refresh();
-   toast(updated.request.completedAt?{title:'Access removed',description:'The manager who marked them as left has a new portal notification.'}:{title:'Checklist task updated'});
+   toast(updated.request.completedAt?{title:'Access removed',description:'The manager who marked them as left has been notified.'}:{title:'Checklist task updated'});
   }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
  }
  const blocked=tasks.filter(task=>task.status==='BLOCKED');
@@ -83,7 +85,8 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
   <div className="min-w-0 space-y-6">
    {forwardingMoved&&<Alert tone="warning" title="Email forwarding changed"><p>The manager’s records were handed over, so new email now goes to {request.forwardToName??'the new manager'}. If you’ve already set up forwarding, change it.</p></Alert>}
-   {!closed&&!cancelled&&data.activity.some(event=>event.event==='ACCOUNTS_CORRECTED'&&event.metadata.reopened===true)&&<Alert tone="warning" title="A manager corrected the accounts"><p>A step you finished opened again because it names a new company email or RingCentral number. Check the accounts below.</p></Alert>}
+   {!closed&&!cancelled&&data.activity.some(event=>event.event==='ACCOUNTS_CORRECTED'&&event.metadata.reopened===true)&&<Alert tone="warning" title="A manager corrected the accounts"><p>A step you finished opened again because a company email, RingCentral number or load board sign-in changed. Check the accounts below.</p></Alert>}
+   {!closed&&!cancelled&&sharedPeople.length>0&&<Alert tone="warning" title="Someone else still uses a sign-in"><p>{sharedPeople.join(' and ')} also {sharedPeople.length===1?'uses':'use'} {profile.displayName}’s {sharedBoards} sign-in and {sharedPeople.length===1?'is':'are'} staying. Change its password and tell their manager, rather than closing it.</p></Alert>}
    {profile.noSetupRecord&&!closed&&!cancelled&&<Alert tone="warning" title="No IT setup on record"><p>{profile.displayName} started before the workspace, so these accounts come from their manager and may be incomplete. Check the admin consoles as well.</p></Alert>}
    {cancelled?<Alert tone="info" title="Removal cancelled"><p>The manager cancelled the notice: this dispatcher is staying, and nothing needs removing.</p></Alert>
     :scheduled?<Alert tone="info" title="Don’t remove anything yet"><p>{profile.displayName} keeps working until the end of <LocalTime iso={`${request.dueOn}T12:00:00Z`} format="date"/>. You can add notes and plan now; tasks can be marked completed from that day. If the manager asks to remove access now, this page says so and you get an alert.</p></Alert>
@@ -105,15 +108,17 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
   <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
    <Card><CardHeader title="Accounts to remove"/><CardBody className="space-y-4">
     <div className="flex items-center gap-3"><Avatar name={profile.displayName} size="lg"/>
-     <div className="min-w-0"><p className="truncate font-medium">{profile.displayName}</p><p className="text-[13px] text-muted-foreground">Dispatcher{profile.mcName?` · ${profile.mcName}`:''}{profile.teamName?` · ${profile.teamName}`:''}</p></div></div>
+     <div className="min-w-0"><p className="truncate font-medium">{profile.displayName}</p><p className="text-[13px] text-muted-foreground">{profile.position??'Dispatcher'}{profile.mcName?` · ${profile.mcName}`:''}{profile.teamName?` · ${profile.teamName}`:''}</p></div></div>
     <DescriptionList layout="rows" items={[
      {label:'Company email',value:profile.companyEmail&&<><span className="block break-all">{profile.companyEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.companyEmail} label="Copy email" size="sm" variant="ghost"/></span></>,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
      {label:'Email afterwards',value:request.emailAfter==='FORWARD'?`Forward to ${request.forwardToName??'the manager'}, 30 days`:'Suspend only'},
      {label:'RingCentral number',value:profile.ringCentralNumber,mono:true,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
+     ...(profile.ringCentralExtension?[{label:'Extension',value:profile.ringCentralExtension,mono:true}]:[]),
+     ...(profile.datEmail?[{label:'DAT sign-in',value:<SignIn email={profile.datEmail} others={shared.dat}/>}]:[]),...(profile.truckstopEmail?[{label:'Truckstop sign-in',value:<SignIn email={profile.truckstopEmail} others={shared.truckstop}/>}]:[]),
      ...(profile.ringCentralNumber?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),
      {label:'Set up',value:profile.setUpAt&&<LocalTime iso={profile.setUpAt} format="date"/>,emptyLabel:profile.noSetupRecord?'Before the workspace':'Setup wasn’t finished'}]}/>
    </CardBody></Card>
-   <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they don’t remove accounts for you. Never enter passwords or tokens in notes.</p>
+   <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they don’t remove accounts for you. Don’t put passwords in notes.</p>
   </div>
  </div>
  {editing&&<Dialog open onClose={()=>setEditing(null)} title={`Update ${editing.label}`} description={scheduled?'Plan ahead. This can be marked completed from their last day.':'Record the outcome of your manual removal work.'} busy={pending==='task'} actions={<Button form="it-removal-editor" type="submit">{pending==='task'?'Saving…':completing?'Finish removal':'Save task'}</Button>}>
@@ -122,7 +127,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
    options={taskOutcomes.filter(status=>(status!=='NOT_NEEDED'||editing.optional)&&(!scheduled||PLANNING.includes(status))).map(status=>({value:status,label:statusLabel(status)}))}/>
   {needsOutcome&&<Select id="removal-number" label="What happens to the number" name="numberOutcome" value={outcome} placeholder="Choose what happens" optional={taskStatus!=='COMPLETED'}
    onChange={event=>setOutcome(event.target.value as NumberOutcome)} width="md" options={NUMBER_OUTCOMES} hint={`${profile.ringCentralNumber}. Needed to mark the task completed.`}/>}
-  <Textarea id="removal-notes" label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Never include passwords or tokens."/>
+  <Textarea id="removal-notes" label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Don’t put passwords in notes."/>
   {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This finishes the removal.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager who marked them as left receives a portal notification.</p><Checkbox name="confirmCompletion" required label="I confirm their access is removed." className="text-foreground"/></div>}
   <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>
  </form>

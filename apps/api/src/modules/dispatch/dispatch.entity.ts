@@ -4,9 +4,11 @@ import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn
 export const NO_MC = 'No MC yet';
 export const POSITIONS = ['DISPATCHER', 'SUPPORT'] as const;
 export type Position = typeof POSITIONS[number];
-/** Two names for one position: a support or an updater is tied to one dispatcher and treated alike. Only what they're called differs. */
+/** Two names for one position: a support or an updater assists one dispatcher or one whole team, and is treated alike. Only what they're called differs. */
 export const SUPPORT_TYPES = ['SUPPORT', 'UPDATER'] as const;
 export type SupportType = typeof SUPPORT_TYPES[number];
+/** What someone is called, for what IT reads. */
+export const positionLabel = (member: { position: Position; supportType: SupportType }) => member.position === 'DISPATCHER' ? 'Dispatcher' : member.supportType === 'UPDATER' ? 'Updater' : 'Support';
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
  'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
@@ -45,6 +47,11 @@ export class ExistingMemberRecord {
  @Column('varchar', { length: 40, nullable: true }) ringCentralNumber!: string | null;
  @Column('varchar', { length: 254, nullable: true }) personalEmail!: string | null;
  @Column('varchar', { length: 40, nullable: true }) personalPhone!: string | null;
+ // A Telegram username (a record only: nothing is sent to it), a RingCentral extension, and load board sign-in emails, never passwords.
+ @Column('varchar', { length: 32, nullable: true }) telegram!: string | null;
+ @Column('varchar', { length: 6, nullable: true }) ringCentralExtension!: string | null;
+ @Column('varchar', { length: 254, nullable: true }) datEmail!: string | null;
+ @Column('varchar', { length: 254, nullable: true }) truckstopEmail!: string | null;
  @Column('timestamptz', { nullable: true }) acceptedAt!: Date | null;
  @Column('uuid', { nullable: true }) acceptedBy!: string | null;
  // False while joinedAt is only the day they were added, and while their first MC and team (or dispatcher) period has no date of its own.
@@ -105,12 +112,13 @@ export class MemberAssignment {
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 
-/** Which dispatcher a support assists from a date; the open row (no endedAt) is now. Changes add rows, never overwrite. */
+/** Which dispatcher, or which whole team, a support assists from a date (exactly one of them); the open row (no endedAt) is now. Changes add rows, never overwrite. */
 @Entity('member_support_links')
 export class MemberSupportLink {
  @PrimaryGeneratedColumn('uuid') id!: string;
  @Column('uuid') supportId!: string;
- @Column('uuid') dispatcherId!: string;
+ @Column('uuid', { nullable: true }) dispatcherId!: string | null;
+ @Column('uuid', { nullable: true }) teamId!: string | null;
  @Column('timestamptz') startedAt!: Date;
  @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
  @Column('varchar', { length: 500, nullable: true }) reason!: string | null;

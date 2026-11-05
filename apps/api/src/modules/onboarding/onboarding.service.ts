@@ -1,6 +1,6 @@
 import { digest, generateVerificationCode } from './verification-code';
 import { LATIN_NAME } from '../documents/documents.dto';
-import { supportedDispatcher } from '../dispatch/create-member';
+import { supportedDispatcher, supportedTeam } from '../dispatch/create-member';
 import { NO_MC } from '../dispatch/dispatch.entity';
 import { responsibleManager } from './hand-over';
 export { digest } from './verification-code';
@@ -57,18 +57,20 @@ export class OnboardingService {
  async create(user: User, input: CreateInvitationDto) {
   if (input.email && this.fictionalOnly && !input.email.endsWith('@example.test')) throw new BadRequestException('Outside production, invitations accept only fictional example.test addresses.');
   const support = input.position === 'SUPPORT';
-  if (support && !input.supportsMemberId) throw new BadRequestException(`Choose the dispatcher this ${input.supportType === 'UPDATER' ? 'updater' : 'support'} will assist.`);
-  if (!support && input.supportsMemberId) throw new BadRequestException('Only a support invitation names a dispatcher.');
+  if (support && !input.supportsMemberId && !input.supportsTeamId) throw new BadRequestException(`Choose the dispatcher or team this ${input.supportType === 'UPDATER' ? 'updater' : 'support'} will assist.`);
+  if (input.supportsMemberId && input.supportsTeamId) throw new BadRequestException('Choose a dispatcher or a team, not both.');
+  if (!support && (input.supportsMemberId || input.supportsTeamId)) throw new BadRequestException('Only a support invitation names a dispatcher or team.');
   if (!support && input.supportType) throw new BadRequestException('Only a support invitation says support or updater.');
   if (support && (input.mcName || input.teamLead || input.jobTitle)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
   if (input.managerId && input.managerId !== user.id && user.role !== Role.SYSTEM_ADMIN) throw new ForbiddenException('Only administrators create invitations for another manager.');
   await this.limit('create:'+user.id,30);
   const token = randomBytes(32).toString('hex');
   const invitation = await this.db.transaction(async em => {
-   if (support) await supportedDispatcher(em, input.supportsMemberId!);
+   if (support && input.supportsMemberId) await supportedDispatcher(em, input.supportsMemberId);
+   if (support && input.supportsTeamId) await supportedTeam(em, input.supportsTeamId);
    const manager = input.managerId ? (await responsibleManager(em, input.managerId)).id : user.id;
    const inv = await em.getRepository(Invitation).save({ email: null, expectedEmail: input.email ?? null, mcName: input.mcName ?? null, teamLead: input.teamLead ?? null, jobTitle: input.jobTitle ?? null,
-    position: support ? 'SUPPORT' : 'DISPATCHER', supportsMemberId: support ? input.supportsMemberId! : null, supportType: input.supportType ?? 'SUPPORT',
+    position: support ? 'SUPPORT' : 'DISPATCHER', supportsMemberId: support ? input.supportsMemberId ?? null : null, supportsTeamId: support ? input.supportsTeamId ?? null : null, supportType: input.supportType ?? 'SUPPORT',
     telegramRequired: input.telegramRequired, managerId: manager, tokenHash: digest(token), expiresAt: new Date(Date.now()+input.expirationDays*86400000) });
    await em.getRepository(DispatcherApplication).save({ invitationId: inv.id, assignedManagerId: manager, status: 'INVITED', fields: support ? {} : {mcName:input.mcName ?? '',teamLead:input.teamLead ?? '',jobTitle:input.jobTitle ?? 'Dispatcher'}, applicantAccessUntil: inv.expiresAt });
    await this.activity(em,inv.id,'INVITATION_CREATED',user.id);
@@ -81,13 +83,15 @@ export class OnboardingService {
  async invitations(user: User) {
   // Catch-up links live on the Dispatchers page, not here.
   const rows = await this.db.getRepository(Invitation).find({ where: user.role === Role.SYSTEM_ADMIN ? { catchUpMemberId: IsNull() } : { managerId: user.id, catchUpMemberId: IsNull() }, order: { createdAt: 'DESC' }, take: 200 });
-  // A support invitation shows the dispatcher they will assist.
+  // A support invitation shows the dispatcher or whole team they will assist.
   const ids = [...new Set(rows.map(row => row.supportsMemberId).filter((id): id is string => !!id))];
   // Once someone is a member, what they're called is on their record: a change or a promotion never reaches the invitation.
   const members: { invitationId: string; position: string; supportType: string }[] = rows.length ? await this.db.query(`SELECT a."invitationId", d.position, d."supportType" FROM dispatcher_applications a JOIN dispatch_members d ON d."applicationId" = a.id WHERE a."invitationId" = ANY($1)`, [rows.map(row => row.id)]) : [];
   const memberOf = new Map(members.map(({ invitationId, position, supportType }) => [invitationId, { position, supportType }]));
   const names: Record<string,string> = ids.length ? Object.fromEntries((await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name FROM dispatch_members WHERE id = ANY($1)`, [ids])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
-  return rows.map(row => ({ ...row, status: invitationStatus(row), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null }));
+  const teamIds = [...new Set(rows.map(row => row.supportsTeamId).filter((id): id is string => !!id))];
+  const teamNames: Record<string,string> = teamIds.length ? Object.fromEntries((await this.db.query(`SELECT id, name FROM teams WHERE id = ANY($1)`, [teamIds])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
+  return rows.map(row => ({ ...row, status: invitationStatus(row), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
  }
  async revoke(user: User, id: string) {
   await this.db.transaction(async em => {
@@ -213,9 +217,9 @@ export class OnboardingService {
  }
  /** What the manager has on file, shown to someone catching up: names only, never MC or DOT numbers. */
  private async onFile(em: EntityManager, memberId: string) {
-  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
+  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(st.name, t.name) AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
    FROM dispatch_members d LEFT JOIN job_titles j ON j.id = d."jobTitleId"
-   LEFT JOIN member_support_links l ON l."supportId" = d.id AND l."endedAt" IS NULL LEFT JOIN dispatch_members sd ON sd.id = l."dispatcherId"
+   LEFT JOIN member_support_links l ON l."supportId" = d.id AND l."endedAt" IS NULL LEFT JOIN dispatch_members sd ON sd.id = l."dispatcherId" LEFT JOIN teams st ON st.id = l."teamId" LEFT JOIN mcs sm ON sm.id = st."mcId"
    LEFT JOIN member_assignments a ON a."memberId" = coalesce(sd.id, d.id) AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId" WHERE d.id = $1`,[memberId]);
   const paper: { kind: string; signedOn: string }[] = await em.query(`SELECT kind, "signedOn"::text AS "signedOn" FROM member_paper_documents WHERE "memberId" = $1 ORDER BY kind`,[memberId]);
   return { ...place, paper };
