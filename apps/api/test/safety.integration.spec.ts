@@ -456,6 +456,45 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(await driver(id)).toMatchObject({ status: 'LEFT' });
   });
 
+  it('records yearly reviews of cleared drivers with a new MVR, lists the ones due, and keeps them as history', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const review = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/annual-reviews`).set(headers).send({ version, reviewedOn: day, outcome: 'QUALIFIED', mvr: { file: '', pulledOn: day, paperAuthorization: true }, ...body });
+    const withPdf = async (body: Record<string, unknown> = {}) => ({ mvr: { file: await mvrPdf(), pulledOn: day, paperAuthorization: true, ...body } });
+    await review(agents.manager, 1, await withPdf()).expect(409);
+    // Cleared 400 days ago, so the first yearly review is already overdue.
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '400 days', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '400 days')`, [id, users.staff.id]);
+    const due = async () => (await agents.lead.get('/api/safety/due').set(headers).expect(200)).body;
+    expect((await due()).items).toMatchObject([{ driverId: id, overdue: true, lastReviewedOn: null, notQualified: false }]);
+    await review(agents.lead, 2, await withPdf()).expect(403);
+    await review(agents.staff2, 2, await withPdf()).expect(403);
+    await review(agents.dispatch, 2, await withPdf()).expect(403);
+    // Input: a real date, not in the future, a current MVR, its PDF, and a note unless qualified.
+    await review(agents.manager, 2, { ...await withPdf(), reviewedOn: addDays(day, 1) }).expect(400);
+    await review(agents.manager, 2, { ...await withPdf(), outcome: 'MAYBE' }).expect(400);
+    await review(agents.manager, 2, { ...await withPdf(), outcome: 'NOT_QUALIFIED' }).expect(400);
+    await review(agents.manager, 2, await withPdf({ pulledOn: addDays(day, -120) })).expect(400);
+    await review(agents.manager, 2, await withPdf({ file: Buffer.from('not a pdf').toString('base64') })).expect(400);
+    await review(agents.manager, 2, { mvr: undefined }).expect(400);
+    await review(agents.manager, 2, await withPdf({ paperAuthorization: false })).expect(400);
+    await review(agents.manager, 1, await withPdf()).expect(409);
+    const recorded = (await review(agents.staff, 2, await withPdf()).expect(201)).body;
+    expect(recorded.version).toBe(3);
+    const profile = await driver(id);
+    expect(profile.annualReviews).toMatchObject({ dueOn: addDays(day, 365), notQualified: false, items: [{ reviewedOn: day, outcome: 'QUALIFIED', mvr: { pulledOn: day, pageCount: 1 } }] });
+    // The MVR opens like any report, and the event holds the outcome only.
+    await agents.lead.get(`/api/safety/drivers/${id}/reports/${profile.annualReviews.items[0].mvr.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    expect((await events(id)).filter(row => row.event === 'ANNUAL_REVIEW_RECORDED').map(row => row.metadata)).toEqual([{ outcome: 'QUALIFIED', withMvr: true }]);
+    expect((await due()).items).toEqual([]);
+    // A later review that finds the driver not qualified stays on the list until a qualified one follows; history is append-only.
+    await review(agents.manager, 3, { ...await withPdf(), outcome: 'NOT_QUALIFIED', note: 'Fictional serious violation' }).expect(201);
+    expect((await due()).items).toMatchObject([{ driverId: id, notQualified: true }]);
+    expect(JSON.stringify(await events(id))).not.toContain('Fictional serious violation');
+    await expect(db.query(`UPDATE driver_annual_reviews SET outcome = 'QUALIFIED'`)).rejects.toThrow();
+    expect((await driver(id)).annualReviews.items.map((row: { outcome: string }) => row.outcome)).toEqual(['NOT_QUALIFIED', 'QUALIFIED']);
+  });
+
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
@@ -1043,6 +1082,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'ANNUAL_REVIEW_RECORDED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard yearly driver reviews');
+    await db.query(`DELETE FROM driver_events WHERE event = 'ANNUAL_REVIEW_RECORDED'`);
+    await db.undoLastMigration(); // DriverAnnualReviews, with none here
     await db.query(`UPDATE drivers SET status = 'LEFT', "closedAt" = now() WHERE id = $1`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard drivers marked as left');
     await db.query(`UPDATE drivers SET status = 'LEAD', "closedAt" = NULL WHERE id = $1`, [id]);
@@ -1097,6 +1140,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverLeft1793040000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverAnnualReviews1793050000000');
   });
 });

@@ -23,7 +23,11 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   consents?: { signatures: ConsentSignature[]; missing: string[]; authorizationSigned: boolean };
   // From an API with clearance and dispatch assignments.
   clearedAt?: string | null; clearedBy?: SafetyPerson | null;
-  clearance?: { items: ClearanceItemRow[]; employers: EmployerRow[]; missing: string[] }; assignments?: DriverAssignmentRow[] }
+  clearance?: { items: ClearanceItemRow[]; employers: EmployerRow[]; missing: string[] }; assignments?: DriverAssignmentRow[];
+  // From an API with yearly reviews.
+  annualReviews?: AnnualReviews }
+export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }
+export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean }
 export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST';
 export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null }
 export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null;

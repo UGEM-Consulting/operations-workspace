@@ -3,7 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { json, type NextFunction, type Request, type Response } from 'express';
 // Photo, PDF and signature uploads (including a saved staff signature) are base64 JSON, and a list of existing dispatchers can run to 500 rows. Only these routes accept bodies above the 100 kB default;
 // the BFF separately caps requests below the hosting limit.
-const UPLOAD_ROUTES = ['/api/dispatch/existing', '/api/applicant/photos', '/api/applicant/documents', '/api/documents', '/api/onboarding/applications', '/api/staff/signature', '/api/driver/documents', '/api/safety/drivers/:id/mvr', '/api/safety/consents', '/api/driver/consents/:id/sign'];
+const UPLOAD_ROUTES = ['/api/dispatch/existing', '/api/applicant/photos', '/api/applicant/documents', '/api/documents', '/api/onboarding/applications', '/api/staff/signature', '/api/driver/documents', '/api/safety/drivers/:id/mvr', '/api/safety/drivers/:id/annual-reviews', '/api/safety/consents', '/api/driver/consents/:id/sign'];
 const uploadJson = json({ limit: '5mb' });
 /**
  * Baseline headers on every API response (no extra dependency). Cache-Control is a default that routes replace when they

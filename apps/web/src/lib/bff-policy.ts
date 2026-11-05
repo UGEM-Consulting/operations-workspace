@@ -53,7 +53,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Promotions: a team lead's request or cancellation, and a manager's decision.
     (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path))) ||
     // Safety drivers: add and edit a driver, withdraw or reopen them, assign their safety staff owner.
-    (method === 'POST' && (path === 'safety/drivers' || match(`safety/drivers/${ID}/(withdraw|reopen|owner|link|link/cancel|ssn)`, path))) ||
+    (method === 'POST' && (path === 'safety/drivers' || match(`safety/drivers/${ID}/(withdraw|reopen|owner|left|link|link/cancel|ssn|annual-reviews)`, path))) ||
     // A driver filling in their application (driver session cookie; no staff account).
     (method === 'POST' && (['driver/begin', 'driver/verify', 'driver/application/submit', 'driver/logout'].includes(path) || match(`driver/documents/${SCAN}`, path))) ||
     (method === 'POST' && match(`safety/drivers/${ID}/documents/${ID}/verify`, path)) ||
@@ -70,7 +70,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`safety/drivers/${ID}/mvr`, path) || path === 'safety/consents') return 4_400_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`safety/drivers/${ID}/(mvr|annual-reviews)`, path) || path === 'safety/consents') return 4_400_000;
   // A list of existing dispatchers, up to 500 rows of text.
   if (path === 'dispatch/existing/check' || path === 'dispatch/existing/add') return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).

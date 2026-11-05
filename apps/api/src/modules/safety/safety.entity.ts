@@ -21,7 +21,7 @@ export const OWNABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
 export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED',
  'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED',
  'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED',
- 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT'] as const;
+ 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT', 'ANNUAL_REVIEW_RECORDED'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -195,7 +195,7 @@ export class DriverScreeningCheck {
 export class DriverReport {
  @PrimaryColumn('uuid') id!: string;
  @Column('uuid') driverId!: string;
- @Column('varchar') kind!: 'MVR';
+ @Column('varchar') kind!: 'MVR' | 'ANNUAL_MVR';
  @Column('date') pulledOn!: string;
  @Column('smallint') pageCount!: number;
  @Column('varchar', { length: 64 }) sha256!: string;

@@ -7,14 +7,16 @@ import { PageHeader } from '@/components/workspace-ui';
 import { documentLabels, type DocumentKind } from './types';
 
 export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; owner: { name: string } | null; expired: boolean }
+export interface DueReview { driverId: string; firstName: string; lastName: string; owner: string | null; lastReviewedOn: string | null; dueOn: string; notQualified: boolean; overdue: boolean }
+export interface DueList { today: string; warningDays: number; items: DueReview[] }
 export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[] }
 
 const day = (value: string) => new Date(`${value}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
 
 /** Safety › Expiring documents: verified scans that have expired or expire soon, soonest first. */
-export function ExpiringDocuments({ data }: { data: ExpiringList }) {
+export function ExpiringDocuments({ data, reviews }: { data: ExpiringList; reviews: DueList }) {
   return <div className="space-y-6">
-    <PageHeader title="Expiring documents" description={`Verified licenses, medical cards and work authorizations that have expired or expire within ${data.warningDays} days. Open the driver to ask for a new scan.`} />
+    <PageHeader title="Expiring documents" description={`Verified licenses, medical cards and work authorizations that have expired or expire within ${data.warningDays} days, and yearly driver reviews that are due. Open the driver to act.`} />
     <Card>
       <Table<ExpiringItem> caption="Documents that have expired or expire soon" rows={data.items} rowKey={item => item.documentId}
         empty={<EmptyState title="Nothing is expiring" description="No verified document has expired or expires soon." />}
@@ -23,6 +25,16 @@ export function ExpiringDocuments({ data }: { data: ExpiringList }) {
           { key: 'document', label: 'Document', cell: item => documentLabels[item.kind as DocumentKind] ?? 'Document' },
           { key: 'expires', label: 'Expires', cell: item => <>{day(item.expiresOn)} <Badge label={item.expired ? 'Expired' : 'Expiring'} tone={item.expired ? 'danger' : 'warning'} /></> },
           { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner?.name ?? '—' },
+        ]} />
+    </Card>
+    <Card>
+      <Table<DueReview> caption="Yearly reviews that are due" rows={reviews.items} rowKey={item => item.driverId}
+        empty={<EmptyState title="No yearly review is due" description={`No cleared driver is due for a yearly review within ${reviews.warningDays} days.`} />}
+        columns={[
+          { key: 'driver', label: 'Yearly review', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
+          { key: 'due', label: 'Due', cell: item => <>{day(item.dueOn)} <Badge label={item.notQualified ? 'Not qualified' : item.overdue ? 'Overdue' : 'Due soon'} tone={item.notQualified || item.overdue ? 'danger' : 'warning'} /></> },
+          { key: 'last', label: 'Last review', hideBelow: 'md', cell: item => item.lastReviewedOn ? day(item.lastReviewedOn) : 'None yet' },
+          { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>
   </div>;
