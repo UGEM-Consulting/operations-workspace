@@ -14,6 +14,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && /^notifications\/[0-9a-f-]{36}\/read$/.test(path)) ||
     // IT tasks (setups and removals together) and the removal checklist after a dispatcher left.
     (method === 'GET' && (path === 'it/tasks' || match(`it/removals/${ID}`, path))) || (method === 'PATCH' && match(`it/removals/${ID}/tasks/[A-Z_]+`, path)) ||
+    // A team lead's sign-in: create it, turn it back on or turn it off.
+    (method === 'POST' && match(`it/sign-ins/${ID}`, path)) ||
     // Handing an application to another manager, and a manager's open records before their account changes.
     (method === 'POST' && match(`onboarding/applications/${ID}/manager`, path)) || (method === 'GET' && match(`users/${ID}/open-records`, path)) ||
     (method === 'POST' && ['applicant/begin','applicant/verify','applicant/submit','applicant/logout','onboarding/invitations'].includes(path)) ||

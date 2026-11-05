@@ -26,6 +26,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { middayIso } from '@/lib/navigation';
 import { ExistingAccountsCard, ExistingPaperworkCard, useCatchUpLink } from './paperwork';
+import { signInItems } from './sign-in-status';
 import { SignIn } from './sign-in';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign } from './types';
 
@@ -146,7 +147,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     {notice && (notice.passed ? <Alert tone="danger" title="Their last day has passed"><p>{anyoneLeft ? `${reassign} still assigned, so this record stays Leaving until they’re reassigned, then it becomes Left automatically. ` : 'They’ll be marked as left within a few minutes. '}IT’s removal of their access doesn’t wait for this.</p></Alert>
       : anyoneLeft ? <Alert tone="warning" title={<>{reassign} to reassign by <LastDay day={notice.lastDay} /></>}><p>{name} can’t be marked as left while anyone is still with them. IT removes their access at the end of that day either way.</p></Alert>
       : <Alert tone="info" title={<>Leaving <LastDay day={notice.lastDay} /></>}><p>Everyone is reassigned. The workspace marks them as left once that day has passed.</p></Alert>)}
-    {open && member.signInOff && !notice?.passed && !removal?.removeNowAt && <Alert tone="warning" title="Their team lead sign-in is off"><p>If they’re still working as a team lead, an administrator can turn it back on in Staff accounts.</p></Alert>}
+    {open && member.signIn?.status === 'WAITING' && member.signIn.request !== 'TURN_OFF' && <Alert tone="info" title={`IT will ${member.signIn.request === 'TURN_ON' ? 'turn' : 'create'} ${member.firstName}’s sign-in${member.signIn.request === 'TURN_ON' ? ' back on' : ''}`}>
+      <p>{accounts?.companyEmail ?? existing?.companyEmail ? `They’ll use ${accounts?.companyEmail ?? existing?.companyEmail} and send ${member.firstName} a first password.` : 'IT will add their company email first, then send them a first password.'} You don’t need to do anything.</p></Alert>}
+    {open && member.signInOff && member.signIn?.status !== 'WAITING' && !notice?.passed && !removal?.removeNowAt && <Alert tone="warning" title="Their team lead sign-in is off"><p>If they’re still working as a team lead, an administrator can turn it back on in Staff accounts.</p></Alert>}
     {member.status === 'ONBOARDING' && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
     {member.status === 'LEFT' && (removal && removalOpen ? <Alert tone="warning" title={`IT is removing access: ${removal.done} of ${removal.total} done`}>
       <p>{emailNow ? `Company email ${emailNow}. ` : ''}The record and its history are kept; it can’t be moved or edited.</p></Alert>
@@ -263,7 +266,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : current ? 'Independent' : null, emptyLabel: noMc ? 'No MC yet' : 'None' },
             { label: 'Team', value: current?.team, emptyLabel: 'No team' },
             { label: 'Job title', value: member.jobTitle?.name, emptyLabel: 'Not set' },
-            { label: 'Since', value: current ? (current.id === undated ? 'Not recorded' : <LocalTime iso={current.startedAt} format="date" />) : null, emptyLabel: '—' }]} /></CardBody>
+            { label: 'Since', value: current ? (current.id === undated ? 'Not recorded' : <LocalTime iso={current.startedAt} format="date" />) : null, emptyLabel: '—' },
+            // Which team they lead; when they started leading isn't recorded.
+            ...(member.leadOf ? [{ label: 'Team lead', value: `Yes, of ${member.leadOf.name}` }] : [])]} /></CardBody>
         </Card>}
         {!support && !!member.supports?.length && <Card>
           <CardHeader title="Supports and updaters" description="Who assists this dispatcher." />
@@ -298,8 +303,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               : accounts.cancelledAt ? <p>Cancelled <LocalTime iso={accounts.cancelledAt} format="date" />: they left before setup finished.</p>
               : accounts.completedAt ? <p>Setup complete <LocalTime iso={accounts.completedAt} format="date" />.</p>
               : <><p>In progress. The dispatcher becomes Active when IT finishes.</p>{progress}</>}
-            {accounts && (accounts.ringCentralExtension || existing?.ringCentralExtension || signIns.dat || signIns.truckstop) && <DescriptionList layout="rows" stacked items={[...(accounts.ringCentralExtension || existing?.ringCentralExtension ? [{ label: 'Extension', value: accounts.ringCentralExtension ?? existing?.ringCentralExtension, mono: true }] : []),
-              ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : [])]} />}
+            {accounts && (accounts.ringCentralExtension || existing?.ringCentralExtension || signIns.dat || signIns.truckstop || member.signIn) && <DescriptionList layout="rows" stacked items={[...(accounts.ringCentralExtension || existing?.ringCentralExtension ? [{ label: 'Extension', value: accounts.ringCentralExtension ?? existing?.ringCentralExtension, mono: true }] : []),
+              ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : []), ...signInItems(member)]} />}
             {member.canOpenApplication && member.applicationId && <Link href={`/onboarding/applications/${member.applicationId}`} className="inline-block text-primary underline-offset-4 hover:underline">Open onboarding record</Link>}
           </CardBody>
         </Card>}

@@ -26,7 +26,7 @@ const RESPONSIBLE = ['DISPATCHER_MANAGER', 'SYSTEM_ADMIN'];
 interface OpenRecords { invitations: number; applications: number; changes: number; itSetup: number; removals?: number; total: number }
 type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null };
 /** A dispatcher record a team lead account can link to; what the account sees follows the team it leads. */
-export interface LeadChoice { id: string; name: string; team: string | null }
+export interface LeadChoice { id: string; name: string; team: string | null; companyEmail?: string | null }
 /**
  * Staff accounts with status tabs and search kept in the URL; filtering happens here because the API returns every account.
  * `page` renders it as the Staff accounts page; otherwise it is a card on Settings (an older API without that page).
@@ -46,10 +46,11 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
   const visible = searched.filter(user => filters.status === 'ALL' || user.status === filters.status);
   const filtered = filters.search !== '' || filters.status !== 'ALL';
   const [role, setRole] = useState('DISPATCHER_MANAGER');
+  const [leadId, setLeadId] = useState('');
   const [status, setStatus] = useState('ACTIVE');
   // A manager's open records, loaded when the change would take their access away (designed as HandOverOnDeactivateScreen).
   const [records, setRecords] = useState<OpenRecords | 'loading' | 'failed' | null>(null);
-  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); setStatus(user?.status ?? 'ACTIVE'); setRecords(null); }
+  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); setLeadId(user?.memberId ?? ''); setStatus(user?.status ?? 'ACTIVE'); setRecords(null); }
   const responsible = !!editing && editing.status === 'ACTIVE' && RESPONSIBLE.includes(editing.role);
   const losesAccess = responsible && (status === 'INACTIVE' || !RESPONSIBLE.includes(role));
   async function change(next: { role?: string; status?: string }) {
@@ -65,12 +66,17 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
   }
   const takers = users.filter(user => user.status === 'ACTIVE' && RESPONSIBLE.includes(user.role) && user.id !== editing?.id);
   const takerOptions = takers.map(user => ({ value: user.id, label: `${user.firstName} ${user.lastName} · ${roleLabel(user.role)}${user.id === currentUserId ? ' (you)' : ''}` }));
+  const leadEmail = leads.find(lead => lead.id === leadId)?.companyEmail;
+  // The email fills in from the record only when the account becomes a team lead or moves to another record; editing a
+  // team lead's name or status leaves their email as it is.
+  const emailFromRecord = role === 'TEAM_LEAD' && !!leadId && !(editing?.role === 'TEAM_LEAD' && editing.memberId === leadId);
   const linked = (user: ManagedUser) => leads.find(lead => lead.id === user.memberId);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
     const data: Record<string, FormDataEntryValue> = Object.fromEntries(new FormData(event.currentTarget));
     if (!data.handOverTo) delete data.handOverTo;
+    if (emailFromRecord && !leadEmail) { setError('Record their company email on their dispatcher record first. A team lead signs in with it.'); return; }
     setPending(true); setError('');
     try {
       // Name-only edits keep sessions; email, role and status changes end them.
@@ -124,7 +130,9 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
     {open && <Dialog open onClose={() => setOpen(false)} busy={pending} title={editing ? `Edit ${editing.firstName} ${editing.lastName}` : 'Add staff member'} actions={<Button type="submit" form="user-editor">{pending ? 'Saving…' : editing ? (losesAccess && records && typeof records === 'object' && records.total > 0 ? (status === 'INACTIVE' ? 'Hand over and deactivate' : 'Hand over and save') : 'Save changes') : 'Create account'}</Button>}>
       <form id="user-editor" onSubmit={submit} className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2"><Input label="First name" name="firstName" defaultValue={editing?.firstName} required maxLength={100} width="full" /><Input label="Last name" name="lastName" defaultValue={editing?.lastName} required maxLength={100} width="full" /></div>
-        <Input label="Email" name="email" type="email" defaultValue={editing?.email} required maxLength={254} width="full" />
+        {emailFromRecord ? <Input key={`lead-${leadId}`} label="Email" name="email" type="email" value={leadEmail ?? ''} readOnly required width="full"
+          hint={leadEmail ? 'A team lead signs in with their company email, from their dispatcher record.' : 'Record their company email on their dispatcher record first. A team lead signs in with it.'} />
+          : <Input key="email" label="Email" name="email" type="email" defaultValue={editing?.email} required maxLength={254} width="full" />}
         <div className="grid gap-4 sm:grid-cols-2"><Select label="Role" name="role" value={role} onChange={event => void change({ role: event.target.value })} width="full" options={roles.map(role => ({ value: role, label: roleLabel(role) }))} /><Select label="Status" name="status" value={status} onChange={event => void change({ status: event.target.value })} width="full" options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} /></div>
         {losesAccess && records === 'loading' && <p role="status" className="text-sm text-muted-foreground">Checking their open invitations and applications…</p>}
         {losesAccess && records === 'failed' && <>
@@ -139,7 +147,7 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
               options={takerOptions}
               hint={`All ${records.total} move together. Finished applications stay with ${editing?.firstName} for the record. Applicants aren’t told; their links keep working.${records.removals ? ' New email from a leaving dispatcher goes to the new manager instead, and IT sees that on the checklist.' : ''}`} />
           </div></Card>}
-        {role === 'TEAM_LEAD' && <Select label="Team lead’s dispatcher record" name="memberId" defaultValue={editing?.memberId ?? ''} required placeholder="Choose a dispatcher" width="full"
+        {role === 'TEAM_LEAD' && <Select label="Team lead’s dispatcher record" name="memberId" value={leadId} onChange={event => setLeadId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
           options={leads.map(lead => ({ value: lead.id, label: lead.team ? `${lead.name} · leads ${lead.team}` : `${lead.name} · leads no team yet` }))}
           hint="They see and act only for the team this dispatcher leads. Changing it ends their sessions." />}
         {!editing && <p className="text-[13px] leading-5 text-muted-foreground">We’ll create a first password for you to send them. They replace it with their own when they first sign in.</p>}

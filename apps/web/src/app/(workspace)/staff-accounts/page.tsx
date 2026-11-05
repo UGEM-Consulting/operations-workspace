@@ -15,7 +15,7 @@ export default async function StaffAccountsPage({ searchParams }: { searchParams
   if (members.ok && teams.ok) {
     const [memberList, teamList] = await Promise.all([readResponse<MemberList>(members, 'dispatchers'), readResponse<TeamList>(teams, 'teams')]);
     leads = memberList.items.filter(member => member.position === 'DISPATCHER' && member.status !== 'LEFT')
-      .map(member => ({ id: member.id, name: fullName(member), team: teamList.items.find(team => !team.archived && team.lead?.id === member.id)?.name ?? null }));
+      .map(member => ({ id: member.id, name: fullName(member), companyEmail: member.companyEmail ?? null, team: teamList.items.find(team => !team.archived && team.lead?.id === member.id)?.name ?? null }));
   }
   return <UserManagement page users={await readResponse<StaffUser[]>(response, 'users')} currentUserId={identity.user.id} filters={filters} leads={leads} />;
 }

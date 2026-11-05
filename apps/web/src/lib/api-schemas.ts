@@ -80,6 +80,12 @@ export const teamListSchema = z.looseObject({
   counts: z.looseObject({ active: z.number(), archived: z.number() }),
 });
 
+const teamPerson = z.looseObject({ id: text, firstName: text, lastName: text, status: text, position: text, version: z.number(), photo: z.boolean(), lastDay: nullableText });
+/** GET /dispatch/teams/:id */
+export const teamDetailSchema = z.looseObject({ id: text, name: text, version: z.number(), archived: z.boolean(), leadId: nullableText, mc: z.looseObject({ id: text, name: text }),
+  dispatchers: z.array(teamPerson.extend({ jobTitle: nullableText, drivers: z.number(), companyEmail: nullableText, accountStatus: nullableText })),
+  helpers: z.array(teamPerson.extend({ dispatcherId: nullableText, teamId: nullableText })) });
+
 const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText });
 /** GET /dispatch/members */
 export const memberListSchema = z.looseObject({ items: z.array(memberRow) });
@@ -149,9 +155,11 @@ export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), ca
   kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
-export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL']), id: text, name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
+export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN']), id: text,
+  // A team lead's sign-in: what IT is asked to do, whose record and their team.
+  signIn: z.enum(['CREATE', 'TURN_ON', 'TURN_OFF']).nullable().optional(), memberId: nullableText.optional(), team: nullableText.optional(), name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
   dueOn: nullableText, scheduled: z.boolean(), updatedAt: text, completedAt: nullableText })), total: z.number(), page: z.number(), pageCount: z.number(), pageSize: z.number(),
-  stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number() }) });
+  stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number(), signIns: z.number().optional() }) });
 /** GET /it/removals/:id */
 export const itRemovalSchema = z.looseObject({
   request: z.looseObject({ id: text, memberId: text, version: z.number(), status: text, scheduled: z.boolean(), dueOn: text, emailAfter: text, numberOutcome: nullableText, completedAt: nullableText, cancelledAt: nullableText, removeNowAt: nullableText,

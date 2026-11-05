@@ -8,6 +8,7 @@ import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { clearSavedSignature } from '../documents/saved-signature';
 import { removeEmailEnrolment } from '../auth/mfa.service';
 import { handOver, openRecords, RESPONSIBLE_ROLES } from '../onboarding/hand-over';
+import { companyEmailOf, syncSignIns } from '../dispatch/lead-sign-in';
 type Editable = 'firstName' | 'lastName' | 'email' | 'role' | 'status';
 const EDITABLE: Editable[] = ['firstName', 'lastName', 'email', 'role', 'status'];
 // Audit event per kind of change. Names change nothing about access; the others end the user's sessions.
@@ -43,22 +44,26 @@ export class UsersService {
         await this.lockAdministration(manager, actor);
         const repo = manager.getRepository(User);
         const user = await repo.save(repo.create({ ...fields, passwordHash, mustChangePassword: true }));
-        const linked = await this.linkMember(manager, user, memberId);
-        const provided = [...Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key), ...(linked ? ['memberId'] : [])];
+        const link = await this.linkMember(manager, user, memberId);
+        await this.companyEmailOnly(manager, user, link.after);
+        // A request waiting for IT to create this sign-in is no longer needed.
+        await syncSignIns(manager, [link.after], actor.id, false);
+        const provided = [...Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key), ...(link.changed ? ['memberId'] : [])];
         await this.audit(manager, user.id, actor.id, SecurityEventType.USER_CREATED, { fields: [...provided, 'password'] });
         return { ...publicUser(user), ...(generatedPassword ? { generatedPassword } : {}) };
       });
     } catch (error) { return this.handleError(error); }
   }
   /**
-   * A team lead's account points at exactly one current dispatcher record; other roles point at none. Returns whether the
-   * link changed. The unique index keeps one account per dispatcher.
+   * A team lead's account points at exactly one current dispatcher record; other roles point at none. Returns the record
+   * before and after, and whether the link changed. The unique index keeps one account per dispatcher.
    */
   private async linkMember(manager: EntityManager, user: User, requested: string | null | undefined) {
     const [current] = await manager.query(`SELECT id FROM dispatch_members WHERE "accountUserId" = $1 FOR UPDATE`, [user.id]);
     const target = user.role === Role.TEAM_LEAD ? (requested === undefined ? current?.id ?? null : requested) : null;
     if (user.role === Role.TEAM_LEAD && !target) throw new BadRequestException('Choose the dispatcher record for this team lead.');
-    if ((current?.id ?? null) === target) return false;
+    const result = { before: (current?.id ?? null) as string | null, after: target as string | null, changed: (current?.id ?? null) !== target };
+    if (!result.changed) return result;
     if (target) {
       const [member] = await manager.query(`SELECT position, status, "accountUserId" FROM dispatch_members WHERE id = $1 FOR UPDATE`, [target]);
       if (!member || member.position !== 'DISPATCHER' || member.status === 'LEFT') throw new BadRequestException('A team lead account links to a current dispatcher.');
@@ -66,7 +71,14 @@ export class UsersService {
     }
     if (current) await manager.query(`UPDATE dispatch_members SET "accountUserId" = NULL WHERE id = $1`, [current.id]);
     if (target) await manager.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [user.id, target]);
-    return true;
+    return result;
+  }
+  /** A team lead signs in with their dispatcher record's company email, never a personal or made-up one. */
+  private async companyEmailOnly(manager: EntityManager, user: User, memberId: string | null) {
+    if (user.role !== Role.TEAM_LEAD || !memberId) return;
+    const { email } = await companyEmailOf(manager, memberId);
+    if (!email) throw new BadRequestException('Record their company email on their dispatcher record first. A team lead signs in with it.');
+    if (email !== user.email.toLowerCase()) throw new BadRequestException(`A team lead signs in with their company email, ${email}.`);
   }
   /** What a manager is responsible for now, asked before their account is deactivated or their role changes. */
   async openRecords(id: string) {
@@ -97,7 +109,10 @@ export class UsersService {
         // The editor submits every field; only real differences count as changes.
         const changed: string[] = EDITABLE.filter(key => dto[key] !== undefined && dto[key] !== user[key]);
         for (const key of changed) Object.assign(user, { [key]: dto[key as Editable] });
-        if (await this.linkMember(manager, user, dto.memberId)) changed.push('memberId');
+        const link = await this.linkMember(manager, user, dto.memberId);
+        if (link.changed) changed.push('memberId');
+        // Turning an account back on counts too: it comes back only under the company email they sign in with now.
+        if (['email', 'role', 'memberId'].some(field => changed.includes(field)) || (changed.includes('status') && user.status === UserStatus.ACTIVE)) await this.companyEmailOnly(manager, user, link.after);
         if (passwordHash) {
           changed.push('password');
           user.passwordHash = passwordHash;
@@ -107,6 +122,9 @@ export class UsersService {
         const events = CHANGE_EVENTS.filter(event => event.fields.some(field => changed.includes(field)));
         const sessionsRevoked = events.some(event => event.revokes);
         if (changed.length) await repo.save(user);
+        // Waiting sign-in requests this change answered (an account turned on or off, a new link) are cancelled, once the account
+        // is saved so they're checked against what it is now. None are asked for here: the administrator changed it on purpose.
+        await syncSignIns(manager, [link.before, link.after], actor.id, false);
         if (sessionsRevoked) {
           await revokeUserSessions(manager, user);
           // Another administrator changed this account (identity, role, status or a password they chose): the owner

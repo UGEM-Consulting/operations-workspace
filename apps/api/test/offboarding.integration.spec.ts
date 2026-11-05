@@ -429,6 +429,8 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
   it('refuses to roll back while offboarding or hand-over history exists', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
+    await db.undoLastMigration(); // TeamLeadSignIns, with none here
+
     await db.undoLastMigration(); // WholeTeamSupports, with none here
     await db.undoLastMigration(); // AccountDetails, with none here
     await db.undoLastMigration(); // SupportTypes, with none here

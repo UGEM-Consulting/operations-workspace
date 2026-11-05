@@ -246,3 +246,14 @@
 .textLayer { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: transparent; }
 .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
 .textLayer ::selection { background: rgb(0 90 200 / 0.25); color: transparent; }
+
+/* A team's org chart (features/dispatch/team-page.tsx): the lines are borders, so they follow the theme. Each row of
+ * dispatchers hangs from a bar joining its first and last card centres (cards are 248px), and a line down the middle
+ * joins the rows. Below 1024px it becomes a list with one line down the left. */
+.org-side::after { content: ''; position: absolute; top: 50%; width: 2rem; border-top: 2px dashed var(--border-strong); }
+.org-side-start::after { left: 100%; } .org-side-end::after { right: 100%; }
+.org-row { position: relative; display: grid; grid-template-columns: repeat(var(--cols), 248px); gap: 1rem; padding-top: 1.25rem; align-items: start; }
+.org-row::before { content: ''; position: absolute; top: 0; left: 124px; right: 124px; border-top: 2px solid var(--border-strong); }
+.org-row:not(:last-child)::after { content: ''; position: absolute; left: calc(50% - 1px); top: 0; bottom: -1.5rem; border-left: 2px solid var(--border-strong); }
+.org-branch { position: relative; display: grid; gap: 0.5rem; }
+.org-branch::before { content: ''; position: absolute; top: -1.25rem; left: 50%; height: 1.25rem; border-left: 2px solid var(--border-strong); }

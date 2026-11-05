@@ -1,6 +1,14 @@
 import { statusLabel } from '@/components/ui/status-badge';
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
-export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number; wholeTeam?: number }
+export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number; wholeTeam?: number;
+  // Everyone assisting its dispatchers or the whole team (from an API with team pages).
+  helpers?: number }
+/** A person on a team's page: their card shows their photo, name and what they do. */
+export interface TeamPerson { id: string; firstName: string; lastName: string; status: MemberStatus; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; version: number; photo: boolean; lastDay: string | null }
+/** GET dispatch/teams/:id: the team, its dispatchers and everyone assisting them or the whole team. */
+export interface TeamDetail { id: string; name: string; version: number; archived: boolean; leadId: string | null; mc: { id: string; name: string; archived: boolean };
+  dispatchers: (TeamPerson & { jobTitle: string | null; drivers: number; companyEmail: string | null; accountStatus: 'ACTIVE' | 'INACTIVE' | null })[];
+  helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[] }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
 export type SupportType = 'SUPPORT' | 'UPDATER';
 /** What someone in the support position is called. An older API sends nothing, and they're all Support then. */
@@ -13,7 +21,9 @@ export interface MemberRow { addedByHand?: boolean; id: string; firstName: strin
   // On notice (from an API with notice periods): the last day, whether it has passed, who still needs reassigning, IT's removal.
   lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null;
   // Added by hand with details missing (from an API with missing details).
-  placed?: boolean; startDateKnown?: boolean; sinceKnown?: boolean }
+  placed?: boolean; startDateKnown?: boolean; sinceKnown?: boolean;
+  // What a team lead signs in with, and whether they have a sign-in (from an API with team lead sign-ins).
+  companyEmail?: string | null; accountStatus?: 'ACTIVE' | 'INACTIVE' | null }
 /** Someone here who still needs a start date or, for a dispatcher, an MC. */
 export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' && (member.startDateKnown === false || (member.position === 'DISPATCHER' && member.placed === false));
 /** Who a support or updater assists: "Riley Santos", or a team's name when it's everyone on it. */
@@ -40,6 +50,8 @@ export interface MemberProfile { sharedSignIns?: SharedSignIns; existing?: Exist
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).
   leftReason?: string | null; leftBy?: string | null; signInOff?: boolean;
+  // Their workspace sign-in as a team lead: waiting for IT (to create, turn on or turn off), on or off; null with none.
+  signIn?: { status: 'WAITING' | 'ACTIVE' | 'OFF'; request: 'CREATE' | 'TURN_ON' | 'TURN_OFF' | null } | null;
   removal?: { id: string; dueOn: string; scheduled?: boolean; removeNowAt?: string | null; removeNowReason?: string | null; completedAt: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardTo: string | null; numberOutcome: string | null; done: number; total: number; tasks: { key: string; status: string }[] } | null;
   // A notice period in progress, who still needs reassigning, and earlier notices that were cancelled or moved.
   notice?: { id: string; lastDay: string; reason: string; createdAt: string; recordedBy: string | null; passed: boolean } | null;

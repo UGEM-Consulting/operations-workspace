@@ -21,6 +21,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
 import { SignIn } from './sign-in';
+import { signInItems } from './sign-in-status';
 import { assists, supportName, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
 
 type LinkResult = { memberId: string; name: string; email?: string; url?: string; problem?: string };
@@ -171,7 +172,7 @@ export function ExistingAccountsCard({ member, open }: { member: MemberProfile; 
     <CardBody className="space-y-3">
       <DescriptionList layout="rows" stacked items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
         ...(existing.ringCentralExtension ? [{ label: 'Extension', value: existing.ringCentralExtension, mono: true }] : []),
-        { label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }]} />
+        { label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }, ...signInItems(member)]} />
       <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>
     </CardBody>
     {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description="What you know now. Nobody is messaged." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
