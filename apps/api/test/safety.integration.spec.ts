@@ -106,7 +106,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       const me = (await agents[key].get('/api/auth/me').set(headers).expect(200)).body;
       expect(me.landingPage).toBe('/safety/drivers');
       // Every Safety role reads the consent forms; only the Safety manager publishes them.
-      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'consents', 'security']);
+      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'expiring', 'consents', 'security']);
     }
     expect((await agents.admin.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toContain('drivers');
     await agents.dispatch.get('/api/safety/drivers').set(headers).expect(403);
@@ -387,6 +387,31 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await events(id)).filter(row => row.event === 'DOCUMENT_VERIFIED').map(row => row.metadata))
       .toEqual([{ kind: 'WORK_AUTHORIZATION', again: false }, { kind: 'LICENSE', again: false }, { kind: 'LICENSE', again: true }]);
     expect(JSON.stringify(await events(id))).not.toContain('D1234567');
+  });
+
+  it('lists verified scans that expired or expire within 60 days, soonest first, to Safety roles only, with dates and no numbers', async () => {
+    const { id, agent } = await applying();
+    const documents = (await scanAll(agent)).documents as { id: string; kind: string }[];
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201);
+    const expiring = async (agent = agents.staff) => (await agent.get('/api/safety/expiring').set(headers).expect(200)).body;
+    const verify = (kind: string, body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/documents/${documents.find(row => row.kind === kind)!.id}/verify`).set(headers).send(body);
+    const today = usDay('latest');
+    // An unverified scan, and one that expires far away, are not listed.
+    expect((await expiring()).items).toEqual([]);
+    await verify('LICENSE', { version: 1, number: 'D1234567', expiresOn: addDays(today, 400) }).expect(201);
+    expect((await expiring()).items).toEqual([]);
+    await verify('MEDICAL_CARD', { version: 1, expiresOn: addDays(today, 30) }).expect(201);
+    await verify('WORK_AUTHORIZATION', { version: 1, expiresOn: addDays(today, -3) }).expect(201);
+    const body = await expiring();
+    expect(body).toMatchObject({ today, warningDays: 60 });
+    expect(body.items.map((row: { kind: string; expired: boolean }) => [row.kind, row.expired])).toEqual([['WORK_AUTHORIZATION', true], ['MEDICAL_CARD', false]]);
+    expect(JSON.stringify(body)).not.toContain('D1234567');
+    // Non-Safety roles are refused.
+    await agents.dispatch.get('/api/safety/expiring').set(headers).expect(403);
+    // A closed record drops out of the list.
+    const { version } = await driver(id);
+    await agents.lead.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version, reason: 'Fictional withdrawal' }).expect(201);
+    expect((await expiring()).items).toEqual([]);
   });
 
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
