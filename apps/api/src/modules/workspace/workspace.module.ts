@@ -10,6 +10,8 @@ import { DispatchModule } from '../dispatch/dispatch.module';
 import { PromotionsService } from '../dispatch/promotions.service';
 import { SafetyModule } from '../safety/safety.module';
 import { ScreeningService } from '../safety/screening.service';
+import { SafetyService } from '../safety/safety.service';
+import { SAFETY_ROLES } from '../safety/driver-records';
 
 /**
  * Work waiting for the signed-in person, for the sidebar and the notification bell. Each count reuses its feature's own
@@ -18,7 +20,7 @@ import { ScreeningService } from '../safety/screening.service';
 @Controller('workspace')
 @Roles(...STAFF)
 class WorkspaceController {
-  constructor(private readonly reviews: ReviewService, private readonly it: ItService, private readonly promotions: PromotionsService, private readonly screening: ScreeningService) {}
+  constructor(private readonly reviews: ReviewService, private readonly it: ItService, private readonly promotions: PromotionsService, private readonly screening: ScreeningService, private readonly safety: SafetyService) {}
   @Get('counts')
   async counts(@Req() req: AuthRequest) {
     const user = req.currentUser;
@@ -30,6 +32,7 @@ class WorkspaceController {
     if (openIt !== null) navigation.it = openIt;
     if (promotions !== null) navigation.promotions = promotions;
     if (drivers !== null) navigation.drivers = drivers;
+    if (SAFETY_ROLES.includes(user.role)) navigation.expiring = await this.safety.expiringCount();
     return { navigation, unreadNotifications: unread };
   }
 }

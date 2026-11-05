@@ -35,6 +35,8 @@ class SafetyController {
  @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
  @Get('consents/:id/file') @FileResponse() async consentFile(@Param('id', ParseUUIDPipe) id: string) { return send(await this.consents.staffFile(id)); }
  @Get('drivers/:id/consents/:documentId/signed') @FileResponse() async signedConsent(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.consents.staffSignedCopy(req.currentUser, id, documentId)); }
+ // Verified scans that have expired or expire soon (dates only).
+ @Get('expiring') expiring() { return this.safety.expiring(); }
  @Get('people') people() { return this.safety.people(); }
  @Get('drivers') drivers(@Query() query: DriverQueryDto) { return this.safety.drivers(query.status); }
  @Post('drivers') create(@Req() req: AuthRequest, @Body() dto: CreateDriverDto) { return this.safety.create(req.currentUser, dto); }
@@ -87,5 +89,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService] })
 export class SafetyModule {}

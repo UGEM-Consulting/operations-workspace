@@ -154,6 +154,8 @@ export const driverProfileSchema = driverRow.extend({
 export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), canPublish: z.boolean(),
   kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
 
+export const expiringSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ documentId: text, driverId: text, kind: text, expiresOn: text, firstName: text, lastName: text, status: text, owner: z.looseObject({ name: text }).nullable().catch(null), expired: z.boolean() })) });
+
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
 export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN']), id: text,
   // A team lead's sign-in: what IT is asked to do, whose record and their team.

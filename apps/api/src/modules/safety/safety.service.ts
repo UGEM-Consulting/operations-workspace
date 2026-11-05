@@ -14,10 +14,12 @@ import { AssignOwnerDto, CreateDriverDto, ReopenDriverDto, UpdateDriverDto, With
 import { driverEvent, lockOpenDriver, ownsDriver, requireScreener, SCREENERS, STALE, writeDriver } from './driver-records';
 import { CLOSED_STATUSES, Driver, DriverApplication, DriverDocument, DriverLink, DriverOwner, earliestFinalRejection, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
 import { currentConsents, missingConsents } from './consent-rules';
-import { missingForDecision } from './screening-rules';
+import { addDays, missingForDecision, usDay } from './screening-rules';
 import { clearanceGaps, hasActiveOwner } from './clearance.service';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
+/** Scans are listed as expiring this many days before their expiration date. */
+export const EXPIRY_WARNING_DAYS = 60;
 
 const EDITABLE = ['firstName', 'lastName', 'phone', 'email', 'driverType', 'licenseType', 'licenseState', 'experienceYears', 'source', 'notes'] as const;
 const person = (alias: string) => `CASE WHEN ${alias}.id IS NULL THEN NULL ELSE json_build_object('id', ${alias}.id, 'name', ${alias}."firstName" || ' ' || ${alias}."lastName", 'active', ${alias}.status = 'ACTIVE') END`;
@@ -41,6 +43,22 @@ export class SafetyService {
    ORDER BY d."createdAt" DESC LIMIT 1000`, [status]);
   return { items };
  }
+
+ /**
+  * Verified scans (license, medical card, work authorization) of drivers whose records are still open and whose
+  * expiration date has passed or falls within EXPIRY_WARNING_DAYS (Eastern date), soonest first. Dates only: never numbers.
+  */
+ async expiring() {
+  const today = usDay('latest');
+  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn",
+    x."firstName", x."lastName", x.status, ${person('o')} AS owner
+   FROM driver_documents d JOIN drivers x ON x.id = d."driverId"
+   LEFT JOIN driver_owners w ON w."driverId" = x.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
+   WHERE d."replacedAt" IS NULL AND d."verifiedAt" IS NOT NULL AND d."expiresOn" IS NOT NULL AND d."expiresOn" <= $1
+    AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT') ORDER BY d."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]);
+  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expired: (item.expiresOn as string) < today })) };
+ }
+ async expiringCount(): Promise<number> { return (await this.expiring()).items.length; }
 
  async driver(id: string) {
   const [driver] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState", d."experienceYears",
