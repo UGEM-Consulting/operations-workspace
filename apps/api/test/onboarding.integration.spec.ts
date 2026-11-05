@@ -562,7 +562,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const [lead]=await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Lead','Dispatcher','DISPATCHER','ACTIVE',now()) RETURNING id`);
   const [other]=await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Other','Dispatcher','DISPATCHER','ONBOARDING',now()) RETURNING id`);
   const invite=(body:Record<string,unknown>)=>manager.post('/api/onboarding/invitations').set(headers).send({expirationDays:7,telegramRequired:false,...body});
-  expect((await invite({position:'SUPPORT'}).expect(400)).body.message).toBe('Choose the dispatcher this support will assist.');
+  expect((await invite({position:'SUPPORT'}).expect(400)).body.message).toBe('Choose the dispatcher or team this support will assist.');
   await invite({position:'SUPPORT',supportsMemberId:lead.id,mcName:'Independent'}).expect(400);
   await invite({supportsMemberId:lead.id}).expect(400);
   const created=await invite({email:payload.email,position:'SUPPORT',supportsMemberId:lead.id}).expect(201);
@@ -766,7 +766,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:false,companyEmail:'not an email'}).expect(400);
   let data=await itAgent.patch(`/api/it/onboarding/${id}/contact`).set(headers).send({version:0,workPhoneVerified:false,assignedRingCentralPhoneNumber:'+1 202 555 0190',companyEmail:' Alex.Demo@Example.test '}).expect(200);
   expect(data.body.request.companyEmail).toBe('alex.demo@example.test');
-  expect(data.body.activity.at(-1).metadata).toEqual({workPhoneVerified:false,assignedNumberRecorded:true,companyEmailRecorded:true});
+  expect(data.body.activity.at(-1).metadata).toEqual({workPhoneVerified:false,assignedNumberRecorded:true,companyEmailRecorded:true,extensionRecorded:false,datRecorded:false,truckstopRecorded:false});
   for(const task of data.body.tasks)data=await itAgent.patch(`/api/it/onboarding/${id}/tasks/${task.key}`).set(headers).send({version:data.body.request.version,status:'COMPLETED'}).expect(200);
   expect(data.body.request.status).toBe('COMPLETED');expect(data.body.request.workPhoneVerifiedAt).toBeNull();
   expect(data.body.request.profile.workPhoneNumber).toBeNull();

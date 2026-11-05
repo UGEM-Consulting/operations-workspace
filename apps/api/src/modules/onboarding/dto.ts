@@ -12,10 +12,11 @@ export class CreateInvitationDto {
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(150) mcName?: string;
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(150) teamLead?: string;
  @optional() @trim() @IsString() @MinLength(1) @MaxLength(100) jobTitle?: string;
- // A support skips the employment questions and has no IT setup; supportsMemberId is the dispatcher they assist.
+ // A support skips the employment questions and has no IT setup; supportsMemberId is the dispatcher they assist, or supportsTeamId the whole team.
  @optional() @IsIn(['DISPATCHER','SUPPORT']) position?: 'DISPATCHER' | 'SUPPORT';
  @optional() @IsIn(SUPPORT_TYPES) supportType?: SupportType;
  @optional() @IsUUID() supportsMemberId?: string;
+ @optional() @IsUUID() supportsTeamId?: string;
  @IsInt() @Min(1) @Max(30) expirationDays = 7;
  @IsBoolean() telegramRequired = false;
  // An administrator may make another active manager responsible; omitted means whoever creates it.
@@ -63,8 +64,9 @@ export class EmploymentAssignmentsDto {
  @trim() @IsString() @MinLength(1) @MaxLength(100) jobTitle!: string;
 }
 export class ReviewDto {
- // Approving a support: the dispatcher they assist (defaults to the one on the invitation), and what they're called.
+ // Approving a support: the dispatcher or whole team they assist (defaults to the one on the invitation), and what they're called.
  @optional() @IsUUID() supportsMemberId?: string;
+ @optional() @IsUUID() supportsTeamId?: string;
  @optional() @IsIn(SUPPORT_TYPES) supportType?: SupportType;
  @IsInt() @Min(0) version!: number;
  @IsIn(['APPROVE','REQUEST_CHANGES','REJECT']) decisionType!: DecisionType;

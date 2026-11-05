@@ -1,5 +1,5 @@
 import { createItRequest } from '../it/create-request';
-import { createMemberForApproval, createSupportForApproval, supportedDispatcher } from '../dispatch/create-member';
+import { createMemberForApproval, createSupportForApproval, supportedDispatcher, supportedTeam } from '../dispatch/create-member';
 import { NO_MC } from '../dispatch/dispatch.entity';
 import { acceptPaperwork } from '../dispatch/existing.service';
 import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
@@ -100,8 +100,8 @@ export class ReviewService {
   // Once someone is a member, what they're called is on their record: a change or a promotion never reaches the invitation.
   const [member]:{position:string;supportType:string}[]=await this.db.query('SELECT position,"supportType" FROM dispatch_members WHERE "applicationId"=$1',[application.id]);
   const employmentOptions=canReview&&!support&&!catchUp?await this.employmentOptions():null;
-  // A support's dispatcher, and the dispatchers a manager may pick instead while deciding.
-  const supports=support?{supportsMemberId:invitation.supportsMemberId,supportType:invitation.supportType,options:await this.dispatcherOptions(invitation.supportsMemberId)}:null;
+  // Who a support assists, and the dispatchers and teams a manager may pick instead while deciding.
+  const supports=support?{supportsMemberId:invitation.supportsMemberId,supportsTeamId:invitation.supportsTeamId,supportType:invitation.supportType,options:await this.dispatcherOptions(invitation.supportsMemberId),teamOptions:await this.teamOptions(invitation.supportsTeamId)}:null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, member:member??null, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
@@ -147,6 +147,9 @@ export class ReviewService {
    LEFT JOIN member_notices n ON n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL
    WHERE d.position = 'DISPATCHER' AND ((d.status <> 'LEFT' AND n.id IS NULL) OR d.id = $1) ORDER BY lower(d."firstName"), lower(d."lastName")`, [current]);
  }
+ async teamOptions(current: string | null) {
+  return this.db.query(`SELECT t.id, t.name, m.name AS mc, t."archivedAt" IS NOT NULL AS archived FROM teams t JOIN mcs m ON m.id = t."mcId" WHERE t."archivedAt" IS NULL OR t.id = $1 ORDER BY t."nameKey"`, [current]);
+ }
  async employmentOptions() {
   const [mcs, teams, jobTitles] = await Promise.all([
    this.db.query(`SELECT id, name FROM mcs WHERE "archivedAt" IS NULL ORDER BY "nameKey"`),
@@ -180,13 +183,14 @@ export class ReviewService {
    const catchUpMemberId = invitation.catchUpMemberId;
    if (catchUpMemberId && invitation.revokedAt) throw new ConflictException('This person has left, so their paperwork is closed.');
    if (catchUpMemberId && input.decisionType === 'REJECT') throw new BadRequestException('Paperwork can be accepted or sent back for changes, not rejected.');
-   if (catchUpMemberId && (input.employment || input.employmentConfirmed || input.supportsMemberId)) throw new BadRequestException('Accepting paperwork doesn’t change where they work.');
-   // Supports have no employment of their own and no IT setup; approval confirms the dispatcher they assist.
+   if (catchUpMemberId && (input.employment || input.employmentConfirmed || input.supportsMemberId || input.supportsTeamId)) throw new BadRequestException('Accepting paperwork doesn’t change where they work.');
+   // Supports have no employment of their own and no IT setup; approval confirms the dispatcher or team they assist.
    const support = invitation.position === 'SUPPORT' && !catchUpMemberId;
    if (support && (input.employment || input.employmentConfirmed)) throw new BadRequestException('Supports have no MC, team or job title of their own; they follow their dispatcher.');
-   if (!support && input.supportsMemberId) throw new BadRequestException('Only a support is approved with a dispatcher.');
+   if (!support && (input.supportsMemberId || input.supportsTeamId)) throw new BadRequestException('Only a support is approved with a dispatcher or team.');
+   if (input.supportsMemberId && input.supportsTeamId) throw new BadRequestException('Choose a dispatcher or a team, not both.');
    if (input.supportType && (!support || input.decisionType !== 'APPROVE')) throw new BadRequestException('Support or updater is confirmed when approving a support.');
-   if (input.supportsMemberId && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher is confirmed during approval.');
+   if ((input.supportsMemberId || input.supportsTeamId) && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher or team is confirmed during approval.');
    if (!support && !catchUpMemberId && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
@@ -232,14 +236,15 @@ export class ReviewService {
    if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation,user.id));
    // The approved dispatcher becomes a dispatch member record (no login), placed by the confirmed assignments.
    if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
-   // An approved support becomes an active support record linked to the dispatcher confirmed here (no IT setup).
+   // An approved support becomes an active support record linked to the dispatcher or team confirmed here (no IT setup).
    if(nextStatus==='APPROVED'&&support){
-    const dispatcherId=input.supportsMemberId??invitation.supportsMemberId;
-    if(!dispatcherId)throw new BadRequestException('Choose the dispatcher this support will assist.');
-    await supportedDispatcher(em,dispatcherId);
+    // A choice made here replaces what the invitation said, either way round.
+    const dispatcherId=input.supportsTeamId?null:input.supportsMemberId??invitation.supportsMemberId,teamId=input.supportsMemberId?null:input.supportsTeamId??invitation.supportsTeamId;
+    if(!dispatcherId&&!teamId)throw new BadRequestException('Choose the dispatcher or team this support will assist.');
+    if(dispatcherId)await supportedDispatcher(em,dispatcherId);else await supportedTeam(em,teamId!);
     const supportType=input.supportType??invitation.supportType;
-    if(dispatcherId!==invitation.supportsMemberId||supportType!==invitation.supportType){invitation.supportsMemberId=dispatcherId;invitation.supportType=supportType;await em.save(invitation);}
-    await createSupportForApproval(em,application,submitted?.fields??{},dispatcherId,review.createdAt,supportType);
+    if(dispatcherId!==invitation.supportsMemberId||teamId!==invitation.supportsTeamId||supportType!==invitation.supportType){invitation.supportsMemberId=dispatcherId;invitation.supportsTeamId=teamId;invitation.supportType=supportType;await em.save(invitation);}
+    await createSupportForApproval(em,application,submitted?.fields??{},{dispatcherId,teamId},review.createdAt,supportType);
    }
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});

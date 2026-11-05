@@ -17,6 +17,12 @@ export class ItContactDto {
  // Omitted keeps the recorded value; an empty string clears it.
  @Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim().toLowerCase():value)
  @ValidateIf((_object:unknown,value:unknown)=>value!==undefined&&value!=='') @IsEmail() @MaxLength(254) companyEmail?:string;
+ // Also optional, and never needed to finish setup. Load board fields take a sign-in email, never a password.
+ @IsOptional() @trim() @Matches(/^(?:|\d{1,6})$/,{message:'The extension should be digits, up to 6.'}) ringCentralExtension?:string;
+ @Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim().toLowerCase():value)
+ @ValidateIf((_object:unknown,value:unknown)=>value!==undefined&&value!=='') @IsEmail({},{message:'A load board sign-in takes the sign-in email only, never a password.'}) @MaxLength(254) datEmail?:string;
+ @Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim().toLowerCase():value)
+ @ValidateIf((_object:unknown,value:unknown)=>value!==undefined&&value!=='') @IsEmail({},{message:'A load board sign-in takes the sign-in email only, never a password.'}) @MaxLength(254) truckstopEmail?:string;
 }
 export class ItQueueDto {
  @Type(()=>Number) @IsInt() @Min(1) @Max(100000) page=1;

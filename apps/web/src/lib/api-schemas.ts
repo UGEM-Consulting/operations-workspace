@@ -84,7 +84,7 @@ const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, pos
 /** GET /dispatch/members */
 export const memberListSchema = z.looseObject({ items: z.array(memberRow) });
 const assignment = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, mcId: nullableText, mc: nullableText, teamId: nullableText, team: nullableText });
-const supportLink = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, dispatcherId: text, dispatcher: text });
+const supportLink = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, dispatcherId: nullableText, dispatcher: nullableText });
 /** GET /dispatch/existing/options */
 export const existingOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text })), teams: z.array(z.looseObject({ id: text, name: text, mcId: text })), jobTitles: z.array(z.looseObject({ id: text, name: text })), dispatchers: z.array(z.looseObject({ id: text, name: text })) });
 /** GET /dispatch/paperwork */
@@ -104,7 +104,7 @@ export const memberProfileSchema = z.looseObject({
 export const teamViewSchema = z.looseObject({
   teams: z.array(z.looseObject({ id: text, name: text, mc: text })),
   dispatchers: z.array(z.looseObject({ id: text, name: text, status: text, teamId: text, lead: z.boolean() })),
-  supports: z.array(z.looseObject({ id: text, name: text, status: text, dispatcherId: text, since: text, pending: z.looseObject({ id: text, createdAt: text }).nullable() })),
+  supports: z.array(z.looseObject({ id: text, name: text, status: text, dispatcherId: nullableText, since: text, pending: z.looseObject({ id: text, createdAt: text }).nullable() })),
   requests: z.array(z.looseObject({ id: text, status: text, reason: text, note: nullableText, createdAt: text, support: text })),
 });
 /** GET /dispatch/promotions */

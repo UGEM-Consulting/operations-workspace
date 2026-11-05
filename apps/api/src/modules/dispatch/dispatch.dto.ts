@@ -2,6 +2,7 @@ import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
+import { EXTENSION } from './account-details';
 import { SUPPORT_TYPES, type SupportType } from './dispatch.entity';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
@@ -21,9 +22,14 @@ export class ExistingRowDto {
  @IsOptional() @IsString() @MaxLength(300) ringCentralNumber?: string;
  @IsOptional() @IsString() @MaxLength(300) personalEmail?: string;
  @IsOptional() @IsString() @MaxLength(300) personalPhone?: string;
+ @IsOptional() @IsString() @MaxLength(300) telegram?: string;
+ @IsOptional() @IsString() @MaxLength(300) ringCentralExtension?: string;
+ @IsOptional() @IsString() @MaxLength(300) datEmail?: string;
+ @IsOptional() @IsString() @MaxLength(300) truckstopEmail?: string;
  @IsOptional() @IsString() @MaxLength(300) supports?: string;
- // The one-person form picks the dispatcher from a list, so two people with the same name stay apart.
+ // The one-person form picks the dispatcher or team from a list, so two people with the same name stay apart.
  @IsOptional() @IsUUID() supportsMemberId?: string;
+ @IsOptional() @IsUUID() supportsTeamId?: string;
  @IsOptional() @IsString() @MaxLength(300) ndaSignedOn?: string;
  @IsOptional() @IsString() @MaxLength(300) sopSignedOn?: string;
  @IsOptional() @IsBoolean() differentPerson?: boolean;
@@ -44,6 +50,10 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) ringCentralNumber?: string;
  @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) personalEmail?: string;
  @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) personalPhone?: string;
+ @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) telegram?: string;
+ @text() @ValidateIf(blankOr) @Matches(EXTENSION, { message: 'The extension should be digits, up to 6.' }) ringCentralExtension?: string;
+ @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) datEmail?: string;
+ @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) truckstopEmail?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
 }
@@ -88,11 +98,13 @@ export class SupportTypeDto {
  @IsInt() @Min(1) version!: number;
  @IsIn(SUPPORT_TYPES) supportType!: SupportType;
 }
+/** Who a support assists from now: one dispatcher or one whole team. */
 export class ReassignSupportDto {
  @IsInt() @Min(1) version!: number;
- @IsUUID() dispatcherId!: string;
+ @IsOptional() @IsUUID() dispatcherId?: string;
+ @IsOptional() @IsUUID() teamId?: string;
  @IsDateString({ strict: true }) startedAt!: string;
- @text() @IsString() @MinLength(1, { message: 'Say why the support is changing dispatcher.' }) @MaxLength(500) reason!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why who they assist is changing.' }) @MaxLength(500) reason!: string;
 }
 /** Notice for a future last day: a new date, and why it changed. */
 export class ChangeLastDayDto {

@@ -1,4 +1,6 @@
+import { sharedSignIns } from '../dispatch/account-details';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { activateMember } from '../dispatch/create-member';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { ApplicationActivity, ApplicationReview, DispatcherApplication } from '../onboarding/entities';
@@ -35,7 +37,7 @@ export async function approvedApplication(em:EntityManager,request:ItOnboardingR
 }
 @Injectable()
 export class ItService {
- constructor(private readonly db:DataSource,private readonly alerts:NotificationsService){}
+ constructor(private readonly db:DataSource,private readonly alerts:NotificationsService,private readonly config:ConfigService){}
  private allowIt(user:User){if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.IT_SPECIALIST].includes(user.role))throw new ForbiddenException();}
  async queue(user:User,input:ItQueueDto){
   this.allowIt(user);
@@ -95,6 +97,8 @@ export class ItService {
  }
  async contact(user:User,id:string,input:ItContactDto){
   this.allowIt(user);await onboardingLimit(this.db,'it-contact:'+user.id,60,60);
+  const fictionalOnly=!(this.config.get('NODE_ENV')==='production'||this.config.get('DEPLOYMENT_PURPOSE')==='production');
+  if(fictionalOnly&&[input.companyEmail,input.datEmail,input.truckstopEmail].some(email=>email&&!email.endsWith('@example.test')))throw new BadRequestException('Outside production, emails must be fictional example.test addresses.');
   return this.db.transaction(async em=>{
    const request=await this.locked(em,id,input.version);
    if(input.workPhoneVerified&&(!request.profile.workPhoneNumber||!INTERNATIONAL_PHONE_PATTERN.test(request.profile.workPhoneNumber.trim())))throw new BadRequestException('The applicant work phone must be valid before IT can verify it.');
@@ -107,8 +111,12 @@ export class ItService {
    const wasVerified=!!request.workPhoneVerifiedAt;
    if(input.workPhoneVerified&&!wasVerified){request.workPhoneVerifiedAt=new Date();request.workPhoneVerifiedBy=user.id;}
    if(!input.workPhoneVerified){request.workPhoneVerifiedAt=null;request.workPhoneVerifiedBy=null;}
-   request.assignedRingCentralPhoneNumber=assigned;request.companyEmail=companyEmail;request.version+=1;await em.save(request);
-   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail}});
+   request.assignedRingCentralPhoneNumber=assigned;request.companyEmail=companyEmail;
+   if(input.ringCentralExtension!==undefined)request.ringCentralExtension=input.ringCentralExtension||null;
+   if(input.datEmail!==undefined)request.datEmail=input.datEmail||null;
+   if(input.truckstopEmail!==undefined)request.truckstopEmail=input.truckstopEmail||null;
+   request.version+=1;await em.save(request);
+   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail}});
    return this.detail(em,request);
   });
  }
@@ -163,7 +171,9 @@ export class ItService {
   const activity=await em.getRepository(ItRemovalActivity).find({where:{requestId:removal.id},order:{createdAt:'ASC'}});
   const [names]=await em.query(`SELECT (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $1) AS manager, (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $2) AS "forwardTo",
     (SELECT "leftAt" FROM dispatch_members WHERE id = $3) AS "leftAt", (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $4) AS "recordedBy"`,[removal.managerId,removal.forwardTo,removal.memberId,removal.createdBy]);
-  return {request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
+  // Anyone else using these sign-ins: IT changes the password rather than closing an account someone still needs.
+  const shared=await sharedSignIns(em,removal.memberId,{dat:removal.profile.datEmail??null,truckstop:removal.profile.truckstopEmail??null});
+  return {sharedSignIns:shared,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
    tasks:REMOVAL_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
  }
  async getRemoval(user:User,id:string){

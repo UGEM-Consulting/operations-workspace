@@ -110,7 +110,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
     {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">
-     <p>{data.invitation.position==='SUPPORT'?`Approving adds them as ${aSupport(data.invitation)} for the dispatcher you confirm. Supports and updaters need no IT setup.`:'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>
+     <p>{data.invitation.position==='SUPPORT'?`Approving adds them as ${aSupport(data.invitation)} for the dispatcher or team you confirm. Supports and updaters need no IT setup.`:'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>
      <p>The applicant gets a short email or Telegram update with the outcome only; your reasons and notes are never included.</p>
     </CardBody></Card>}
    </aside>

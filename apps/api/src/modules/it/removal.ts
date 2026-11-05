@@ -19,7 +19,7 @@ export async function lockSetupRequest(em: EntityManager, memberId: string) {
  * Returns the alert ids to send after commit.
  */
 export async function createRemoval(em: EntityManager, alerts: NotificationsService, input: {
- setup: ItOnboardingRequest | null; accounts?: { companyEmail: string | null; ringCentralNumber: string | null }; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
+ setup: ItOnboardingRequest | null; accounts?: { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null }; position: string; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
  mcName: string | null; teamName: string | null;
 }) {
  const { setup } = input;
@@ -30,7 +30,8 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
  const forward = input.emailAfter === 'FORWARD' && !!companyEmail;
  const removal = await em.getRepository(ItRemovalRequest).save({
   memberId: input.memberId, setupRequestId: setup?.id ?? null, managerId: input.actorId, createdBy: input.actorId,
-  profile: { displayName: setup?.profile.proposedDisplayName ?? input.name, companyEmail, ringCentralNumber, noSetupRecord: !setup,
+  profile: { displayName: setup?.profile.proposedDisplayName ?? input.name, position: input.position, companyEmail, ringCentralNumber, noSetupRecord: !setup,
+   ringCentralExtension: setup?.ringCentralExtension ?? input.accounts?.ringCentralExtension ?? null, datEmail: setup?.datEmail ?? input.accounts?.datEmail ?? null, truckstopEmail: setup?.truckstopEmail ?? input.accounts?.truckstopEmail ?? null,
    mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null },
   emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? input.actorId : null,
   dueOn: input.dueOn, numberOutcome: null, version: 0, completedAt: null, dueAlertedAt: input.scheduled ? null : new Date() });

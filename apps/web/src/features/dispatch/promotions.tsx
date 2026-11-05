@@ -17,10 +17,10 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { PROMOTION_DEFAULTS } from '@/lib/navigation';
-import { aSupport, supportName, type Choice, type TeamRow } from './types';
+import { aSupport, assists, supportName, type Choice, type TeamRow } from './types';
 
 export interface PromotionRow { id: string; status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED'; reason: string; note: string | null; version: number; createdAt: string; decidedAt: string | null;
-  itRequestId: string | null; supportId: string; support: string; supportType?: string; dispatcherId: string | null; dispatcher: string | null; mcId: string | null; mc: string | null; dispatcherPlaced?: boolean; teamId: string | null; team: string | null;
+  itRequestId: string | null; supportId: string; support: string; supportType?: string; dispatcherId: string | null; dispatcher: string | null; wholeTeam?: string | null; mcId: string | null; mc: string | null; dispatcherPlaced?: boolean; teamId: string | null; team: string | null;
   requestedBy: string | null; decidedBy: string | null }
 
 const INDEPENDENT = 'INDEPENDENT';
@@ -63,7 +63,7 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
         { key: 'DECLINED', label: 'Declined', count: searched.filter(row => row.status === 'DECLINED').length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption="Promotion requests" className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
-        { key: 'support', label: 'Person', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.supportId}`} className="block rounded-sm hover:underline"><Person name={row.support} secondary={row.dispatcher ? `${supportName(row)} for ${row.dispatcher}` : supportName(row)} /></Link> },
+        { key: 'support', label: 'Person', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.supportId}`} className="block rounded-sm hover:underline"><Person name={row.support} secondary={row.dispatcher || row.wholeTeam ? `${supportName(row)} for ${assists(row)}` : supportName(row)} /></Link> },
         { key: 'team', label: 'Team', hideBelow: 'md', cell: row => row.team ? <>{row.team}<span className="block text-[13px] text-muted-foreground">{row.mc}</span></> : <span className="text-muted-foreground">{row.mc ?? (row.dispatcherPlaced === false ? 'No MC yet' : 'Independent')}</span> },
         { key: 'reason', label: 'Why', hideBelow: 'lg', cell: row => <><p className="line-clamp-2 text-sm">{row.reason}</p><p className="text-[13px] text-muted-foreground">by {row.requestedBy ?? 'a team lead'} · <LocalTime iso={row.createdAt} format="date" /></p></> },
         { key: 'status', label: 'Status', cell: row => <StatusBadge status={row.status} /> },
@@ -83,7 +83,7 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
           {/* With no MC to default to, one nobody picked must never become Independent. */}
           <Select label="MC" name="mcId" value={mcId} required={needsMc} placeholder={needsMc ? 'Choose an MC' : undefined} onChange={event => setMcId(event.target.value)} width="full" options={[{ value: needsMc ? INDEPENDENT : '', label: 'Independent' }, ...mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))]} />
           <Select key={mcId} label="Team" name="teamId" defaultValue={teamChoices.some(team => team.id === deciding.row.teamId) ? deciding.row.teamId ?? '' : ''} disabled={!mcId || mcId === INDEPENDENT} placeholder="No team" width="full"
-            options={teamChoices.map(team => ({ value: team.id, label: team.name }))} hint="Defaults to the team of the dispatcher they support." />
+            options={teamChoices.map(team => ({ value: team.id, label: team.name }))} hint="Starts from the team they work with now." />
           <Select label="Job title" name="jobTitleId" required placeholder="Choose a job title" width="full" options={jobTitles.filter(title => !title.archived).map(title => ({ value: title.id, label: title.name }))} />
         </>}
         <Textarea label={deciding.decision === 'DECLINE' ? 'Note for the team lead' : 'Note'} optional={deciding.decision === 'APPROVE'} required={deciding.decision === 'DECLINE'} name="note" maxLength={1000} rows={3} />

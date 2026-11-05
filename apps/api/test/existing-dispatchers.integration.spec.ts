@@ -99,7 +99,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect(status(10).status).toBe('PROBLEM');
     expect(body.choices.find((item: Row) => item.field === 'mc')).toMatchObject({ text: 'Northwind Frieght', rows: [3, 4] });
     expect(body.choices.find((item: Row) => item.field === 'team')).toMatchObject({ text: 'Chen', mc: 'Northwind Freight', rows: [5] });
-    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0 });
+    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0, wholeTeam: 0, sharedSignIn: 0 });
     expect((await db.query(`SELECT count(*)::integer AS n FROM dispatch_members`))[0].n).toBe(0);
     // Refused without saving: a row with the same email as an earlier one.
     const twice = await check([base(2, 'One', { companyEmail: 'same@example.test' }), base(3, 'Two', { companyEmail: 'SAME@example.test' })]);
@@ -400,7 +400,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     it('counts rows with no start date or MC as ready, and says how many, but a date that can’t be read is still a problem', async () => {
       const { body } = await check([missing(2, 'Blank'), base(3, 'Undated', { startedOn: '' }), missing(4, 'Typo', { startedOn: 'Marhc 2024' }), missing(5, 'Team', { team: 'Red team' }), missing(6, 'Typed', { mc: 'No MC yet' })]);
       expect(body.rows.map((row: Row) => row.status)).toEqual(['READY', 'READY', 'PROBLEM', 'READY', 'READY']);
-      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1 });
+      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1, wholeTeam: 0, sharedSignIn: 0 });
     });
     it('still needs a job title for a dispatcher', async () => {
       expect((await check([missing(2, 'Untitled', { jobTitle: '' })])).body.rows[0]).toMatchObject({ status: 'PROBLEM', problems: ['Job title is empty.'] });
@@ -614,7 +614,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect(body.rows[1]).toMatchObject({ status: 'READY', position: 'SUPPORT', supportType: 'SUPPORT' });
       expect(body.rows[2]).toMatchObject({ status: 'READY', position: 'SUPPORT', supportType: 'UPDATER' });
       expect(body.rows[3]).toMatchObject({ status: 'PROBLEM', problems: ['Position “Update” should be Dispatcher, Support or Updater.'] });
-      expect((await check([{ ...helper(2, 'Mc', 'Updater'), mc: 'Northwind Freight' }])).body.rows[0].problems).toContain('An updater has no MC, team or job title of their own. Leave them empty.');
+      expect((await check([{ ...helper(2, 'Mc', 'Updater'), mc: 'Northwind Freight' }])).body.rows[0].problems).toContain('An updater has no MC or job title of their own. Leave them empty.');
       const added = (await add([base(2, 'Lead'), helper(3, 'Ann', 'Updater')])).body;
       const id = added.members.find((row: Row) => row.row === 3).id;
       const profile = await page(id);
@@ -637,8 +637,8 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     });
     it('names an updater in what the file is told', async () => {
       const rows = (await check([{ row: 2, firstName: 'An', lastName: 'Fictional', position: 'Updater' }, { row: 3, firstName: 'Su', lastName: 'Fictional', position: 'Support' }, helper(4, 'Lo', 'Updater')])).body.rows;
-      expect(rows[0].problems).toEqual(['An updater needs the dispatcher they assist.']);
-      expect(rows[1].problems).toEqual(['A support needs the dispatcher they assist.']);
+      expect(rows[0].problems).toEqual(['Name the dispatcher they assist, or the team if they assist everyone on it.']);
+      expect(rows[1].problems).toEqual(['Name the dispatcher they assist, or the team if they assist everyone on it.']);
       expect(rows[2].problems).toEqual(['Assists “Lead Fictional”, who isn’t in this file or the workspace.']);
     });
     it('changes between the two without touching anything else, and keeps the change', async () => {
@@ -707,6 +707,316 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const runner = db.createQueryRunner();
       const { SupportTypes1793000000000: Migration } = await import('../src/database/migrations/1793000000000-SupportTypes');
       await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard updaters');
+      await runner.release();
+    });
+  });
+  describe('Telegram, extension and load board sign-ins', () => {
+    const page = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    it('checks them on their row, and never repeats a load board value in case it is a password', async () => {
+      const { body } = await check([base(2, 'Bad', { datEmail: 'hunter2-secret', truckstopEmail: 'also secret', telegram: 'no spaces allowed', ringCentralExtension: '12a' })]);
+      expect(body.rows[0].status).toBe('PROBLEM');
+      const said = body.rows[0].problems.join(' ');
+      expect(said).toMatch(/DAT sign-in isn’t an email address/);
+      expect(said).toMatch(/Truckstop sign-in isn’t an email address/);
+      expect(said).toMatch(/Telegram should be a username/);
+      expect(said).toMatch(/digits, up to 6/);
+      expect(said).not.toMatch(/hunter2|also secret/);
+    });
+    it('reads back a Telegram that a downloaded file guarded with an apostrophe', async () => {
+      expect((await check([base(2, 'Back', { telegram: "'@riley_santos" })])).body.rows[0].status).toBe('READY');
+    });
+    it('keeps a row without them ready, as older files are', async () => {
+      expect((await check([base(2, 'Plain')])).body.rows[0].status).toBe('READY');
+    });
+    it('saves them, and a shared sign-in is allowed and shown on both people', async () => {
+      const shared = { datEmail: 'Shared.DAT@example.test' };
+      const rows = [base(2, 'Riley', { telegram: 'https://t.me/riley_santos', ringCentralExtension: '214', truckstopEmail: 'riley.ts@example.test', ...shared }), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Updater', supports: 'Riley Fictional', ...shared }];
+      const checked = (await check(rows)).body;
+      expect(checked.counts).toMatchObject({ ready: 2, sharedSignIn: 2 });
+      const added = (await add(rows)).body;
+      expect(added.left).toEqual([]);
+      const riley = await page(added.members[0].id), sky = await page(added.members[1].id);
+      expect(riley.existing).toMatchObject({ telegram: 'riley_santos', ringCentralExtension: '214', datEmail: 'shared.dat@example.test', truckstopEmail: 'riley.ts@example.test' });
+      expect(riley.sharedSignIns.dat).toEqual([{ id: sky.id, name: 'Sky Fictional' }]);
+      expect(riley.sharedSignIns.truckstop).toEqual([]);
+      expect(sky.sharedSignIns.dat).toEqual([{ id: riley.id, name: 'Riley Fictional' }]);
+      // Someone already here with the same sign-in is not the same person.
+      const next = (await check([base(2, 'Blake', shared)])).body;
+      expect(next.rows[0].status).toBe('READY');
+      expect(next.counts.sharedSignIn).toBe(1);
+      // Events hold field names, never values.
+      const events = await db.query(`SELECT metadata::text AS text FROM dispatch_events`);
+      expect(events.map((row: { text: string }) => row.text).join()).not.toMatch(/shared\.dat|riley_santos/);
+    });
+    it('doesn’t call a sign-in shared with a row that won’t be added', async () => {
+      const { body } = await check([base(2, 'Ready', { datEmail: 'same@example.test' }), base(3, 'Dated', { datEmail: 'same@example.test', startedOn: 'not a date' })]);
+      expect(body.rows.map((row: { status: string }) => row.status)).toEqual(['READY', 'PROBLEM']);
+      expect(body.counts.sharedSignIn).toBe(0);
+    });
+    it('gives IT the MC and team when a correction during a notice opens the removal', async () => {
+      const added = (await add([base(2, 'Lead'), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supports: 'Lead Fictional' }, { row: 4, firstName: 'Whole', lastName: 'Fictional', position: 'Updater', team: 'Red team' }])).body;
+      const lastDay = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      for (const member of added.members.slice(1) as { id: string }[]) {
+        await agents.manager.post(`/api/dispatch/members/${member.id}/leave`).set(headers).send({ version: 1, leftAt: lastDay, reason: 'Moved on.' }).expect(201);
+        expect(await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [member.id])).toEqual([]);
+        await agents.manager.patch(`/api/dispatch/members/${member.id}/existing`).set(headers).send({ version: 2, datEmail: 'late@example.test' }).expect(200);
+      }
+      const profile = async (id: string) => (await db.query(`SELECT profile FROM it_removal_requests WHERE "memberId" = $1`, [id]))[0].profile;
+      expect((await profile(added.members[1].id)).mcName).toBe('Northwind Freight');
+      expect(await profile(added.members[2].id)).toMatchObject({ mcName: 'Northwind Freight', teamName: 'Red team' });
+    });
+    it('corrects and clears them, refusing what is not an email or a username', async () => {
+      const id = await addOne('Riley');
+      const patch = (version: number, body: Row) => agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version, ...body });
+      await patch(1, { datEmail: 'not-an-email' }).expect(400);
+      await patch(1, { ringCentralExtension: 'abc' }).expect(400);
+      await patch(1, { telegram: 'a b' }).expect(400);
+      const saved = (await patch(1, { datEmail: 'RILEY@example.test', ringCentralExtension: '77', telegram: '@riley_santos' }).expect(200)).body;
+      expect((await page(id)).existing).toMatchObject({ datEmail: 'riley@example.test', ringCentralExtension: '77', telegram: 'riley_santos' });
+      await patch(saved.version, { datEmail: '', ringCentralExtension: '', telegram: '' }).expect(200);
+      expect((await page(id)).existing).toMatchObject({ datEmail: null, ringCentralExtension: null, telegram: null });
+    });
+    it('tells IT who else uses a sign-in, including for a support with nothing else recorded', async () => {
+      const added = (await add([base(2, 'Riley', { datEmail: 'shared@example.test', ringCentralExtension: '214' }), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supports: 'Riley Fictional', datEmail: 'shared@example.test' }])).body;
+      const [riley, sky] = added.members.map((row: { id: string }) => row.id);
+      const today = new Date().toISOString().slice(0, 10);
+      await agents.manager.post(`/api/dispatch/members/${sky}/leave`).set(headers).send({ version: 1, leftAt: today, reason: 'Moved on.' }).expect(201);
+      const [skyRemoval] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [sky]);
+      const skyDetail = (await agents.it.get(`/api/it/removals/${skyRemoval.id}`).set(headers).expect(200)).body;
+      expect(skyDetail.request.profile).toMatchObject({ datEmail: 'shared@example.test' });
+      expect(skyDetail.sharedSignIns.dat).toEqual([{ id: riley, name: 'Riley Fictional' }]);
+      // Once they've left they no longer count as using it.
+      expect((await page(riley)).sharedSignIns.dat).toEqual([]);
+      await agents.manager.post(`/api/dispatch/members/${riley}/leave`).set(headers).send({ version: 1, leftAt: today, reason: 'Moved on.' }).expect(201);
+      const [rileyRemoval] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [riley]);
+      const rileyDetail = (await agents.it.get(`/api/it/removals/${rileyRemoval.id}`).set(headers).expect(200)).body;
+      expect(rileyDetail.request.profile).toMatchObject({ ringCentralExtension: '214', datEmail: 'shared@example.test' });
+      expect(rileyDetail.sharedSignIns.dat).toEqual([]);
+    });
+    it('reopens business software when a sign-in is corrected during a notice', async () => {
+      const id = await addOne('Riley');
+      const lastDay = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: 1, leftAt: lastDay, reason: 'Moved on.' }).expect(201);
+      const [removal] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [id]);
+      await db.query(`UPDATE it_removal_tasks SET status = 'COMPLETED' WHERE "requestId" = $1 AND key = 'BUSINESS_SOFTWARE'`, [removal.id]);
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: 2, datEmail: 'riley@example.test' }).expect(200);
+      const detail = (await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body;
+      expect(detail.request.profile.datEmail).toBe('riley@example.test');
+      expect(detail.tasks.find((task: { key: string }) => task.key === 'BUSINESS_SOFTWARE').status).toBe('PENDING');
+    });
+    it('lets IT record them during setup, without needing them to finish, and refuses a password', async () => {
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'newhire.fictional@example.test');
+      const employment = { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' };
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers, ...employment }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, ...employment, accurate: true }).expect(201);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, employmentConfirmed: true, employment }).expect(201);
+      const [setup] = await db.query(`SELECT id FROM it_onboarding_requests WHERE "applicationId" = $1`, [applicationId]);
+      const contact = (version: number, body: Row) => agents.it.patch(`/api/it/onboarding/${setup.id}/contact`).set(headers).send({ version, workPhoneVerified: false, ...body });
+      await contact(0, { datEmail: 'hunter2' }).expect(400);
+      await contact(0, { datEmail: 'real.person@gmail.com' }).expect(400);
+      await contact(0, { companyEmail: 'real.person@gmail.com' }).expect(400);
+      await contact(0, { ringCentralExtension: 'x' }).expect(400);
+      const saved = (await contact(0, { ringCentralExtension: '301', datEmail: 'NEW@example.test' }).expect(200)).body;
+      expect(saved.request).toMatchObject({ ringCentralExtension: '301', datEmail: 'new@example.test', truckstopEmail: null });
+      const members = (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as Row[];
+      const hire = members.find(row => row.status === 'ONBOARDING')!;
+      expect((await page(hire.id as string)).accounts).toMatchObject({ ringCentralExtension: '301', datEmail: 'new@example.test' });
+      const [activity] = await db.query(`SELECT metadata FROM it_onboarding_activity WHERE event = 'CONTACT_VERIFICATION_UPDATED' AND "requestId" = $1 ORDER BY "createdAt" DESC LIMIT 1`, [setup.id]);
+      expect(JSON.stringify(activity.metadata)).not.toMatch(/new@example|301/);
+      // Someone sharing a sign-in IT set up shows on both.
+      const other = await addOne('Sam', { datEmail: 'new@example.test' });
+      expect((await page(other)).sharedSignIns.dat).toEqual([{ id: hire.id, name: expect.any(String) }]);
+    });
+    it('tells IT about what a manager recorded for someone who later had IT setup, with IT’s own values first', async () => {
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({}).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'promoted.fictional@example.test');
+      const employment = { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' };
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers, ...employment }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, ...employment, accurate: true }).expect(201);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, employmentConfirmed: true, employment }).expect(201);
+      const [{ id }] = await db.query(`SELECT id FROM dispatch_members WHERE "applicationId" = $1`, [applicationId]);
+      const [setup] = await db.query(`SELECT id FROM it_onboarding_requests WHERE "applicationId" = $1`, [applicationId]);
+      // The record a promoted support keeps from when they were added by hand.
+      await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","datEmail","truckstopEmail") VALUES ($1,$2,'kept.dat@example.test','kept.ts@example.test')`, [id, users.manager.id]);
+      await db.query(`UPDATE it_onboarding_requests SET "truckstopEmail" = 'it.ts@example.test', "companyEmail" = 'it@example.test', "assignedRingCentralPhoneNumber" = '+1 202 555 0190', "completedAt" = now() WHERE id = $1`, [setup.id]);
+      await db.query(`UPDATE dispatch_members SET status = 'ACTIVE' WHERE id = $1`, [id]);
+      const { version } = await page(id), lastDay = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: lastDay, reason: 'Moved on.' }).expect(201);
+      const [removal] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [id]);
+      const read = async () => (await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body;
+      expect((await read()).request.profile).toMatchObject({ position: 'Dispatcher', datEmail: 'kept.dat@example.test', truckstopEmail: 'it.ts@example.test', companyEmail: 'it@example.test' });
+      // A correction reaches IT only where IT recorded nothing, and reopens the step.
+      await db.query(`UPDATE it_removal_tasks SET status = 'COMPLETED' WHERE "requestId" = $1 AND key = 'BUSINESS_SOFTWARE'`, [removal.id]);
+      const next = (await page(id)).version;
+      const saved = (await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: next, truckstopEmail: 'changed.ts@example.test' }).expect(200)).body;
+      let detail = await read();
+      expect(detail.request.profile.truckstopEmail).toBe('it.ts@example.test');
+      expect(detail.tasks.find((task: { key: string }) => task.key === 'BUSINESS_SOFTWARE').status).toBe('COMPLETED');
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: saved.version, datEmail: 'changed.dat@example.test' }).expect(200);
+      detail = await read();
+      expect(detail.request.profile.datEmail).toBe('changed.dat@example.test');
+      expect(detail.tasks.find((task: { key: string }) => task.key === 'BUSINESS_SOFTWARE').status).toBe('PENDING');
+    });
+    it('says what IT is removing for a support', async () => {
+      const added = (await add([base(2, 'Lead'), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Updater', supports: 'Lead Fictional', datEmail: 'sky@example.test' }])).body;
+      await agents.manager.post(`/api/dispatch/members/${added.members[1].id}/leave`).set(headers).send({ version: 1, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved on.' }).expect(201);
+      const [removal] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [added.members[1].id]);
+      expect((await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body.request.profile.position).toBe('Updater');
+    });
+    it('refuses a rollback while they are recorded', async () => {
+      await addOne('Riley', { ringCentralExtension: '214' });
+      const runner = db.createQueryRunner();
+      const { AccountDetails1793010000000: Migration } = await import('../src/database/migrations/1793010000000-AccountDetails');
+      await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard recorded account details');
+      await runner.release();
+    });
+  });
+
+  describe('A support or updater for a whole team', () => {
+    const page = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    const list = async () => (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items as Row[];
+    const team = async () => (await db.query(`SELECT id, version FROM teams WHERE name = 'Red team'`))[0] as { id: string; version: number };
+    const helper = (row: number, name: string, extra: Row = {}) => ({ row, firstName: name, lastName: 'Fictional', position: 'Updater', ...extra });
+    it('reads a team and no dispatcher as the whole team, and neither as a problem', async () => {
+      const { body } = await check([helper(2, 'Team', { team: 'red TEAM' }), helper(3, 'Neither'), helper(4, 'Lost', { team: 'Nowhere' }), helper(5, 'Titled', { team: 'Red team', jobTitle: 'Dispatcher' }), base(6, 'Lead'), helper(7, 'Both', { team: 'Nowhere', supports: 'Lead Fictional' })]);
+      const row = (number: number) => body.rows.find((item: { row: number }) => item.row === number);
+      expect(row(2).status).toBe('READY');
+      expect(row(3)).toMatchObject({ status: 'PROBLEM', problems: ['Name the dispatcher they assist, or the team if they assist everyone on it.'] });
+      expect(row(4).status).toBe('CHOICE');
+      expect(row(5).problems.join()).toMatch(/no MC or job title of their own/);
+      // A dispatcher named wins: the team in the row is ignored.
+      expect(row(7).status).toBe('READY');
+      expect(body.counts.wholeTeam).toBe(1);
+      expect(body.choices).toEqual([{ field: 'team', text: 'Nowhere', forSupports: true, rows: [4] }]);
+    });
+    it('keeps a support’s team choice apart from a dispatcher’s with the same text', async () => {
+      const { body } = await check([base(2, 'Dee', { mc: '', team: 'Nowhere' }), helper(3, 'Sky', { team: 'Nowhere' })]);
+      expect(body.choices).toEqual(expect.arrayContaining([{ field: 'team', text: 'Nowhere', rows: [2] }, { field: 'team', text: 'Nowhere', forSupports: true, rows: [3] }]));
+      expect(body.rows.map((row: { status: string }) => row.status)).toEqual(['CHOICE', 'CHOICE']);
+    });
+    it('refuses a row naming both a dispatcher and a team, as invitations do', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id, { id: teamId } = await team();
+      const row = { ...helper(2, 'Both'), supportsMemberId: lead, supportsTeamId: teamId };
+      const { body } = await check([row]);
+      expect(body.rows[0]).toMatchObject({ status: 'PROBLEM', problems: ['Choose a dispatcher or a team, not both.'] });
+      expect((await add([row])).body.members).toEqual([]);
+    });
+    it('marks a team archived since the invitation, and approval refuses it', async () => {
+      const { id: teamId } = await team();
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({ position: 'SUPPORT', supportsTeamId: teamId }).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'archivedteam.fictional@example.test');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      const { version } = await team();
+      await agents.manager.patch(`/api/dispatch/teams/${teamId}`).set(headers).send({ version, archived: true }).expect(200);
+      const detail = (await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body;
+      expect(detail.supports.teamOptions).toEqual(expect.arrayContaining([expect.objectContaining({ id: teamId, archived: true })]));
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true }).expect(400);
+    });
+    it('adds them with the team’s MC and team, by file or by the one-person form', async () => {
+      const { id: teamId } = await team();
+      const added = (await add([helper(2, 'Filed', { team: 'Red team' }), { ...helper(3, 'Formed'), supportsTeamId: teamId }])).body;
+      expect(added.left).toEqual([]);
+      const row = (await list()).find(item => item.firstName === 'Filed')!;
+      expect(row).toMatchObject({ position: 'SUPPORT', supportType: 'UPDATER', mc: 'Northwind Freight', team: 'Red team', teamId, wholeTeam: 'Red team', dispatcher: null, placed: true });
+      const profile = await page(added.members[1].id);
+      expect(profile.supportOf).toMatchObject({ wholeTeam: 'Red team', dispatcherId: null, mc: 'Northwind Freight', team: 'Red team' });
+      const paperwork = (await agents.manager.get('/api/dispatch/paperwork').set(headers).expect(200)).body.items as Row[];
+      expect(paperwork.find(item => item.firstName === 'Filed')).toMatchObject({ mc: 'Northwind Freight', team: 'Red team', wholeTeam: 'Red team', dispatcher: null });
+    });
+    it('changes who they assist either way, keeping the history', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky', { supports: 'Lead Fictional' })])).body;
+      const [lead, sky] = added.members.map((row: { id: string }) => row.id), { id: teamId } = await team();
+      const reassign = (version: number, body: Row) => agents.manager.post(`/api/dispatch/members/${sky}/reassign`).set(headers).send({ version, startedAt: new Date().toISOString().slice(0, 10), reason: 'Team needs help.', ...body });
+      await reassign(1, {}).expect(400);
+      await reassign(1, { dispatcherId: lead, teamId }).expect(400);
+      await reassign(1, { dispatcherId: lead }).expect(400);
+      await reassign(1, { teamId }).expect(201);
+      await reassign(2, { teamId }).expect(400);
+      let profile = await page(sky);
+      expect(profile.supportOf).toMatchObject({ wholeTeam: 'Red team', dispatcherId: null });
+      expect(profile.supportHistory.map((row: { dispatcher: string | null; wholeTeam: string | null }) => row.wholeTeam ?? row.dispatcher)).toEqual(['Red team', 'Lead Fictional']);
+      await reassign(2, { dispatcherId: lead }).expect(201);
+      profile = await page(sky);
+      expect(profile.supportOf).toMatchObject({ wholeTeam: null, dispatcherId: lead });
+      expect(profile.supportHistory).toHaveLength(3);
+      const events = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED' ORDER BY "createdAt"`);
+      expect(events.map((row: { metadata: Row }) => row.metadata.assists)).toEqual(['TEAM', 'DISPATCHER']);
+    });
+    it('keeps a team open while anyone assists it, and a dispatcher leaving doesn’t wait for them', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky', { team: 'Red team' })])).body;
+      const [lead, sky] = added.members.map((row: { id: string }) => row.id), today = new Date().toISOString().slice(0, 10);
+      await agents.manager.post(`/api/dispatch/members/${lead}/leave`).set(headers).send({ version: 1, leftAt: today, reason: 'Moved on.' }).expect(201);
+      const { id, version } = await team();
+      const refused = await agents.manager.patch(`/api/dispatch/teams/${id}`).set(headers).send({ version, archived: true }).expect(409);
+      expect(refused.body.message).toMatch(/Change who they assist first/);
+      const [other] = await db.query(`SELECT id FROM mcs WHERE name = 'Lakeside Carriers'`);
+      await agents.manager.patch(`/api/dispatch/teams/${id}`).set(headers).send({ version, mcId: other.id }).expect(409);
+      expect((await agents.manager.get('/api/dispatch/teams').set(headers).expect(200)).body.items[0]).toMatchObject({ wholeTeam: 1 });
+      // Leaving ends their link, and then the team can close.
+      await agents.manager.post(`/api/dispatch/members/${sky}/leave`).set(headers).send({ version: 1, leftAt: today, reason: 'Moved on.' }).expect(201);
+      await agents.manager.patch(`/api/dispatch/teams/${id}`).set(headers).send({ version, archived: true }).expect(200);
+    });
+    it('invites someone for a whole team, and approval can confirm or change it', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id, { id: teamId } = await team();
+      const invite = (body: Row) => agents.manager.post('/api/onboarding/invitations').set(headers).send(body);
+      await invite({ position: 'SUPPORT', supportsMemberId: lead, supportsTeamId: teamId }).expect(400);
+      await invite({ supportsTeamId: teamId }).expect(400);
+      const made = await invite({ position: 'SUPPORT', supportType: 'UPDATER', supportsTeamId: teamId }).expect(201);
+      const listed = (await agents.manager.get('/api/onboarding/invitations').set(headers).expect(200)).body as Row[];
+      expect(listed.find(row => row.id === made.body.id)).toMatchObject({ supportsTeam: { id: teamId, name: 'Red team' }, supports: null });
+      const { agent, applicationId } = await open(made.body.url, 'wholeteam.fictional@example.test');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      const detail = (await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body;
+      expect(detail.supports).toMatchObject({ supportsTeamId: teamId, supportsMemberId: null, teamOptions: [{ id: teamId, name: 'Red team', mc: 'Northwind Freight' }] });
+      const review = (body: Row) => agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, ...body });
+      await review({ supportsMemberId: lead, supportsTeamId: teamId }).expect(400);
+      await review({}).expect(201);
+      const member = (await list()).find(row => row.firstName === 'Dana')!;
+      expect(member).toMatchObject({ wholeTeam: 'Red team', team: 'Red team', status: 'ACTIVE' });
+      expect((await db.query(`SELECT count(*)::integer AS n FROM it_onboarding_requests`))[0].n).toBe(0);
+    });
+    it('lets approval move someone invited for a dispatcher to a whole team', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id, { id: teamId } = await team();
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({ position: 'SUPPORT', supportsMemberId: lead }).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'moved.fictional@example.test');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, supportsTeamId: teamId }).expect(201);
+      expect(await db.query(`SELECT "supportsMemberId", "supportsTeamId" FROM invitations WHERE id = $1`, [made.body.id])).toEqual([{ supportsMemberId: null, supportsTeamId: teamId }]);
+    });
+    it('shows them to the team lead, who can request their promotion, and the manager starts from the team', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky', { team: 'Red team' })])).body;
+      const [lead, sky] = added.members.map((row: { id: string }) => row.id), { id: teamId } = await team();
+      await db.query(`UPDATE teams SET "leadMemberId" = $1 WHERE id = $2`, [lead, teamId]);
+      const passwordHash = await hashPassword(password);
+      const account = await db.getRepository(User).save({ firstName: 'Fictional', lastName: 'Lead', email: 'existing.lead@example.test', role: Role.TEAM_LEAD, status: UserStatus.ACTIVE, passwordHash });
+      await db.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [account.id, lead]);
+      const agent = request.agent(app.getHttpServer());
+      await agent.post('/api/auth/login').set(headers).send({ email: account.email, password }).expect(200);
+      const view = (await agent.get('/api/team').set(headers).expect(200)).body;
+      expect(view.supports).toEqual([expect.objectContaining({ id: sky, teamId, dispatcherId: null })]);
+      const sent = await agent.post('/api/team/promotions').set(headers).send({ supportId: sky, reason: 'Ready to dispatch.' }).expect(201);
+      expect((await agent.get('/api/team').set(headers).expect(200)).body.requests).toHaveLength(1);
+      const promotions = (await agents.manager.get('/api/dispatch/promotions').set(headers).expect(200)).body.items as Row[];
+      expect(promotions.find(row => row.id === sent.body.id)).toMatchObject({ wholeTeam: 'Red team', dispatcher: null, mc: 'Northwind Freight', team: 'Red team', teamId, dispatcherPlaced: true });
+    });
+    it('keeps whole team people from a team lead who doesn’t lead that team', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky', { team: 'Red team' })])).body;
+      const passwordHash = await hashPassword(password);
+      const account = await db.getRepository(User).save({ firstName: 'Fictional', lastName: 'Lead', email: 'existing.lead@example.test', role: Role.TEAM_LEAD, status: UserStatus.ACTIVE, passwordHash });
+      await db.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [account.id, added.members[0].id]);
+      const agent = request.agent(app.getHttpServer());
+      await agent.post('/api/auth/login').set(headers).send({ email: account.email, password }).expect(200);
+      await agent.post('/api/team/promotions').set(headers).send({ supportId: added.members[1].id, reason: 'Ready.' }).expect(403);
+    });
+    it('refuses a rollback while anyone assists a whole team', async () => {
+      await add([helper(2, 'Sky', { team: 'Red team' })]);
+      const runner = db.createQueryRunner();
+      const { WholeTeamSupports1793020000000: Migration } = await import('../src/database/migrations/1793020000000-WholeTeamSupports');
+      await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard whole team supports');
       await runner.release();
     });
   });

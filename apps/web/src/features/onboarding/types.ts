@@ -1,8 +1,10 @@
 export interface Invitation { id: string; email: string | null; expectedEmail: string | null; consumedAt: string | null; mcName: string | null; teamLead: string | null; jobTitle: string | null; telegramRequired: boolean; status: string; expiresAt: string; createdAt: string; catchUpMemberId?: string | null; catchUp?: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null; paper: { kind: string; signedOn: string }[] } | null;
   // From an API with supports; absent (a dispatcher) on an older one.
-  position?: 'DISPATCHER' | 'SUPPORT'; supportType?: 'SUPPORT' | 'UPDATER'; supportsMemberId?: string | null; supports?: { id: string; name: string } | null; member?: { position: string; supportType?: string } | null; }
+  position?: 'DISPATCHER' | 'SUPPORT'; supportType?: 'SUPPORT' | 'UPDATER'; supportsMemberId?: string | null; supports?: { id: string; name: string } | null; supportsTeamId?: string | null; supportsTeam?: { id: string; name: string } | null; member?: { position: string; supportType?: string } | null; }
 export interface DispatcherOption { id: string; name: string; status: string; mc: string | null; team: string | null; leaving?: boolean }
-export interface SupportChoice { supportsMemberId: string | null; supportType?: 'SUPPORT' | 'UPDATER'; options: DispatcherOption[] }
+export interface TeamOption { id: string; name: string; mc: string | null; archived?: boolean }
+// teamOptions comes from an API with whole team supports; without it, only a dispatcher can be chosen.
+export interface SupportChoice { supportsMemberId: string | null; supportsTeamId?: string | null; supportType?: 'SUPPORT' | 'UPDATER'; options: DispatcherOption[]; teamOptions?: TeamOption[] }
 export interface Fields { firstName?: string; lastName?: string; personalPhoneNumber?: string; workPhoneNumber?: string; preferredAmericanFirstName?: string; preferredAmericanLastName?: string; telegram?: string; mcName?: string; teamLead?: string; jobTitle?: string; }
 export interface Application { id: string; invitationId: string; status: ApplicationStatus; fields: Fields; version: number; updatedAt: string; submittedAt: string | null; }
 export const applicationStatuses = ['INVITED','DRAFT','SUBMITTED','CHANGES_REQUESTED','RESUBMITTED','APPROVED','REJECTED'] as const;

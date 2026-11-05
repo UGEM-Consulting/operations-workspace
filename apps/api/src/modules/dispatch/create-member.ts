@@ -3,7 +3,25 @@ import { EntityManager, IsNull } from 'typeorm';
 import type { ApplicationFields, DispatcherApplication } from '../onboarding/entities';
 import { EmploymentAssignments } from '../onboarding/entities';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
-import { DispatchMember, MemberAssignment, MemberSupportLink, Team, SupportType } from './dispatch.entity';
+import { DispatchMember, MemberAssignment, MemberSupportLink, NO_MC, Team, SupportType } from './dispatch.entity';
+
+/** Where someone works now, for IT's removal. A support or updater works where their dispatcher or team works; a dispatcher with no period has no MC yet, which IT mustn't read as Independent. */
+export async function memberPlace(em: EntityManager, id: string): Promise<{ mcName: string | null; teamName: string | null }> {
+ const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
+ if (current?.mcId) {
+  const [row] = await em.query(`SELECT m.name AS mc, t.name AS team FROM mcs m LEFT JOIN teams t ON t.id = $2 WHERE m.id = $1`, [current.mcId, current.teamId]);
+  return { mcName: row?.mc ?? null, teamName: row?.team ?? null };
+ }
+ if (current) return { mcName: null, teamName: null };
+ const link = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
+ if (link?.teamId) {
+  const [team] = await em.query(`SELECT m.name AS mc, t.name AS team FROM teams t JOIN mcs m ON m.id = t."mcId" WHERE t.id = $1`, [link.teamId]);
+  return { mcName: team?.mc ?? null, teamName: team?.team ?? null };
+ }
+ if (link?.dispatcherId) return memberPlace(em, link.dispatcherId);
+ const member = await em.getRepository(DispatchMember).findOneBy({ id });
+ return { mcName: member?.position === 'DISPATCHER' ? NO_MC : null, teamName: null };
+}
 
 /**
  * Called only inside the approval transaction: the approved dispatcher becomes a member record (no login), ONBOARDING
@@ -76,17 +94,24 @@ export async function supportedDispatcher(em: EntityManager, id: string) {
  return dispatcher;
 }
 
+/** A team a support can assist as a whole. Read FOR SHARE so it can't be archived or change its MC until the new link commits. */
+export async function supportedTeam(em: EntityManager, id: string) {
+ const team = await lockTeam(em, id);
+ if (!team || team.archivedAt) throw new BadRequestException('Choose an active team for this support.');
+ return team;
+}
+
 /**
  * Called only inside the approval transaction for a support invitation: the support becomes an ACTIVE member record
- * (no IT setup) linked to the dispatcher they assist. Supports have no MC, team or job title of their own.
+ * (no IT setup) linked to the dispatcher or whole team they assist. Supports have no MC, team or job title of their own.
  */
-export async function createSupportForApproval(em: EntityManager, application: DispatcherApplication, fields: ApplicationFields, dispatcherId: string, approvedAt: Date, supportType: SupportType = 'SUPPORT') {
- await supportedDispatcher(em, dispatcherId);
+export async function createSupportForApproval(em: EntityManager, application: DispatcherApplication, fields: ApplicationFields, assists: { dispatcherId: string | null; teamId: string | null }, approvedAt: Date, supportType: SupportType = 'SUPPORT') {
+ if (assists.dispatcherId) await supportedDispatcher(em, assists.dispatcherId); else await supportedTeam(em, assists.teamId!);
  const first = fields.preferredAmericanFirstName?.trim() || fields.firstName?.trim() || 'Support';
  const last = fields.preferredAmericanLastName?.trim() || fields.lastName?.trim() || '';
  const member = await em.getRepository(DispatchMember).save({ applicationId: application.id, firstName: first.slice(0, 100), lastName: last.slice(0, 100),
   position: 'SUPPORT', supportType, status: 'ACTIVE', jobTitleId: null, joinedAt: approvedAt });
- await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
+ await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId: assists.dispatcherId, teamId: assists.teamId, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
  return member;
 }
 

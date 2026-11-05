@@ -20,7 +20,8 @@ import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
-import { supportName, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
+import { SignIn } from './sign-in';
+import { assists, supportName, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
 
 type LinkResult = { memberId: string; name: string; email?: string; url?: string; problem?: string };
 const name = (row: { firstName: string; lastName: string }) => `${row.firstName} ${row.lastName}`;
@@ -81,7 +82,7 @@ export function PaperworkTable({ list, search }: { list: PaperworkList; search: 
     <div className="grid grid-cols-2 gap-4 p-4 sm:p-5 lg:grid-cols-4">{[['Link to create', list.counts.toCreate], ['Link sent', list.counts.sent], ['Waiting for you', list.counts.waiting], ['Paperwork finished', list.counts.finished]].map(([label, value]) => <div key={label} className="rounded-lg border bg-card p-4 shadow-xs"><p className="text-xs font-medium text-muted-foreground">{label}</p><p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p></div>)}</div>
     <Table caption="Dispatchers with outstanding paperwork" className="border-t border-border" rows={rows} rowKey={row => row.id} columns={[
       { key: 'pick', label: 'Select', srOnly: true, cell: row => row.state === 'TO_CREATE' ? <input type="checkbox" className="size-4 accent-primary" aria-label={`Select ${name(row)}`} checked={picked.includes(row.id)} onChange={event => setPicked(current => event.target.checked ? [...current, row.id] : current.filter(id => id !== row.id))} /> : null },
-      { key: 'name', label: 'Dispatcher', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={name(row)} secondary={row.position === 'SUPPORT' ? `${supportName(row)} for ${row.dispatcher ?? 'a dispatcher'}` : [row.mc ?? 'Independent', row.team].filter(Boolean).join(' · ')} /></Link> },
+      { key: 'name', label: 'Dispatcher', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={name(row)} secondary={row.position === 'SUPPORT' ? `${supportName(row)} for ${assists(row)}` : [row.mc ?? 'Independent', row.team].filter(Boolean).join(' · ')} /></Link> },
       { key: 'nda', label: 'NDA', cell: row => <DocBadge doc={row.nda} /> }, { key: 'sop', label: 'SOP', cell: row => <DocBadge doc={row.sop} /> },
       { key: 'link', label: 'Link', hideBelow: 'lg', muted: true, cell: linkText }, { key: 'status', label: 'Status', cell: state }]}
       empty={<EmptyState compact title={term ? 'Nothing matches this search' : 'Nothing outstanding'} description={term ? 'Try another search.' : 'Everyone added by hand has finished their paperwork, or nobody has been added yet.'} />}
@@ -153,7 +154,7 @@ export function ExistingPaperworkCard({ member }: { member: MemberProfile }) {
   </Card>;
 }
 
-/** Accounts recorded by a manager, shown in the rail, with the way to correct everything they recorded. */
+/** Accounts recorded by a manager, shown in the rail, with the way to correct everything they recorded. Once their application has a Telegram answer, that's the one shown, so it isn't offered here. */
 export function ExistingAccountsCard({ member, open }: { member: MemberProfile; open: boolean }) {
   const router = useRouter(), toast = useToast(), existing = member.existing!;
   const [editing, setEditing] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -168,17 +169,29 @@ export function ExistingAccountsCard({ member, open }: { member: MemberProfile; 
   const paperOn = (kind: string) => existing.paper.find(item => item.kind === kind)?.signedOn ?? '';
   return <Card><CardHeader title="Accounts" actions={open && <Button size="sm" variant="ghost" onClick={() => { setEditing(true); setError(''); }}><Pencil aria-hidden="true" className="size-3.5" />Edit</Button>} />
     <CardBody className="space-y-3">
-      <DescriptionList layout="rows" items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' }]} />
+      <DescriptionList layout="rows" stacked items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
+        ...(existing.ringCentralExtension ? [{ label: 'Extension', value: existing.ringCentralExtension, mono: true }] : []),
+        { label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }]} />
       <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>
     </CardBody>
-    {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title="Edit recorded details" description="What a manager recorded. Clear a field to remove it." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
-      <form id="edit-existing" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
-        <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" defaultValue={existing.companyEmail ?? ''} />
-        <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" defaultValue={existing.ringCentralNumber ?? ''} />
-        <Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" defaultValue={existing.personalEmail ?? ''} hint="The catch-up link needs this." />
-        <Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" defaultValue={existing.personalPhone ?? ''} />
-        <Input name="ndaSignedOn" label="NDA signed on paper" optional type="date" width="full" defaultValue={paperOn('NDA')} hint="A signed copy is on file with the company." />
-        <Input name="sopSignedOn" label="SOP signed on paper" optional type="date" width="full" defaultValue={paperOn('SOP')} hint="A signed copy is on file with the company." />
+    {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description="What you know now. Nobody is messaged." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
+      <form id="edit-existing" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
+        <Card><CardHeader title="Accounts" description="IT uses these when they leave, so add them if you can." /><CardBody className="grid gap-4 sm:grid-cols-2">
+          <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" defaultValue={existing.companyEmail ?? ''} />
+          <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" defaultValue={existing.ringCentralNumber ?? ''} />
+          <Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" defaultValue={existing.ringCentralExtension ?? ''} hint="Digits only." /><span className="max-sm:hidden" />
+          <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.datEmail ?? ''} hint="The email only. Never a password." />
+          <Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.truckstopEmail ?? ''} hint="The email only. Never a password." />
+        </CardBody></Card>
+        <Card><CardHeader title="Contact" description="The catch-up link is checked against the personal email." /><CardBody className="grid gap-4 sm:grid-cols-2">
+          <Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" defaultValue={existing.personalEmail ?? ''} />
+          <Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" defaultValue={existing.personalPhone ?? ''} />
+          {!member.details?.telegram && <Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" defaultValue={existing.telegram ? `@${existing.telegram}` : ''} />}
+        </CardBody></Card>
+        <Card><CardHeader title="Signed on paper" description="A signed copy is on file with the company." /><CardBody className="grid gap-4 sm:grid-cols-2">
+          <Input name="ndaSignedOn" label="NDA signed on paper" optional type="date" width="full" defaultValue={paperOn('NDA')} />
+          <Input name="sopSignedOn" label="SOP signed on paper" optional type="date" width="full" defaultValue={paperOn('SOP')} />
+        </CardBody></Card>
       </fieldset><Notice message={error} error /><PendingHint pending={busy} /></form>
     </Dialog>}
   </Card>;

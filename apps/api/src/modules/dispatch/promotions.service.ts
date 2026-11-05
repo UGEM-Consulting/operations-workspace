@@ -33,16 +33,17 @@ export class PromotionsService {
   const dispatchers = ids.length ? await this.db.query(`SELECT d.id, ${name('d')} AS name, d.status, a."teamId", jt.name AS "jobTitle", (t."leadMemberId" = d.id) AS lead
    FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" JOIN teams t ON t.id = a."teamId" LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
    WHERE a."teamId" = ANY($1) AND a."endedAt" IS NULL AND d.status <> 'LEFT' AND d.position = 'DISPATCHER' ORDER BY lower(d."firstName"), lower(d."lastName")`, [ids]) : [];
-  const supports = dispatchers.length ? await this.db.query(`SELECT s.id, ${name('s')} AS name, s."supportType", s.status, l."dispatcherId", l."startedAt" AS since,
+  const supports = ids.length ? await this.db.query(`SELECT s.id, ${name('s')} AS name, s."supportType", s.status, l."dispatcherId", l."teamId", l."startedAt" AS since,
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_support_links x WHERE x."supportId" = s.id) > 1 AS "sinceKnown",
     (SELECT json_build_object('id', p.id, 'createdAt', p."createdAt") FROM promotion_requests p WHERE p."supportId" = s.id AND p.status = 'PENDING') AS pending
    FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN existing_member_records e ON e."memberId" = s.id
-   WHERE l."dispatcherId" = ANY($1) AND l."endedAt" IS NULL AND s.status <> 'LEFT' ORDER BY lower(s."firstName")`, [dispatchers.map((row: { id: string }) => row.id)]) : [];
-  // Only for people still in their teams: a support assisting one of their dispatchers, or a promoted support now one.
+   WHERE (l."dispatcherId" = ANY($1) OR l."teamId" = ANY($2)) AND l."endedAt" IS NULL AND s.status <> 'LEFT' ORDER BY lower(s."firstName")`, [dispatchers.map((row: { id: string }) => row.id), ids]) : [];
+  // Only for people still in their teams: a support assisting one of their dispatchers or the whole team, or a promoted support now one.
   const requests = ids.length ? await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p."createdAt", p."decidedAt", ${name('s')} AS support
-   FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId" WHERE p."requestedBy" = $1 AND s.status <> 'LEFT' AND EXISTS (SELECT 1 FROM member_assignments a
+   FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId" WHERE p."requestedBy" = $1 AND s.status <> 'LEFT' AND (EXISTS (SELECT 1 FROM member_assignments a
     LEFT JOIN member_support_links l ON l."dispatcherId" = a."memberId" AND l."endedAt" IS NULL AND l."supportId" = s.id
-    WHERE a."endedAt" IS NULL AND a."teamId" = ANY($2) AND (a."memberId" = s.id OR l.id IS NOT NULL)) ORDER BY p."createdAt" DESC LIMIT 50`, [user.id, ids]) : [];
+    WHERE a."endedAt" IS NULL AND a."teamId" = ANY($2) AND (a."memberId" = s.id OR l.id IS NOT NULL))
+    OR EXISTS (SELECT 1 FROM member_support_links w WHERE w."supportId" = s.id AND w."endedAt" IS NULL AND w."teamId" = ANY($2))) ORDER BY p."createdAt" DESC LIMIT 50`, [user.id, ids]) : [];
   return { teams, dispatchers, supports, requests };
  }
 
@@ -75,11 +76,11 @@ export class PromotionsService {
  async list(status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED' | 'ALL' = 'ALL') {
   const items = await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p.version, p."createdAt", p."decidedAt", p."itRequestId",
     s.id AS "supportId", ${name('s')} AS support, s."supportType", d.id AS "dispatcherId", ${name('d')} AS dispatcher,
-    m.id AS "mcId", m.name AS mc, a.id IS NOT NULL AS "dispatcherPlaced", t.id AS "teamId", t.name AS team,
+    coalesce(lm.id, m.id) AS "mcId", coalesce(lm.name, m.name) AS mc, a.id IS NOT NULL OR lt.id IS NOT NULL AS "dispatcherPlaced", coalesce(lt.id, t.id) AS "teamId", coalesce(lt.name, t.name) AS team, lt.name AS "wholeTeam",
     CASE WHEN r.id IS NULL THEN NULL ELSE ${name('r')} END AS "requestedBy", CASE WHEN x.id IS NULL THEN NULL ELSE ${name('x')} END AS "decidedBy"
    FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId"
    LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = s.id ORDER BY l."startedAt" DESC LIMIT 1) l ON true
-   LEFT JOIN dispatch_members d ON d.id = l."dispatcherId"
+   LEFT JOIN dispatch_members d ON d.id = l."dispatcherId" LEFT JOIN teams lt ON lt.id = l."teamId" LEFT JOIN mcs lm ON lm.id = lt."mcId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    LEFT JOIN users r ON r.id = p."requestedBy" LEFT JOIN users x ON x.id = p."decidedBy"
@@ -153,10 +154,10 @@ export class PromotionsService {
   if (!(await this.scope(this.db, user)).length) throw new ForbiddenException('Your account isn’t linked to a team you lead.');
  }
 
- /** A support assisting a dispatcher in one of the team lead's teams; outside that scope looks the same as not existing. */
+ /** A support assisting a dispatcher in one of the team lead's teams, or one of those teams as a whole; outside that scope looks the same as not existing. */
  private async supportInScope(em: EntityManager, user: User, supportId: string, lock = true) {
   const teams = (await this.scope(em, user)).map(team => team.id);
-  const [support] = await em.query(`SELECT s.id, s.position, s.status, a."teamId" FROM dispatch_members s
+  const [support] = await em.query(`SELECT s.id, s.position, s.status, coalesce(l."teamId", a."teamId") AS "teamId" FROM dispatch_members s
    JOIN member_support_links l ON l."supportId" = s.id AND l."endedAt" IS NULL
    LEFT JOIN member_assignments a ON a."memberId" = l."dispatcherId" AND a."endedAt" IS NULL WHERE s.id = $1${lock ? ' FOR UPDATE OF s' : ''}`, [supportId]);
   if (!support || !teams.includes(support.teamId)) throw new NotFoundException('This person isn’t in your team.');

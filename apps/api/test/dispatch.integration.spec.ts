@@ -58,6 +58,8 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
+    await db.undoLastMigration(); // WholeTeamSupports, with none here
+    await db.undoLastMigration(); // AccountDetails, with none here
     await db.undoLastMigration(); // SupportTypes, with none here
     await db.undoLastMigration(); // DocumentAmericanName, with none here
     await db.undoLastMigration(); // MissingDetails, with none here
@@ -79,7 +81,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const long = 'X'.repeat(120);
     await approved(['Zed', 'North'], { mcName: 'Northwind Freight', teamLead: long, jobTitle: 'Dispatcher' });
     await approved(['Zed', 'Lake'], { mcName: 'Lakeside Carriers', teamLead: long, jobTitle: 'Dispatcher' });
-    await db.runMigrations(); expect(await latest()).toBe('SupportTypes1793000000000');
+    await db.runMigrations(); expect(await latest()).toBe('WholeTeamSupports1793020000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -96,7 +98,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('SupportTypes1793000000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('WholeTeamSupports1793020000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -202,7 +204,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
       const app = await approved([first, 'Fictional'], { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' });
       const application = await db.getRepository(DispatcherApplication).findOneByOrFail({ id: app });
       const fields = { preferredAmericanFirstName: first, preferredAmericanLastName: 'Fictional' };
-      await db.transaction(async em => { if (kind === 'SUPPORT') await createSupportForApproval(em, application, fields, dispatcherId!, new Date('2026-03-01T20:00:00Z')); else await createMemberForApproval(em, application, fields, { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' }, new Date('2026-02-01T12:00:00Z')); });
+      await db.transaction(async em => { if (kind === 'SUPPORT') await createSupportForApproval(em, application, fields, { dispatcherId: dispatcherId!, teamId: null }, new Date('2026-03-01T20:00:00Z')); else await createMemberForApproval(em, application, fields, { mcName: 'Northwind Freight', teamLead: 'Red team', jobTitle: 'Dispatcher' }, new Date('2026-02-01T12:00:00Z')); });
       return byName(first);
     };
     const avery = await make('Avery', 'DISPATCHER'), blake = await make('Blake', 'DISPATCHER');
@@ -301,7 +303,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const support = async (first: string) => {
       const app = await approved([first, 'Fictional'], { mcName: '', teamLead: '', jobTitle: '' });
       const application = await db.getRepository(DispatcherApplication).findOneByOrFail({ id: app });
-      await db.transaction(em => createSupportForApproval(em, application, { preferredAmericanFirstName: first, preferredAmericanLastName: 'Fictional' }, avery.id, new Date('2026-03-01T12:00:00Z')));
+      await db.transaction(em => createSupportForApproval(em, application, { preferredAmericanFirstName: first, preferredAmericanLastName: 'Fictional' }, { dispatcherId: avery.id, teamId: null }, new Date('2026-03-01T12:00:00Z')));
       return byName(first);
     };
     const sky = await support('Sky'), river = await support('River');
@@ -331,6 +333,8 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.manager.patch(`/api/dispatch/teams/${blue.id}`).set(headers).send({ version: 1, leadMemberId: blake.id }).expect(200);
     // The state DispatcherContacts left behind: a backfilled lead moved back to ONBOARDING while still leading.
     await db.query(`UPDATE dispatch_members SET status = 'ONBOARDING' WHERE id = $1`, [avery.id]);
+    await db.undoLastMigration(); // WholeTeamSupports, with none here
+    await db.undoLastMigration(); // AccountDetails, with none here
     await db.undoLastMigration(); // SupportTypes, with none here
     await db.undoLastMigration(); // DocumentAmericanName, with none here
     await db.undoLastMigration(); // MissingDetails, with none here
@@ -351,6 +355,8 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
+    await db.undoLastMigration(); // WholeTeamSupports, with none here
+    await db.undoLastMigration(); // AccountDetails, with none here
     await db.undoLastMigration(); // SupportTypes, with none here
     await db.undoLastMigration(); // DocumentAmericanName, with none here
     await db.undoLastMigration(); // MissingDetails, with none here
