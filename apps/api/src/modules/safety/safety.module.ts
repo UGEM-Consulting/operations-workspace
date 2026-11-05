@@ -8,7 +8,7 @@ import { StorageModule } from '../storage/storage.module';
 import { BeginDriverDto, DriverDocumentDto, DriverVersionDto, SaveDriverApplicationDto, VerifyDocumentDto, VerifyDriverDto } from './driver-application.dto';
 import { DriverAccessService } from './driver-access.service';
 import { PiiService } from './pii';
-import { AssignOwnerDto, CreateDriverDto, DriverQueryDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
+import { AssignOwnerDto, CreateDriverDto, MarkLeftDto, DriverQueryDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
 import { SAFETY_ROLES } from './driver-records';
 import { SafetyService } from './safety.service';
 import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
@@ -44,6 +44,7 @@ class SafetyController {
  @Patch('drivers/:id') update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateDriverDto) { return this.safety.update(req.currentUser, id, dto); }
  @Post('drivers/:id/withdraw') withdraw(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: WithdrawDriverDto) { return this.safety.withdraw(req.currentUser, id, dto); }
  @Post('drivers/:id/reopen') reopen(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReopenDriverDto) { return this.safety.reopen(req.currentUser, id, dto); }
+ @Post('drivers/:id/left') markLeft(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: MarkLeftDto) { return this.safety.markLeft(req.currentUser, id, dto); }
  @Post('drivers/:id/owner') assignOwner(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignOwnerDto) { return this.safety.assignOwner(req.currentUser, id, dto); }
  @Post('drivers/:id/link') sendLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DriverVersionDto) { return this.safety.sendLink(req.currentUser, id, dto); }
  @Post('drivers/:id/link/cancel') cancelLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DriverVersionDto) { return this.safety.cancelLink(req.currentUser, id, dto); }

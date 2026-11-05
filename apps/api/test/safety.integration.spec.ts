@@ -414,6 +414,48 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await expiring()).items).toEqual([]);
   });
 
+  it('marks an approved or cleared driver as left: closes the record, ends the owner and dispatch assignment, frees the contacts and records no private values', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const left = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version, leftOn: usDay('latest'), reason: 'Fictional resignation', ...body });
+    // Only approved or cleared drivers can leave.
+    expect((await left(agents.manager, 1).expect(409)).body.message).toMatch(/approved or cleared/);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '3 days', version = 2 WHERE id = $1`, [id]);
+    const owner = await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '3 days') RETURNING id`, [id, users.staff.id]);
+    const mc = (await db.query(`INSERT INTO mcs (name, "nameKey", "mcNumber") VALUES ('Fictional MC', 'fictional mc', '698741') RETURNING id`))[0].id;
+    const member = (await db.query(`INSERT INTO dispatch_members ("firstName", "lastName", position, status, "joinedAt") VALUES ('Dee', 'Fictional', 'DISPATCHER', 'ACTIVE', '2026-02-01T12:00:00Z') RETURNING id`))[0].id;
+    await db.query(`INSERT INTO driver_assignments ("driverId", "mcId", "memberId", "startedAt") VALUES ($1, $2, $3, now() - interval '2 days')`, [id, mc, member]);
+    try {
+      // Roles and input: the Safety lead and other owners can't; the reason, a real date, not in the future, not before clearance.
+      await left(agents.lead, 2).expect(403);
+      await left(agents.staff2, 2).expect(403);
+      await left(agents.dispatch, 2).expect(403);
+      await left(agents.manager, 2, { reason: ' ' }).expect(400);
+      await left(agents.manager, 2, { leftOn: '2026-13-01' }).expect(400);
+      await left(agents.manager, 2, { leftOn: addDays(usDay('latest'), 1) }).expect(400);
+      await left(agents.manager, 2, { leftOn: addDays(usDay('latest'), -10) }).expect(400);
+      await left(agents.manager, 1).expect(409);
+      expect((await left(agents.manager, 2).expect(201)).body.version).toBe(3);
+      expect(await driver(id)).toMatchObject({ status: 'LEFT', statusReason: 'Fictional resignation', closedAt: expect.any(String), version: 3 });
+      expect((await db.query(`SELECT count(*)::int AS n FROM driver_owners WHERE "driverId" = $1 AND "endedAt" IS NULL`, [id]))[0].n).toBe(0);
+      expect((await db.query(`SELECT count(*)::int AS n FROM driver_assignments WHERE "driverId" = $1 AND "endedAt" IS NULL`, [id]))[0].n).toBe(0);
+      expect((await events(id)).filter(row => row.event === 'LEFT').map(row => row.metadata)).toEqual([{ from: 'CLEARED', assignmentEnded: true }]);
+      expect(JSON.stringify(await events(id))).not.toContain('Fictional resignation');
+      // Closed: no more changes, and the same person can be entered again.
+      await left(agents.manager, 3).expect(409);
+      await agents.lead.patch(`/api/safety/drivers/${id}`).set(headers).send({ version: 3, notes: 'x' }).expect(409);
+      expect((await agents.lead.get('/api/safety/drivers?status=CLOSED').set(headers).expect(200)).body.items.map((row: { status: string }) => row.status)).toEqual(['LEFT']);
+      await add(agents.lead).expect(201);
+    } finally { await db.query('TRUNCATE drivers, dispatch_members, mcs CASCADE'); void owner; }
+  });
+
+  it('lets the current owner mark their own approved driver as left', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '1 day')`, [id, users.staff.id]);
+    await agents.staff.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version: 2, leftOn: usDay('latest'), reason: 'Fictional move' }).expect(201);
+    expect(await driver(id)).toMatchObject({ status: 'LEFT' });
+  });
+
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
@@ -1001,6 +1043,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query(`UPDATE drivers SET status = 'LEFT', "closedAt" = now() WHERE id = $1`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard drivers marked as left');
+    await db.query(`UPDATE drivers SET status = 'LEAD', "closedAt" = NULL WHERE id = $1`, [id]);
+    await db.undoLastMigration(); // DriverLeft, with none here
     await db.undoLastMigration(); // TeamLeadSignIns, with none here
 
     await db.undoLastMigration(); // WholeTeamSupports, with none here
@@ -1051,6 +1097,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('TeamLeadSignIns1793030000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverLeft1793040000000');
   });
 });

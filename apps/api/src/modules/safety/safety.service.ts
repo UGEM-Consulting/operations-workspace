@@ -10,12 +10,12 @@ import { driverDocumentKey, StorageService } from '../storage/storage.service';
 import { DriverVersionDto, VerifyDocumentDto } from './driver-application.dto';
 import { PiiService } from './pii';
 import { Role, User, UserStatus } from '../users/user.entity';
-import { AssignOwnerDto, CreateDriverDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
+import { AssignOwnerDto, CreateDriverDto, MarkLeftDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
 import { driverEvent, lockOpenDriver, ownsDriver, requireScreener, SCREENERS, STALE, writeDriver } from './driver-records';
-import { CLOSED_STATUSES, Driver, DriverApplication, DriverDocument, DriverLink, DriverOwner, earliestFinalRejection, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
+import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDocument, DriverLink, DriverOwner, earliestFinalRejection, LEAVABLE, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
 import { currentConsents, missingConsents } from './consent-rules';
 import { addDays, missingForDecision, usDay } from './screening-rules';
-import { clearanceGaps, hasActiveOwner } from './clearance.service';
+import { CLEARERS, clearanceGaps, hasActiveOwner } from './clearance.service';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
 /** Scans are listed as expiring this many days before their expiration date. */
@@ -191,6 +191,35 @@ export class SafetyService {
    if (driver.status !== 'WITHDRAWN') throw new ConflictException('Only a withdrawn driver can be reopened.');
    await em.getRepository(Driver).update(id, { status: 'LEAD', statusReason: null, closedAt: null, version: driver.version + 1 });
    await driverEvent(em, user.id, id, 'REOPENED', {});
+   return { id, version: driver.version + 1 };
+  });
+ }
+
+ /**
+  * Marks an approved or cleared driver as Left on their last day. The Safety manager, administrators and the driver's
+  * current owner may. The record closes (nothing else changes on it), the current owner and dispatch assignment end that
+  * day, and the dispatcher stops counting the driver. The phone and email are free again for a new lead.
+  */
+ async markLeft(user: User, id: string, dto: MarkLeftDto) {
+  return writeDriver(this.db, async em => {
+   const driver = await lockOpenDriver(em, id, dto.version);
+   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s owner and the Safety manager can mark a driver as left.');
+   if (!LEAVABLE.includes(driver.status)) throw new ConflictException('Only an approved or cleared driver can be marked as left.');
+   if (dto.leftOn > usDay('latest')) throw new BadRequestException('The last day can’t be in the future.');
+   if (dto.leftOn < '1980-01-01') throw new BadRequestException('Enter the last day they worked.');
+   if (driver.clearedAt && dto.leftOn < usDay('latest', driver.clearedAt)) throw new BadRequestException('The last day can’t be before the driver was cleared.');
+   const closedAt = new Date(`${dto.leftOn}T12:00:00Z`);
+   // A change dated the same day as the period it ends starts one millisecond after it (the database keeps microseconds).
+   const end = (startedAt: Date) => new Date(Math.max(closedAt.getTime(), startedAt.getTime() + 1));
+   const assignments = em.getRepository(DriverAssignment), owners = em.getRepository(DriverOwner);
+   const assignment = await assignments.findOneBy({ driverId: id, endedAt: IsNull() });
+   if (assignment) await assignments.update(assignment.id, { endedAt: end(assignment.startedAt) });
+   const owner = await owners.findOneBy({ driverId: id, endedAt: IsNull() });
+   if (owner) await owners.update(owner.id, { endedAt: end(owner.startedAt) });
+   await em.getRepository(DriverLink).update({ driverId: id, revokedAt: IsNull() }, { revokedAt: new Date() });
+   await em.getRepository(Driver).update(id, { status: 'LEFT', statusReason: dto.reason, closedAt, version: driver.version + 1 });
+   // Field names and flags only, never the reason or the date.
+   await driverEvent(em, user.id, id, 'LEFT', { from: driver.status, assignmentEnded: !!assignment });
    return { id, version: driver.version + 1 };
   });
  }

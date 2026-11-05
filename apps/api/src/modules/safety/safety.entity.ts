@@ -8,18 +8,20 @@ export const LICENSE_TYPES = ['CDL_A', 'CDL_B', 'CDL_C', 'DL'] as const;
 export type LicenseType = typeof LICENSE_TYPES[number];
 // LEAD → APPLYING → SCREENING → AWAITING_DECISION → APPROVED → CLEARED; REJECTED, WITHDRAWN and LEFT close the record.
 // A rejection always passes through PRE_ADVERSE (the pre-adverse notice and its waiting period), also from APPROVED when
-// clearance turns something up. LEFT comes later.
+// clearance turns something up. A driver who stops driving for the company is marked LEFT (approved or cleared only).
 export const DRIVER_STATUSES = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION', 'PRE_ADVERSE', 'APPROVED', 'CLEARED', 'REJECTED', 'WITHDRAWN', 'LEFT'] as const;
 export type DriverStatus = typeof DRIVER_STATUSES[number];
 export const CLOSED_STATUSES: readonly DriverStatus[] = ['REJECTED', 'WITHDRAWN', 'LEFT'];
 /** Statuses a driver can be withdrawn from: anything before the Safety manager's approval. */
+/** Drivers who work for the company and can be marked as Left. */
+export const LEAVABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
 export const WITHDRAWABLE: readonly DriverStatus[] = ['LEAD', 'APPLYING', 'SCREENING', 'AWAITING_DECISION', 'PRE_ADVERSE'];
 /** A safety staff owner is assigned once the Safety manager has approved the driver. */
 export const OWNABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
 export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED',
  'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED',
  'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED',
- 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED'] as const;
+ 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;

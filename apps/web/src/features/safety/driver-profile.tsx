@@ -9,7 +9,8 @@ import { Dialog } from '@/components/ui/dialog';
 import { Alert, Notice } from '@/components/ui/alert';
 import { DescriptionList } from '@/components/ui/description-list';
 import { EmptyState } from '@/components/ui/feedback';
-import { Select, Textarea } from '@/components/ui/field';
+import { Input, Select, Textarea } from '@/components/ui/field';
+import { useToday } from './driver-documents';
 import { LocalTime } from '@/components/ui/local-time';
 import { Timeline } from '@/components/ui/timeline';
 import { Badge, statusLabel } from '@/components/ui/status-badge';
@@ -27,8 +28,8 @@ import { ScreeningCard } from './screening-card';
 import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
   type SafetyPeople, type SafetyPerson } from './types';
 
-type Action = 'edit' | 'withdraw' | 'reopen' | 'owner';
-const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', REOPENED: 'Reopened as a lead',
+type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left';
+const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', LEFT: 'Marked as left', REOPENED: 'Reopened as a lead',
   SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Owner assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
   DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
@@ -58,6 +59,7 @@ function eventMeta(row: DriverEventRow) {
 export function DriverProfileView({ driver, people, screener, decider, owns }: { driver: DriverProfile; people: SafetyPeople; screener: boolean; decider: boolean; owns: boolean }) {
   const router = useRouter();
   const toast = useToast();
+  const today = useToday();
   const [action, setAction] = useState<Action | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -76,14 +78,15 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     try {
       if (action === 'edit') await mutate(`safety/drivers/${driver.id}`, 'PATCH', { version: driver.version, ...driverBody(form) });
       else if (action === 'withdraw') await mutate(`safety/drivers/${driver.id}/withdraw`, 'POST', { version: driver.version, reason: form.get('reason') });
+      else if (action === 'left') await mutate(`safety/drivers/${driver.id}/left`, 'POST', { version: driver.version, leftOn: form.get('leftOn'), reason: form.get('reason') });
       else if (action === 'reopen') await mutate(`safety/drivers/${driver.id}/reopen`, 'POST', { version: driver.version });
       else await mutate(`safety/drivers/${driver.id}/owner`, 'POST', { version: driver.version, ownerId: form.get('ownerId'), ...(String(form.get('reason') ?? '').trim() ? { reason: form.get('reason') } : {}) });
-      toast({ title: action === 'edit' ? 'Details saved' : action === 'withdraw' ? `${name} withdrawn` : action === 'reopen' ? `${name} reopened as a lead` : 'Owner assigned' });
+      toast({ title: action === 'edit' ? 'Details saved' : action === 'withdraw' ? `${name} withdrawn` : action === 'left' ? `${name} marked as left` : action === 'reopen' ? `${name} reopened as a lead` : 'Owner assigned' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
-  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change owner' : 'Assign owner' };
+  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change owner' : 'Assign owner', left: `Mark ${name} as left?` };
   const staff = people.staff.filter(person => person.id !== owner?.owner?.id);
   return <div className="space-y-6">
     <PageCrumb label={name} />
@@ -91,10 +94,13 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       meta={[driverTypes[driver.driverType], driver.phone, <>Added <LocalTime iso={driver.createdAt} format="date" />{driver.addedBy ? ` by ${driver.addedBy.name}` : ''}</>]}
       action={<div className="flex flex-wrap gap-2">
         {screener && WITHDRAWABLE.includes(driver.status) && <Button variant="outline" onClick={() => start('withdraw')}><UserMinus aria-hidden="true" className="size-4" />Withdraw</Button>}
+        {(driver.status === 'APPROVED' || driver.status === 'CLEARED') && (decider || owns) && <Button variant="outline" onClick={() => start('left')}><UserMinus aria-hidden="true" className="size-4" />Mark as left</Button>}
         {screener && driver.status === 'WITHDRAWN' && <Button variant="outline" onClick={() => start('reopen')}><RotateCcw aria-hidden="true" className="size-4" />Reopen as lead</Button>}
         {canEdit && <Button onClick={() => start('edit')}><Pencil aria-hidden="true" className="size-4" />Edit details</Button>}</div>} />
     {driver.status === 'WITHDRAWN' && <Alert tone="info" title="This driver was withdrawn">
       <p className="whitespace-pre-wrap">{driver.closedAt && <><LocalTime iso={driver.closedAt} format="date" />: </>}{driver.statusReason}</p>{screener && <p className="mt-1">Reopen them as a lead if they get back in touch.</p>}</Alert>}
+    {driver.status === 'LEFT' && <Alert tone="info" title="This driver left">
+      <p className="whitespace-pre-wrap">{driver.closedAt && <><LocalTime iso={driver.closedAt} format="date" />: </>}{driver.statusReason}</p></Alert>}
     {driver.status === 'REJECTED' && <Alert tone="info" title="This driver was rejected">
       <p>{driver.closedAt && <>Closed <LocalTime iso={driver.closedAt} format="date" /> after the final notice. </>}The record and the decisions are kept.</p></Alert>}
     {driver.status === 'APPLYING' && driver.application?.correctionNote && <Alert tone="warning" title="Back with the driver for corrections">
@@ -159,12 +165,16 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       </Card>
       </div>
     </div>
-    {action && <Dialog open onClose={() => setAction(null)} busy={pending} title={titles[action]} tone={action === 'withdraw' ? 'danger' : undefined}
-      description={action === 'withdraw' ? 'The record is closed and kept. You can reopen it later.' : action === 'reopen' ? 'They start again as a lead.' : action === 'owner' ? 'The safety staff member who looks after this driver from now on.' : undefined}
-      actions={<Button type="submit" form="driver-action" variant={action === 'withdraw' ? 'destructive' : 'default'}>{pending ? 'Saving…' : action === 'withdraw' ? 'Withdraw' : action === 'reopen' ? 'Reopen' : action === 'owner' ? 'Assign' : 'Save changes'}</Button>}>
+    {action && <Dialog open onClose={() => setAction(null)} busy={pending} title={titles[action]} tone={action === 'withdraw' || action === 'left' ? 'danger' : undefined}
+      description={action === 'withdraw' ? 'The record is closed and kept. You can reopen it later.' : action === 'left' ? 'The record is closed and kept. Their owner and dispatch assignment end on the last day, and the dispatcher stops counting them.' : action === 'reopen' ? 'They start again as a lead.' : action === 'owner' ? 'The safety staff member who looks after this driver from now on.' : undefined}
+      actions={<Button type="submit" form="driver-action" variant={action === 'withdraw' || action === 'left' ? 'destructive' : 'default'}>{pending ? 'Saving…' : action === 'withdraw' ? 'Withdraw' : action === 'left' ? 'Mark as left' : action === 'reopen' ? 'Reopen' : action === 'owner' ? 'Assign' : 'Save changes'}</Button>}>
       {action === 'edit' ? <DriverForm id="driver-action" driver={driver} leads={screener ? people.leads : undefined} onSubmit={submit} error={error} />
         : <form id="driver-action" onSubmit={submit} className="space-y-4">
           {action === 'withdraw' && <Textarea label="Why" name="reason" required maxLength={500} rows={3} hint="For example: no reply, took another job, didn’t meet requirements." />}
+          {action === 'left' && <>
+            <Input label="Last day they worked" name="leftOn" type="date" required width="sm" max={today ?? undefined} defaultValue={today ?? undefined} />
+            <Textarea label="Why" name="reason" required maxLength={500} rows={3} hint="For example: resigned, contract ended. No health or other private details." />
+          </>}
           {action === 'owner' && <>
             <Select label="Safety staff" name="ownerId" required placeholder="Choose a person" width="full" options={staff.map(person => ({ value: person.id, label: person.name }))} />
             {owner && <Textarea label="Why the owner is changing" name="reason" required maxLength={500} rows={3} />}

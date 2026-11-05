@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
 import { DRIVER_TYPES, type DriverType, LICENSE_TYPES, type LicenseType, US_STATES } from './safety.entity';
@@ -56,4 +56,11 @@ export class AssignOwnerDto {
  @IsInt() @Min(1) version!: number;
  @IsUUID() ownerId!: string;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
+
+/** Marks an approved or cleared driver as Left: the last day they worked for the company, and why (staff text, no health or other private details). */
+export class MarkLeftDto {
+ @IsInt() @Min(1) version!: number;
+ @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Enter the last day as a full date.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) leftOn!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why the driver left.' }) @MaxLength(500) reason!: string;
 }
