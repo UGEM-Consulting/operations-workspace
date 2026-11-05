@@ -13,6 +13,8 @@ import { SAFETY_ROLES } from './driver-records';
 import { SafetyService } from './safety.service';
 import { AnnualReviewService } from './annual-review.service';
 import { AnnualReviewDto } from './annual-review.dto';
+import { TestingService } from './testing.service';
+import { RecordTestDto, VoidTestDto } from './testing.dto';
 import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 import { ScreeningService } from './screening.service';
 import { ScanSweeper } from './scan-sweeper';
@@ -31,7 +33,7 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService) {}
  // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
  @Get('consents') consentList(@Req() req: AuthRequest) { return this.consents.list(req.currentUser); }
  @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
@@ -45,10 +47,13 @@ class SafetyController {
  // The record plus its yearly reviews (cleared drivers).
  @Get('drivers/:id') async driver(@Param('id', ParseUUIDPipe) id: string) {
   const driver = await this.safety.driver(id);
-  return { ...driver, annualReviews: await this.annual.forDriver(id, driver.clearedAt) };
+  return { ...driver, annualReviews: await this.annual.forDriver(id, driver.clearedAt), testing: await this.testing.forDriver(id) };
  }
  // Yearly reviews that are due or overdue, and drivers whose last review found them not qualified.
- @Get('due') due() { return this.annual.due(); }
+ @Get('due') async due() { return { ...await this.annual.due(), tests: await this.testing.attention() }; }
+ // Drug and alcohol test results (results only): the owner and Safety manager record; only the manager voids.
+ @Post('drivers/:id/tests') recordTest(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RecordTestDto) { return this.testing.record(req.currentUser, id, dto); }
+ @Post('drivers/:id/tests/:testId/void') voidTest(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('testId', ParseUUIDPipe) testId: string, @Body() dto: VoidTestDto) { return this.testing.void(req.currentUser, id, testId, dto); }
  @Post('drivers/:id/annual-reviews') annualReview(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AnnualReviewDto) { return this.annual.record(req.currentUser, id, dto); }
  @Patch('drivers/:id') update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateDriverDto) { return this.safety.update(req.currentUser, id, dto); }
  @Post('drivers/:id/withdraw') withdraw(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: WithdrawDriverDto) { return this.safety.withdraw(req.currentUser, id, dto); }
@@ -99,5 +104,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, AnnualReviewService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, AnnualReviewService, TestingService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService] })
 export class SafetyModule {}

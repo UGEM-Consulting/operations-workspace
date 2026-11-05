@@ -25,7 +25,10 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   clearedAt?: string | null; clearedBy?: SafetyPerson | null;
   clearance?: { items: ClearanceItemRow[]; employers: EmployerRow[]; missing: string[] }; assignments?: DriverAssignmentRow[];
   // From an API with yearly reviews.
-  annualReviews?: AnnualReviews }
+  annualReviews?: AnnualReviews;
+  // From an API with ongoing drug and alcohol testing.
+  testing?: { items: TestRow[] } }
+export interface TestRow { id: string; kind: 'DRUG' | 'ALCOHOL'; reason: string; testedOn: string; result: 'NEGATIVE' | 'NOT_NEGATIVE' | 'CANCELLED' | 'REFUSED'; note: string | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }
 export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean }
 export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST';
@@ -121,3 +124,6 @@ export function gapLabel(code: string): string {
   if (code.startsWith('document:')) return `Verify the ${documentLabels[code.slice(9) as DocumentKind]?.toLowerCase() ?? code.slice(9)}`;
   return code;
 }
+
+export const testReasons: Record<string, string> = { RANDOM: 'Random', POST_ACCIDENT: 'Post-accident', REASONABLE_SUSPICION: 'Reasonable suspicion', RETURN_TO_DUTY: 'Return to duty', FOLLOW_UP: 'Follow-up' };
+export const testResults: Record<string, { label: string; tone: 'success' | 'danger' | 'neutral' }> = { NEGATIVE: { label: 'Negative', tone: 'success' }, NOT_NEGATIVE: { label: 'Not negative', tone: 'danger' }, REFUSED: { label: 'Refused', tone: 'danger' }, CANCELLED: { label: 'Cancelled', tone: 'neutral' } };

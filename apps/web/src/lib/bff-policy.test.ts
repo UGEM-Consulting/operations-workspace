@@ -19,7 +19,7 @@ describe('driver consent forms through the BFF', () => {
 
 describe('driver screening through the BFF', () => {
   it('allows the screening and decision mutations, and nothing beside them', () => {
-    for (const path of [`safety/drivers/${ID}/checks/IDENTITY`, `safety/drivers/${ID}/mvr`, `safety/drivers/${ID}/left`, `safety/drivers/${ID}/annual-reviews`, `safety/drivers/${ID}/corrections`, `safety/drivers/${ID}/send-for-decision`, `safety/drivers/${ID}/decision`])
+    for (const path of [`safety/drivers/${ID}/checks/IDENTITY`, `safety/drivers/${ID}/mvr`, `safety/drivers/${ID}/left`, `safety/drivers/${ID}/annual-reviews`, `safety/drivers/${ID}/tests`, `safety/drivers/${ID}/tests/${ID}/void`, `safety/drivers/${ID}/corrections`, `safety/drivers/${ID}/send-for-decision`, `safety/drivers/${ID}/decision`])
       assert.equal(allowedEndpoint('POST', path), true, path);
     assert.equal(allowedEndpoint('GET', `safety/drivers/${ID}/decision`), false);
     assert.equal(allowedEndpoint('POST', `safety/drivers/${ID}/checks/identity`), false);

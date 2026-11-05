@@ -495,6 +495,47 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await driver(id)).annualReviews.items.map((row: { outcome: string }) => row.outcome)).toEqual(['NOT_QUALIFIED', 'QUALIFIED']);
   });
 
+  it('records drug and alcohol test results only, lists non-negative ones for follow-up and lets only the manager void an entry', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const test = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/tests`).set(headers).send({ version, kind: 'DRUG', reason: 'RANDOM', testedOn: day, result: 'NEGATIVE', ...body });
+    await test(agents.manager, 1).expect(409);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [id, users.staff.id]);
+    const attention = async () => (await agents.lead.get('/api/safety/due').set(headers).expect(200)).body.tests;
+    await test(agents.lead, 2).expect(403);
+    await test(agents.staff2, 2).expect(403);
+    await test(agents.dispatch, 2).expect(403);
+    await test(agents.manager, 2, { kind: 'URINE' }).expect(400);
+    await test(agents.manager, 2, { reason: 'BORED' }).expect(400);
+    await test(agents.manager, 2, { result: 'POSITIVE' }).expect(400);
+    await test(agents.manager, 2, { testedOn: addDays(day, 1) }).expect(400);
+    await test(agents.manager, 2, { testedOn: addDays(day, -60) }).expect(400);
+    await test(agents.manager, 2, { lab: 'Fictional Lab' }).expect(400);
+    await test(agents.manager, 1).expect(409);
+    expect((await test(agents.staff, 2, { note: 'Fictional collection site', testedOn: addDays(day, -5) }).expect(201)).body.version).toBe(3);
+    expect(await attention()).toEqual([]);
+    // A not-negative drug test needs follow-up; an alcohol negative doesn't clear it, a later drug negative does.
+    await test(agents.manager, 3, { result: 'NOT_NEGATIVE', testedOn: addDays(day, -1) }).expect(201);
+    await test(agents.manager, 4, { kind: 'ALCOHOL', reason: 'FOLLOW_UP' }).expect(201);
+    expect(await attention()).toMatchObject([{ driverId: id, kind: 'DRUG', result: 'NOT_NEGATIVE' }]);
+    await test(agents.manager, 5, { reason: 'RETURN_TO_DUTY' }).expect(201);
+    expect(await attention()).toEqual([]);
+    // Entries are never edited: only the manager voids, with a reason, and a voided result no longer counts.
+    const items = (await driver(id)).testing.items as { id: string; result: string; voidedAt: string | null }[];
+    expect(items).toHaveLength(4);
+    const refused = items.find(row => row.result === 'NOT_NEGATIVE')!.id;
+    const voidTest = (agent: Agent, version: number, testId: string, reason = 'Entered against the wrong driver') => agent.post(`/api/safety/drivers/${id}/tests/${testId}/void`).set(headers).send({ version, reason });
+    await voidTest(agents.staff, 6, refused).expect(403);
+    await voidTest(agents.manager, 6, refused, ' ').expect(400);
+    await voidTest(agents.manager, 6, refused).expect(201);
+    await voidTest(agents.manager, 7, refused).expect(409);
+    expect((await driver(id)).testing.items.find((row: { id: string }) => row.id === refused)).toMatchObject({ voidedAt: expect.any(String), voidReason: 'Entered against the wrong driver' });
+    // Events name the kind and reason, never the result, the date or notes.
+    expect((await events(id)).filter(row => row.event === 'TEST_RECORDED').map(row => row.metadata)[0]).toEqual({ kind: 'DRUG', reason: 'RANDOM' });
+    expect(JSON.stringify(await events(id))).not.toMatch(/NOT_NEGATIVE|Fictional collection site|wrong driver/);
+  });
+
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
@@ -1082,6 +1123,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'TEST_RECORDED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded drug and alcohol test results');
+    await db.query(`DELETE FROM driver_events WHERE event = 'TEST_RECORDED'`);
+    await db.undoLastMigration(); // DriverTesting, with none here
     await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'ANNUAL_REVIEW_RECORDED', '{}')`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard yearly driver reviews');
     await db.query(`DELETE FROM driver_events WHERE event = 'ANNUAL_REVIEW_RECORDED'`);
@@ -1140,6 +1185,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverAnnualReviews1793050000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverTesting1793060000000');
   });
 });

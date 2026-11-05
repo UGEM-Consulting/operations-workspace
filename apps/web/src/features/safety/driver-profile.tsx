@@ -20,6 +20,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { ApplicationCard } from './application-card';
 import { ClearanceCard, ClearanceProgress } from './clearance-card';
 import { AnnualReviewCard } from './annual-review-card';
+import { TestingCard } from './testing-card';
 import { HistoryReview } from './history-review';
 import { ConsentCard } from './consent-card';
 import { DecisionCard } from './decision-card';
@@ -116,6 +117,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         {/* While the driver is being cleared (and after), clearance is the work in hand, so it comes first. */}
         {driver.clearance && (clearing || driver.clearance.items.length > 0 || driver.clearance.employers.length > 0) && <ClearanceCard driver={driver} canWork={canClear} />}
         {driver.annualReviews && (driver.status === 'CLEARED' || driver.annualReviews.items.length > 0) && <AnnualReviewCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} />}
+        {driver.testing && (driver.status === 'CLEARED' || driver.testing.items.length > 0) && <TestingCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider} />}
         <Card>
           <CardHeader title="Details" />
           <CardBody><DescriptionList items={[
