@@ -6,7 +6,8 @@ import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog } from '@/components/ui/dialog';
 import { useLeaveGuard } from '@/components/shell-context';
 
-export interface ReadyPassword { kind: 'created' | 'reset'; name: string; firstName: string; email: string; password: string }
+// A team lead's sign-in names it so, and labels the email as the company email they sign in with.
+export interface ReadyPassword { kind: 'created' | 'reset'; name: string; firstName: string; email: string; password: string; title?: string; emailLabel?: string }
 const WARNING = 'Leave without copying this password? It can’t be shown again.';
 
 function CopyRow({ label, value, onCopied }: { label: string; value: string; onCopied?: () => void }) {
@@ -29,13 +30,13 @@ export function PasswordReadyDialog({ ready, onClose }: { ready: ReadyPassword; 
   const close = () => { if (copied || window.confirm(WARNING)) onClose(); };
   const label = ready.kind === 'created' ? 'First password' : 'New password';
   const signIn = `${window.location.origin}/login`;
-  return <Dialog open onClose={close} protectChanges={false} closeLabel="Close" title={ready.kind === 'created' ? `Account created for ${ready.name}` : `New password for ${ready.name}`}
+  return <Dialog open onClose={close} protectChanges={false} closeLabel="Close" title={ready.title ?? (ready.kind === 'created' ? `Account created for ${ready.name}` : `New password for ${ready.name}`)}
     description={`Copy these and send them to ${ready.firstName}.`} actions={<Button type="button" onClick={close}>I’ve copied it</Button>}>
     <div className="space-y-3">
       <CopyRow label="Sign-in page" value={signIn} />
-      <CopyRow label="Email" value={ready.email} />
+      <CopyRow label={ready.emailLabel ?? 'Email'} value={ready.email} />
       <CopyRow label={label} value={ready.password} onCopied={() => setCopied(true)} />
-      <CopyButton text={`Sign-in page: ${signIn}\nEmail: ${ready.email}\n${label}: ${ready.password}`} label="Copy all three" onCopied={() => setCopied(true)} />
+      <CopyButton text={`Sign-in page: ${signIn}\n${ready.emailLabel ?? 'Email'}: ${ready.email}\n${label}: ${ready.password}`} label="Copy all three" onCopied={() => setCopied(true)} />
       <Alert tone="warning" title="You won’t see this password again"><p>Send it to them privately, not in a group chat. They choose their own password when they first sign in.</p></Alert>
     </div>
   </Dialog>;

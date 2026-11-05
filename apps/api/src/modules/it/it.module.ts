@@ -4,6 +4,7 @@ import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } from './it.dto';
 import { ItService } from './it.service';
+import { SignInDto, SignInsService } from './sign-ins';
 import { UpdatesModule } from '../updates/updates.module';
 @Controller('it/onboarding')
 @Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
@@ -27,6 +28,13 @@ class ItRemovalController {
  @Get(':id') get(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.getRemoval(req.currentUser,id);}
  @Patch(':id/tasks/:key') task(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Param('key') key:string,@Body() input:RemovalTaskDto){return this.service.removalTask(req.currentUser,id,key,input);}
 }
+// A team lead's sign-in: IT or an administrator creates it with the company email, turns it back on or turns it off.
+@Controller('it/sign-ins')
+@Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
+class ItSignInsController {
+ constructor(private readonly service:SignInsService){}
+ @Post(':id') complete(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Body() input:SignInDto){return this.service.complete(req.currentUser,id,input);}
+}
 @Controller('notifications')
 @Roles(Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER)
 class NotificationController {
@@ -34,5 +42,5 @@ class NotificationController {
  @Get() list(@Req() req:AuthRequest){return this.service.notifications(req.currentUser);}
  @Post(':id/read') read(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.readNotification(req.currentUser,id);}
 }
-@Module({imports:[UpdatesModule],controllers:[ItController,ItTasksController,ItRemovalController,NotificationController],providers:[ItService],exports:[ItService]})
+@Module({imports:[UpdatesModule],controllers:[ItController,ItTasksController,ItRemovalController,ItSignInsController,NotificationController],providers:[ItService,SignInsService],exports:[ItService]})
 export class ItModule {}

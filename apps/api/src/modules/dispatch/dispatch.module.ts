@@ -15,6 +15,7 @@ import { LeavingSweeper } from './leaving-sweeper';
 class DispatchController {
  constructor(private readonly dispatch: DispatchService) {}
  @Get('teams') teams(@Query() query: StatusQueryDto) { return this.dispatch.teams(query.status === 'LEFT' || query.status === 'ONBOARDING' ? 'ALL' : query.status); }
+ @Get('teams/:id') team(@Param('id', ParseUUIDPipe) id: string) { return this.dispatch.team(id); }
  @Post('teams') createTeam(@Req() req: AuthRequest, @Body() dto: CreateTeamDto) { return this.dispatch.createTeam(req.currentUser, dto); }
  @Patch('teams/:id') updateTeam(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateTeamDto) { return this.dispatch.updateTeam(req.currentUser, id, dto); }
  @Get('members') members(@Query() query: StatusQueryDto) { return this.dispatch.members(query.status === 'ARCHIVED' ? 'ALL' : query.status); }

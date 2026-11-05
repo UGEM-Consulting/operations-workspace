@@ -53,6 +53,10 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('GET', `it/removals/${ID}`), true);
     assert.equal(allowedEndpoint('PATCH', `it/removals/${ID}/tasks/SHARED_PASSWORDS`), true);
     assert.equal(allowedEndpoint('PATCH', `it/removals/${ID}/tasks/shared`), false);
+    // A team lead's sign-in: one step, by its id only.
+    assert.equal(allowedEndpoint('POST', `it/sign-ins/${ID}`), true);
+    assert.equal(allowedEndpoint('GET', `it/sign-ins/${ID}`), false);
+    assert.equal(allowedEndpoint('POST', `it/sign-ins/${ID}/extra`), false);
     assert.equal(allowedEndpoint('DELETE', `it/removals/${ID}`), false);
     assert.equal(allowedEndpoint('POST', `onboarding/applications/${ID}/manager`), true);
     assert.equal(allowedEndpoint('GET', `onboarding/applications/${ID}/manager`), false);

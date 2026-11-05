@@ -1,4 +1,5 @@
 import { sharedSignIns } from '../dispatch/account-details';
+import { companyEmailSql } from '../dispatch/lead-sign-in';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { activateMember } from '../dispatch/create-member';
@@ -15,20 +16,27 @@ import { IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest
 
 const statusSql=itStatusSql('r');
 // Setups (approved, not cancelled) and removals as one list for IT tasks; each row's progress uses the shared rule.
-const TASK_ROWS=`SELECT 'SETUP' AS kind, r.id, r.profile->>'proposedDisplayName' AS name, r.profile->>'personalEmail' AS email, r.profile->>'mcName' AS mc,
+const SETUP_AND_REMOVAL_ROWS=`SELECT 'SETUP' AS kind, r.id, r.profile->>'proposedDisplayName' AS name, r.profile->>'personalEmail' AS email, r.profile->>'mcName' AS mc,
   ${itStatusSql('r')} AS status, (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done,
-  (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id)::integer AS total, NULL::text AS "dueOn", NULL::timestamptz AS "removeNowAt", r."createdAt", r."updatedAt", r."completedAt"
+  (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id)::integer AS total, NULL::text AS "dueOn", NULL::timestamptz AS "removeNowAt", r."createdAt", r."updatedAt", r."completedAt",
+  NULL::text AS "signIn", NULL::uuid AS "memberId", NULL::text AS team
  FROM it_onboarding_requests r JOIN dispatcher_applications a ON a.id = r."applicationId" AND a.status = 'APPROVED'
  JOIN application_reviews v ON v.id = r."approvalId" AND v."applicationId" = r."applicationId" AND v."decisionType" = 'APPROVE' WHERE r."cancelledAt" IS NULL
  UNION ALL
  SELECT 'REMOVAL', m.id, m.profile->>'displayName', m.profile->>'companyEmail', m.profile->>'mcName', ${itStatusSql('m','it_removal_tasks')},
   (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer,
-  (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id)::integer, m."dueOn"::text, m."removeNowAt", m."createdAt", m."updatedAt", m."completedAt"
+  (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id)::integer, m."dueOn"::text, m."removeNowAt", m."createdAt", m."updatedAt", m."completedAt", NULL, NULL, NULL
  FROM it_removal_requests m WHERE m."cancelledAt" IS NULL`;
+// A team lead's sign-in: one step, so done is 0 or 1 of 1. The email is the one they sign in with: their account's, else the company email on record.
+const SIGN_IN_ROWS=`SELECT 'SIGN_IN', s.id, d."firstName" || ' ' || d."lastName", coalesce(u.email, ${companyEmailSql()}),
+  mc.name, CASE WHEN s."doneAt" IS NULL THEN 'PENDING' ELSE 'COMPLETED' END, CASE WHEN s."doneAt" IS NULL THEN 0 ELSE 1 END, 1, NULL, NULL, s."createdAt", coalesce(s."doneAt", s."createdAt"), s."doneAt", s.kind, d.id, t.name
+ FROM team_lead_sign_ins s JOIN dispatch_members d ON d.id = s."memberId" LEFT JOIN users u ON u.id = d."accountUserId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
+ LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN teams t ON t.id = a."teamId" LEFT JOIN mcs mc ON mc.id = a."mcId" WHERE s."cancelledAt" IS NULL`;
+const taskRows=(signIns:boolean)=>signIns?`${SETUP_AND_REMOVAL_ROWS} UNION ALL ${SIGN_IN_ROWS}`:SETUP_AND_REMOVAL_ROWS;
 // Not due yet: the Eastern date (the given parameter) hasn't reached the last day and nobody asked to remove access now.
 const scheduledSql=(today:string)=>`(kind = 'REMOVAL' AND "completedAt" IS NULL AND "removeNowAt" IS NULL AND "dueOn"::date > ${today}::date)`;
 const SCHEDULED=scheduledSql('$2');
-const VIEW_SQL:Record<ItTasksDto['view'],string>={open:`status <> 'COMPLETED'`,setup:`kind = 'SETUP' AND status <> 'COMPLETED'`,removal:`kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${SCHEDULED}`,scheduled:SCHEDULED,finished:`status = 'COMPLETED'`,all:'true'};
+const VIEW_SQL:Record<ItTasksDto['view'],string>={open:`status <> 'COMPLETED'`,setup:`kind = 'SETUP' AND status <> 'COMPLETED'`,signin:`kind = 'SIGN_IN' AND status <> 'COMPLETED'`,removal:`kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${SCHEDULED}`,scheduled:SCHEDULED,finished:`status = 'COMPLETED'`,all:'true'};
 /** IT access requires the approved application and the APPROVE review the request was created from. */
 export async function approvedApplication(em:EntityManager,request:ItOnboardingRequest){
  const app=await em.getRepository(DispatcherApplication).findOneBy({id:request.applicationId,status:'APPROVED'});
@@ -72,17 +80,18 @@ export class ItService {
   this.allowIt(user);
   const search=input.search?'%'+input.search.replace(/[\\%_]/g,'\\$&')+'%':'';
   const today=usDay('latest');
+  const taskSql=taskRows(input.signIns==='1');
   const where=`(${VIEW_SQL[input.view]}) AND ($1 = '' OR concat(name,' ',email,' ',mc) ILIKE $1)`;
   const [rows,[count],[stats]]=await Promise.all([
-   this.db.query(`WITH rows AS (${TASK_ROWS}) SELECT *, ${SCHEDULED} AS scheduled FROM rows WHERE ${where}
+   this.db.query(`WITH rows AS (${taskSql}) SELECT *, ${SCHEDULED} AS scheduled FROM rows WHERE ${where}
     ORDER BY (kind = 'REMOVAL' AND "completedAt" IS NULL AND NOT ${SCHEDULED}) DESC, ${SCHEDULED} ASC, "dueOn" ASC NULLS LAST, "updatedAt" DESC, id LIMIT $3 OFFSET $4`,[search,today,input.pageSize,(input.page-1)*input.pageSize]),
-   this.db.query(`WITH rows AS (${TASK_ROWS}) SELECT count(*)::integer AS total FROM rows WHERE ${where} AND $2::date IS NOT NULL`,[search,today]),
-   this.db.query(`WITH rows AS (${TASK_ROWS}) SELECT
+   this.db.query(`WITH rows AS (${taskSql}) SELECT count(*)::integer AS total FROM rows WHERE ${where} AND $2::date IS NOT NULL`,[search,today]),
+   this.db.query(`WITH rows AS (${taskSql}) SELECT
      count(*) FILTER (WHERE status <> 'COMPLETED')::integer AS open, count(*) FILTER (WHERE kind = 'SETUP' AND status <> 'COMPLETED')::integer AS setup,
      count(*) FILTER (WHERE kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${scheduledSql('$1')})::integer AS removal, count(*) FILTER (WHERE ${scheduledSql('$1')})::integer AS scheduled, min("dueOn") FILTER (WHERE ${scheduledSql('$1')}) AS "nextScheduled",
      count(*) FILTER (WHERE status = 'COMPLETED')::integer AS finished, count(*)::integer AS "all",
      count(*) FILTER (WHERE kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${scheduledSql('$1')})::integer AS "removalsDue",
-     count(*) FILTER (WHERE kind = 'SETUP' AND status = 'PENDING')::integer AS "setupsWaiting", count(*) FILTER (WHERE status = 'BLOCKED')::integer AS blocked,
+     count(*) FILTER (WHERE kind = 'SETUP' AND status = 'PENDING')::integer AS "setupsWaiting", count(*) FILTER (WHERE status = 'BLOCKED')::integer AS blocked, count(*) FILTER (WHERE kind = 'SIGN_IN' AND status <> 'COMPLETED')::integer AS "signIns",
      count(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= date_trunc('month', now()))::integer AS "finishedThisMonth" FROM rows`,[today]),
   ]);
   return {items:rows,total:count.total,page:input.page,pageSize:input.pageSize,pageCount:Math.ceil(count.total/input.pageSize),stats};
@@ -162,7 +171,8 @@ export class ItService {
    .innerJoin(DispatcherApplication,'a','a.id=r.applicationId AND a.status = :approved',{approved:'APPROVED'})
    .innerJoin(ApplicationReview,'v',"v.id=r.approvalId AND v.applicationId=r.applicationId AND v.decisionType='APPROVE'")
    .where('r.completedAt IS NULL AND r.cancelledAt IS NULL').getCount();
-  return setups+await this.db.getRepository(ItRemovalRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
+  const [{signIns}]=await this.db.query(`SELECT count(*)::integer AS "signIns" FROM team_lead_sign_ins WHERE "doneAt" IS NULL AND "cancelledAt" IS NULL`);
+  return setups+signIns+await this.db.getRepository(ItRemovalRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
  }
 
  // ── Removal: the reverse of setup, opened when a dispatcher who had IT setup is marked as left ──

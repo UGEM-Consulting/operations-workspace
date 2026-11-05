@@ -35,10 +35,12 @@ export class RemovalTaskDto extends TaskUpdateDto {
  @IsOptional() @IsIn(NUMBER_OUTCOMES) numberOutcome?:NumberOutcome;
 }
 /** IT tasks: setups and removals in one list. Open is every unfinished task; Setup and Removal the open ones of each, due removals only; Scheduled the removals not due yet. */
-export const TASK_VIEWS=['open','setup','removal','scheduled','finished','all'] as const;
+export const TASK_VIEWS=['open','setup','signin','removal','scheduled','finished','all'] as const;
 export class ItTasksDto {
  @Type(()=>Number) @IsInt() @Min(1) @Max(100000) page=1;
  @Type(()=>Number) @IsInt() @Min(1) @Max(50) pageSize=20;
  @IsIn(TASK_VIEWS) view:typeof TASK_VIEWS[number]='open';
  @trim() @IsString() @MaxLength(100) search='';
+ // Team lead sign-ins are listed only for pages that know them ('1'), so an older page never meets a row it can't read.
+ @IsOptional() @IsIn(['1']) signIns?:'1';
 }

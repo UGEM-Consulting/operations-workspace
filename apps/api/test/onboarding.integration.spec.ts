@@ -593,6 +593,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const [title]=await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Dispatcher','dispatcher') RETURNING id`);
   const member=async(first:string)=>(await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ($1,'Dispatcher','DISPATCHER','ACTIVE',now()-interval '30 days') RETURNING id`,[first]))[0].id as string;
   const lead=await member('Lead'),helper=await member('Helper'),outsider=await member('Outsider');
+  // A team lead signs in with their company email, recorded on their dispatcher record.
+  await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail") VALUES ($1,(SELECT id FROM users ORDER BY "createdAt" LIMIT 1),'team.lead@example.test')`,[lead]);
   const [team]=await db.query(`INSERT INTO teams (name,"nameKey","mcId","leadMemberId") VALUES ('Lead team','lead team',$1,$2) RETURNING id`,[mc.id,lead]);
   for(const id of [lead,helper])await db.query(`INSERT INTO member_assignments ("memberId","mcId","teamId","startedAt") VALUES ($1,$2,$3,now()-interval '30 days')`,[id,mc.id,team.id]);
   // A support for Helper (in Lead's team), approved through the usual application.

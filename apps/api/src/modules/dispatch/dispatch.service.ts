@@ -13,9 +13,8 @@ import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } 
 import { DriverAssignment } from '../safety/safety.entity';
 import { NotificationsService } from '../updates/notifications.service';
 import { createRemoval, lockSetupRequest } from '../it/removal';
-import { revokeUserSessions } from '../auth/revoke';
-import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { User as UserEntity, UserStatus } from '../users/user.entity';
+import { companyEmailSql, lockAccount, syncSignIns, turnOffAccount } from './lead-sign-in';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 const NOTICE_MAX_DAYS = 90, LEAVING_LOCK = 42002036;
@@ -51,11 +50,41 @@ export class DispatchService {
     CASE WHEN l.id IS NULL THEN NULL ELSE json_build_object('id', l.id, 'name', l."firstName" || ' ' || l."lastName") END AS lead,
     (SELECT count(*)::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = t.id AND a."endedAt" IS NULL AND d.status = 'ACTIVE') AS members,
     (SELECT count(*)::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = t.id AND a."endedAt" IS NULL AND d.status = 'ONBOARDING') AS onboarding,
-    (SELECT count(*)::integer FROM member_support_links l JOIN dispatch_members d ON d.id = l."supportId" WHERE l."teamId" = t.id AND l."endedAt" IS NULL AND d.status <> 'LEFT') AS "wholeTeam"
+    (SELECT count(*)::integer FROM member_support_links l JOIN dispatch_members d ON d.id = l."supportId" WHERE l."teamId" = t.id AND l."endedAt" IS NULL AND d.status <> 'LEFT') AS "wholeTeam",
+    (SELECT count(*)::integer FROM member_support_links l JOIN dispatch_members d ON d.id = l."supportId" WHERE l."endedAt" IS NULL AND d.status <> 'LEFT' AND (l."teamId" = t.id
+      OR l."dispatcherId" IN (SELECT a."memberId" FROM member_assignments a WHERE a."teamId" = t.id AND a."endedAt" IS NULL))) AS helpers
    FROM teams t JOIN mcs m ON m.id = t."mcId" LEFT JOIN dispatch_members l ON l.id = t."leadMemberId"
    WHERE ($1 = 'ALL' OR ($1 = 'ACTIVE') = (t."archivedAt" IS NULL)) ORDER BY m."nameKey", t."nameKey"`, [status]);
   const [counts] = await this.db.query(`SELECT count(*) FILTER (WHERE "archivedAt" IS NULL)::integer AS active, count(*) FILTER (WHERE "archivedAt" IS NOT NULL)::integer AS archived FROM teams`);
   return { items, counts };
+ }
+
+ /**
+  * One team as it's built, for its page (designed as an org chart and approved 2026-11-05): its lead, its dispatchers
+  * (in IT setup too) and everyone assisting them or the whole team, each with whether they have a profile photo (the
+  * plain selfie from an approved application, as the dispatcher page shows it), how many drivers a dispatcher has and
+  * the last day of anyone leaving. Names and work details only.
+  */
+ async team(id: string) {
+  const person = `d.id, d."firstName", d."lastName", d.status, d.position, d."supportType", d.version,
+   EXISTS(SELECT 1 FROM dispatcher_applications a JOIN applicant_photos p ON p."applicationId" = a.id AND p.kind = 'SELFIE' AND p."createdAt" <= a."submittedAt" WHERE a.id = d."applicationId" AND a.status = 'APPROVED') AS photo,
+   (SELECT n."lastDay"::text FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AS "lastDay"`;
+  // The three reads don't depend on each other, so they run at once.
+  const [[team], dispatchers, helpers] = await Promise.all([
+   this.db.query(`SELECT t.id, t.name, t.version, t."archivedAt" IS NOT NULL AS archived, t."leadMemberId" AS "leadId", json_build_object('id', m.id, 'name', m.name, 'archived', m."archivedAt" IS NOT NULL) AS mc
+    FROM teams t JOIN mcs m ON m.id = t."mcId" WHERE t.id = $1`, [id]),
+   this.db.query(`SELECT ${person}, jt.name AS "jobTitle",
+     (SELECT count(*)::integer FROM driver_assignments x WHERE x."memberId" = d.id AND x."endedAt" IS NULL) AS drivers,
+     ${companyEmailSql()} AS "companyEmail", (SELECT u.status FROM users u WHERE u.id = d."accountUserId") AS "accountStatus"
+    FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" LEFT JOIN job_titles jt ON jt.id = d."jobTitleId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
+    WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND d.status <> 'LEFT' ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
+   // Whoever assists the whole team or one of its current dispatchers (the same people the query above returns).
+   this.db.query(`SELECT ${person}, l."dispatcherId", l."teamId" FROM member_support_links l JOIN dispatch_members d ON d.id = l."supportId"
+    WHERE l."endedAt" IS NULL AND d.status <> 'LEFT' AND (l."teamId" = $1 OR l."dispatcherId" IN (SELECT a."memberId" FROM member_assignments a JOIN dispatch_members x ON x.id = a."memberId"
+     WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND x.status <> 'LEFT')) ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
+  ]);
+  if (!team) throw new NotFoundException('This team no longer exists.');
+  return { ...team, dispatchers, helpers };
  }
 
  async createTeam(user: User, dto: CreateTeamDto) {
@@ -76,6 +105,7 @@ export class DispatchService {
    if (!team) throw new NotFoundException('This team no longer exists.');
    if (team.version !== dto.version) throw new ConflictException(STALE);
    const members = await this.teamMembers(em, id);
+   const previousLead = team.leadMemberId;
    const fields: string[] = [];
    if (dto.name !== undefined && dto.name !== team.name) { team.name = dto.name; team.nameKey = listNameKey(dto.name); fields.push('name'); }
    if (dto.mcId !== undefined && dto.mcId !== team.mcId) {
@@ -99,6 +129,8 @@ export class DispatchService {
    await em.getRepository(Team).save(team);
    if (fields.length) await this.event(em, user, 'TEAM_UPDATED', { teamId: id }, { fields });
    if (archive !== null) await this.event(em, user, archive ? 'TEAM_ARCHIVED' : 'TEAM_RESTORED', { teamId: id }, {});
+   // A new lead needs a sign-in, and someone who stops leading but stays on is turned off; IT or an administrator does both.
+   if (previousLead !== team.leadMemberId) await syncSignIns(em, [previousLead, team.leadMemberId], user.id);
    return { id, version: team.version };
   });
  }
@@ -108,6 +140,7 @@ export class DispatchService {
     jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a.id IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a.id IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", coalesce(st.id, t.id) AS "teamId", coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
+    ${companyEmailSql()} AS "companyEmail",
     n."lastDay"::text AS "lastDay", n."lastDay" < $2::date AS "lastDayPassed",
     CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM driver_assignments da WHERE da."memberId" = d.id AND da."endedAt" IS NULL) END AS "driversToReassign",
     CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM member_support_links ml WHERE ml."dispatcherId" = d.id AND ml."endedAt" IS NULL) END AS "supportsToReassign",
@@ -178,6 +211,9 @@ export class DispatchService {
    FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event = 'MEMBER_LEFT' ORDER BY e."createdAt" DESC LIMIT 1`, [id]) : [];
   // A team lead whose sign-in is off while they're still here: staying longer or staying on doesn't turn it back on.
   const account = member.accountUserId && member.status !== 'LEFT' ? await this.db.getRepository(UserEntity).findOneBy({ id: member.accountUserId }) : null;
+  // Their workspace sign-in as a team lead: waiting for IT (and for what), on or off. Managers see it; IT acts on it.
+  const [signInRequest]: { kind: string }[] = member.status !== 'LEFT' ? await this.db.query(`SELECT kind FROM team_lead_sign_ins WHERE "memberId" = $1 AND "doneAt" IS NULL AND "cancelledAt" IS NULL`, [id]) : [];
+  const signIn = signInRequest ? { status: 'WAITING', request: signInRequest.kind } : account ? { status: account.status === UserStatus.ACTIVE ? 'ACTIVE' : 'OFF', request: null } : null;
   const fields = (application?.fields ?? {}) as Record<string, string | undefined>;
   const current = history.find((row: { endedAt: Date | null }) => row.endedAt === null) ?? null;
   // Who a support has assisted over time (the open row is now, with that dispatcher's or team's MC and team); a dispatcher's supports now.
@@ -205,7 +241,7 @@ export class DispatchService {
    details: application ? { legalFirstName: fields.firstName ?? null, legalLastName: fields.lastName ?? null, preferredAmericanFirstName: fields.preferredAmericanFirstName ?? null,
     preferredAmericanLastName: fields.preferredAmericanLastName ?? null, personalEmail: application.email, personalPhoneNumber: fields.personalPhoneNumber ?? null,
     telegram: fields.telegram ?? null, mcName: fields.mcName ?? null, teamLead: fields.teamLead ?? null, jobTitle: fields.jobTitle ?? null, submittedAt: application.submittedAt } : null,
-   existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE,
+   existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
    noticeHistory: notices.filter(row => row.cancelledAt || row.changes.length).map(row => ({ id: row.id, lastDay: row.lastDay, reason: row.reason, recordedBy: row.recorder, createdAt: row.createdAt, cancelledAt: row.cancelledAt, cancelledBy: row.canceller, cancelReason: row.cancelReason, changes: row.changes.map(({ from, to, reason, at }) => ({ from, to, reason, at })) })) };
  }
 
@@ -260,6 +296,7 @@ export class DispatchService {
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
    const leadCleared = await this.clearLead(em, id, teamId);
+   if (leadCleared) await syncSignIns(em, [id], user.id);
    member.version += 1; await em.save(member);
    await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared });
    return { id, version: member.version };
@@ -367,6 +404,7 @@ export class DispatchService {
     member.version += 1; await em.save(member);
     if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
     await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
+    await syncSignIns(em, [id], user.id);
     return { id, version: member.version };
    }
    await this.requireNobodyAssigned(em, member);
@@ -417,6 +455,8 @@ export class DispatchService {
    await em.getRepository(ApplicationActivity).save({ invitationId: link.id, event: 'INVITATION_REVOKED', actorId: actor.id });
   }
   await this.event(em, actor, 'MEMBER_LEFT', { memberId: id }, { leadCleared, reasonGiven: true, itRemoval, signInOff });
+  // Leaving turns the account off with them, so a request still waiting for IT is cancelled.
+  await syncSignIns(em, [id], actor.id);
  }
  private async openNotice(em: EntityManager, id: string) {
   const notice = await em.getRepository(MemberNotice).findOne({ where: { memberId: id, cancelledAt: IsNull(), finishedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
@@ -463,6 +503,8 @@ export class DispatchService {
    Object.assign(notice, { cancelledAt: new Date(), cancelledBy: user.id, cancelReason: dto.reason }); await em.save(notice);
    member.version += 1; await em.save(member);
    await this.event(em, user, 'NOTICE_CANCELLED', { memberId: id }, { itRemoval: !!removal });
+   // Staying on as a lead whose sign-in was turned off asks IT to turn it back on; nothing turns it on by itself.
+   await syncSignIns(em, [id], user.id);
    return { id, version: member.version };
   });
  }
@@ -483,6 +525,7 @@ export class DispatchService {
    }
    member.version += 1; await em.save(member);
    await this.event(em, user, 'ACCESS_REMOVAL_REQUESTED', { memberId: id }, { signInOff });
+   await syncSignIns(em, [id], user.id);
    return { id, version: member.version };
   });
   this.alerts.dispatch(alerts);
@@ -530,7 +573,7 @@ export class DispatchService {
   if (!member || !notice || member.status === 'LEFT' || notice.lastDay >= usDay('earliest')) return false;
   const actor = { id: notice.recordedBy };
   const { supports, drivers } = await this.stillAssigned(em, member);
-  if (supports || drivers) { await this.endTeamLeadAccount(em, actor, member); return false; }
+  if (supports || drivers) { await this.endTeamLeadAccount(em, actor, member); await syncSignIns(em, [member.id], actor.id); return false; }
   notice.finishedAt = new Date(); await em.save(notice);
   // Dated their last day, or just after a later change to where they work.
   const placed = await em.getRepository(MemberAssignment).findOneBy({ memberId, endedAt: IsNull() });
@@ -544,11 +587,9 @@ export class DispatchService {
  /** A team lead who leaves can't sign in any more: the account is made inactive and every session ends (metadata-only event). */
  private async endTeamLeadAccount(em: EntityManager, user: Pick<User, 'id'>, member: DispatchMember) {
   if (!member.accountUserId) return false;
-  const account = await em.getRepository(UserEntity).createQueryBuilder('u').addSelect('u.authVersion').setLock('pessimistic_write').where('u.id = :id', { id: member.accountUserId }).getOne();
+  const account = await lockAccount(em, member.accountUserId);
   if (!account || account.status !== UserStatus.ACTIVE) return false;
-  account.status = UserStatus.INACTIVE; await em.getRepository(UserEntity).update(account.id, { status: UserStatus.INACTIVE });
-  await revokeUserSessions(em, account);
-  await em.insert(StaffSecurityEvent, { userId: account.id, actorId: user.id, type: SecurityEventType.USER_STATUS_CHANGED, metadata: { fields: ['status'], sessionsRevoked: true, reason: 'member-left' } });
+  await turnOffAccount(em, account, user.id, 'member-left');
   return true;
  }
 
