@@ -1,7 +1,5 @@
-import { Transform } from 'class-transformer';
+import { text, filled } from './dto-helpers';
 import { IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
-const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 export const TEST_KINDS = ['DRUG', 'ALCOHOL'] as const;
 export const TEST_REASONS = ['RANDOM', 'POST_ACCIDENT', 'REASONABLE_SUSPICION', 'RETURN_TO_DUTY', 'FOLLOW_UP'] as const;
 export const TEST_RESULTS = ['NEGATIVE', 'NOT_NEGATIVE', 'CANCELLED', 'REFUSED'] as const;

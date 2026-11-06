@@ -1,32 +1,69 @@
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/feedback';
+import { LocalTime } from '@/components/ui/local-time';
 import { Table } from '@/components/ui/table';
 import { Badge } from '@/components/ui/status-badge';
-import { PageHeader } from '@/components/workspace-ui';
-import { documentLabels, ownerDocumentLabels, type DocumentKind } from './types';
+import { FilterBar } from '@/components/ui/filter-bar';
+import { PageHeader, StatCard } from '@/components/workspace-ui';
+import { queueHref } from '@/lib/navigation';
+import { ExpiringRenewal } from './expiring-renewal';
+import { documentLabels, ownerDocumentLabels, type DocumentKind, type RenewalKind, type RenewalLink, type RenewalScan } from './types';
 
-export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; truck?: string | null; owner: { name: string } | null; expired: boolean }
+export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; truck?: string | null; owner: { id?: string; name: string } | null; expired: boolean;
+  // From an API with renewals: the driver's version and email, and, for an approved or cleared driver's license or medical card, where its renewal stands.
+  version?: number; email?: string | null; renewal?: { link: RenewalLink | null; scan: RenewalScan | null } | null }
 export interface DueReview { driverId: string; firstName: string; lastName: string; owner: string | null; lastReviewedOn: string | null; dueOn: string; notQualified: boolean; overdue: boolean }
 export interface DueTest { driverId: string; firstName: string; lastName: string; kind: 'DRUG' | 'ALCOHOL'; result: string; testedOn: string; owner: string | null }
 export interface DueIncident { incidentId: string; driverId: string; firstName: string; lastName: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; owner: string | null }
 export interface DueList { today: string; warningDays: number; items: DueReview[]; tests?: DueTest[]; incidents?: DueIncident[] }
 export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[] }
 
-const day = (value: string) => new Date(`${value}T12:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
 
-/** Safety › Expiring documents: verified scans that have expired or expire soon, soonest first. */
-export function ExpiringDocuments({ data, reviews }: { data: ExpiringList; reviews: DueList }) {
+// A calendar day (YYYY-MM-DD) plus some days.
+const addDays = (day: string, days: number) => new Date(Date.parse(`${day}T12:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+export const EXPIRING_DEFAULTS: Record<string, string> = { view: 'all', search: '' };
+
+/**
+ * Safety › Expiring documents (designed as ExpiringDocumentsScreen): verified scans that have expired or expire soon,
+ * soonest first, with counts and a My drivers view for owners. An expired license or medical card puts the driver on hold.
+ */
+export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { data: ExpiringList; reviews: DueList; meId: string; screener: boolean; filters: Record<string, string> }) {
+  const mine = data.items.filter(item => item.owner?.id === meId), soon = addDays(data.today, 30);
+  const query = (filters.search ?? '').toLowerCase();
+  const shown = (filters.view === 'mine' ? mine : data.items).filter(item => `${item.firstName} ${item.lastName}`.toLowerCase().includes(query));
+  const href = (view: string) => queueHref('/safety/expiring', filters, { view });
+  // Safety leads, the Safety manager, administrators and the driver's owner renew (the API decides).
+  const renewable = (item: ExpiringItem) => !!item.renewal && item.version !== undefined && (screener || item.owner?.id === meId);
+  const renewalState = (item: ExpiringItem) => {
+    // A scan to check first, then a link that is out (also after Not readable), then an unreadable scan.
+    const scan = item.renewal?.scan, link = item.renewal?.link;
+    if (scan && !scan.unreadable) return <Badge label="Waiting for your check" tone="warning" />;
+    if (link) return link.expired ? <Badge label="Link expired" tone="neutral" /> : <span className="inline-flex flex-wrap items-center gap-1.5"><Badge label="Link sent" tone="info" /><LocalTime iso={link.createdAt} format="date" className="text-[13px] text-muted-foreground" /></span>;
+    if (scan) return <Badge label="Not readable" tone="danger" />;
+    return '—';
+  };
   return <div className="space-y-6">
     <PageHeader title="Expiring documents" description={`Verified licenses, medical cards and work authorizations that have expired or expire within ${data.warningDays} days, and yearly driver reviews that are due. Open the driver to act.`} />
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+      <StatCard label="Expired" value={data.items.filter(item => item.expired).length} detail="Renew or replace them now" href={href('all')} tone="danger" />
+      <StatCard label="Within 30 days" value={data.items.filter(item => !item.expired && item.expiresOn <= soon).length} detail="Contact the driver now" href={href('all')} tone="warning" />
+      <StatCard label={`Within ${data.warningDays} days`} value={data.items.filter(item => !item.expired && item.expiresOn > soon).length} detail="Coming up" href={href('all')} tone="neutral" />
+      <StatCard label="Yours" value={mine.length} detail="Drivers you own" href={href('mine')} tone="info" />
+    </div>
     <Card>
-      <Table<ExpiringItem> caption="Documents that have expired or expire soon" rows={data.items} rowKey={item => item.documentId}
+      <FilterBar path="/safety/expiring" filters={filters} defaults={EXPIRING_DEFAULTS} statusKey="view" searchLabel="Search driver" statuses={[{ key: 'mine', label: 'My drivers', count: mine.length }, { key: 'all', label: 'All', count: data.items.length }]} />
+      <Table<ExpiringItem> caption="Documents that have expired or expire soon" className="border-t border-border" rows={shown} rowKey={item => item.documentId}
         empty={<EmptyState title="Nothing is expiring" description="No verified document has expired or expires soon." />}
         columns={[
           { key: 'driver', label: 'Driver', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'document', label: 'Document', cell: item => (documentLabels[item.kind as DocumentKind] ?? ownerDocumentLabels[item.kind as keyof typeof ownerDocumentLabels] ?? 'Document') + (item.truck ? ` · unit ${item.truck}` : '') },
-          { key: 'expires', label: 'Expires', cell: item => <>{day(item.expiresOn)} <Badge label={item.expired ? 'Expired' : 'Expiring'} tone={item.expired ? 'danger' : 'warning'} /></> },
-          { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner?.name ?? '—' },
+          { key: 'expires', label: 'Expires', nowrap: true, cell: item => <>{day(item.expiresOn)} <Badge label={item.expired ? 'Expired' : 'Expiring'} tone={item.expired ? 'danger' : 'warning'} /></> },
+          { key: 'renewal', label: 'Renewal', hideBelow: 'md', cell: renewalState },
+          { key: 'owner', label: 'Owner', hideBelow: 'xl', cell: item => item.owner?.name ?? '—' },
+          { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => renewable(item) ? <ExpiringRenewal kind={item.kind as RenewalKind} scan={item.renewal?.scan ?? null} link={item.renewal?.link ?? null} expired={item.expired}
+            name={`${item.firstName} ${item.lastName}`.trim()} driver={{ id: item.driverId, firstName: item.firstName, email: item.email ?? null, version: item.version! }} /> : null },
         ]} />
     </Card>
     <Card>

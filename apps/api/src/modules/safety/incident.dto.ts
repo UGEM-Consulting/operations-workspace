@@ -1,9 +1,6 @@
-import { Transform } from 'class-transformer';
+import { text, upper, filled } from './dto-helpers';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { US_STATES } from './safety.entity';
-const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
-const upper = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toUpperCase() : value);
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 export const INCIDENT_KINDS = ['ACCIDENT', 'VIOLATION', 'INSPECTION'] as const;
 type Kind = typeof INCIDENT_KINDS[number];
 const only = (kind: Kind) => (object: { kind?: Kind }) => object.kind === kind;

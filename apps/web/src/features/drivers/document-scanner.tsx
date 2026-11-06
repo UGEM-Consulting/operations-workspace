@@ -27,10 +27,12 @@ export const scannerId = (kind: DocumentKind) => `scan-${segments[kind]}`;
 /**
  * Scans one document with the phone camera: take a photo of each page (or pick saved photos), turn any that came out
  * sideways, then save. The API removes photo metadata and combines the pages into one PDF. Saving again replaces it.
+ * With `send` (a renewal link), the pages go to Safety once through `send.upload` instead of into the application.
  */
-export function DocumentScanner({ kind, view, required, error, onSaved, onEnded, onDraft }: { kind: DocumentKind; view: DriverApplicationView; required: boolean;
-  error?: string; onSaved: (view: DriverApplicationView) => void; onEnded: (message: string) => void; onDraft: (kind: DocumentKind, draft: ScanDraft) => void }) {
-  const current = view.documents?.find(document => document.kind === kind) ?? null;
+export function DocumentScanner({ kind, view, required, error, onSaved, onEnded, onDraft, send }: { kind: DocumentKind; view?: DriverApplicationView; required: boolean;
+  error?: string; onSaved?: (view: DriverApplicationView) => void; onEnded: (message: string) => void; onDraft: (kind: DocumentKind, draft: ScanDraft) => void;
+  send?: { label: string; hint: string; upload: (pages: string[]) => Promise<void> } }) {
+  const current = view?.documents?.find(document => document.kind === kind) ?? null;
   const [pages, setPages] = useState<Page[]>([]);
   const [scanning, setScanning] = useState(!current);
   const [subtype, setSubtype] = useState(current?.subtype ?? '');
@@ -61,8 +63,9 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
       // One page at a time: decoding several full-size camera photos at once can exhaust an older phone's memory.
       const images: string[] = [];
       for (const page of pages) images.push(await imageForUpload(page.file, { maxSide: PAGE_SIDE, maxBytes: PAGE_BYTES, rotation: page.rotation }));
+      if (send) { await send.upload(images); stop(); return; }
       const saved = await mutate<DriverApplicationView>(`driver/documents/${segments[kind]}`, 'POST', { pages: images, ...(kind === 'WORK_AUTHORIZATION' ? { subtype } : {}) });
-      stop(); onSaved(saved); setAnnouncement(`${documentLabels[kind]} saved.`);
+      stop(); onSaved?.(saved); setAnnouncement(`${documentLabels[kind]} saved.`);
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error.message);
       setFailed(true); setMessage(error instanceof PhotoError ? error.message : errorMessage(error, 'The scan wasn’t saved. Try again.'));
@@ -72,7 +75,7 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
     className={cn('space-y-3 rounded-lg border p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring', shownError ? 'border-danger-border' : 'border-border')}>
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0"><h3 id={title} className="font-medium">{documentLabels[kind]}{!required && <span className="font-normal text-muted-foreground"> (optional)</span>}</h3>
-        <p className="text-sm text-muted-foreground">{hints[kind]}</p></div>
+        <p className="text-sm text-muted-foreground">{send?.hint ?? hints[kind]}</p></div>
       {current && !scanning && <Button type="button" size="sm" variant="outline" onClick={() => { setScanning(true); setMessage(''); setAnnouncement(''); }}>Scan again</Button>}
     </div>
     {current && !scanning && <p className="flex flex-wrap items-center gap-2 text-sm"><CheckCircle2 aria-hidden="true" className="size-4 text-success" />
@@ -102,10 +105,12 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" disabled={busy || pages.length >= MAX_PAGES} onClick={() => camera.current?.click()}><Camera aria-hidden="true" className="size-4" />{pages.length ? 'Take another page' : 'Take photo'}</Button>
         <Button type="button" variant="ghost" disabled={busy || pages.length >= MAX_PAGES} onClick={() => files.current?.click()}><ImagePlus aria-hidden="true" className="size-4" />Choose photos</Button>
-        {pages.length > 0 && <Button type="button" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : `Save ${pages.length} ${pages.length === 1 ? 'page' : 'pages'}`}</Button>}
+        {pages.length > 0 && !send && <Button type="button" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : `Save ${pages.length} ${pages.length === 1 ? 'page' : 'pages'}`}</Button>}
         {current && <Button type="button" variant="ghost" disabled={busy} onClick={stop}>Cancel</Button>}
       </div>
       <p className="text-[13px] text-muted-foreground">Lay the document flat in good light, fill the frame and keep the text sharp. Use the turn button if a page is sideways.</p>
+      {/* Sending is the page's one step (RenewDriverPhoneScreen), so it is the full-width main button. */}
+      {send && <Button type="button" size="lg" className="w-full" disabled={busy || !pages.length} onClick={() => void save()}>{busy ? 'Sending…' : send.label}</Button>}
     </>}
     {shownError && <p className="text-sm text-danger">{shownError}</p>}
     <PendingHint pending={busy} />

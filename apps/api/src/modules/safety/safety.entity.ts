@@ -21,7 +21,8 @@ export const OWNABLE: readonly DriverStatus[] = ['APPROVED', 'CLEARED'];
 export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SAFETY_LEAD_CHANGED', 'OWNER_ASSIGNED',
  'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED',
  'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED',
- 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT', 'ANNUAL_REVIEW_RECORDED', 'TEST_RECORDED', 'TEST_VOIDED', 'INCIDENT_RECORDED', 'INCIDENT_UPDATED', 'INCIDENT_VOIDED', 'TRUCK_SAVED', 'OWNER_DOCUMENT_UPLOADED', 'OWNER_DOCUMENT_VIEWED'] as const;
+ 'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT', 'ANNUAL_REVIEW_RECORDED', 'TEST_RECORDED', 'TEST_VOIDED', 'INCIDENT_RECORDED', 'INCIDENT_UPDATED', 'INCIDENT_VOIDED', 'TRUCK_SAVED', 'OWNER_DOCUMENT_UPLOADED', 'OWNER_DOCUMENT_VIEWED',
+ 'RENEWAL_LINK_SENT', 'RENEWAL_LINK_CANCELLED', 'RENEWAL_OPENED', 'DOCUMENT_RENEWED', 'DOCUMENT_UNREADABLE'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -106,6 +107,9 @@ export class DriverLink {
  @Column('timestamptz', { nullable: true }) revokedAt!: Date | null;
  @Column('timestamptz', { nullable: true }) completedAt!: Date | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ // An application link, or a link to scan one renewed document (completedAt is when the driver sent it).
+ @Column('varchar', { default: 'APPLICATION' }) purpose!: 'APPLICATION' | 'RENEWAL';
+ @Column('varchar', { nullable: true }) documentKind!: RenewalKind | null;
 }
 
 /** One emailed code request. Unmatched requests are stored too (no link, no code) so every request writes the same. */
@@ -145,6 +149,9 @@ export type DriverDocumentKind = typeof DRIVER_DOCUMENT_KINDS[number];
 export const WORK_AUTHORIZATION_TYPES = ['US_PASSPORT', 'GREEN_CARD', 'WORK_PERMIT', 'OTHER'] as const;
 export type WorkAuthorizationType = typeof WORK_AUTHORIZATION_TYPES[number];
 /** URL segments for document kinds (driver/documents/<segment>). */
+/** Documents renewed once the driver is approved or cleared (an expired one puts a cleared driver on hold). */
+export const RENEWAL_KINDS = ['LICENSE', 'MEDICAL_CARD'] as const;
+export type RenewalKind = typeof RENEWAL_KINDS[number];
 export const DOCUMENT_SEGMENTS: Record<string, DriverDocumentKind> = { license: 'LICENSE', 'medical-card': 'MEDICAL_CARD', 'work-authorization': 'WORK_AUTHORIZATION' };
 /** Documents needed before submitting: the license and work authorization, and a medical card for CDL drivers. */
 export function requiredDriverDocuments(fields: DriverApplicationFields): DriverDocumentKind[] {
@@ -170,6 +177,10 @@ export class DriverDocument {
  @Column('date', { nullable: true }) expiresOn!: string | null;
  // Bumped by each verification, so two people recording the same document can't silently overwrite each other.
  @Column('integer', { default: 1 }) version!: number;
+ // Who uploaded a renewal (null: the driver scanned it), and a renewal scan Safety couldn't read (it is never checked).
+ @Column('uuid', { nullable: true }) uploadedBy!: string | null;
+ @Column('timestamptz', { nullable: true }) unreadableAt!: Date | null;
+ @Column('uuid', { nullable: true }) unreadableBy!: string | null;
 }
 
 /**

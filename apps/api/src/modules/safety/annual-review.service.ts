@@ -25,12 +25,16 @@ const NO_AUTHORIZATION = { message: 'The driver hasn’t signed the background c
  * Yearly reviews of cleared drivers: the owner or Safety manager (or an administrator) pulls a new MVR, reviews the driving
  * record and records the outcome. Every Safety role reads them. Reviews are append-only; the MVR is an ANNUAL_MVR report.
  */
+const NOT_REVIEWER = 'Only the driver’s owner and the Safety manager can record a yearly review.';
+
 @Injectable()
 export class AnnualReviewService {
  constructor(private readonly db: DataSource, private readonly storage: StorageService) {}
 
  async record(user: User, id: string, dto: AnnualReviewDto) {
   if (dto.outcome === 'NOT_QUALIFIED' && !dto.note) throw new BadRequestException('Say why the driver isn’t qualified.');
+  // Checked again under the driver lock; this early check keeps someone who'd be refused from storing a file first.
+  if (!CLEARERS.includes(user.role) && !await ownsDriver(this.db.manager, user, id)) throw new ForbiddenException(NOT_REVIEWER);
   const today = usDay('latest');
   if (dto.reviewedOn > today) throw new BadRequestException('The review date can’t be in the future.');
   let file: Buffer | null = null, pageCount = 0;
@@ -49,7 +53,7 @@ export class AnnualReviewService {
   try {
    return await writeDriver(this.db, async em => {
     const driver = await lockOpenDriver(em, id, dto.version);
-    if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s owner and the Safety manager can record a yearly review.');
+    if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException(NOT_REVIEWER);
     if (driver.status !== 'CLEARED' || !driver.clearedAt) throw new ConflictException('Yearly reviews start once the driver is cleared.');
     if (dto.reviewedOn < usDay('latest', driver.clearedAt)) throw new BadRequestException('The review can’t be dated before the driver was cleared.');
     const [last] = await em.query(`SELECT to_char(max("reviewedOn"), 'YYYY-MM-DD') AS "on" FROM driver_annual_reviews WHERE "driverId" = $1`, [id]) as { on: string | null }[];
@@ -81,7 +85,8 @@ export class AnnualReviewService {
     CASE WHEN m.id IS NULL THEN NULL ELSE json_build_object('id', m.id, 'pulledOn', to_char(m."pulledOn", 'YYYY-MM-DD'), 'pageCount', m."pageCount") END AS mvr
    FROM driver_annual_reviews r LEFT JOIN users u ON u.id = r."reviewerId" LEFT JOIN driver_reports m ON m.id = r."reportId" WHERE r."driverId" = $1 ORDER BY r."reviewedOn" DESC, r."createdAt" DESC`, [id]) as { reviewedOn: string; outcome: string }[];
   const base = items[0]?.reviewedOn ?? (clearedAt ? usDay('latest', clearedAt) : null);
-  return { items, dueOn: base ? addDays(base, REVIEW_INTERVAL_DAYS) : null, notQualified: items[0]?.outcome === 'NOT_QUALIFIED' };
+  // storageEnabled: whether an MVR file can be attached (it is required then); staging may run without storage.
+  return { items, dueOn: base ? addDays(base, REVIEW_INTERVAL_DAYS) : null, notQualified: items[0]?.outcome === 'NOT_QUALIFIED', storageEnabled: this.storage.enabled };
  }
 
  /** Cleared drivers whose yearly review is overdue, due within REVIEW_WARNING_DAYS, or whose last review found them not qualified. */

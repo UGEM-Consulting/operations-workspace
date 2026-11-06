@@ -28,13 +28,16 @@ export class TruckService {
  private async write<T>(user: User, id: string, version: number, work: (em: Parameters<Parameters<typeof writeDriver>[1]>[0], driver: Driver) => Promise<T>) {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, version);
-   if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, the Safety manager and the driver’s owner can change trucks.');
+   await this.mayChange(em, user, id);
    if (driver.driverType !== 'OWNER_OPERATOR') throw new ConflictException('Trucks are kept for owner-operators.');
    if (!WORKING.includes(driver.status)) throw new ConflictException('Trucks are added once the Safety manager approves the driver.');
    return work(em, driver);
   });
  }
- private async truck(em: Parameters<Parameters<typeof writeDriver>[1]>[0], driverId: string, truckId: string) {
+ private async mayChange(em: Parameters<Parameters<typeof writeDriver>[1]>[0], user: User, id: string) {
+  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, the Safety manager and the driver’s owner can change trucks.');
+ }
+ private async truck(em:Parameters<Parameters<typeof writeDriver>[1]>[0], driverId: string, truckId: string) {
   const [row] = await em.query(`SELECT id, "archivedAt" FROM driver_trucks WHERE id = $1 AND "driverId" = $2 FOR UPDATE`, [truckId, driverId]) as { id: string; archivedAt: Date | null }[];
   if (!row) throw new NotFoundException('This truck is no longer on the list.');
   return row;
@@ -80,6 +83,8 @@ export class TruckService {
   if (!this.storage.enabled) throw new ServiceUnavailableException('Uploads aren’t available right now.');
   if (dto.kind !== 'LEASE' && !dto.expiresOn) throw new BadRequestException(`Enter the expiration date shown on the ${KIND_WORDS[dto.kind]}.`);
   if (dto.expiresOn && dto.expiresOn < '2000-01-01') throw new BadRequestException('Enter the expiration date shown on the document.');
+  // Checked again under the driver lock; this early check keeps someone who'd be refused from storing a file first.
+  await this.mayChange(this.db.manager, user, id);
   await onboardingLimit(this.db, `driver-owner-doc:${user.id}`, 30, 3600);
   const file = decodePdf(dto.file);
   const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });

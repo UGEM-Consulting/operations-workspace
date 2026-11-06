@@ -33,17 +33,21 @@ export function AnnualReviewCard({ driver, canRecord }: { driver: DriverProfile;
   const [error, setError] = useState('');
   const reviews = driver.annualReviews;
   if (!reviews) return null;
+  // Without file storage the API refuses an MVR and records the review without one (an older API sends no flag).
+  const withMvr = reviews.storageEnabled !== false;
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
     const form = new FormData(event.currentTarget), file = form.get('file');
-    if (!(file instanceof File) || file.type !== 'application/pdf') { setError('Choose the MVR as a PDF file.'); return; }
-    if (file.size > MAX_PDF_BYTES) { setError('The PDF must be 3 MB or smaller.'); return; }
+    if (withMvr) {
+      if (!(file instanceof File) || file.type !== 'application/pdf') { setError('Choose the MVR as a PDF file.'); return; }
+      if (file.size > MAX_PDF_BYTES) { setError('The PDF must be 3 MB or smaller.'); return; }
+    }
     setPending(true); setError('');
     try {
       const note = String(form.get('note') ?? '').trim();
       await mutate(`safety/drivers/${driver.id}/annual-reviews`, 'POST', { version: driver.version, reviewedOn: form.get('reviewedOn'), outcome, ...(note ? { note } : {}),
-        mvr: { file: await fileToBase64(file), pulledOn: form.get('pulledOn'), ...(form.get('paperAuthorization') === 'on' ? { paperAuthorization: true } : {}) } });
+        ...(withMvr ? { mvr: { file: await fileToBase64(file as File), pulledOn: form.get('pulledOn'), ...(form.get('paperAuthorization') === 'on' ? { paperAuthorization: true } : {}) } } : {}) });
       toast({ title: 'Yearly review recorded' });
       setOpen(false); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
@@ -63,14 +67,16 @@ export function AnnualReviewCard({ driver, canRecord }: { driver: DriverProfile;
           {row.mvr && <ViewDocumentButton documents={[{ url: `/api/backend/safety/drivers/${driver.id}/reports/${row.mvr.id}/file`, title: `Yearly MVR · ${driver.firstName} ${driver.lastName}`, meta: `${row.mvr.pageCount} ${row.mvr.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> the MVR</span></ViewDocumentButton>}
         </li>)}</ul>}
     </CardBody>
-    {open && <Dialog open onClose={() => setOpen(false)} busy={pending} title="Record the yearly review" description="Attach the MVR you pulled, then record what the review found. Never write medical or drug test details."
+    {open && <Dialog open onClose={() => setOpen(false)} busy={pending} title="Record the yearly review" description={`${withMvr ? 'Attach the MVR you pulled, then record' : 'Record'} what the review found. Never write medical or drug test details.`}
       actions={<Button type="submit" form="annual-review">{pending ? 'Saving…' : 'Record review'}</Button>}>
       <form id="annual-review" onSubmit={submit} className="space-y-4">
         <Input label="Date of the review" name="reviewedOn" type="date" required defaultValue={today ?? ''} max={today ?? undefined} width="md" />
-        <Field id="annual-mvr" label="New MVR (PDF)" hint="3 MB maximum, pulled in the last 90 days."><input id="annual-mvr" name="file" type="file" accept="application/pdf" required
-          className="block w-full text-sm file:mr-3 file:min-h-9 file:cursor-pointer file:rounded-sm file:border file:border-input file:bg-card file:px-3 file:text-sm file:font-medium file:shadow-xs hover:file:bg-accent" /></Field>
-        <Input label="Date pulled" name="pulledOn" type="date" required defaultValue={today ?? ''} max={today ?? undefined} width="md" />
-        {driver.consents && !driver.consents.authorizationSigned && <Checkbox name="paperAuthorization" required label="The driver signed a paper background check authorization, and it’s on file." />}
+        {withMvr ? <>
+          <Field id="annual-mvr" label="New MVR (PDF)" hint="3 MB maximum, pulled in the last 90 days."><input id="annual-mvr" name="file" type="file" accept="application/pdf" required
+            className="block w-full text-sm file:mr-3 file:min-h-9 file:cursor-pointer file:rounded-sm file:border file:border-input file:bg-card file:px-3 file:text-sm file:font-medium file:shadow-xs hover:file:bg-accent" /></Field>
+          <Input label="Date pulled" name="pulledOn" type="date" required defaultValue={today ?? ''} max={today ?? undefined} width="md" />
+          {driver.consents && !driver.consents.authorizationSigned && <Checkbox name="paperAuthorization" required label="The driver signed a paper background check authorization, and it’s on file." />}
+        </> : <p className="text-sm text-muted-foreground">File storage isn’t set up here, so no MVR is attached.</p>}
         <RadioGroup name="outcome" label="Outcome" value={outcome} onChange={value => setOutcome(value as 'QUALIFIED' | 'NOT_QUALIFIED')} options={[
           { value: 'QUALIFIED', label: 'Qualified to keep driving' }, { value: 'NOT_QUALIFIED', label: 'Not qualified', description: 'A note is required. The driver stays on the due list.' }]} />
         <Textarea label={outcome === 'NOT_QUALIFIED' ? 'What the review found' : 'Note'} name="note" optional={outcome === 'QUALIFIED'} required={outcome === 'NOT_QUALIFIED'} maxLength={1000} rows={3} />

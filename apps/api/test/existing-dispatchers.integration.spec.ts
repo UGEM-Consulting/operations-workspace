@@ -1,3 +1,4 @@
+import { addDays, usDay } from '../src/modules/safety/screening-rules';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -233,7 +234,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
   it('gives IT the normal checklist when they leave, from what the manager recorded', async () => {
     const id = await addOne('Riley', { companyEmail: 'riley@example.test' });
     const version = (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body.version;
-    await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Resigned.', emailAfter: 'FORWARD' }).expect(201);
+    await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: usDay('latest'), reason: 'Resigned.', emailAfter: 'FORWARD' }).expect(201);
     const [removal] = await db.query(`SELECT * FROM it_removal_requests WHERE "memberId" = $1`, [id]);
     expect(removal).toMatchObject({ setupRequestId: null, emailAfter: 'FORWARD' });
     expect(removal.profile).toMatchObject({ companyEmail: 'riley@example.test', ringCentralNumber: null, noSetupRecord: true, setUpAt: null, mcName: 'Northwind Freight' });
@@ -251,7 +252,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     const sent = await link(plain);
     for (const id of [plain, mailbox]) {
       const version = (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body.version;
-      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved on.' }).expect(201);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: usDay('latest'), reason: 'Moved on.' }).expect(201);
     }
     expect((await db.query(`SELECT "memberId" FROM it_removal_requests`)).map((row: Row) => row.memberId)).toEqual([mailbox]);
     const refused = await request(app.getHttpServer()).post('/api/applicant/begin').set(headers).send({ token: sent.url.split('#').pop(), email: 'plain.home@example.test' }).expect(201);
@@ -260,7 +261,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
   });
   const version = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body.version as number;
   const correct = async (id: string, body: Row) => { const current = await version(id); return agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: current, ...body }); };
-  const inDays = (days: number) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+  const inDays = (days: number) => addDays(usDay('latest'), days);
   const leave = async (id: string, leftAt = inDays(0)) => { const current = await version(id); return agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: current, leftAt, reason: 'Moved on.' }).expect(201); };
 
   it('holds back the same person twice in one file until they are said to be different people', async () => {
@@ -508,7 +509,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect((await link(id)).url).toBeTruthy();
       expect((await agents.manager.get('/api/dispatch/paperwork').set(headers).expect(200)).body.items.find((row: Row) => row.id === id).mc).toBe('No MC yet');
       const profile = await page(id);
-      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: profile.version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved away' }).expect(201);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: profile.version, leftAt: usDay('latest'), reason: 'Moved away' }).expect(201);
       const left = await page(id);
       expect(left.status).toBe('LEFT');
       await setStart(id, left.version, { startedOn: '2024-01-01' }, 409);
@@ -564,14 +565,14 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const id = (await add([{ row: 2, firstName: 'Gone', lastName: 'Fictional', position: 'Support', supportsMemberId: dispatcher, startedOn: '2024-03-04' }])).body.members[0].id;
       expect((await list()).find(row => row.id === id)).toMatchObject({ addedByHand: true, mc: 'Northwind Freight' });
       const profile = await page(id);
-      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: profile.version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved away' }).expect(201);
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: profile.version, leftAt: usDay('latest'), reason: 'Moved away' }).expect(201);
       expect((await list()).find(row => row.id === id)).toMatchObject({ placed: false, mc: null, addedByHand: true });
       const [approved] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Approved','Fictional','DISPATCHER','ACTIVE',now()) RETURNING id`);
       expect((await list()).find(row => row.id === approved.id)).toMatchObject({ addedByHand: false });
     });
     it('tells IT someone had no MC yet, not that they were Independent', async () => {
       const nomc = (await add([missing(2, 'Nomc', { companyEmail: 'nomc@example.test' })])).body.members[0].id, solo = (await add([base(2, 'Solo', { mc: 'Independent', team: '' })])).body.members[0].id;
-      for (const id of [nomc, solo]) { const { version } = await page(id); await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved away' }).expect(201); }
+      for (const id of [nomc, solo]) { const { version } = await page(id); await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: usDay('latest'), reason: 'Moved away' }).expect(201); }
       const profile = async (id: string) => (await db.query(`SELECT profile FROM it_removal_requests WHERE "memberId" = $1`, [id]))[0].profile;
       expect((await profile(nomc)).mcName).toBe('No MC yet');
       expect((await profile(solo)).mcName).toBeNull();
@@ -755,7 +756,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     });
     it('gives IT the MC and team when a correction during a notice opens the removal', async () => {
       const added = (await add([base(2, 'Lead'), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supports: 'Lead Fictional' }, { row: 4, firstName: 'Whole', lastName: 'Fictional', position: 'Updater', team: 'Red team' }])).body;
-      const lastDay = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      const lastDay = addDays(usDay('latest'), 10);
       for (const member of added.members.slice(1) as { id: string }[]) {
         await agents.manager.post(`/api/dispatch/members/${member.id}/leave`).set(headers).send({ version: 1, leftAt: lastDay, reason: 'Moved on.' }).expect(201);
         expect(await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [member.id])).toEqual([]);
@@ -779,7 +780,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     it('tells IT who else uses a sign-in, including for a support with nothing else recorded', async () => {
       const added = (await add([base(2, 'Riley', { datEmail: 'shared@example.test', ringCentralExtension: '214' }), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supports: 'Riley Fictional', datEmail: 'shared@example.test' }])).body;
       const [riley, sky] = added.members.map((row: { id: string }) => row.id);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = usDay('latest');
       await agents.manager.post(`/api/dispatch/members/${sky}/leave`).set(headers).send({ version: 1, leftAt: today, reason: 'Moved on.' }).expect(201);
       const [skyRemoval] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [sky]);
       const skyDetail = (await agents.it.get(`/api/it/removals/${skyRemoval.id}`).set(headers).expect(200)).body;
@@ -795,7 +796,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     });
     it('reopens business software when a sign-in is corrected during a notice', async () => {
       const id = await addOne('Riley');
-      const lastDay = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      const lastDay = addDays(usDay('latest'), 10);
       await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: 1, leftAt: lastDay, reason: 'Moved on.' }).expect(201);
       const [removal] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [id]);
       await db.query(`UPDATE it_removal_tasks SET status = 'COMPLETED' WHERE "requestId" = $1 AND key = 'BUSINESS_SOFTWARE'`, [removal.id]);
@@ -841,7 +842,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","datEmail","truckstopEmail") VALUES ($1,$2,'kept.dat@example.test','kept.ts@example.test')`, [id, users.manager.id]);
       await db.query(`UPDATE it_onboarding_requests SET "truckstopEmail" = 'it.ts@example.test', "companyEmail" = 'it@example.test', "assignedRingCentralPhoneNumber" = '+1 202 555 0190', "completedAt" = now() WHERE id = $1`, [setup.id]);
       await db.query(`UPDATE dispatch_members SET status = 'ACTIVE' WHERE id = $1`, [id]);
-      const { version } = await page(id), lastDay = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+      const { version } = await page(id), lastDay = addDays(usDay('latest'), 10);
       await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: lastDay, reason: 'Moved on.' }).expect(201);
       const [removal] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [id]);
       const read = async () => (await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body;
@@ -860,7 +861,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     });
     it('says what IT is removing for a support', async () => {
       const added = (await add([base(2, 'Lead'), { row: 3, firstName: 'Sky', lastName: 'Fictional', position: 'Updater', supports: 'Lead Fictional', datEmail: 'sky@example.test' }])).body;
-      await agents.manager.post(`/api/dispatch/members/${added.members[1].id}/leave`).set(headers).send({ version: 1, leftAt: new Date().toISOString().slice(0, 10), reason: 'Moved on.' }).expect(201);
+      await agents.manager.post(`/api/dispatch/members/${added.members[1].id}/leave`).set(headers).send({ version: 1, leftAt: usDay('latest'), reason: 'Moved on.' }).expect(201);
       const [removal] = await db.query(`SELECT id FROM it_removal_requests WHERE "memberId" = $1`, [added.members[1].id]);
       expect((await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body.request.profile.position).toBe('Updater');
     });
@@ -928,7 +929,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     it('changes who they assist either way, keeping the history', async () => {
       const added = (await add([base(2, 'Lead'), helper(3, 'Sky', { supports: 'Lead Fictional' })])).body;
       const [lead, sky] = added.members.map((row: { id: string }) => row.id), { id: teamId } = await team();
-      const reassign = (version: number, body: Row) => agents.manager.post(`/api/dispatch/members/${sky}/reassign`).set(headers).send({ version, startedAt: new Date().toISOString().slice(0, 10), reason: 'Team needs help.', ...body });
+      const reassign = (version: number, body: Row) => agents.manager.post(`/api/dispatch/members/${sky}/reassign`).set(headers).send({ version, startedAt: usDay('latest'), reason: 'Team needs help.', ...body });
       await reassign(1, {}).expect(400);
       await reassign(1, { dispatcherId: lead, teamId }).expect(400);
       await reassign(1, { dispatcherId: lead }).expect(400);
@@ -946,7 +947,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     });
     it('keeps a team open while anyone assists it, and a dispatcher leaving doesn’t wait for them', async () => {
       const added = (await add([base(2, 'Lead'), helper(3, 'Sky', { team: 'Red team' })])).body;
-      const [lead, sky] = added.members.map((row: { id: string }) => row.id), today = new Date().toISOString().slice(0, 10);
+      const [lead, sky] = added.members.map((row: { id: string }) => row.id), today = usDay('latest');
       await agents.manager.post(`/api/dispatch/members/${lead}/leave`).set(headers).send({ version: 1, leftAt: today, reason: 'Moved on.' }).expect(201);
       const { id, version } = await team();
       const refused = await agents.manager.patch(`/api/dispatch/teams/${id}`).set(headers).send({ version, archived: true }).expect(409);

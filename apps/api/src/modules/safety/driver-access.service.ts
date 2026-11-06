@@ -16,8 +16,9 @@ import { consentStatus } from './consent-rules';
 import { scanPdf } from './scan';
 import { PiiService } from './pii';
 import { historyMissing } from './history-rules';
+import { isProduction, sessionLink } from './driver-records';
 import { usDay } from './screening-rules';
-import { DOCUMENT_SEGMENTS, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
+import { DOCUMENT_SEGMENTS, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, LEAVABLE, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
 
 /** Code requests per window, like applicant verification: a circuit breaker plus per-address buckets, no per-link cap. */
 export const DRIVER_BEGIN_LIMITS = { global: 1000, ip: 20, emailIp: 5, linkIp: 10 } as const;
@@ -52,7 +53,7 @@ export class DriverAccessService {
  private readonly logger = new Logger('DriverVerification');
  constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly pii: PiiService,
   private readonly storage: StorageService) {}
- private get production() { return this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'; }
+ private get production() { return isProduction(this.config); }
 
  async begin(dto: BeginDriverDto, req: Request) {
   if (!this.email.enabled) throw new ServiceUnavailableException('Email verification isn’t available right now. Please contact Safety.');
@@ -64,7 +65,7 @@ export class DriverAccessService {
   await onboardingLimit(this.db, `driver-begin-link-ip:${target}:${ip}`, DRIVER_BEGIN_LIMITS.linkIp);
   const link = await this.db.getRepository(DriverLink).findOneBy({ tokenHash: target });
   const driver = link ? await this.db.getRepository(Driver).findOneBy({ id: link.driverId }) : null;
-  const valid = !!link && !!driver && this.open(link) && link.email === dto.email && driver.status === 'APPLYING';
+  const valid = !!link && !!driver && this.open(link) && link.email === dto.email && this.usable(link, driver);
   await this.db.query('DELETE FROM driver_challenges WHERE "expiresAt" < now()');
   const code = valid ? generateVerificationCode() : null;
   const challenge = await this.db.getRepository(DriverChallenge).save({ linkId: valid ? link.id : null, email: valid ? dto.email : null, codeHash: code ? digest(code) : null,
@@ -87,28 +88,34 @@ export class DriverAccessService {
   await onboardingLimit(this.db, 'driver-verify-global', DRIVER_VERIFY_LIMITS.global, 60);
   await onboardingLimit(this.db, `driver-verify-ip:${clientBucket(req)}`, DRIVER_VERIFY_LIMITS.ip);
   await onboardingLimit(this.db, `driver-code:${dto.challengeId}`, 5);
-  const linkId = await this.db.transaction(async em => {
+  const verified = await this.db.transaction(async em => {
    const challenge = await em.getRepository(DriverChallenge).createQueryBuilder('c').addSelect('c.codeHash').setLock('pessimistic_write').where('c.id = :id', { id: dto.challengeId }).getOne();
    if (!challenge?.linkId || !challenge.codeHash || challenge.consumedAt || challenge.expiresAt.getTime() <= Date.now() || challenge.codeHash !== digest(dto.code)) throw new UnauthorizedException(INVALID);
    const link = await em.getRepository(DriverLink).findOneBy({ id: challenge.linkId });
    const driver = link ? await em.getRepository(Driver).findOne({ where: { id: link.driverId }, lock: { mode: 'pessimistic_write' } }) : null;
    const current = link ? await em.getRepository(DriverLink).findOne({ where: { id: link.id }, lock: { mode: 'pessimistic_write' } }) : null;
-   if (!current || !driver || !this.open(current) || current.email !== challenge.email || driver.status !== 'APPLYING') throw new UnauthorizedException(INVALID);
+   if (!current || !driver || !this.open(current) || current.email !== challenge.email || !this.usable(current, driver)) throw new UnauthorizedException(INVALID);
    await em.getRepository(DriverChallenge).update(challenge.id, { consumedAt: new Date(), codeHash: null });
+   // A renewal link opens only the page for that one document (RenewalService).
+   if (current.purpose === 'RENEWAL') {
+    await em.getRepository(DriverEvent).save({ driverId: driver.id, actorId: null, event: 'RENEWAL_OPENED', metadata: { kind: current.documentKind } });
+    return current;
+   }
    // The first visit starts the application with what Safety already knows.
    if (!await em.getRepository(DriverApplication).existsBy({ driverId: driver.id })) {
     await em.getRepository(DriverApplication).save({ driverId: driver.id, fields: this.clean({ legalFirstName: driver.firstName, legalLastName: driver.lastName, phone: driver.phone,
      licenseState: driver.licenseState ?? undefined, licenseClass: driver.licenseType ?? undefined }) });
    }
    await em.getRepository(DriverEvent).save({ driverId: driver.id, actorId: null, event: 'APPLICATION_VERIFIED', metadata: {} });
-   return current.id;
+   return current;
   });
   await new Promise<void>((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()));
-  req.session.driverLinkId = linkId;
+  req.session.driverLinkId = verified.id;
   req.session.expiresAt = Date.now() + SESSION_MS;
   req.session.cookie.maxAge = SESSION_MS;
   await new Promise<void>((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()));
-  return { verified: true };
+  // Which page the link opens: the application, or the renewal of one document.
+  return { verified: true, purpose: verified.purpose };
  }
 
  async current(req: Request) {
@@ -204,12 +211,11 @@ export class DriverAccessService {
   * by ConsentService for the driver's consent forms.
   */
  async session(em: EntityManager, req: Request, lock: boolean) {
-  const linkId = req.session?.driverLinkId;
-  if (!linkId || !req.session.expiresAt || req.session.expiresAt <= Date.now()) throw new UnauthorizedException('Please verify your email again.');
-  const first = await em.getRepository(DriverLink).findOneBy({ id: linkId });
-  if (!first) throw new UnauthorizedException('Please verify your email again.');
+  const first = await sessionLink(em, req);
+  // A renewal link's session never reads or changes the application.
+  if (first.purpose !== 'APPLICATION') throw new UnauthorizedException('Please verify your email again.');
   const driver = await em.getRepository(Driver).findOne({ where: { id: first.driverId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
-  const link = lock ? await em.getRepository(DriverLink).findOneByOrFail({ id: linkId }) : first;
+  const link = lock ? await em.getRepository(DriverLink).findOneByOrFail({ id: first.id }) : first;
   const application = await em.getRepository(DriverApplication).findOne({ where: { driverId: first.driverId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
   // A submitted application stays readable for the rest of the session while it is still the one sent (Safety reopening
   // it as a draft ends that access); anything else needs an open link.
@@ -217,6 +223,8 @@ export class DriverAccessService {
   return { link, driver, application };
  }
  private open(link: DriverLink) { return !link.revokedAt && !link.completedAt && link.expiresAt.getTime() > Date.now(); }
+ // An application link works while the driver is applying; a renewal link while they are approved or cleared.
+ private usable(link: DriverLink, driver: Driver) { return link.purpose === 'RENEWAL' ? LEAVABLE.includes(driver.status) : driver.status === 'APPLYING'; }
  private clean(fields: DriverApplicationFields): DriverApplicationFields {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => typeof value === 'string' && value !== '')) as DriverApplicationFields;
  }

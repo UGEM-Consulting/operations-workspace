@@ -1,3 +1,4 @@
+import { upper, filled } from './dto-helpers';
 import { Transform, Type } from 'class-transformer';
 import { applyDecorators } from '@nestjs/common';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsBoolean, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
@@ -7,9 +8,7 @@ import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requireme
 import { VERIFICATION_CODE_PATTERN } from '../onboarding/verification-code';
 import { LICENSE_TYPES, type LicenseType, US_STATES, WORK_AUTHORIZATION_TYPES, type WorkAuthorizationType } from './safety.entity';
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : value);
-const upper = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toUpperCase() : value);
 // Drafts may leave any answer empty; a format is checked only once something is entered. Submission checks completeness.
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const PHONE = { message: 'Enter a phone number with 7 to 15 digits.' };
 

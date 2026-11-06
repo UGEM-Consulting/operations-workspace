@@ -438,7 +438,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect(await driver(id)).toMatchObject({ status: 'LEFT', statusReason: 'Fictional resignation', closedAt: expect.any(String), version: 3 });
       expect((await db.query(`SELECT count(*)::int AS n FROM driver_owners WHERE "driverId" = $1 AND "endedAt" IS NULL`, [id]))[0].n).toBe(0);
       expect((await db.query(`SELECT count(*)::int AS n FROM driver_assignments WHERE "driverId" = $1 AND "endedAt" IS NULL`, [id]))[0].n).toBe(0);
-      expect((await events(id)).filter(row => row.event === 'LEFT').map(row => row.metadata)).toEqual([{ from: 'CLEARED', assignmentEnded: true }]);
+      expect((await events(id)).filter(row => row.event === 'LEFT').map(row => row.metadata)).toEqual([{ from: 'CLEARED', assignmentEnded: true, trucksArchived: false }]);
       expect(JSON.stringify(await events(id))).not.toContain('Fictional resignation');
       // Closed: no more changes, and the same person can be entered again.
       await left(agents.manager, 3).expect(409);
@@ -452,8 +452,12 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id } = (await add(agents.lead).expect(201)).body;
     await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [id]);
     await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '1 day')`, [id, users.staff.id]);
+    await db.query(`INSERT INTO driver_trucks ("driverId", unit, vin, year, make) VALUES ($1, 'T-9', '1FUJGLLB5CLDF9999', 2020, 'Volvo')`, [id]);
     await agents.staff.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version: 2, leftOn: usDay('latest'), reason: 'Fictional move' }).expect(201);
     expect(await driver(id)).toMatchObject({ status: 'LEFT' });
+    // Their truck is archived with them, so its VIN is free for the next driver.
+    expect((await db.query(`SELECT "archivedAt" IS NOT NULL AS archived FROM driver_trucks WHERE "driverId" = $1`, [id]))[0].archived).toBe(true);
+    expect((await events(id)).find(row => row.event === 'LEFT')!.metadata).toEqual({ from: 'APPROVED', assignmentEnded: false, trucksArchived: true });
   });
 
   it('records yearly reviews of cleared drivers with a new MVR, lists the ones due, and keeps them as history', async () => {
@@ -502,7 +506,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await test(agents.manager, 1).expect(409);
     await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = 2 WHERE id = $1`, [id]);
     await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [id, users.staff.id]);
-    const attention = async () => (await agents.lead.get('/api/safety/due').set(headers).expect(200)).body.tests;
+    const attention = async (agent = agents.manager) => (await agent.get('/api/safety/due').set(headers).expect(200)).body.tests;
     await test(agents.lead, 2).expect(403);
     await test(agents.staff2, 2).expect(403);
     await test(agents.dispatch, 2).expect(403);
@@ -519,10 +523,19 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await test(agents.manager, 3, { result: 'NOT_NEGATIVE', testedOn: addDays(day, -1) }).expect(201);
     await test(agents.manager, 4, { kind: 'ALCOHOL', reason: 'FOLLOW_UP' }).expect(201);
     expect(await attention()).toMatchObject([{ driverId: id, kind: 'DRUG', result: 'NOT_NEGATIVE' }]);
+    // Results are for the manager and the owner only (49 CFR 40.321): the lead and other staff see neither them nor why the driver is on hold.
+    expect(await attention(agents.staff)).toHaveLength(1);
+    expect(await attention(agents.lead)).toEqual([]);
+    expect(await attention(agents.staff2)).toEqual([]);
+    const as = async (agent: Agent) => (await agent.get(`/api/safety/drivers/${id}`).set(headers).expect(200)).body;
+    expect(await as(agents.lead)).toMatchObject({ testing: { hidden: true }, hold: { onHold: false, test: null, review: false } });
+    expect((await as(agents.staff2)).testing).toEqual({ hidden: true });
+    expect(await as(agents.staff)).toMatchObject({ testing: { items: expect.any(Array) }, hold: { onHold: true, test: true } });
     await test(agents.manager, 5, { reason: 'RETURN_TO_DUTY' }).expect(201);
     expect(await attention()).toEqual([]);
+    expect((await as(agents.manager)).hold).toEqual({ onHold: false, test: false, review: false, documents: false });
     // Entries are never edited: only the manager voids, with a reason, and a voided result no longer counts.
-    const items = (await driver(id)).testing.items as { id: string; result: string; voidedAt: string | null }[];
+    const items = (await as(agents.manager)).testing.items as { id: string; result: string; voidedAt: string | null }[];
     expect(items).toHaveLength(4);
     const refused = items.find(row => row.result === 'NOT_NEGATIVE')!.id;
     const voidTest = (agent: Agent, version: number, testId: string, reason = 'Entered against the wrong driver') => agent.post(`/api/safety/drivers/${id}/tests/${testId}/void`).set(headers).send({ version, reason });
@@ -530,7 +543,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await voidTest(agents.manager, 6, refused, ' ').expect(400);
     await voidTest(agents.manager, 6, refused).expect(201);
     await voidTest(agents.manager, 7, refused).expect(409);
-    expect((await driver(id)).testing.items.find((row: { id: string }) => row.id === refused)).toMatchObject({ voidedAt: expect.any(String), voidReason: 'Entered against the wrong driver' });
+    expect((await as(agents.manager)).testing.items.find((row: { id: string }) => row.id === refused)).toMatchObject({ voidedAt: expect.any(String), voidReason: 'Entered against the wrong driver' });
     // Events name the kind and reason, never the result, the date or notes.
     expect((await events(id)).filter(row => row.event === 'TEST_RECORDED').map(row => row.metadata)[0]).toEqual({ kind: 'DRUG', reason: 'RANDOM' });
     expect(JSON.stringify(await events(id))).not.toMatch(/NOT_NEGATIVE|Fictional collection site|wrong driver/);
@@ -1244,10 +1257,161 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await decide(agents.manager, id, { version, ...notice, noticeSentOn: today() }).expect(409);
   });
 
+
+  /** A submitted driver whose scans were checked (the medical card already expired), then cleared and owned by safety staff. */
+  async function clearedWithExpiredCard() {
+    const one = await submitted(), day = usDay('latest');
+    for (const document of one.documents) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
+      .send({ version: 1, ...(document.kind === 'LICENSE' ? { expiresOn: addDays(day, 400) } : document.kind === 'MEDICAL_CARD' ? { expiresOn: addDays(day, -3) } : {}) }).expect(201);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = version + 1 WHERE id = $1`, [one.id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [one.id, users.staff.id]);
+    const medical = one.documents.find(row => row.kind === 'MEDICAL_CARD')!.id;
+    return { ...one, medical, version: (await driver(one.id)).version as number };
+  }
+  const medicalFile = (id: string, documentId: string) => join(storage, 'drivers', id, 'documents', 'medical-card', `${documentId}.pdf`);
+  /** Opens a renewal link in a new browser: true in `code` when the emailed code went out. */
+  async function openRenewal(url: string, email = 'jordan.wheeler@example.test') {
+    const agent = request.agent(app.getHttpServer()), token = url.split('#').pop() as string;
+    const before = sent.length;
+    const { challengeId } = (await agent.post('/api/driver/begin').set(headers).send({ token, email }).expect(201)).body;
+    await settle();
+    return { agent, challengeId: challengeId as string, code: sent.length > before ? sent.at(-1)!.code : null };
+  }
+
+  it('renews an expired medical card Safety has in hand: saved checked, the hold lifts and the earlier scan is kept', async () => {
+    const { id, medical, version } = await clearedWithExpiredCard(), day = usDay('latest');
+    expect((await driver(id, agents.manager)).hold).toMatchObject({ onHold: true, documents: true });
+    expect((await driver(id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ checked: { id: medical, expiresOn: addDays(day, -3), current: true }, link: null, scan: null });
+    const renew = (agent: Agent, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/documents/renew`).set(headers)
+      .send({ version, kind: 'MEDICAL_CARD', pages: [page()], expiresOn: addDays(day, 700), confirmed: true, ...body });
+    // Who: Safety leads, the manager, administrators and the owner; not another safety staff member or Dispatch.
+    await renew(agents.staff2, {}).expect(403);
+    await renew(agents.dispatch, {}).expect(403);
+    // What: one PDF or photos, a date still to come, the confirmation, and never the work authorization.
+    await renew(agents.staff, { expiresOn: addDays(day, -1) }).expect(400);
+    await renew(agents.staff, { confirmed: false }).expect(400);
+    await renew(agents.staff, { kind: 'WORK_AUTHORIZATION' }).expect(400);
+    await renew(agents.staff, { file: await mvrPdf() }).expect(400);
+    await renew(agents.staff, { pages: undefined, file: Buffer.from('not a pdf').toString('base64') }).expect(400);
+    await renew(agents.staff, { version: version - 1 }).expect(409);
+    await renew(agents.staff, { pages: undefined, file: await mvrPdf() }).expect(201);
+    const record = await driver(id, agents.manager);
+    expect(record.hold).toMatchObject({ onHold: false, documents: false });
+    expect(record.version).toBe(version + 1);
+    const renewed = record.documents.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD');
+    expect(renewed).toMatchObject({ uploadedBySafety: true, verifiedBy: 'Fictional staff', expiresOn: addDays(day, 700), pageCount: 1, unreadableAt: null });
+    expect(existsSync(medicalFile(id, medical))).toBe(true);
+    expect(existsSync(medicalFile(id, renewed.id))).toBe(true);
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_RENEWED').map(row => row.metadata)).toEqual([{ kind: 'MEDICAL_CARD', pages: 1 }]);
+    expect(JSON.stringify(await events(id))).not.toContain(addDays(day, 700));
+    // The expiring list now counts the renewed card, which is far away.
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.filter((row: { driverId: string }) => row.driverId === id)).toEqual([]);
+  });
+
+  it('sends a renewal link: the driver scans only that document, which lifts nothing until a person checks it', async () => {
+    const { id, version, medical } = await clearedWithExpiredCard(), day = usDay('latest');
+    const link = (agent: Agent, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/renewals`).set(headers).send({ kind: 'MEDICAL_CARD', ...body });
+    await link(agents.staff2, { version }).expect(403);
+    const first = (await link(agents.staff, { version }).expect(201)).body;
+    expect(first.url).toMatch(/\/driver#[a-f0-9]{64}$/);
+    // A new link for the same document stops the first one.
+    const second = (await link(agents.lead, { version: first.version }).expect(201)).body;
+    expect((await openRenewal(first.url)).code).toBeNull();
+    const renewal = await openRenewal(second.url);
+    expect((await renewal.agent.post('/api/driver/verify').set(headers).send({ challengeId: renewal.challengeId, code: renewal.code }).expect(201)).body).toEqual({ verified: true, purpose: 'RENEWAL' });
+    // The session opens only the renewal: never the application or its scans.
+    await renewal.agent.get('/api/driver/application').set(headers).expect(401);
+    await renewal.agent.post('/api/driver/documents/medical-card').set(headers).send({ pages: [page()] }).expect(401);
+    expect((await renewal.agent.get('/api/driver/renewal').set(headers).expect(200)).body).toMatchObject({ kind: 'MEDICAL_CARD', email: 'jordan.wheeler@example.test', sentAt: null, document: null });
+    const scanned = (await renewal.agent.post('/api/driver/renewal').set(headers).send({ pages: [page(), page()] }).expect(201)).body;
+    expect(scanned).toMatchObject({ kind: 'MEDICAL_CARD', sentAt: expect.any(String), document: { pageCount: 2 } });
+    await renewal.agent.post('/api/driver/renewal').set(headers).send({ pages: [page()] }).expect(409);
+    // Sending it moved the driver's version on, so a page Safety opened before can't replace the scan without seeing it.
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/renew`).set(headers)
+      .send({ version: second.version, kind: 'MEDICAL_CARD', pages: [page()], expiresOn: addDays(day, 700), confirmed: true }).expect(409);
+    // Waiting for its check: the expired card still holds them, and both the list and the profile say so.
+    let record = await driver(id, agents.manager);
+    const waiting = record.renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD');
+    expect(waiting).toMatchObject({ checked: { id: medical, current: false }, link: null, scan: { pageCount: 2, unreadable: false, version: 1 } });
+    expect(record.hold).toMatchObject({ onHold: true, documents: true });
+    const listed = (await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.find((row: { driverId: string; kind: string }) => row.driverId === id && row.kind === 'MEDICAL_CARD');
+    expect(listed).toMatchObject({ documentId: medical, expired: true, version: record.version, email: 'jordan.wheeler@example.test', renewal: { link: null, scan: { id: waiting.scan.id } } });
+    // Not readable: never checked, and the next scan replaces it (its file goes; the checked card's stays).
+    await agents.staff2.post(`/api/safety/drivers/${id}/documents/${waiting.scan.id}/unreadable`).set(headers).send({ version: 1 }).expect(403);
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/${waiting.scan.id}/unreadable`).set(headers).send({ version: 1 }).expect(201);
+    await agents.lead.post(`/api/safety/drivers/${id}/documents/${waiting.scan.id}/verify`).set(headers).send({ version: 2, expiresOn: addDays(day, 700) }).expect(409);
+    const third = (await link(agents.staff, { version: record.version }).expect(201)).body;
+    // The new link is out while the unreadable scan is still the current one: the profile reports both.
+    expect((await driver(id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ link: { expired: false }, scan: { id: waiting.scan.id, unreadable: true } });
+    const again = await openRenewal(third.url);
+    await again.agent.post('/api/driver/verify').set(headers).send({ challengeId: again.challengeId, code: again.code }).expect(201);
+    await again.agent.post('/api/driver/renewal').set(headers).send({ pages: [page()] }).expect(201);
+    expect(existsSync(medicalFile(id, waiting.scan.id))).toBe(false);
+    expect(existsSync(medicalFile(id, medical))).toBe(true);
+    // Checked: the date a person read lifts the hold.
+    record = await driver(id, agents.manager);
+    const next = record.renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD').scan;
+    // A date that has passed means they photographed the old card: refused, so the scan can still be marked not readable.
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/documents/${next.id}/verify`).set(headers).send({ version: 1, expiresOn: addDays(day, -1) }).expect(400)).body.message).toMatch(/not readable/);
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/${next.id}/verify`).set(headers).send({ version: 1, expiresOn: addDays(day, 700) }).expect(201);
+    record = await driver(id, agents.manager);
+    expect(record.hold).toMatchObject({ onHold: false, documents: false });
+    expect(record.renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ checked: { id: next.id, current: true }, scan: null });
+    expect((await events(id)).filter(row => ['RENEWAL_LINK_SENT', 'RENEWAL_OPENED', 'DOCUMENT_UNREADABLE'].includes(row.event) || (row.event === 'DOCUMENT_UPLOADED' && row.metadata.renewal)).map(row => [row.event, row.metadata]))
+      .toEqual([['RENEWAL_LINK_SENT', { kind: 'MEDICAL_CARD', resent: false }], ['RENEWAL_LINK_SENT', { kind: 'MEDICAL_CARD', resent: true }], ['RENEWAL_OPENED', { kind: 'MEDICAL_CARD' }],
+        ['DOCUMENT_UPLOADED', { kind: 'MEDICAL_CARD', pages: 2, renewal: true }], ['DOCUMENT_UNREADABLE', { kind: 'MEDICAL_CARD' }], ['RENEWAL_LINK_SENT', { kind: 'MEDICAL_CARD', resent: false }],
+        ['RENEWAL_OPENED', { kind: 'MEDICAL_CARD' }], ['DOCUMENT_UPLOADED', { kind: 'MEDICAL_CARD', pages: 1, renewal: true }]]);
+  });
+
+  it('keeps a scan the driver sent with their application when a renewal replaces it, and never treats it as a renewal scan', async () => {
+    const one = await submitted(), day = usDay('latest');
+    // The medical card from the application is never checked (as for a DL driver, for whom it is optional).
+    for (const document of one.documents.filter(row => row.kind !== 'MEDICAL_CARD')) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
+      .send({ version: 1, ...(document.kind === 'LICENSE' ? { expiresOn: addDays(day, 400) } : {}) }).expect(201);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now(), version = version + 1 WHERE id = $1`, [one.id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now())`, [one.id, users.staff.id]);
+    const medical = one.documents.find(row => row.kind === 'MEDICAL_CARD')!.id, { version } = await driver(one.id);
+    // Not a scan waiting for a renewal check, so it can't be marked not readable.
+    expect((await driver(one.id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ checked: null, scan: null });
+    await agents.staff.post(`/api/safety/drivers/${one.id}/documents/${medical}/unreadable`).set(headers).send({ version: 1 }).expect(409);
+    await agents.staff.post(`/api/safety/drivers/${one.id}/documents/renew`).set(headers)
+      .send({ version, kind: 'MEDICAL_CARD', pages: [page()], expiresOn: addDays(day, 700), confirmed: true }).expect(201);
+    // Its file stays, also through the sweep of leftover scans.
+    expect(existsSync(medicalFile(one.id, medical))).toBe(true);
+    await app.get(ScanSweeper).sweep(Date.now() + LEFTOVER_SCAN_AGE_MS + 60_000);
+    expect(existsSync(medicalFile(one.id, medical))).toBe(true);
+  });
+
+  it('stops renewal links when they are cancelled, the email changes or the driver leaves, and offers them only once approved', async () => {
+    const { id, version } = await clearedWithExpiredCard();
+    const link = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/renewals`).set(headers).send({ kind: 'LICENSE', ...body });
+    const cancel = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/renewals/cancel`).set(headers).send({ kind: 'LICENSE', ...body });
+    // Cancelled: no code goes out any more, and cancelling again is refused.
+    const cancelled = (await link({ version }).expect(201)).body;
+    const { version: afterCancel } = (await cancel({ version: cancelled.version }).expect(201)).body;
+    expect((await openRenewal(cancelled.url)).code).toBeNull();
+    await cancel({ version: afterCancel }).expect(409);
+    // The bound email changes: the link stops.
+    const bound = (await link({ version: afterCancel }).expect(201)).body;
+    const { version: changed } = (await agents.lead.patch(`/api/safety/drivers/${id}`).set(headers).send({ version: bound.version, email: 'jordan.w@example.test' }).expect(200)).body;
+    expect((await openRenewal(bound.url)).code).toBeNull();
+    // Leaving revokes it too.
+    const last = (await link({ version: changed }).expect(201)).body;
+    await agents.manager.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version: last.version, leftOn: usDay('latest'), reason: 'Fictional move' }).expect(201);
+    expect((await openRenewal(last.url, 'jordan.w@example.test')).code).toBeNull();
+    // Before approval there is nothing to renew.
+    const fresh = (await add(agents.lead, { ...lead, phone: '555 010 4444', email: 'riley.lead@example.test' }).expect(201)).body;
+    expect((await agents.lead.post(`/api/safety/drivers/${fresh.id}/renewals`).set(headers).send({ version: 1, kind: 'LICENSE' }).expect(409)).body.message).toMatch(/approved/);
+  });
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    // A renewal Safety uploaded (or a renewal link, or a scan marked as not readable) keeps DocumentRenewals.
+    await db.query(`UPDATE driver_documents SET "uploadedBy" = $1 WHERE "driverId" = $2`, [users.staff.id, id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard document renewals');
+    await db.query(`UPDATE driver_documents SET "uploadedBy" = NULL WHERE "driverId" = $1`, [id]);
+    await db.undoLastMigration(); // DocumentRenewals, with none here
     await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'TRUCK_SAVED', '{}')`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard owner-operator trucks or documents');
     await db.query(`DELETE FROM driver_events WHERE event = 'TRUCK_SAVED'`);
@@ -1318,6 +1482,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('OwnerOperatorTrucks1793080000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DocumentRenewals1793090000000');
   });
 });

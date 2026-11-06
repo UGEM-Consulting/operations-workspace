@@ -11,6 +11,7 @@ import { ApiError, errorMessage, mutate, readApi } from '@/lib/client-api';
 import { DOCUMENT_KINDS, documentLabels, licenseTypes, requiredDocuments, US_STATES, type DocumentKind } from '@/features/safety/types';
 import { ConsentSigning, consentSectionId, type ConsentItem } from './consent-signing';
 import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
+import { DriverRenewal, type DriverRenewalView } from './driver-renewal';
 import { historyMissing, type DriverHistory } from './history-rules';
 import { HistoryEditor, historySection, HistorySections, type HistoryEditing } from './history-section';
 
@@ -47,13 +48,16 @@ const useToday = () => useSyncExternalStore(noSubscription, () => localDate(), (
 export function DriverApplicationPage() {
   const token = useSyncExternalStore(subscribe, readFragment, () => null);
   const [view, setView] = useState<DriverApplicationView | null>(null);
-  const [state, setState] = useState<'loading' | 'form' | 'closed'>('loading');
+  // A renewal link opens the page for one document instead of the application (DriverRenewal).
+  const [renewal, setRenewal] = useState<DriverRenewalView | null>(null);
+  const [purpose, setPurpose] = useState<'APPLICATION' | 'RENEWAL' | null>(null);
+  const [state, setState] = useState<'loading' | 'form' | 'renewal' | 'closed'>('loading');
   const [closedMessage, setClosedMessage] = useState('');
   // The link verified in this tab. Each new link (a fragment pasted into this tab, on a shared phone perhaps) needs its
   // own verification, so the previous driver's session never answers for it.
   const [verifiedToken, setVerifiedToken] = useState<string | null>(null);
   const [shownToken, setShownToken] = useState(token);
-  if (shownToken !== token) { setShownToken(token); setView(null); setState('loading'); setClosedMessage(''); }
+  if (shownToken !== token) { setShownToken(token); setView(null); setRenewal(null); setPurpose(null); setState('loading'); setClosedMessage(''); }
   useEffect(() => { if (window.location.hash) window.history.replaceState(null, '', window.location.pathname); }, [token]);
   // Opening a link always verifies for that link, so an earlier session in this browser (another driver's, or a submitted
   // application) never answers for it. Without a link, the current session (a reload) opens the form, if there is one.
@@ -63,17 +67,23 @@ export function DriverApplicationPage() {
   useEffect(() => {
     if (token === null || malformed || (linked && !verified)) return;
     let current = true;
-    readApi<DriverApplicationView>('driver/application').then(result => { if (current) { setView(result); setState('form'); } }, (error: unknown) => {
+    const showRenewal = () => readApi<DriverRenewalView>('driver/renewal').then(result => { if (current) { setRenewal(result); setState('renewal'); } });
+    // After a reload the session may be a renewal link's, which the application refuses: then open the renewal.
+    const open = purpose === 'RENEWAL' ? showRenewal()
+      : readApi<DriverApplicationView>('driver/application').then(result => { if (current) { setView(result); setState('form'); } },
+        (error: unknown) => { if (purpose === null && error instanceof ApiError && error.status === 401) return showRenewal(); throw error; });
+    open.catch((error: unknown) => {
       if (!current) return;
-      setClosedMessage(error instanceof ApiError && error.status === 401 ? 'Open the application link from Safety to continue. You’ll get a code by email.' : errorMessage(error, 'Unable to load your application.'));
+      setClosedMessage(error instanceof ApiError && error.status === 401 ? 'Open the link from Safety to continue. You’ll get a code by email.' : errorMessage(error, 'Unable to load your application.'));
       setState('closed');
     });
     return () => { current = false; };
-  }, [token, malformed, linked, verified]);
+  }, [token, malformed, linked, verified, purpose]);
   if (token === null) return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
   if (malformed) return <Closed message="This link looks incomplete. Open the full link from Safety’s message." />;
-  if (linked && !verified) return <VerifyDriver key={token} token={token} onVerified={() => setVerifiedToken(token)} />;
+  if (linked && !verified) return <VerifyDriver key={token} token={token} onVerified={next => { setPurpose(next); setVerifiedToken(token); }} />;
   if (state === 'loading') return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
+  if (state === 'renewal' && renewal) return <DriverRenewal view={renewal} focusHeading={verified} onEnded={message => { setClosedMessage(message); setState('closed'); }} />;
   if (state === 'closed' || !view) return <Closed message={closedMessage} />;
   return <DriverForm view={view} focusHeading={verified} onSaved={setView} onEnded={message => { setClosedMessage(message); setState('closed'); }} />;
 }
@@ -88,7 +98,7 @@ function firstOnPage(form: HTMLFormElement | null, keys: string[]) {
   return elements.sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)[0];
 }
 
-function VerifyDriver({ token, onVerified }: { token: string; onVerified: () => void }) {
+function VerifyDriver({ token, onVerified }: { token: string; onVerified: (purpose: 'APPLICATION' | 'RENEWAL' | null) => void }) {
   const [challenge, setChallenge] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false), [failed, setFailed] = useState(false);
   const code = useRef<HTMLInputElement>(null);
   useEffect(() => { if (challenge) code.current?.focus(); }, [challenge]);
@@ -100,7 +110,8 @@ function VerifyDriver({ token, onVerified }: { token: string; onVerified: () => 
   }
   async function verify(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setFailed(false); setMessage('');
-    try { await mutate('driver/verify', 'POST', { challengeId: challenge, code: new FormData(event.currentTarget).get('code') }); onVerified(); }
+    // An older API says nothing about the link, which then is an application link.
+    try { const result = await mutate<{ purpose?: 'APPLICATION' | 'RENEWAL' }>('driver/verify', 'POST', { challengeId: challenge, code: new FormData(event.currentTarget).get('code') }); onVerified(result?.purpose ?? 'APPLICATION'); }
     catch (error) { setFailed(true); setMessage(errorMessage(error, 'The code is wrong or has expired.')); }
     finally { setBusy(false); }
   }

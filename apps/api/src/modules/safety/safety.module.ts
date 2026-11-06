@@ -29,6 +29,8 @@ import { ApplicantSignatureDto } from '../documents/documents.dto';
 import { clientContext } from '../documents/client-context';
 import { PublishConsentDto } from './consent.dto';
 import { ConsentService } from './consent.service';
+import { DocumentVersionDto, RenewalLinkDto, RenewDocumentDto } from './renewal.dto';
+import { RenewalService } from './renewal.service';
 // Private files: never cached, never sniffed into another type.
 const FileResponse = () => applyDecorators(Header('Cache-Control', 'no-store, private'), Header('X-Content-Type-Options', 'nosniff'));
 const send = (file: FileResult) => new StreamableFile(file.body, { type: file.type, length: file.body.length, disposition: `inline; filename="${file.filename}"` });
@@ -37,7 +39,7 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService, private readonly renewals: RenewalService) {}
  // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
  @Get('consents') consentList(@Req() req: AuthRequest) { return this.consents.list(req.currentUser); }
  @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
@@ -48,12 +50,13 @@ class SafetyController {
  @Get('people') people() { return this.safety.people(); }
  @Get('drivers') drivers(@Query() query: DriverQueryDto) { return this.safety.drivers(query.status); }
  @Post('drivers') create(@Req() req: AuthRequest, @Body() dto: CreateDriverDto) { return this.safety.create(req.currentUser, dto); }
- // The record plus its yearly reviews (cleared drivers).
- @Get('drivers/:id') async driver(@Param('id', ParseUUIDPipe) id: string) {
+ // The record plus its yearly reviews, tests (only for those who may see results), incidents, trucks and any hold.
+ @Get('drivers/:id') async driver(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) {
   const driver = await this.safety.driver(id);
-  return { ...driver, annualReviews: await this.annual.forDriver(id, driver.clearedAt), testing: await this.testing.forDriver(id), incidents: await this.incidents.forDriver(id), trucks: await this.trucks.forDriver(id) };
+  const [annualReviews, { testing, hold }, incidents, trucks] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id),
+   this.incidents.forDriver(id), this.trucks.forDriver(id)]);
+  return { ...driver, annualReviews, testing, incidents, trucks, hold };
  }
- // Yearly reviews that are due or overdue, and drivers whose last review found them not qualified.
  // Owner-operators' trucks and their lease, insurance and registration PDFs (no-store files; every open is recorded).
  @Get('trucks') truckList() { return this.trucks.list(); }
  @Post('drivers/:id/trucks') addTruck(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: TruckDto) { return this.trucks.add(req.currentUser, id, dto); }
@@ -61,7 +64,8 @@ class SafetyController {
  @Post('drivers/:id/trucks/:truckId/archive') archiveTruck(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Body() dto: ArchiveTruckDto) { return this.trucks.archive(req.currentUser, id, truckId, dto); }
  @Post('drivers/:id/trucks/:truckId/documents') uploadOwnerDocument(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Body() dto: OwnerDocumentDto) { return this.trucks.upload(req.currentUser, id, truckId, dto); }
  @Get('drivers/:id/trucks/:truckId/documents/:documentId/file') @FileResponse() async ownerDocument(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.trucks.file(req.currentUser, id, truckId, documentId)); }
- @Get('due') async due() { return { ...await this.annual.due(), tests: await this.testing.attention(), incidents: await this.incidents.attention() }; }
+ // Yearly reviews due or overdue (and drivers found not qualified), open test results (only as this person may see them) and open incidents.
+ @Get('due') async due(@Req() req: AuthRequest) { return { ...await this.annual.due(), tests: await this.testing.attentionFor(req.currentUser), incidents: await this.incidents.attention() }; }
  // Drug and alcohol test results (results only): the owner and Safety manager record; only the manager voids.
  @Post('drivers/:id/tests') recordTest(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RecordTestDto) { return this.testing.record(req.currentUser, id, dto); }
  // Accidents, violations and inspections: recorded by the owner or Safety manager; only the manager voids.
@@ -79,6 +83,12 @@ class SafetyController {
  @Post('drivers/:id/link/cancel') cancelLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DriverVersionDto) { return this.safety.cancelLink(req.currentUser, id, dto); }
  // Scans are no-store files; every staff view is recorded.
  @Get('drivers/:id/documents/:documentId/file') @FileResponse() async document(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.safety.documentFile(req.currentUser, id, documentId)); }
+ // Renewing a license or medical card: upload it checked, or send the driver a link to scan it (shown once), then check
+ // their scan through verify or mark it as not readable.
+ @Post('drivers/:id/documents/renew') renew(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RenewDocumentDto) { return this.renewals.upload(req.currentUser, id, dto); }
+ @Post('drivers/:id/renewals') renewalLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RenewalLinkDto) { return this.renewals.sendLink(req.currentUser, id, dto); }
+ @Post('drivers/:id/renewals/cancel') cancelRenewal(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RenewalLinkDto) { return this.renewals.cancelLink(req.currentUser, id, dto); }
+ @Post('drivers/:id/documents/:documentId/unreadable') unreadable(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string, @Body() dto: DocumentVersionDto) { return this.renewals.unreadable(req.currentUser, id, documentId, dto); }
  @Post('drivers/:id/documents/:documentId/verify') verify(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string, @Body() dto: VerifyDocumentDto) { return this.safety.verifyDocument(req.currentUser, id, documentId, dto); }
  // A POST so the full number never sits in a cacheable GET; every view is recorded.
  @Post('drivers/:id/ssn') ssn(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.safety.revealSsn(req.currentUser, id); }
@@ -101,7 +111,10 @@ class SafetyController {
 @Controller('driver')
 @Public()
 class DriverController {
- constructor(private readonly access: DriverAccessService, private readonly consents: ConsentService) {}
+ constructor(private readonly access: DriverAccessService, private readonly consents: ConsentService, private readonly renewals: RenewalService) {}
+ // A renewal link opens only this: which document Safety asked for, and sending its scan.
+ @Get('renewal') renewal(@Req() req: Request) { return this.renewals.view(req); }
+ @Post('renewal') sendRenewal(@Body() dto: DriverDocumentDto, @Req() req: Request) { return this.renewals.send(req, dto); }
  // Consent forms: open (recorded only by the explicit view request), sign, and download the signed copy.
  @Get('consents/:id/file') @FileResponse() async consentFile(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) { return send(await this.consents.driverFile(req, id)); }
  @Post('consents/:id/view') consentView(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) { return this.consents.recordView(req, id); }
@@ -119,5 +132,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, RenewalService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
 export class SafetyModule {}

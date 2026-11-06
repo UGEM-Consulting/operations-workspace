@@ -1,8 +1,7 @@
-import { Transform, Type } from 'class-transformer';
+import { text, filled } from './dto-helpers';
+import { Type } from 'class-transformer';
 import { IsBase64, IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { MAX_PDF_BYTES } from '../documents/documents.dto';
-const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The new MVR for a yearly review: a base64 PDF and the date it was pulled. */

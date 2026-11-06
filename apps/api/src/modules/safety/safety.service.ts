@@ -11,8 +11,8 @@ import { DriverVersionDto, VerifyDocumentDto } from './driver-application.dto';
 import { PiiService } from './pii';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { AssignOwnerDto, CreateDriverDto, MarkLeftDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
-import { driverEvent, lockOpenDriver, ownsDriver, requireScreener, SCREENERS, STALE, writeDriver } from './driver-records';
-import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDocument, DriverLink, DriverOwner, earliestFinalRejection, LEAVABLE, OWNABLE, phoneKey, WITHDRAWABLE } from './safety.entity';
+import { driverEvent, isProduction, lockOpenDriver, ownsDriver, requireScreener, revokeOpenLinks, SCREENERS, sentWithApplication, STALE, writeDriver } from './driver-records';
+import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDocument, DriverLink, DriverOwner, type DriverStatus, earliestFinalRejection, LEAVABLE, OWNABLE, phoneKey, RENEWAL_KINDS, type RenewalKind, WITHDRAWABLE } from './safety.entity';
 import { currentConsents, missingConsents } from './consent-rules';
 import { addDays, missingForDecision, usDay } from './screening-rules';
 import { CLEARERS, clearanceGaps, hasActiveOwner } from './clearance.service';
@@ -23,6 +23,20 @@ export const EXPIRY_WARNING_DAYS = 60;
 
 const EDITABLE = ['firstName', 'lastName', 'phone', 'email', 'driverType', 'licenseType', 'licenseState', 'experienceYears', 'source', 'notes'] as const;
 const person = (alias: string) => `CASE WHEN ${alias}.id IS NULL THEN NULL ELSE json_build_object('id', ${alias}.id, 'name', ${alias}."firstName" || ' ' || ${alias}."lastName", 'active', ${alias}.status = 'ACTIVE') END`;
+/**
+ * What Expiring documents lists (expiring() and expiringCount()), with $1 the last day listed: each open driver's latest
+ * checked scan of each kind, like the hold (a renewal waiting for its check leaves the expired one listed), and current
+ * owner-operator truck documents.
+ */
+const EXPIRING = `FROM (
+    (SELECT DISTINCT ON (d."driverId", d.kind) d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn", NULL::text AS truck
+    FROM driver_documents d WHERE d."verifiedAt" IS NOT NULL ORDER BY d."driverId", d.kind, d."createdAt" DESC)
+    UNION ALL
+    SELECT o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), t.unit
+    FROM driver_owner_documents o JOIN driver_trucks t ON t.id = o."truckId" WHERE o."replacedAt" IS NULL AND o."expiresOn" IS NOT NULL AND t."archivedAt" IS NULL
+   ) e JOIN drivers x ON x.id = e."driverId"
+   LEFT JOIN driver_owners w ON w."driverId" = x.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
+   WHERE e."expiresOn" <= $1 AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT')`;
 const blank = (value: string | null | undefined) => value === undefined ? undefined : value === null || value === '' ? null : value;
 
 /**
@@ -50,18 +64,42 @@ export class SafetyService {
   */
  async expiring() {
   const today = usDay('latest');
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT e."documentId", e."driverId", e.kind, e."expiresOn", e.truck, x."firstName", x."lastName", x.status, ${person('o')} AS owner FROM (
-    SELECT d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn", NULL::text AS truck
-    FROM driver_documents d WHERE d."replacedAt" IS NULL AND d."verifiedAt" IS NOT NULL AND d."expiresOn" IS NOT NULL
-    UNION ALL
-    SELECT o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), t.unit
-    FROM driver_owner_documents o JOIN driver_trucks t ON t.id = o."truckId" WHERE o."replacedAt" IS NULL AND o."expiresOn" IS NOT NULL AND t."archivedAt" IS NULL
-   ) e JOIN drivers x ON x.id = e."driverId"
-   LEFT JOIN driver_owners w ON w."driverId" = x.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
-   WHERE e."expiresOn" <= $1 AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT') ORDER BY e."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]);
-  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expired: (item.expiresOn as string) < today })) };
+  const items: Record<string, unknown>[] = await this.db.query(`SELECT e."documentId", e."driverId", e.kind, e."expiresOn", e.truck, x."firstName", x."lastName", x.status, x.version,
+    x.email, ${person('o')} AS owner ${EXPIRING} ORDER BY e."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]);
+  // Licenses and medical cards of approved and cleared drivers show where their renewal stands.
+  const renewable = items.filter(item => LEAVABLE.includes(item.status as DriverStatus) && (RENEWAL_KINDS as readonly unknown[]).includes(item.kind) && item.truck === null);
+  const renewals = await this.renewals([...new Set(renewable.map(item => item.driverId as string))]);
+  const renewal = (item: Record<string, unknown>) => {
+   if (!renewable.includes(item)) return null;
+   const row = renewals.find(entry => entry.driverId === item.driverId && entry.kind === item.kind);
+   return row ? { link: row.link, scan: row.scan } : null;
+  };
+  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expired: (item.expiresOn as string) < today, renewal: renewal(item) })) };
  }
- async expiringCount(): Promise<number> { return (await this.expiring()).items.length; }
+ /** For the sidebar: the same documents, counted, without the details the page shows. */
+ async expiringCount(): Promise<number> {
+  const [row] = await this.db.query(`SELECT count(*)::int AS n ${EXPIRING}`, [addDays(usDay('latest'), EXPIRY_WARNING_DAYS)]) as { n: number }[];
+  return row.n;
+ }
+
+ /**
+  * Where renewing each driver's license and medical card stands (RENEWAL_KINDS): the latest checked one (the one the
+  * hold counts), an open renewal link (never its token), and a scan the driver sent through a renewal link that waits for
+  * its check or that nobody could read (never a scan from their application: sentWithApplication).
+  */
+ private async renewals(driverIds: string[]): Promise<{ driverId: string; kind: RenewalKind; checked: { id: string; expiresOn: string | null; current: boolean } | null;
+  link: { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean } | null; scan: { id: string; version: number; pageCount: number; createdAt: string; unreadable: boolean } | null }[]> {
+  if (!driverIds.length) return [];
+  return this.db.query(`SELECT x."driverId", k.kind,
+    (SELECT json_build_object('id', c.id, 'expiresOn', to_char(c."expiresOn", 'YYYY-MM-DD'), 'current', c."replacedAt" IS NULL) FROM driver_documents c
+     WHERE c."driverId" = x."driverId" AND c.kind = k.kind AND c."verifiedAt" IS NOT NULL ORDER BY c."createdAt" DESC LIMIT 1) AS checked,
+    (SELECT json_build_object('createdAt', l."createdAt", 'expiresAt', l."expiresAt", 'openedAt', l."openedAt", 'expired', l."expiresAt" <= now()) FROM driver_links l
+     WHERE l."driverId" = x."driverId" AND l.purpose = 'RENEWAL' AND l."documentKind" = k.kind AND l."revokedAt" IS NULL AND l."completedAt" IS NULL) AS link,
+    (SELECT json_build_object('id', n.id, 'version', n.version, 'pageCount', n."pageCount", 'createdAt', n."createdAt", 'unreadable', n."unreadableAt" IS NOT NULL) FROM driver_documents n
+     WHERE n."driverId" = x."driverId" AND n.kind = k.kind AND n."replacedAt" IS NULL AND n."verifiedAt" IS NULL AND n."uploadedBy" IS NULL
+      AND n."createdAt" > coalesce((SELECT a."submittedAt" FROM driver_applications a WHERE a."driverId" = x."driverId"), '-infinity')) AS scan
+   FROM unnest($1::uuid[]) x("driverId") CROSS JOIN (VALUES ('LICENSE'), ('MEDICAL_CARD')) k(kind)`, [driverIds]);
+ }
 
  async driver(id: string) {
   const [driver] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState", d."experienceYears",
@@ -69,17 +107,18 @@ export class SafetyService {
    d."clearedAt", ${person('k')} AS "clearedBy"
    FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" LEFT JOIN users k ON k.id = d."clearedBy" WHERE d.id = $1`, [id]);
   if (!driver) throw new NotFoundException('This driver record no longer exists.');
-  const [owners, activity, [link], [application], documents, checks, [mvr], reviews, consents, currentForms, clearanceItems, employers, assignments, activeOwner] = await Promise.all([
+  const [owners, activity, [link], [application], documents, checks, [mvr], reviews, consents, currentForms, clearanceItems, employers, assignments, activeOwner, renewals] = await Promise.all([
    this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, CASE WHEN a.id IS NULL THEN NULL ELSE a."firstName" || ' ' || a."lastName" END AS "assignedBy"
     FROM driver_owners x LEFT JOIN users o ON o.id = x."ownerId" LEFT JOIN users a ON a.id = x."actorId" WHERE x."driverId" = $1 ORDER BY x."startedAt" DESC, x."createdAt" DESC`, [id]),
    this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
     FROM driver_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."driverId" = $1 ORDER BY e."createdAt" DESC LIMIT 200`, [id]),
    // The open link (never its token) and the driver's answers; the SSN only as its last four digits.
-   this.db.query(`SELECT email, "createdAt", "expiresAt", "openedAt", "expiresAt" <= now() AS expired FROM driver_links WHERE "driverId" = $1 AND "revokedAt" IS NULL AND "completedAt" IS NULL`, [id]),
+   this.db.query(`SELECT email, "createdAt", "expiresAt", "openedAt", "expiresAt" <= now() AS expired FROM driver_links WHERE "driverId" = $1 AND purpose = 'APPLICATION' AND "revokedAt" IS NULL AND "completedAt" IS NULL`, [id]),
    this.db.query(`SELECT status, fields, history, "ssnLast4", version, "submittedAt", "updatedAt", "correctionNote", "correctionRequestedAt" FROM driver_applications WHERE "driverId" = $1`, [id]),
    // Current scans and Safety's check of each.
+   // A renewal Safety uploaded is marked (uploadedBySafety), and one nobody could read carries unreadableAt.
    this.db.query(`SELECT d.id, d.kind, d.subtype, d."pageCount", d."createdAt", d."verifiedAt", d.number, d.version, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn",
-     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "verifiedBy"
+     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "verifiedBy", d."uploadedBy" IS NOT NULL AS "uploadedBySafety", d."unreadableAt"
     FROM driver_documents d LEFT JOIN users u ON u.id = d."verifiedBy" WHERE d."driverId" = $1 AND d."replacedAt" IS NULL ORDER BY d."createdAt"`, [id]),
    // Screening: the Safety lead's checks, the current MVR (never its file here) and the decisions so far, newest first.
    this.db.query(`SELECT c.key, c.result, c.note, c."checkedAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "checkedBy"
@@ -105,6 +144,7 @@ export class SafetyService {
     LEFT JOIN member_assignments ma ON ma."memberId" = x.id AND ma."endedAt" IS NULL LEFT JOIN teams t ON t.id = ma."teamId"
     WHERE a."driverId" = $1 ORDER BY a."startedAt" DESC, a."createdAt" DESC`, [id]),
    hasActiveOwner(this.db.manager, id),
+   this.renewals([id]),
   ]);
   const consentsMissing = missingConsents(currentForms, consents.map((row: { documentId: string }) => row.documentId));
   const gaps = missingForDecision({ application, checkKeys: checks.map((row: { key: string }) => row.key), hasMvr: !!mvr,
@@ -112,7 +152,7 @@ export class SafetyService {
   // While a pre-adverse notice is out, the first day the rejection can be final.
   const notice = driver.status === 'PRE_ADVERSE' ? reviews.find((row: { action: string }) => row.action === 'PRE_ADVERSE') : null;
   const owner = owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null;
-  return { ...driver, owner, owners, activity, link: link ?? null, application: application ?? null, documents,
+  return { ...driver, owner, owners, activity, link: link ?? null, application: application ?? null, documents, renewals,
    clearance: { items: clearanceItems, employers, missing: clearanceGaps(clearanceItems, activeOwner, employers) }, assignments,
    screening: { checks, mvr: mvr ?? null, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null },
    consents: { signatures: consents, missing: consentsMissing, authorizationSigned: consents.some((row: { kind: string }) => row.kind === 'BACKGROUND_AUTHORIZATION') } };
@@ -151,7 +191,7 @@ export class SafetyService {
    }
    if (fields.includes('phone')) driver.phoneKey = phoneKey(driver.phone);
    // The open link was bound to the old address, so an email change cancels it.
-   const linkCancelled = fields.includes('email') && await this.cancelOpenLink(em, driver);
+   const linkCancelled = fields.includes('email') && await this.cancelOpenLink(em, driver, true);
    if (fields.includes('email')) await this.endSubmittedAccess(em, id);
    let leadChanged = false;
    if (dto.safetyLeadId !== undefined && dto.safetyLeadId !== driver.safetyLeadId) {
@@ -220,9 +260,11 @@ export class SafetyService {
    const owner = await owners.findOneBy({ driverId: id, endedAt: IsNull() });
    if (owner) await owners.update(owner.id, { endedAt: end(owner.startedAt) });
    await em.getRepository(DriverLink).update({ driverId: id, revokedAt: IsNull() }, { revokedAt: new Date() });
+   // Their trucks are archived with them (kept for history), so the VIN is free for whoever drives the truck next.
+   const [, archived] = await em.query(`UPDATE driver_trucks SET "archivedAt" = now(), "updatedAt" = now() WHERE "driverId" = $1 AND "archivedAt" IS NULL`, [id]) as [unknown, number];
    await em.getRepository(Driver).update(id, { status: 'LEFT', statusReason: dto.reason, closedAt, version: driver.version + 1 });
    // Field names and flags only, never the reason or the date.
-   await driverEvent(em, user.id, id, 'LEFT', { from: driver.status, assignmentEnded: !!assignment });
+   await driverEvent(em, user.id, id, 'LEFT', { from: driver.status, assignmentEnded: !!assignment, trucksArchived: archived > 0 });
    return { id, version: driver.version + 1 };
   });
  }
@@ -274,8 +316,7 @@ export class SafetyService {
   */
  async issueLink(em: EntityManager, user: User, driver: Driver) {
   if (!driver.email) throw new BadRequestException('Add the driver’s email first. The link works only with that address.');
-  const production = this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production';
-  if (!production && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
+  if (!isProduction(this.config) && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
   const resent = await this.cancelOpenLink(em, driver);
   await this.endSubmittedAccess(em, driver.id);
   const token = randomBytes(32).toString('hex');
@@ -333,22 +374,30 @@ export class SafetyService {
    if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id))
     throw new ForbiddenException('Only Safety leads, managers and the driver’s owner can verify documents.');
    if (CLOSED_STATUSES.includes(driver.status)) throw new ConflictException('This driver record is closed and can’t be changed.');
-   if (!await em.getRepository(DriverApplication).existsBy({ driverId: id, status: 'SUBMITTED' })) throw new ConflictException('Documents are verified once the driver submits their application.');
+   const application = await em.getRepository(DriverApplication).findOneBy({ driverId: id, status: 'SUBMITTED' });
+   if (!application) throw new ConflictException('Documents are verified once the driver submits their application.');
    const document = await em.getRepository(DriverDocument).findOne({ where: { id: documentId, driverId: id, replacedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
    if (!document) throw new NotFoundException('This document was replaced or no longer exists.');
    if (document.version !== dto.version) throw new ConflictException('Someone else recorded this document at the same time. Reload and try again.');
+   if (document.unreadableAt) throw new ConflictException('This scan was marked as not readable. Send the driver a new link or upload the document.');
    if (document.kind === 'WORK_AUTHORIZATION' && dto.number) throw new BadRequestException('Don’t record the number of a work authorization document. Its expiration date is enough.');
    if (document.kind !== 'WORK_AUTHORIZATION' && !dto.expiresOn) throw new BadRequestException('Enter the expiration date shown on the document.');
+   // A renewal the driver scanned must still be valid: a past date means they photographed the old one, which stays
+   // unchecked so Safety can mark it as not readable and send a new link (screening still records any date it reads).
+   const renewalScan = !document.verifiedAt && !document.uploadedBy && (RENEWAL_KINDS as readonly string[]).includes(document.kind) && !sentWithApplication(document, application.submittedAt);
+   if (renewalScan && dto.expiresOn! < usDay('latest')) throw new BadRequestException('This date has passed, so it isn’t the renewed document. Mark the scan as not readable and send a new link.');
    await em.getRepository(DriverDocument).update(documentId, { verifiedAt: new Date(), verifiedBy: user.id, number: dto.number || null, expiresOn: dto.expiresOn || null, version: document.version + 1 });
    await driverEvent(em, user.id, id, 'DOCUMENT_VERIFIED', { kind: document.kind, again: document.verifiedAt !== null });
    return { id: documentId, version: document.version + 1 };
   });
  }
 
- /** Revokes the open link, if any; an applying driver goes back to LEAD on the entity passed in (the caller saves it). */
- private async cancelOpenLink(em: EntityManager, driver: Driver) {
-  const result = await em.getRepository(DriverLink).update({ driverId: driver.id, revokedAt: IsNull(), completedAt: IsNull() }, { revokedAt: new Date() });
-  if (!result.affected) return false;
+ /**
+  * Revokes the open application link, if any (with all, renewal links too: they are bound to the same email); an applying
+  * driver goes back to LEAD on the entity passed in (the caller saves it).
+  */
+ private async cancelOpenLink(em: EntityManager, driver: Driver, all = false) {
+  if (!await revokeOpenLinks(em, driver.id, all ? {} : { purpose: 'APPLICATION' })) return false;
   if (driver.status === 'APPLYING') driver.status = 'LEAD';
   return true;
  }

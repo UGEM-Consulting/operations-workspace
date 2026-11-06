@@ -9,7 +9,8 @@ export interface DriverRow { id: string; firstName: string; lastName: string; ph
   status: DriverStatus; version: number; createdAt: string; closedAt: string | null; safetyLead: SafetyPerson | null; owner: SafetyPerson | null }
 export interface DriverOwnerRow { id: string; startedAt: string; endedAt: string | null; reason: string | null; owner: SafetyPerson | null; assignedBy: string | null }
 export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean; resent?: boolean; emailChanged?: boolean; kind?: string; reopened?: boolean;
-  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string; item?: string; status?: string; action?: string; truck?: boolean }; createdAt: string; actor: string | null }
+  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string; item?: string; status?: string; action?: string; truck?: boolean;
+  reason?: string; outcome?: string; withMvr?: boolean; renewal?: boolean }; createdAt: string; actor: string | null }
 export interface DriverProfile extends DriverRow { experienceYears: number | null; source: string | null; notes: string | null; statusReason: string | null; updatedAt: string;
   addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[];
   // From an API with driver applications; absent on an older one.
@@ -17,6 +18,8 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   application?: { status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; ssnLast4: string | null; version: number; submittedAt: string | null; updatedAt: string;
     correctionNote?: string | null; correctionRequestedAt?: string | null; history?: DriverHistory | null } | null;
   documents?: DriverDocumentRow[];
+  // From an API with renewals: where renewing the license and medical card stands (the latest checked one, an open link, a scan to check).
+  renewals?: RenewalRow[];
   // From an API with screening and decisions; absent on an older one.
   screening?: Screening;
   // From an API with consent forms.
@@ -27,7 +30,10 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with yearly reviews.
   annualReviews?: AnnualReviews;
   // From an API with ongoing drug and alcohol testing.
-  testing?: { items: TestRow[] };
+  // hidden: the results aren't shown to this viewer, so items are absent.
+  testing?: { items?: TestRow[]; hidden?: boolean };
+  // On hold for Dispatch: a failed or refused test (null when this person may not see results, and then onHold leaves it out), a Not qualified yearly review or an expired document.
+  hold?: { onHold: boolean; test: boolean | null; review: boolean; documents?: boolean };
   // From an API with accidents, violations and inspections.
   incidents?: { items: IncidentRow[] };
   // From an API with owner-operator trucks.
@@ -37,7 +43,7 @@ export const ownerDocumentLabels = { LEASE: 'Lease', INSURANCE: 'Insurance', REG
 export interface IncidentRow { id: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; state: string | null; summary: string; note: string | null; preventable: 'YES' | 'NO' | 'UNDETERMINED' | null; injuries: boolean | null; fatalities: boolean | null; towAway: boolean | null; disposition: 'PENDING' | 'CONVICTED' | 'DISMISSED' | null; outOfService: boolean | null; violationCount: number | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface TestRow { id: string; kind: 'DRUG' | 'ALCOHOL'; reason: string; testedOn: string; result: 'NEGATIVE' | 'NOT_NEGATIVE' | 'CANCELLED' | 'REFUSED'; note: string | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }
-export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean }
+export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean; storageEnabled?: boolean }
 export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST';
 export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null }
 export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null;
@@ -54,7 +60,14 @@ export interface Screening { checks: ScreeningCheck[]; mvr: { id: string; pulled
   reviews: DriverReviewRow[]; missing: string[]; finalRejectionFrom: string | null }
 export type DocumentKind = 'LICENSE' | 'MEDICAL_CARD' | 'WORK_AUTHORIZATION';
 export interface DriverDocumentRow { id: string; kind: DocumentKind; subtype: string | null; pageCount: number; createdAt: string;
-  verifiedAt: string | null; number: string | null; expiresOn: string | null; verifiedBy: string | null; version: number }
+  verifiedAt: string | null; number: string | null; expiresOn: string | null; verifiedBy: string | null; version: number;
+  // From an API with renewals: a renewal Safety uploaded, and a renewal scan nobody could read.
+  uploadedBySafety?: boolean; unreadableAt?: string | null }
+export type RenewalKind = 'LICENSE' | 'MEDICAL_CARD';
+export const RENEWAL_KINDS: RenewalKind[] = ['LICENSE', 'MEDICAL_CARD'];
+export interface RenewalLink { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean }
+export interface RenewalScan { id: string; version: number; pageCount: number; createdAt: string; unreadable: boolean }
+export interface RenewalRow { kind: RenewalKind; checked: { id: string; expiresOn: string | null; current: boolean } | null; link: RenewalLink | null; scan: RenewalScan | null }
 export interface SafetyPeople { leads: { id: string; name: string; role: string }[]; staff: { id: string; name: string; role: string }[] }
 
 export const SCREENER_ROLES = ['SYSTEM_ADMIN', 'SAFETY_MANAGER', 'SAFETY_LEAD'];

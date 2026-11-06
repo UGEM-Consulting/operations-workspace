@@ -10,7 +10,8 @@ export interface TruckListRow { id: string; driverId: string; firstName: string;
   archivedAt: string | null; insuranceExpiresOn: string | null; registrationExpiresOn: string | null; hasLease: boolean }
 export interface TruckList { today: string; items: TruckListRow[] }
 
-const dateCell = (value: string | null, today: string) => value ? <><LocalTime iso={`${value}T12:00:00Z`} format="date" />{value < today && <> <Badge label="Expired" tone="danger" /></>}</> : <span className="text-muted-foreground">Missing</span>;
+// An archived truck's dates no longer count, so it never shows as expired.
+const dateCell = (value: string | null, today: string, archived: boolean) => value ? <><LocalTime iso={`${value}T12:00:00Z`} format="date" />{!archived && value < today &&<> <Badge label="Expired" tone="danger" /></>}</> : <span className="text-muted-foreground">Missing</span>;
 
 /** Safety › Trucks: every owner-operator truck with the dates from its insurance and registration. Open the driver to change a truck or upload a document. */
 export function Trucks({ data }: { data: TruckList }) {
@@ -22,8 +23,8 @@ export function Trucks({ data }: { data: TruckList }) {
         columns={[
           { key: 'truck', label: 'Truck', primary: true, cell: row => <><span className="font-medium">Unit {row.unit}</span> · {row.year} {row.make}{row.archivedAt && <> <Badge label="Archived" /></>}</> },
           { key: 'driver', label: 'Driver', cell: row => <Link className="underline" href={`/safety/drivers/${row.driverId}`}>{`${row.firstName} ${row.lastName}`.trim()}</Link> },
-          { key: 'insurance', label: 'Insurance', cell: row => dateCell(row.insuranceExpiresOn, data.today) },
-          { key: 'registration', label: 'Registration', hideBelow: 'md', cell: row => dateCell(row.registrationExpiresOn, data.today) },
+          { key: 'insurance', label: 'Insurance', cell: row => dateCell(row.insuranceExpiresOn, data.today, !!row.archivedAt) },
+          { key: 'registration', label: 'Registration', hideBelow: 'md', cell: row => dateCell(row.registrationExpiresOn, data.today, !!row.archivedAt) },
           { key: 'lease', label: 'Lease', hideBelow: 'lg', cell: row => row.hasLease ? 'On file' : <span className="text-muted-foreground">Missing</span> },
         ]} />
     </Card>

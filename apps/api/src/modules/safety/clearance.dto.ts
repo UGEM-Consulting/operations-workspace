@@ -1,8 +1,6 @@
-import { Transform } from 'class-transformer';
+import { text, filled } from './dto-helpers';
 import { IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { CLEARANCE_STATUSES, type ClearanceStatus } from './safety.entity';
-const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 const DATE = /^\d{4}-\d{2}-\d{2}$/, MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const RESULTS = ['NEGATIVE', 'NOT_NEGATIVE', 'CANCELLED', 'NO_VIOLATIONS', 'VIOLATIONS'] as const;
 

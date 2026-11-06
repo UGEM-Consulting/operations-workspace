@@ -34,7 +34,11 @@ export function TrucksCard({ driver, canChange }: { driver: DriverProfile; canCh
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending || !action) return;
-    const form = new FormData(event.currentTarget), text = (name: string) => String(form.get(name) ?? '').trim();
+    const form = new FormData(event.currentTarget), text = (name: string) => String(form.get(name) ?? '').trim(), file = form.get('file');
+    if (action.kind === 'document') {
+      if (!(file instanceof File) || file.type !== 'application/pdf') { setError('Choose the document as a PDF file.'); return; }
+      if (file.size > MAX_PDF_BYTES) { setError('The PDF must be 3 MB or smaller.'); return; }
+    }
     setPending(true); setError('');
     try {
       const base = `safety/drivers/${driver.id}/trucks`;
@@ -43,10 +47,7 @@ export function TrucksCard({ driver, canChange }: { driver: DriverProfile; canCh
           ...(text('plate') ? { plate: text('plate'), plateState: text('plateState') } : {}) });
         toast({ title: action.truck ? 'Truck saved' : 'Truck added' });
       } else if (action.kind === 'document') {
-        const file = form.get('file');
-        if (!(file instanceof File) || file.type !== 'application/pdf') throw new Error('Choose the document as a PDF file.');
-        if (file.size > MAX_PDF_BYTES) throw new Error('The PDF must be 3 MB or smaller.');
-        await mutate(`${base}/${action.truck.id}/documents`, 'POST', { version: driver.version, kind, file: await fileToBase64(file), ...(text('expiresOn') ? { expiresOn: text('expiresOn') } : {}) });
+        await mutate(`${base}/${action.truck.id}/documents`, 'POST', { version: driver.version, kind, file: await fileToBase64(file as File), ...(text('expiresOn') ? { expiresOn: text('expiresOn') } : {}) });
         toast({ title: 'Document uploaded' });
       } else {
         await mutate(`${base}/${action.truck.id}/archive`, 'POST', { version: driver.version });
@@ -73,7 +74,7 @@ export function TrucksCard({ driver, canChange }: { driver: DriverProfile; canCh
           <ul className="mt-2 space-y-1">{(['LEASE', 'INSURANCE', 'REGISTRATION'] as const).map(documentKind => {
             const doc = row.documents.find(item => item.kind === documentKind);
             return <li key={documentKind} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span>{ownerDocumentLabels[documentKind]}: {doc ? <>{doc.expiresOn ? <>expires {day(doc.expiresOn)}</> : 'on file'}{doc.expiresOn && doc.expiresOn < (today ?? '') && <> <Badge label="Expired" tone="danger" /></>}</> : <span className="text-muted-foreground">not uploaded</span>}</span>
+              <span>{ownerDocumentLabels[documentKind]}: {doc ? <>{doc.expiresOn ? <>expires {day(doc.expiresOn)}</> : 'on file'}{!row.archivedAt && doc.expiresOn && doc.expiresOn < (today ?? '') &&<> <Badge label="Expired" tone="danger" /></>}</> : <span className="text-muted-foreground">not uploaded</span>}</span>
               {doc && <ViewDocumentButton documents={[{ url: `/api/backend/safety/drivers/${driver.id}/trucks/${row.id}/documents/${doc.id}/file`, title: `${ownerDocumentLabels[documentKind]} · unit ${row.unit}`, meta: `${doc.pageCount} ${doc.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> the {ownerDocumentLabels[documentKind].toLowerCase()}</span></ViewDocumentButton>}
             </li>;
           })}</ul>

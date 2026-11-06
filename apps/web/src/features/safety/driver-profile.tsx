@@ -1,9 +1,10 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Pencil, RotateCcw, UserCheck, UserMinus } from 'lucide-react';
+import { Ellipsis, FileUp, Pencil, RotateCcw, UserCheck, UserMinus, type LucideIcon } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu } from '@/components/ui/dropdown-menu';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Alert, Notice } from '@/components/ui/alert';
@@ -27,10 +28,11 @@ import { HistoryReview } from './history-review';
 import { ConsentCard } from './consent-card';
 import { DecisionCard } from './decision-card';
 import { DriverDocuments } from './driver-documents';
+import { cancelRenewalLink, CheckRenewalDialog, RenewDialog, renewalWords } from './renew-document';
 import { DriverForm, driverBody } from './driver-form';
 import { ScreeningCard } from './screening-card';
-import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
-  type SafetyPeople, type SafetyPerson } from './types';
+import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, testReasons, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
+  type RenewalKind, type RenewalScan, type SafetyPeople, type SafetyPerson } from './types';
 
 type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left';
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', LEFT: 'Marked as left', REOPENED: 'Reopened as a lead',
@@ -39,19 +41,30 @@ const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'D
   DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
   SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form',
-  CLEARANCE_RECORDED: 'Clearance item recorded', EMPLOYER_RECORDED: 'Previous employer recorded', CLEARED: 'Cleared', DISPATCH_ASSIGNED: 'Assigned to a dispatcher' };
-const employerActions: Record<string, string> = { 'from-application': 'added from the application', added: 'added', requested: 'asked', answered: 'answered', 'good-faith': 'good-faith effort recorded', updated: 'dates changed', removed: 'removed' };
+  CLEARANCE_RECORDED: 'Clearance item recorded', EMPLOYER_RECORDED: 'Previous employer recorded', CLEARED: 'Cleared', DISPATCH_ASSIGNED: 'Assigned to a dispatcher',
+  ANNUAL_REVIEW_RECORDED: 'Yearly review recorded', TEST_RECORDED: 'Test result recorded', TEST_VOIDED: 'Test result voided', INCIDENT_RECORDED: 'Incident recorded', INCIDENT_UPDATED: 'Incident settled',
+  INCIDENT_VOIDED: 'Incident voided', OWNER_DOCUMENT_UPLOADED: 'Truck document uploaded', OWNER_DOCUMENT_VIEWED: 'Truck document opened',
+  RENEWAL_LINK_SENT: 'Renewal link created', RENEWAL_LINK_CANCELLED: 'Renewal link cancelled', RENEWAL_OPENED: 'Driver opened a renewal link', DOCUMENT_RENEWED: 'Document renewed',
+  DOCUMENT_UNREADABLE: 'Scan marked as not readable' };
+const truckActions: Record<string, string> = { added: 'Truck added', updated: 'Truck updated', archived: 'Truck archived' };
+const eventTitle = (row: DriverEventRow) => row.event === 'TRUCK_SAVED' ? truckActions[row.metadata.action ?? ''] ?? 'Truck saved'
+  : row.event === 'DOCUMENT_UPLOADED' && row.metadata.renewal ? 'Driver sent a renewed document' : events[row.event] ?? 'Other change';
+const employerActions: Record<string, string> = { 'from-application': 'added from the application', added: 'added', requested: 'asked', answered: 'answered', 'good-faith': 'good-faith effort recorded', updated: 'dates changed', removed: 'removed', archived: 'archived' };
 const results: Record<string, string> = { PASS: 'passed', CONCERN: 'concern' };
+const otherKinds: Record<string, string> = { DRUG: 'drug', ALCOHOL: 'alcohol', ACCIDENT: 'accident', VIOLATION: 'violation', INSPECTION: 'inspection', LEASE: 'lease', INSURANCE: 'insurance', REGISTRATION: 'registration' };
+const outcomes: Record<string, string> = { QUALIFIED: 'qualified', NOT_QUALIFIED: 'not qualified' };
+const kindLabel = (kind: string) => documentLabels[kind as DocumentKind] ?? consentLabels[kind] ?? otherKinds[kind] ?? 'other';
 const who = (person: SafetyPerson | null) => person ? `${person.name}${person.active ? '' : ' (inactive)'}` : null;
 function eventMeta(row: DriverEventRow) {
   const fields = row.event === 'UPDATED' && row.metadata.fields?.length ? ` · ${row.metadata.fields.map(field => fieldLabels[field] ?? field).join(', ')}` : '';
   // Steps the driver takes have no staff actor.
-  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED', 'CONSENT_SIGNED'].includes(row.event) ? 'Driver' : 'Someone');
+  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED', 'CONSENT_SIGNED', 'RENEWAL_OPENED'].includes(row.event) ? 'Driver' : 'Someone');
   const check = row.metadata.check ? ` · ${screeningChecks.find(item => item.key === row.metadata.check)?.label ?? row.metadata.check}: ${row.metadata.result ? results[row.metadata.result] ?? statusLabel(row.metadata.result) : 'cleared'}` : '';
-  return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${documentLabels[row.metadata.kind as DocumentKind] ?? consentLabels[row.metadata.kind] ?? row.metadata.kind}` : ''}
+  return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${kindLabel(row.metadata.kind)}` : ''}{row.metadata.reason ? ` · ${testReasons[row.metadata.reason]?.toLowerCase() ?? 'other reason'}` : ''}
+    {row.metadata.outcome ? ` · ${outcomes[row.metadata.outcome] ?? 'outcome recorded'}` : ''}{row.metadata.withMvr === false ? ' · no MVR attached' : ''}
     {check}{row.metadata.replaced ? ' · replaced the earlier one' : ''}{row.metadata.authorization === 'PAPER' ? ' · paper authorization on file' : ''}{row.metadata.conditional ? ' · with conditions' : ''}{row.metadata.concerns ? ` · ${row.metadata.concerns} ${row.metadata.concerns === 1 ? 'concern' : 'concerns'}` : ''}
     {row.metadata.item ? ` · ${CLEARANCE_ITEMS.find(item => item.key === row.metadata.item)?.label ?? row.metadata.item}: ${row.metadata.status ? statusLabel(row.metadata.status).toLowerCase() : 'not started'}` : ''}
-    {row.metadata.action ? ` · ${employerActions[row.metadata.action] ?? row.metadata.action}` : ''}{row.event === 'DISPATCH_ASSIGNED' && row.metadata.first === false ? ' · changed' : ''}</>;
+    {row.metadata.action && row.event !== 'TRUCK_SAVED' ? ` · ${employerActions[row.metadata.action] ?? 'changed'}` : ''}{row.event === 'DISPATCH_ASSIGNED' && row.metadata.first === false ? ' · changed' : ''}</>;
 }
 
 /**
@@ -73,6 +86,24 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
   const clearing = driver.status === 'APPROVED' || driver.status === 'CLEARED', canClear = driver.status === 'APPROVED' && (decider || owns);
   const conditions = clearing ? driver.screening?.reviews.find(row => row.action === 'APPROVED')?.conditions : null;
   const assignment = driver.assignments?.find(row => row.endedAt === null) ?? null;
+  // Renewing a license or medical card once the driver is approved: Safety leads, the Safety manager, administrators and
+  // the owner (the API decides). The hold counts only checked documents, so a scan waiting for its check lifts nothing.
+  const [renewing, setRenewing] = useState<{ kind: RenewalKind; how?: 'upload' | 'link' } | null>(null);
+  const [checking, setChecking] = useState<{ kind: RenewalKind; scan: RenewalScan } | null>(null);
+  const renewalDriver = { id: driver.id, firstName: driver.firstName, email: driver.email, version: driver.version };
+  const canRenew = clearing && (screener || owns) && !!driver.renewals;
+  const expiredRenewals = today ? (driver.renewals ?? []).filter(row => row.checked?.expiresOn && row.checked.expiresOn < today) : [];
+  const waitingRenewals = (driver.renewals ?? []).filter(row => row.scan && !row.scan.unreadable);
+  const renewFirst = canRenew ? expiredRenewals[0] : undefined;
+  // Why the documents hold them: each expired one, unless the driver sent a new one that waits for its check (its own
+  // alert). Before the browser knows today's date, or from an older API, one general line.
+  const heldDocuments = !driver.hold?.documents ? [] : today && driver.renewals
+    ? expiredRenewals.filter(row => !waitingRenewals.includes(row)).map(row => ({ key: row.kind, text: <>Their {renewalWords[row.kind]} expired on <LocalTime iso={`${row.checked!.expiresOn}T12:00:00Z`} format="date" />. {canRenew ? 'Renew it to lift this.' : 'A newer checked one lifts this.'}</> }))
+    : [{ key: 'documents', text: <>Their license or medical card has expired. A newer checked one lifts this.</> }];
+  async function cancelLink(kind: RenewalKind) {
+    try { await cancelRenewalLink(renewalDriver, kind); toast({ title: 'Link cancelled', description: 'It no longer works.' }); router.refresh(); }
+    catch (error) { toast({ tone: 'danger', title: 'The link wasn’t cancelled', description: errorMessage(error, 'Reload and try again.') }); }
+  }
   function start(next: Action) { setAction(next); setError(''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -92,15 +123,22 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
   }
   const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change owner' : 'Assign owner', left: `Mark ${name} as left?` };
   const staff = people.staff.filter(person => person.id !== owner?.owner?.id);
+  // One main button (the next thing the record needs, else Edit) and the rest under More actions, with what ends the record last.
+  const actions: { action: Action; label: string; icon: LucideIcon; danger?: boolean }[] = [
+    ...(screener && driver.status === 'WITHDRAWN' ? [{ action: 'reopen' as const, label: 'Reopen as lead', icon: RotateCcw }] : []),
+    ...(canEdit ? [{ action: 'edit' as const, label: 'Edit details', icon: Pencil }] : []),
+    ...(screener && WITHDRAWABLE.includes(driver.status) ? [{ action: 'withdraw' as const, label: 'Withdraw', icon: UserMinus, danger: true }] : []),
+    ...(clearing && (decider || owns) ? [{ action: 'left' as const, label: 'Mark as left', icon: UserMinus, danger: true }] : [])];
+  // An expired license or medical card makes Renew the main button (RenewDriverPageScreen).
+  const main = renewFirst || actions[0]?.danger ? null : actions[0] ?? null, more = actions.filter(item => item !== main);
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <PageHeader title={name} badge={<Badge label={badge.label} tone={badge.tone} />}
       meta={[driverTypes[driver.driverType], driver.phone, <>Added <LocalTime iso={driver.createdAt} format="date" />{driver.addedBy ? ` by ${driver.addedBy.name}` : ''}</>]}
       action={<div className="flex flex-wrap gap-2">
-        {screener && WITHDRAWABLE.includes(driver.status) && <Button variant="outline" onClick={() => start('withdraw')}><UserMinus aria-hidden="true" className="size-4" />Withdraw</Button>}
-        {(driver.status === 'APPROVED' || driver.status === 'CLEARED') && (decider || owns) && <Button variant="outline" onClick={() => start('left')}><UserMinus aria-hidden="true" className="size-4" />Mark as left</Button>}
-        {screener && driver.status === 'WITHDRAWN' && <Button variant="outline" onClick={() => start('reopen')}><RotateCcw aria-hidden="true" className="size-4" />Reopen as lead</Button>}
-        {canEdit && <Button onClick={() => start('edit')}><Pencil aria-hidden="true" className="size-4" />Edit details</Button>}</div>} />
+        {renewFirst && <Button onClick={() => setRenewing({ kind: renewFirst.kind })}><FileUp aria-hidden="true" className="size-4" />Renew {renewalWords[renewFirst.kind]}</Button>}
+        {main && <Button onClick={() => start(main.action)}><main.icon aria-hidden="true" className="size-4" />{main.label}</Button>}
+        {more.length > 0 && <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={more.map(item => ({ label: item.label, icon: item.icon, danger: item.danger, onSelect: () => start(item.action) }))} />}</div>} />
     {driver.status === 'WITHDRAWN' && <Alert tone="info" title="This driver was withdrawn">
       <p className="whitespace-pre-wrap">{driver.closedAt && <><LocalTime iso={driver.closedAt} format="date" />: </>}{driver.statusReason}</p>{screener && <p className="mt-1">Reopen them as a lead if they get back in touch.</p>}</Alert>}
     {driver.status === 'LEFT' && <Alert tone="info" title="This driver left">
@@ -113,14 +151,27 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     {screener && driver.status === 'APPROVED' && !owner && people.staff.length > 0 && <Alert tone="info" title="Assign a safety staff owner"
       action={<Button size="sm" variant="outline" onClick={() => start('owner')}>Assign owner</Button>}>
       <p>The owner looks after this driver from now on, starting with the clearance checklist.</p></Alert>}
+    {driver.status === 'CLEARED' && driver.hold?.onHold && (heldDocuments.length > 0 || driver.hold.review || driver.hold.test) && <Alert tone="danger" title="On hold: Dispatch can’t assign this driver">
+      <ul className="list-disc space-y-1 pl-5">
+        {heldDocuments.map(item => <li key={item.key}>{item.text}</li>)}
+        {driver.hold.review && <li>Their latest yearly review found them not qualified. A later Qualified review lifts this.</li>}
+        {driver.hold.test && <li>Their latest drug or alcohol test wasn’t negative, or they refused it. A later negative test, such as return-to-duty, lifts this.</li>}      </ul>
+      <p className="mt-2">Dispatch sees only that the driver is on hold.</p></Alert>}
+    {/* A scan the driver sent counts only once someone checks it (RenewCheckScreen). */}
+    {clearing && waitingRenewals.map(row => {
+      const expired = expiredRenewals.includes(row), words = renewalWords[row.kind];
+      return <Alert key={row.kind} tone="warning" title={`${driver.firstName || name} sent a new ${words}`}
+        action={canRenew && row.scan ? <Button size="sm" variant="outline" onClick={() => setChecking({ kind: row.kind, scan: row.scan! })}>Check it</Button> : undefined}>
+        <p>{expired ? `Check it to lift the hold. Until then the expired ${words} still counts.` : 'Check it so it counts.'}</p></Alert>;
+    })}
     {conditions && <Alert tone="info" title="Condition from the approval"><p className="whitespace-pre-wrap">{conditions}</p></Alert>}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">
         {/* While the driver is being cleared (and after), clearance is the work in hand, so it comes first. */}
         {driver.clearance && (clearing || driver.clearance.items.length > 0 || driver.clearance.employers.length > 0) && <ClearanceCard driver={driver} canWork={canClear} />}
         {driver.annualReviews && (driver.status === 'CLEARED' || driver.annualReviews.items.length > 0) && <AnnualReviewCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} />}
-        {driver.testing && (driver.status === 'CLEARED' || driver.testing.items.length > 0) && <TestingCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider} />}
-        {driver.incidents && (driver.status === 'CLEARED' || driver.incidents.items.length > 0) && <IncidentsCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider} />}
+        {driver.testing && (driver.status === 'CLEARED' || !!driver.testing.items?.length) && <TestingCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider && !closed} />}
+        {driver.incidents && (driver.status === 'CLEARED' || driver.incidents.items.length > 0) && <IncidentsCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider && !closed} />}
         {driver.trucks && driver.driverType === 'OWNER_OPERATOR' && (driver.status === 'APPROVED' || driver.status === 'CLEARED' || driver.trucks.items.length > 0) && <TrucksCard driver={driver} canChange={(driver.status === 'APPROVED' || driver.status === 'CLEARED') && (screener || owns)} />}
         <Card>
           <CardHeader title="Details" />
@@ -138,11 +189,12 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         {(driver.application !== undefined || driver.link !== undefined) && <ApplicationCard driver={driver} screener={screener} owns={owns} />}
         {driver.application?.status === 'SUBMITTED' && driver.application.history && <HistoryReview history={driver.application.history} sentOn={driver.application.submittedAt}
           currentAddress={[driver.application.fields.addressLine1, driver.application.fields.city, [driver.application.fields.state, driver.application.fields.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')} />}
-        {driver.documents !== undefined && (driver.documents.length > 0 || driver.application) && <DriverDocuments driver={driver} canVerify={screener || owns} />}
+        {driver.documents !== undefined && (driver.documents.length > 0 || driver.application) && <DriverDocuments driver={driver} canVerify={screener || owns}
+          renewals={canRenew ? { renew: kind => setRenewing({ kind }), check: (kind, scan) => setChecking({ kind, scan }), cancelLink: kind => void cancelLink(kind) } : undefined} />}
         {driver.consents && (driver.consents.signatures.length > 0 || (driver.application && driver.consents.missing.length > 0)) && <ConsentCard driver={driver} />}
         <Card>
           <CardHeader title="Activity" description="What changed and who did it." />
-          <CardBody>{driver.activity.length ? <Timeline items={driver.activity.map(row => ({ id: row.id, title: events[row.event] ?? row.event, meta: eventMeta(row),
+          <CardBody>{driver.activity.length ? <Timeline items={driver.activity.map(row => ({ id: row.id, title: eventTitle(row), meta: eventMeta(row),
             tone: row.event === 'WITHDRAWN' ? 'neutral' : row.event === 'CREATED' ? 'info' : undefined }))} /> : <EmptyState compact title="Nothing yet" />}</CardBody>
         </Card>
       </div>
@@ -173,6 +225,10 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       </Card>
       </div>
     </div>
+    {renewing && <RenewDialog driver={renewalDriver} kind={renewing.kind} expired={expiredRenewals.some(row => row.kind === renewing.kind)}
+      openLink={driver.renewals?.find(row => row.kind === renewing.kind)?.link ?? null} initialHow={renewing.how} onClose={() => setRenewing(null)} />}
+    {checking && <CheckRenewalDialog driver={renewalDriver} kind={checking.kind} scan={checking.scan} onClose={() => setChecking(null)}
+      onUnreadable={() => { setChecking(null); setRenewing({ kind: checking.kind, how: 'link' }); }} />}
     {action && <Dialog open onClose={() => setAction(null)} busy={pending} title={titles[action]} tone={action === 'withdraw' || action === 'left' ? 'danger' : undefined}
       description={action === 'withdraw' ? 'The record is closed and kept. You can reopen it later.' : action === 'left' ? 'The record is closed and kept. Their owner and dispatch assignment end on the last day, and the dispatcher stops counting them.' : action === 'reopen' ? 'They start again as a lead.' : action === 'owner' ? 'The safety staff member who looks after this driver from now on.' : undefined}
       actions={<Button type="submit" form="driver-action" variant={action === 'withdraw' || action === 'left' ? 'destructive' : 'default'}>{pending ? 'Saving…' : action === 'withdraw' ? 'Withdraw' : action === 'left' ? 'Mark as left' : action === 'reopen' ? 'Reopen' : action === 'owner' ? 'Assign' : 'Save changes'}</Button>}>

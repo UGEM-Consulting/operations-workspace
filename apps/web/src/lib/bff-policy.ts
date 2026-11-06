@@ -56,6 +56,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && (path === 'safety/drivers' || match(`safety/drivers/${ID}/(withdraw|reopen|owner|left|link|link/cancel|ssn|annual-reviews|tests|incidents)`, path))) ||
     // A driver filling in their application (driver session cookie; no staff account).
     (method === 'POST' && (['driver/begin', 'driver/verify', 'driver/application/submit', 'driver/logout'].includes(path) || match(`driver/documents/${SCAN}`, path))) ||
+    // Renewing a license or medical card: upload it, send or cancel the driver's link, mark their scan as not readable.
+    (method === 'POST' && match(`safety/drivers/${ID}/(documents/renew|renewals|renewals/cancel|documents/${ID}/unreadable)`, path)) ||
+    // A driver's renewal link: which document, and sending its scan.
+    ((method === 'GET' || method === 'POST') && path === 'driver/renewal') ||
     (method === 'POST' && (match(`safety/drivers/${ID}/documents/${ID}/verify`, path) || match(`safety/drivers/${ID}/(tests|incidents)/${ID}/void`, path) || match(`safety/drivers/${ID}/incidents/${ID}/settle`, path))) ||
     // Screening (checks, the MVR, corrections, the hand-off) and the Safety manager's decision.
     (method === 'POST' && match(`safety/drivers/${ID}/(checks/[A-Z_]+|mvr|corrections|send-for-decision|decision)`, path)) ||
@@ -72,7 +76,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`safety/drivers/${ID}/(mvr|annual-reviews)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || path === 'safety/consents') return 4_400_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/drivers/${ID}/(mvr|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || path === 'safety/consents') return 4_400_000;
   // A list of existing dispatchers, up to 500 rows of text.
   if (path === 'dispatch/existing/check' || path === 'dispatch/existing/add') return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).

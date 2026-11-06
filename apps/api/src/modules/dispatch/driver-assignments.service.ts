@@ -8,6 +8,7 @@ import { AssignDriverDto } from './dispatch.dto';
 import { DispatchMember, MemberAssignment } from './dispatch.entity';
 import { day, notBefore } from './dispatch.service';
 import { ledTeams, lockTeam, onNotice } from './create-member';
+import { onHoldSql } from '../safety/holds';
 
 /** A team lead acts only inside the teams they lead; everyone else here is a dispatch manager or administrator. */
 type Scope = { teamIds: string[] } | null;
@@ -26,7 +27,7 @@ export class DriverAssignmentsService {
  /** A team lead sees the drivers waiting for a dispatcher and the ones their teams' dispatchers work with. */
  async drivers(user: User | null) {
   const scope = await this.scope(this.db.manager, user);
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d."driverType", d."licenseType", d.version, d."clearedAt",
+  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d."driverType", d."licenseType", d.version, d."clearedAt", ${onHoldSql()} AS "onHold",
     CASE WHEN k.id IS NULL THEN NULL ELSE ${name('k')} END AS "clearedBy",
     CASE WHEN a.id IS NULL THEN NULL ELSE json_build_object('mcId', m.id, 'mc', m.name, 'memberId', x.id, 'dispatcher', ${name('x')}, 'teamId', t.id, 'team', t.name, 'truck', a.truck, 'startedAt', a."startedAt") END AS assignment
    FROM drivers d LEFT JOIN users k ON k.id = d."clearedBy"
@@ -72,6 +73,11 @@ export class DriverAssignmentsService {
    if (driver.status !== 'CLEARED') throw new ConflictException('Only a driver Safety has cleared can be assigned.');
    const assignments = em.getRepository(DriverAssignment);
    const current = await assignments.findOneBy({ driverId: id, endedAt: IsNull() });
+   // On hold (a failed or refused test, not qualified at the yearly review or an expired document): Safety lifts it, and
+   // Dispatch isn't told why. Nobody new takes them on, but one already assigned can be handed to another dispatcher, so
+   // their dispatcher can still leave or change MC.
+   const [{ held }] = await em.query(`SELECT ${onHoldSql()} AS held FROM drivers d WHERE d.id = $1`, [id]) as { held: boolean }[];
+   if (held && !current) throw new ConflictException('Safety has put this driver on hold, so they can’t be assigned. Ask Safety.');
    // A team lead may change only a driver who works with their own teams (or no one yet).
    if (scope && current && !await em.getRepository(MemberAssignment).createQueryBuilder('a')
     .where('a.memberId = :member AND a.endedAt IS NULL AND a.teamId IN (:...teams)', { member: current.memberId, teams: scope.teamIds }).getExists())

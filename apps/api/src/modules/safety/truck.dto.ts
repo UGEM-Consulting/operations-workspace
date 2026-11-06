@@ -1,10 +1,9 @@
+import { text, filled } from './dto-helpers';
 import { Transform } from 'class-transformer';
 import { IsBase64, IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { MAX_PDF_BYTES } from '../documents/documents.dto';
 import { US_STATES } from './safety.entity';
-const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 const upper = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.replace(/\s+/g, '').toUpperCase() : value);
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 export const OWNER_DOCUMENT_KINDS = ['LEASE', 'INSURANCE', 'REGISTRATION'] as const;
 
 /** An owner-operator's truck. The VIN has 17 characters and never I, O or Q. */

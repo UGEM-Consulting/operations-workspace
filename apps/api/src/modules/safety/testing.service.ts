@@ -5,6 +5,7 @@ import { CLEARERS } from './clearance.service';
 import { driverEvent, lockOpenDriver, ownsDriver, writeDriver } from './driver-records';
 import { RecordTestDto, VoidTestDto } from './testing.dto';
 import { usDay } from './screening-rules';
+import { holdReasons } from './holds';
 
 /**
  * Ongoing drug and alcohol testing of cleared drivers, results only. The owner, the Safety manager and administrators
@@ -46,12 +47,42 @@ export class TestingService {
   });
  }
 
+ /**
+  * Test results are seen only by those who act on them (49 CFR 40.321): the Safety manager, administrators and the
+  * driver's current owner. Other Safety roles see that testing exists, not the results.
+  */
+ async canSee(user: User, driverId: string) {
+  return CLEARERS.includes(user.role) || await ownsDriver(this.db.manager, user, driverId);
+ }
+ /**
+  * Whether Dispatch sees this driver as on hold, and why for Safety: a failed or refused test, a Not qualified yearly
+  * review or an expired document. Someone who may not see results gets test null and onHold from the other reasons only,
+  * because a hold with no visible reason would itself say that a test failed (49 CFR 40.321).
+  */
+ private async hold(id: string, seesResults: boolean) {
+  const reasons = await holdReasons(this.db.manager, id);
+  const test = seesResults ? reasons.test : null;
+  return { onHold: !!test || reasons.review || reasons.documents, test, review: reasons.review, documents: reasons.documents };
+ }
+ /** The driver profile's testing and hold, deciding once whether this person may see results. */
+ async forProfile(user: User, id: string) {
+  const seesResults = await this.canSee(user, id);
+  const [testing, hold] = await Promise.all([seesResults ? this.forDriver(id) : { hidden: true as const }, this.hold(id, seesResults)]);
+  return { testing, hold };
+ }
  /** A driver's entries, newest first (voided ones included and marked). */
  async forDriver(id: string) {
   const items = await this.db.query(`SELECT t.id, t.kind, t.reason, to_char(t."testedOn", 'YYYY-MM-DD') AS "testedOn", t.result, t.note, t."createdAt", t."voidedAt", t."voidReason",
     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "recordedBy"
    FROM driver_tests t LEFT JOIN users u ON u.id = t."recordedBy" WHERE t."driverId" = $1 ORDER BY t."testedOn" DESC, t."createdAt" DESC`, [id]);
   return { items };
+ }
+
+ /** attention() as this person may see it: all of it for the Safety manager and administrators, their own drivers for an owner. */
+ async attentionFor(user: User) {
+  if (CLEARERS.includes(user.role)) return this.attention();
+  const owned = new Set((await this.db.query(`SELECT "driverId" FROM driver_owners WHERE "ownerId" = $1 AND "endedAt" IS NULL`, [user.id]) as { driverId: string }[]).map(row => row.driverId));
+  return (await this.attention()).filter(row => owned.has(row.driverId));
  }
 
  /** Cleared drivers whose latest standing result is not negative or a refusal, so a return-to-duty process is open. */

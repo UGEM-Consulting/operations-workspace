@@ -35,7 +35,10 @@ class WorkspaceController {
     if (openIt !== null) navigation.it = openIt;
     if (promotions !== null) navigation.promotions = promotions;
     if (drivers !== null) navigation.drivers = drivers;
-    if (SAFETY_ROLES.includes(user.role)) navigation.expiring = await this.safety.expiringCount() + (await this.annual.due()).items.length + (await this.testing.attention()).length + (await this.incidents.attention()).length;
+    if (SAFETY_ROLES.includes(user.role)) {
+      const [expiring, due, tests, incidents] = await Promise.all([this.safety.expiringCount(), this.annual.due(), this.testing.attentionFor(user), this.incidents.attention()]);
+      navigation.expiring = expiring + due.items.length + tests.length + incidents.length;
+    }
     return { navigation, unreadNotifications: unread };
   }
 }

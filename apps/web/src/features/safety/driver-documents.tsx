@@ -13,28 +13,38 @@ import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { documentLabels, workAuthorizationTypes, type DriverDocumentRow, type DriverProfile } from './types';
+import { DOCUMENT_KINDS, documentLabels, RENEWAL_KINDS, workAuthorizationTypes, type DriverDocumentRow, type DriverProfile, type RenewalKind, type RenewalScan } from './types';
 
 const date = (value: string | null) => value ? <LocalTime iso={`${value}T12:00:00Z`} format="date" /> : null;
-// Today in the viewer's time zone, read only in the browser: the server renders no Expired badge, so the first render
-// matches it whatever its clock says.
+const pages = (count: number) => `${count} ${count === 1 ? 'page' : 'pages'}`;
+// Today's US date, read only in the browser: the server renders no Expired badge, so the first render matches it whatever
+// its clock says. Eastern (the default) is the day the API checks entered dates and expiry against; a waiting period ends
+// only once the Pacific date reaches it (usDay in screening-rules.ts), so the decision card asks for that one.
 const noSubscription = () => () => undefined;
-export const useToday = () => useSyncExternalStore(noSubscription, () => new Date().toLocaleDateString('en-CA'), () => null);
+export const useToday = (timeZone: 'America/New_York' | 'America/Los_Angeles' = 'America/New_York') =>
+  useSyncExternalStore(noSubscription, () => new Date().toLocaleDateString('en-CA', { timeZone }), () => null);
+
+/** What the Documents card asks the page to open for a license or medical card renewal (the dialogs live on the page). */
+export interface RenewalActions { renew: (kind: RenewalKind) => void; check: (kind: RenewalKind, scan: RenewalScan) => void; cancelLink: (kind: RenewalKind) => void }
 
 /**
  * The driver's scanned documents (each one PDF, opened in a new tab) and Safety's check of each: a person reads the
  * document and records its expiry date and, except for work authorization, its number. Screeners and the driver's owner
- * verify once the driver submits. The API records every time someone opens a scan.
+ * verify once the driver submits. Once the driver is approved, licenses and medical cards are renewed here (`renewals`,
+ * designed as RenewDriverPageScreen): Renew, a link out, or a scan the driver sent waiting for its check. The API records
+ * every time someone opens a scan.
  */
-export function DriverDocuments({ driver, canVerify }: { driver: DriverProfile; canVerify: boolean }) {
+export function DriverDocuments({ driver, canVerify, renewals }: { driver: DriverProfile; canVerify: boolean; renewals?: RenewalActions }) {
   const router = useRouter();
   const toast = useToast();
   const today = useToday();
   const [verifying, setVerifying] = useState<DriverDocumentRow | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
-  const documents = driver.documents ?? [], submitted = driver.application?.status === 'SUBMITTED';
+  // Always license, medical card, work authorization, so a renewed one keeps its place.
+  const documents = [...(driver.documents ?? [])].sort((a, b) => DOCUMENT_KINDS.indexOf(a.kind) - DOCUMENT_KINDS.indexOf(b.kind)), submitted = driver.application?.status === 'SUBMITTED';
   const fileUrl = (document: DriverDocumentRow) => `/api/backend/safety/drivers/${driver.id}/documents/${document.id}/file`;
+  const renewing = (document: DriverDocumentRow) => renewals && (RENEWAL_KINDS as string[]).includes(document.kind) ? driver.renewals?.find(row => row.kind === document.kind) ?? null : null;
   async function verify(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!verifying || pending) return;
@@ -47,35 +57,67 @@ export function DriverDocuments({ driver, canVerify }: { driver: DriverProfile; 
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
+  const description = renewals ? 'Licenses and medical cards are renewed here once the driver is cleared. The earlier scan is kept.'
+    : submitted ? 'Scanned by the driver with their phone. Open each one and record what it shows.' : 'Scanned by the driver with their phone. You can verify them once the driver submits.';
   return <Card id="documents" className="scroll-mt-20">
-    <CardHeader title="Documents" description={submitted ? 'Scanned by the driver with their phone. Open each one and record what it shows.' : 'Scanned by the driver with their phone. You can verify them once the driver submits.'} />
+    <CardHeader title="Documents" description={description} />
     {documents.length ? <ul className="mt-3 divide-y divide-border border-t border-border">{documents.map(document => {
-      const expired = !!(today && document.expiresOn && document.expiresOn < today);
+      const renewal = renewing(document), kind = document.kind as RenewalKind;
+      // A scan the driver sent is the current document until someone checks it; the hold still counts the checked one.
+      const scan = renewal?.scan?.id === document.id ? renewal.scan : null;
+      const checkedOn = renewal ? renewal.checked?.expiresOn ?? null : document.expiresOn;
+      const expired = !!(today && checkedOn && checkedOn < today);
+      const view = <ViewDocumentButton documents={[{ url: fileUrl(document), title: documentLabels[document.kind], meta: pages(document.pageCount) }]}>View<span className="sr-only"> {documentLabels[document.kind]}</span></ViewDocumentButton>;
+      const label = <span className="sr-only"> {documentLabels[document.kind]}</span>;
+      let meta: React.ReactNode, badge: React.ReactNode, actions: React.ReactNode;
+      // What needs someone first: a scan to check, then a link that is out (also after Not readable), then an unreadable scan.
+      if (renewal && renewals && scan && !scan.unreadable) {
+        meta = <>New scan <LocalTime iso={scan.createdAt} format="date" /> · {pages(scan.pageCount)} · waiting for your check</>;
+        badge = <Badge label="Waiting for your check" tone="warning" />;
+        actions = <>{view}<Button size="sm" onClick={() => renewals.check(kind, scan)}>Check it{label}</Button></>;
+      } else if (renewal && renewals && renewal.link) {
+        meta = <>{scan ? 'Last scan not readable' : expired ? 'Expired' : 'Expires'}{scan ? null : <> {date(checkedOn)}</>} · link sent <LocalTime iso={renewal.link.createdAt} format="date" />, {renewal.link.expired ? 'no longer works' : <>works until <LocalTime iso={renewal.link.expiresAt} format="date" /></>}</>;
+        badge = <Badge label={renewal.link.expired ? 'Link expired' : 'Link sent'} tone={renewal.link.expired ? 'neutral' : 'info'} />;
+        actions = <>{view}{renewal.link.expired ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
+          : <Button size="sm" variant="outline" onClick={() => renewals.cancelLink(kind)}>Cancel link{label}</Button>}</>;
+      } else if (renewal && renewals && scan) {
+        meta = <>New scan <LocalTime iso={scan.createdAt} format="date" /> · {pages(scan.pageCount)} · not readable</>;
+        badge = <Badge label="Not readable" tone="danger" />;
+        actions = <>{view}<Button size="sm" onClick={() => renewals.renew(kind)}>Renew{label}</Button></>;
+      } else if (renewals && document.verifiedAt) {
+        // Once the driver is approved: what counts is the date and the page count (RenewDriverPageScreen).
+        meta = <>{document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{pages(document.pageCount)}{document.uploadedBySafety ? ' · uploaded by Safety' : ''}</>;
+        badge = <Badge label={expired ? 'Expired' : 'Checked'} tone={expired ? 'danger' : 'success'} />;
+        actions = <>{view}{renewal && <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>}</>;
+      } else {
+        meta = <>{pages(document.pageCount)} · {document.uploadedBySafety ? 'uploaded' : 'scanned'} <LocalTime iso={document.createdAt} format="date" />
+          {document.verifiedAt && <> · {document.number ? <>No. <span className="font-mono">{document.number}</span> · </> : null}{document.expiresOn ? <>expires {date(document.expiresOn)} · </> : null}verified by {document.verifiedBy ?? 'a former account'}</>}</>;
+        badge = document.verifiedAt ? <Badge label={expired ? 'Expired' : 'Verified'} tone={expired ? 'danger' : 'success'} /> : <Badge label="Not verified" tone="neutral" />;
+        actions = <>{view}
+          {renewal && renewals ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
+            : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => { setVerifying(document); setError(''); }}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : 'Verify'}{label}</Button>}</>;
+      }
       return <li key={document.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
         <FileText aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1 text-sm">
           <p className="font-medium">{documentLabels[document.kind]}{document.subtype ? <span className="font-normal text-muted-foreground"> · {workAuthorizationTypes[document.subtype] ?? document.subtype}</span> : null}</p>
-          <p className="text-[13px] text-muted-foreground">{document.pageCount} {document.pageCount === 1 ? 'page' : 'pages'} · scanned <LocalTime iso={document.createdAt} format="date" />
-            {document.verifiedAt && <> · {document.number ? <>No. <span className="font-mono">{document.number}</span> · </> : null}{document.expiresOn ? <>expires {date(document.expiresOn)} · </> : null}verified by {document.verifiedBy ?? 'a former account'}</>}</p>
+          <p className="text-[13px] text-muted-foreground">{meta}</p>
         </div>
-        {document.verifiedAt ? <Badge label={expired ? 'Expired' : 'Verified'} tone={expired ? 'danger' : 'success'} /> : <Badge label="Not verified" tone="neutral" />}
-        <span className="flex gap-1">
-          <ViewDocumentButton documents={[{ url: fileUrl(document), title: documentLabels[document.kind], meta: `${document.pageCount} ${document.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> {documentLabels[document.kind]}</span></ViewDocumentButton>
-          {canVerify && submitted && <Button size="sm" variant="outline" onClick={() => { setVerifying(document); setError(''); }}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : 'Verify'}<span className="sr-only"> {documentLabels[document.kind]}</span></Button>}
-        </span>
+        {badge}
+        <span className="flex gap-1">{actions}</span>
       </li>;
     })}</ul> : <CardBody><EmptyState compact title="No documents yet" description="The driver scans them while filling in their application." /></CardBody>}
     {verifying && <Dialog open onClose={() => setVerifying(null)} busy={pending} title={`Verify ${documentLabels[verifying.kind].toLowerCase()}`}
       description="Open the document, check it’s readable and belongs to this driver, then record what it shows."
       actions={<Button type="submit" form="verify-document" disabled={pending}>{pending ? 'Saving…' : 'Mark as verified'}</Button>}>
       <form id="verify-document" onSubmit={verify} className="space-y-4">
-        <ViewDocumentButton variant="outline" documents={[{ url: fileUrl(verifying), title: documentLabels[verifying.kind], meta: `${verifying.pageCount} ${verifying.pageCount === 1 ? 'page' : 'pages'}` }]}>Open the {documentLabels[verifying.kind].toLowerCase()}</ViewDocumentButton>
+        <ViewDocumentButton variant="outline" documents={[{ url: fileUrl(verifying), title: documentLabels[verifying.kind], meta: pages(verifying.pageCount) }]}>Open the {documentLabels[verifying.kind].toLowerCase()}</ViewDocumentButton>
         {verifying.kind === 'WORK_AUTHORIZATION'
           ? <Input label="Expiration date" name="expiresOn" type="date" optional defaultValue={verifying.expiresOn ?? ''} width="md"
             hint="Leave it empty if the document doesn’t expire. Don’t record passport, card or A-numbers." />
           : <>
             <Input label="Document number" name="number" optional defaultValue={verifying.number ?? ''} maxLength={40} autoComplete="off" spellCheck={false} width="full" />
-            <Input label="Expiration date" name="expiresOn" type="date" required defaultValue={verifying.expiresOn ?? ''} width="md" hint="As printed on the document. Reminders before it expires come in a later update." />
+            <Input label="Expiration date" name="expiresOn" type="date" required defaultValue={verifying.expiresOn ?? ''} width="md" hint="As printed on the document. Expiring documents lists it 60 days before it expires." />
           </>}
         <Notice message={error} error />
       </form>

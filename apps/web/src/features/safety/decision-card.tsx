@@ -51,6 +51,8 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
   const router = useRouter();
   const toast = useToast();
   const today = useToday();
+  // The waiting period ends once the Pacific date reaches its last day, as the API checks it; dates typed are limited by the Eastern one.
+  const waitEndsToday = useToday('America/Los_Angeles');
   const [decision, setDecision] = useState<Decision | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -60,7 +62,7 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
   const awaiting = driver.status === 'AWAITING_DECISION', noticeOut = driver.status === 'PRE_ADVERSE', finalFrom = screening.finalRejectionFrom;
   const notice = screening.reviews.find(row => row.action === 'PRE_ADVERSE');
   // The browser's date decides only whether the button is offered; the API checks the waiting period again.
-  const canReject = !!(finalFrom && today && today >= finalFrom);
+  const canReject = !!(finalFrom && waitEndsToday && waitEndsToday >= finalFrom);
   const concerns = screening.checks.filter(check => check.result === 'CONCERN').length;
   const clearing = driver.status === 'APPROVED';
   const failed = clearing ? (driver.clearance?.items ?? []).filter(item => item.status === 'BLOCKED' && item.result) : [];
