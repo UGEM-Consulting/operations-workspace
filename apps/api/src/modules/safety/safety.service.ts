@@ -12,7 +12,7 @@ import { PiiService } from './pii';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { AssignOwnerDto, CreateDriverDto, MarkLeftDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
 import { driverEvent, isProduction, lockOpenDriver, ownsDriver, requireScreener, revokeOpenLinks, SCREENERS, sentWithApplication, STALE, writeDriver } from './driver-records';
-import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDocument, DriverLink, DriverOwner, type DriverStatus, earliestFinalRejection, LEAVABLE, OWNABLE, phoneKey, RENEWAL_KINDS, type RenewalKind, WITHDRAWABLE } from './safety.entity';
+import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDocument, DriverLink, DriverOwner, type DriverStatus, earliestFinalRejection, LEAVABLE, NOT_RECHECKED, OWNABLE, phoneKey, RENEWAL_KINDS, type RenewalKind, WITHDRAWABLE } from './safety.entity';
 import { currentConsents, missingConsents } from './consent-rules';
 import { addDays, missingForDecision, usDay } from './screening-rules';
 import { CLEARERS, clearanceGaps, hasActiveOwner } from './clearance.service';
@@ -26,17 +26,17 @@ const person = (alias: string) => `CASE WHEN ${alias}.id IS NULL THEN NULL ELSE 
 /**
  * What Expiring documents lists (expiring() and expiringCount()), with $1 the last day listed: each open driver's latest
  * checked scan of each kind, like the hold (a renewal waiting for its check leaves the expired one listed), and current
- * owner-operator truck documents.
+ * owner-operator truck documents. A US passport or green card never shows: it isn't re-checked (NOT_RECHECKED).
  */
 const EXPIRING = `FROM (
-    (SELECT DISTINCT ON (d."driverId", d.kind) d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn", NULL::text AS truck
+    (SELECT DISTINCT ON (d."driverId", d.kind) d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn", NULL::text AS truck, d.subtype
     FROM driver_documents d WHERE d."verifiedAt" IS NOT NULL ORDER BY d."driverId", d.kind, d."createdAt" DESC)
     UNION ALL
-    SELECT o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), t.unit
+    SELECT o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), t.unit, NULL
     FROM driver_owner_documents o JOIN driver_trucks t ON t.id = o."truckId" WHERE o."replacedAt" IS NULL AND o."expiresOn" IS NOT NULL AND t."archivedAt" IS NULL
    ) e JOIN drivers x ON x.id = e."driverId"
    LEFT JOIN driver_owners w ON w."driverId" = x.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
-   WHERE e."expiresOn" <= $1 AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT')`;
+   WHERE e."expiresOn" <= $1 AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT') AND (e.subtype IS NULL OR e.subtype NOT IN ('US_PASSPORT','GREEN_CARD'))`;
 const blank = (value: string | null | undefined) => value === undefined ? undefined : value === null || value === '' ? null : value;
 
 /**
@@ -246,7 +246,7 @@ export class SafetyService {
  async markLeft(user: User, id: string, dto: MarkLeftDto) {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, dto.version);
-   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s owner and the Safety manager can mark a driver as left.');
+   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety contact and the Safety manager can mark a driver as left.');
    if (!LEAVABLE.includes(driver.status)) throw new ConflictException('Only an approved or cleared driver can be marked as left.');
    if (dto.leftOn > usDay('latest')) throw new BadRequestException('The last day can’t be in the future.');
    if (dto.leftOn < '1980-01-01') throw new BadRequestException('Enter the last day they worked.');
@@ -273,13 +273,13 @@ export class SafetyService {
   requireScreener(user);
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, dto.version);
-   if (!OWNABLE.includes(driver.status)) throw new ConflictException('A safety staff owner is assigned once the Safety manager approves the driver.');
+   if (!OWNABLE.includes(driver.status)) throw new ConflictException('A Safety contact is assigned once the Safety manager approves the driver.');
    const owner = await em.getRepository(User).findOneBy({ id: dto.ownerId });
    if (!owner || owner.role !== Role.SAFETY_STAFF || owner.status !== UserStatus.ACTIVE) throw new BadRequestException('Choose an active safety staff member.');
    const owners = em.getRepository(DriverOwner);
    const current = await owners.findOneBy({ driverId: id, endedAt: IsNull() });
-   if (current?.ownerId === owner.id) throw new BadRequestException('This person already owns the driver.');
-   if (current && !dto.reason) throw new BadRequestException('Say why the driver is changing owner.');
+   if (current?.ownerId === owner.id) throw new BadRequestException('This person is already the driver’s Safety contact.');
+   if (current && !dto.reason) throw new BadRequestException('Say why the driver’s Safety contact is changing.');
    const now = new Date();
    if (current) await owners.update(current.id, { endedAt: now });
    await owners.save({ driverId: id, ownerId: owner.id, startedAt: now, reason: dto.reason || null, actorId: user.id });
@@ -339,7 +339,7 @@ export class SafetyService {
  /** The full SSN, for Safety leads, managers, administrators and the driver's owner. Every view is recorded. */
  async revealSsn(user: User, id: string) {
   if (!SCREENERS.includes(user.role) && !await ownsDriver(this.db.manager, user, id))
-   throw new ForbiddenException('Only Safety leads, managers and the driver’s owner can view the full number.');
+   throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can view the full number.');
   await onboardingLimit(this.db, `ssn-reveal:${user.id}`, 30, 3600);
   const application = await this.db.getRepository(DriverApplication).createQueryBuilder('a').addSelect('a.ssnCiphertext').where('a."driverId" = :id', { id }).getOne();
   if (!application?.ssnCiphertext) throw new NotFoundException('No Social Security number on file.');
@@ -372,7 +372,7 @@ export class SafetyService {
    if (!driver) throw new NotFoundException('This driver record no longer exists.');
    // Checked under the driver lock, so an owner change can't land between the check and the write.
    if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id))
-    throw new ForbiddenException('Only Safety leads, managers and the driver’s owner can verify documents.');
+    throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can verify documents.');
    if (CLOSED_STATUSES.includes(driver.status)) throw new ConflictException('This driver record is closed and can’t be changed.');
    const application = await em.getRepository(DriverApplication).findOneBy({ driverId: id, status: 'SUBMITTED' });
    if (!application) throw new ConflictException('Documents are verified once the driver submits their application.');
@@ -386,8 +386,15 @@ export class SafetyService {
    // unchecked so Safety can mark it as not readable and send a new link (screening still records any date it reads).
    const renewalScan = !document.verifiedAt && !document.uploadedBy && (RENEWAL_KINDS as readonly string[]).includes(document.kind) && !sentWithApplication(document, application.submittedAt);
    if (renewalScan && dto.expiresOn! < usDay('latest')) throw new BadRequestException('This date has passed, so it isn’t the renewed document. Mark the scan as not readable and send a new link.');
-   await em.getRepository(DriverDocument).update(documentId, { verifiedAt: new Date(), verifiedBy: user.id, number: dto.number || null, expiresOn: dto.expiresOn || null, version: document.version + 1 });
-   await driverEvent(em, user.id, id, 'DOCUMENT_VERIFIED', { kind: document.kind, again: document.verifiedAt !== null });
+   // A work authorization's type can be corrected (the driver still chose what to give). A US passport or green card
+   // isn't re-checked when it expires (Form I-9), so it keeps no date and never shows in Expiring documents.
+   if (dto.subtype && document.kind !== 'WORK_AUTHORIZATION') throw new BadRequestException('Only a work authorization has a document type.');
+   const subtype = document.kind === 'WORK_AUTHORIZATION' ? dto.subtype ?? document.subtype : null;
+   const expiresOn = subtype && NOT_RECHECKED.includes(subtype) ? null : dto.expiresOn || null;
+   // A work permit is re-checked before it runs out, so it can't be checked without its date.
+   if (subtype === 'WORK_PERMIT' && !expiresOn) throw new BadRequestException('Enter the expiration date printed on the work permit.');
+   await em.getRepository(DriverDocument).update(documentId, { verifiedAt: new Date(), verifiedBy: user.id, number: dto.number || null, expiresOn, subtype, version: document.version + 1 });
+   await driverEvent(em, user.id, id, 'DOCUMENT_VERIFIED', { kind: document.kind, again: document.verifiedAt !== null, ...(subtype !== document.subtype ? { typeChanged: true } : {}) });
    return { id: documentId, version: document.version + 1 };
   });
  }

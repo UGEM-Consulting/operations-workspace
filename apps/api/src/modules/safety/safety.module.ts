@@ -9,7 +9,7 @@ import { BeginDriverDto, DriverDocumentDto, DriverVersionDto, SaveDriverApplicat
 import { DriverAccessService } from './driver-access.service';
 import { PiiService } from './pii';
 import { AssignOwnerDto, CreateDriverDto, MarkLeftDto, DriverQueryDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
-import { SAFETY_ROLES } from './driver-records';
+import { DECIDERS, SAFETY_ROLES } from './driver-records';
 import { SafetyService } from './safety.service';
 import { AnnualReviewService } from './annual-review.service';
 import { AnnualReviewDto } from './annual-review.dto';
@@ -31,6 +31,7 @@ import { PublishConsentDto } from './consent.dto';
 import { ConsentService } from './consent.service';
 import { DocumentVersionDto, RenewalLinkDto, RenewDocumentDto } from './renewal.dto';
 import { RenewalService } from './renewal.service';
+import { NoticeLetterService, PublishNoticeLetterDto } from './notice-letters';
 // Private files: never cached, never sniffed into another type.
 const FileResponse = () => applyDecorators(Header('Cache-Control', 'no-store, private'), Header('X-Content-Type-Options', 'nosniff'));
 const send = (file: FileResult) => new StreamableFile(file.body, { type: file.type, length: file.body.length, disposition: `inline; filename="${file.filename}"` });
@@ -39,9 +40,17 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService, private readonly renewals: RenewalService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService, private readonly renewals: RenewalService, private readonly letters: NoticeLetterService) {}
  // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
- @Get('consents') consentList(@Req() req: AuthRequest) { return this.consents.list(req.currentUser); }
+ // Consent forms and the notice letters, on one page (Forms and letters).
+ @Get('consents') async consentList(@Req() req: AuthRequest) {
+  const [consents, letters] = await Promise.all([this.consents.list(req.currentUser), this.letters.list()]);
+  return { ...consents, letters };
+ }
+ // Notice letters: the Safety manager publishes them; a driver's letter is filled in on download and never stored.
+ @Post('letters') publishLetter(@Req() req: AuthRequest, @Body() dto: PublishNoticeLetterDto) { return this.letters.publish(req.currentUser, dto); }
+ @Get('letters/:id/file') @FileResponse() async letterFile(@Param('id', ParseUUIDPipe) id: string) { return send(await this.letters.file(id)); }
+ @Get('drivers/:id/letters/:kind') @FileResponse() async driverLetter(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.letters.forDriver(req.currentUser, id, kind)); }
  @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
  @Get('consents/:id/file') @FileResponse() async consentFile(@Param('id', ParseUUIDPipe) id: string) { return send(await this.consents.staffFile(id)); }
  @Get('drivers/:id/consents/:documentId/signed') @FileResponse() async signedConsent(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.consents.staffSignedCopy(req.currentUser, id, documentId)); }
@@ -53,9 +62,9 @@ class SafetyController {
  // The record plus its yearly reviews, tests (only for those who may see results), incidents, trucks and any hold.
  @Get('drivers/:id') async driver(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) {
   const driver = await this.safety.driver(id);
-  const [annualReviews, { testing, hold }, incidents, trucks] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id),
-   this.incidents.forDriver(id), this.trucks.forDriver(id)]);
-  return { ...driver, annualReviews, testing, incidents, trucks, hold };
+  const [annualReviews, { testing, hold }, incidents, trucks, noticeLetters] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id),
+   this.incidents.forDriver(id), this.trucks.forDriver(id), DECIDERS.includes(req.currentUser.role) ? this.letters.current() : undefined]);
+  return { ...driver, annualReviews, testing, incidents, trucks, hold, noticeLetters };
  }
  // Owner-operators' trucks and their lease, insurance and registration PDFs (no-store files; every open is recorded).
  @Get('trucks') truckList() { return this.trucks.list(); }
@@ -132,5 +141,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, RenewalService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, RenewalService, NoticeLetterService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
 export class SafetyModule {}

@@ -163,7 +163,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.lead.id }).expect(400);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff.id, reason: 'Again' }).expect(400);
-    expect((await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id }).expect(400)).body.message).toBe('Say why the driver is changing owner.');
+    expect((await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id }).expect(400)).body.message).toBe('Say why the driver’s Safety contact is changing.');
     await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id, reason: 'Balancing workloads' }).expect(201);
     const record = await driver(id);
     expect(record.owner).toMatchObject({ id: users.staff2.id });
@@ -401,7 +401,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await verify('LICENSE', { version: 1, number: 'D1234567', expiresOn: addDays(today, 400) }).expect(201);
     expect((await expiring()).items).toEqual([]);
     await verify('MEDICAL_CARD', { version: 1, expiresOn: addDays(today, 30) }).expect(201);
-    await verify('WORK_AUTHORIZATION', { version: 1, expiresOn: addDays(today, -3) }).expect(201);
+    await verify('WORK_AUTHORIZATION', { version: 1, subtype: 'WORK_PERMIT', expiresOn: addDays(today, -3) }).expect(201);
     const body = await expiring();
     expect(body).toMatchObject({ today, warningDays: 60 });
     expect(body.items.map((row: { kind: string; expired: boolean }) => [row.kind, row.expired])).toEqual([['WORK_AUTHORIZATION', true], ['MEDICAL_CARD', false]]);
@@ -1403,10 +1403,81 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const fresh = (await add(agents.lead, { ...lead, phone: '555 010 4444', email: 'riley.lead@example.test' }).expect(201)).body;
     expect((await agents.lead.post(`/api/safety/drivers/${fresh.id}/renewals`).set(headers).send({ version: 1, kind: 'LICENSE' }).expect(409)).body.message).toMatch(/approved/);
   });
+  it('lets Safety correct a work authorization’s type, and lists only work permits as expiring', async () => {
+    const { id, documents } = await submitted(), day = usDay('latest');
+    const work = documents.find(row => row.kind === 'WORK_AUTHORIZATION')!.id;
+    const verify = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/documents/${work}/verify`).set(headers).send(body);
+    const expiring = async () => (await agents.lead.get('/api/safety/expiring').set(headers).expect(200)).body.items.filter((row: { driverId: string }) => row.driverId === id);
+    // A type only on a work authorization, and only one of the four.
+    await agents.lead.post(`/api/safety/drivers/${id}/documents/${documents.find(row => row.kind === 'LICENSE')!.id}/verify`).set(headers).send({ version: 1, subtype: 'WORK_PERMIT', expiresOn: addDays(day, 400) }).expect(400);
+    await verify({ version: 1, subtype: 'VISA' }).expect(400);
+    // A work permit needs its date, even from a page that sends none.
+    await verify({ version: 1, subtype: 'WORK_PERMIT' }).expect(400);
+    // The driver scanned a green card; Safety sees a work permit and records its date: listed 60 days before.
+    await verify({ version: 1, subtype: 'WORK_PERMIT', expiresOn: addDays(day, 20) }).expect(201);
+    expect((await driver(id)).documents.find((row: { kind: string }) => row.kind === 'WORK_AUTHORIZATION')).toMatchObject({ subtype: 'WORK_PERMIT', expiresOn: addDays(day, 20) });
+    expect((await expiring()).map((row: { kind: string }) => row.kind)).toEqual(['WORK_AUTHORIZATION']);
+    // Back to a green card: no date is kept, and it drops out of the list.
+    await verify({ version: 2, subtype: 'GREEN_CARD', expiresOn: addDays(day, 20) }).expect(201);
+    expect((await driver(id)).documents.find((row: { kind: string }) => row.kind === 'WORK_AUTHORIZATION')).toMatchObject({ subtype: 'GREEN_CARD', expiresOn: null });
+    expect(await expiring()).toEqual([]);
+    // An older page sends no type: the recorded one stays.
+    await verify({ version: 3, expiresOn: '' }).expect(201);
+    expect((await driver(id)).documents.find((row: { kind: string }) => row.kind === 'WORK_AUTHORIZATION')).toMatchObject({ subtype: 'GREEN_CARD' });
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_VERIFIED').map(row => row.metadata))
+      .toEqual([{ kind: 'WORK_AUTHORIZATION', again: false, typeChanged: true }, { kind: 'WORK_AUTHORIZATION', again: true, typeChanged: true }, { kind: 'WORK_AUTHORIZATION', again: true }]);
+  });
+
+  it('publishes notice letters and fills one in for a driver, with their MVR behind the pre-adverse notice', async () => {
+    const one = await awaiting();
+    const letterPdf = async (pages = 2) => { const pdf = await PDFDocument.create(); for (let n = 0; n < pages; n++) pdf.addPage([612, 792]); return Buffer.from(await pdf.save()).toString('base64'); };
+    const fields = [{ page: 1, x: 0.1, y: 0.1, width: 0.3, height: 0.02, kind: 'NAME', signer: 'SIGNER' }, { page: 1, x: 0.1, y: 0.14, width: 0.5, height: 0.02, kind: 'ADDRESS', signer: 'SIGNER' },
+      { page: 1, x: 0.6, y: 0.05, width: 0.25, height: 0.02, kind: 'DATE', signer: 'SIGNER' }];
+    const letter = (agent: Agent, kind: string) => agent.get(`/api/safety/drivers/${one.id}/letters/${kind}`).set(headers).buffer(true).parse((res, done) => { const parts: Buffer[] = []; res.on('data', (part: Buffer) => parts.push(part)); res.on('end', () => done(null, Buffer.concat(parts))); });
+    // Nothing published yet.
+    await letter(agents.manager, 'pre-adverse').expect(404);
+    // Only the Safety manager and administrators publish; a letter takes name, address and date, never a signature.
+    await agents.lead.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(), fields }).expect(403);
+    await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(),
+      fields: [{ ...fields[0], kind: 'SIGNATURE' }] }).expect(400);
+    // A letter takes the name, address and date only: no day, month or year on their own.
+    await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(), fields: [{ ...fields[2], kind: 'DAY' }] }).expect(400);
+    // An address belongs on a letter only, never on a consent form.
+    await agents.manager.post('/api/safety/consents').set(headers).send({ kind: 'CLEARINGHOUSE_CONSENT', title: 'Fictional consent', file: await letterPdf(1), fields: [fields[1]] }).expect(400);
+    const published = (await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(), fields }).expect(201)).body;
+    expect(published).toMatchObject({ kind: 'PRE_ADVERSE', version: 1, pageCount: 2 });
+    const list = (await agents.staff.get('/api/safety/consents').set(headers).expect(200)).body;
+    expect(list.letters.map((row: { kind: string; versions: unknown[] }) => [row.kind, row.versions.length])).toEqual([['PRE_ADVERSE', 1], ['FINAL', 0]]);
+    expect((await driver(one.id, agents.manager)).noticeLetters).toEqual({ PRE_ADVERSE: { version: 1, pageCount: 2 }, FINAL: null });
+    // Only those who can download a letter are told which ones exist.
+    expect((await driver(one.id, agents.lead)).noticeLetters).toBeUndefined();
+    // The driver's letter: only the deciders, only while a decision is open, the letter's two pages plus the MVR's one.
+    await letter(agents.lead, 'pre-adverse').expect(403);
+    await letter(agents.manager, 'final').expect(409);
+    await letter(agents.manager, 'other').expect(404);
+    // A crafted name is just an unknown letter.
+    await letter(agents.manager, 'constructor').expect(404);
+    const filled = await letter(agents.manager, 'pre-adverse').expect(200).expect('content-type', 'application/pdf').expect('cache-control', 'no-store, private');
+    expect((await PDFDocument.load(filled.body)).getPageCount()).toBe(3);
+    expect((await events(one.id)).filter(row => row.event === 'NOTICE_LETTER_DOWNLOADED').map(row => row.metadata)).toEqual([{ kind: 'PRE_ADVERSE', withMvr: true }]);
+    // Once the pre-adverse notice is recorded, the final letter follows (when published).
+    await decide(agents.manager, one.id, { version: one.version, decision: 'PRE_ADVERSE', note: 'Fictional reason', noticeSent: true, noticeSentOn: today() }).expect(201);
+    await letter(agents.manager, 'final').expect(404);
+    await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'FINAL', title: 'Fictional final notice', file: await letterPdf(1), fields: [fields[0]] }).expect(201);
+    expect((await PDFDocument.load((await letter(agents.manager, 'final').expect(200)).body)).getPageCount()).toBe(1);
+    // Published versions never change.
+    await expect(db.query(`UPDATE driver_notice_letters SET title = 'x' WHERE id = $1`, [published.id])).rejects.toThrow();
+  });
+
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    // A notice letter downloaded (or one published) keeps NoticeLetters.
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'NOTICE_LETTER_DOWNLOADED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard notice letters');
+    await db.query(`DELETE FROM driver_events WHERE event = 'NOTICE_LETTER_DOWNLOADED'`);
+    await db.undoLastMigration(); // NoticeLetters, with none here
     // A renewal Safety uploaded (or a renewal link, or a scan marked as not readable) keeps DocumentRenewals.
     await db.query(`UPDATE driver_documents SET "uploadedBy" = $1 WHERE "driverId" = $2`, [users.staff.id, id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard document renewals');
@@ -1482,6 +1553,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DocumentRenewals1793090000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('NoticeLetters1793100000000');
   });
 });

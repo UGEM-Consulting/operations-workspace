@@ -162,13 +162,16 @@ export const driverProfileSchema = driverRow.extend({
     hidden: z.boolean().optional() }).optional().catch(undefined),
   incidents: z.looseObject({ items: z.array(z.looseObject({ id: text, kind: text, occurredOn: text, summary: text, note: nullableText, voidedAt: nullableText })) }).optional().catch(undefined),
   hold: z.looseObject({ onHold: z.boolean(), test: z.boolean().nullable(), review: z.boolean(), documents: z.boolean().optional() }).optional().catch(undefined),
+  noticeLetters: z.looseObject({ PRE_ADVERSE: z.looseObject({ version: z.number(), pageCount: z.number() }).nullable(), FINAL: z.looseObject({ version: z.number(), pageCount: z.number() }).nullable() }).optional().catch(undefined),
   trucks: z.looseObject({ items: z.array(z.looseObject({ id: text, unit: text, vin: text, year: z.number(), make: text, archivedAt: nullableText,
     documents: z.array(z.looseObject({ id: text, kind: text, expiresOn: nullableText, pageCount: z.number() })).default([]) })) }).optional().catch(undefined),
 });
 
 /** GET /safety/consents: the consent forms drivers sign. */
 export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), canPublish: z.boolean(),
-  kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
+  kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })),
+  // The notice letters, from an API with them; a malformed value is dropped and the page shows the consent forms only.
+  letters: z.array(z.looseObject({ kind: z.enum(['PRE_ADVERSE', 'FINAL']), label: text, versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })).optional().catch(undefined) });
 
 export const trucksSchema = z.looseObject({ today: text, items: z.array(z.looseObject({ id: text, driverId: text, firstName: text, lastName: text, unit: text, vin: text, year: z.number(), make: text, plate: nullableText, plateState: nullableText,
   archivedAt: nullableText, insuranceExpiresOn: nullableText, registrationExpiresOn: nullableText, hasLease: z.boolean() })) });

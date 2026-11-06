@@ -36,7 +36,7 @@ import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, drive
 
 type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left';
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', LEFT: 'Marked as left', REOPENED: 'Reopened as a lead',
-  SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Owner assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
+  SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Safety contact assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
   DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
@@ -116,25 +116,26 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       else if (action === 'left') await mutate(`safety/drivers/${driver.id}/left`, 'POST', { version: driver.version, leftOn: form.get('leftOn'), reason: form.get('reason') });
       else if (action === 'reopen') await mutate(`safety/drivers/${driver.id}/reopen`, 'POST', { version: driver.version });
       else await mutate(`safety/drivers/${driver.id}/owner`, 'POST', { version: driver.version, ownerId: form.get('ownerId'), ...(String(form.get('reason') ?? '').trim() ? { reason: form.get('reason') } : {}) });
-      toast({ title: action === 'edit' ? 'Details saved' : action === 'withdraw' ? `${name} withdrawn` : action === 'left' ? `${name} marked as left` : action === 'reopen' ? `${name} reopened as a lead` : 'Owner assigned' });
+      toast({ title: action === 'edit' ? 'Details saved' : action === 'withdraw' ? `${name} withdrawn` : action === 'left' ? `${name} marked as left` : action === 'reopen' ? `${name} reopened as a lead` : 'Safety contact assigned' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
-  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change owner' : 'Assign owner', left: `Mark ${name} as left?` };
+  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change safety contact' : 'Assign safety contact', left: `Mark ${name} as left?` };
   const staff = people.staff.filter(person => person.id !== owner?.owner?.id);
   // One main button (the next thing the record needs, else Edit) and the rest under More actions, with what ends the record last.
   const actions: { action: Action; label: string; icon: LucideIcon; danger?: boolean }[] = [
     ...(screener && driver.status === 'WITHDRAWN' ? [{ action: 'reopen' as const, label: 'Reopen as lead', icon: RotateCcw }] : []),
     ...(canEdit ? [{ action: 'edit' as const, label: 'Edit details', icon: Pencil }] : []),
     ...(screener && WITHDRAWABLE.includes(driver.status) ? [{ action: 'withdraw' as const, label: 'Withdraw', icon: UserMinus, danger: true }] : []),
+    ...(screener && OWNABLE.includes(driver.status) && staff.length > 0 ? [{ action: 'owner' as const, label: owner ? 'Change safety contact' : 'Assign safety contact', icon: UserCheck }] : []),
     ...(clearing && (decider || owns) ? [{ action: 'left' as const, label: 'Mark as left', icon: UserMinus, danger: true }] : [])];
   // An expired license or medical card makes Renew the main button (RenewDriverPageScreen).
   const main = renewFirst || actions[0]?.danger ? null : actions[0] ?? null, more = actions.filter(item => item !== main);
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <PageHeader title={name} badge={<Badge label={badge.label} tone={badge.tone} />}
-      meta={[driverTypes[driver.driverType], driver.phone, <>Added <LocalTime iso={driver.createdAt} format="date" />{driver.addedBy ? ` by ${driver.addedBy.name}` : ''}</>]}
+      meta={[driverTypes[driver.driverType], license(driver) || driver.phone, owner?.owner ? `Safety contact ${owner.owner.name}` : driver.safetyLead ? `Safety lead ${driver.safetyLead.name}` : <>Added <LocalTime iso={driver.createdAt} format="date" /></>]}
       action={<div className="flex flex-wrap gap-2">
         {renewFirst && <Button onClick={() => setRenewing({ kind: renewFirst.kind })}><FileUp aria-hidden="true" className="size-4" />Renew {renewalWords[renewFirst.kind]}</Button>}
         {main && <Button onClick={() => start(main.action)}><main.icon aria-hidden="true" className="size-4" />{main.label}</Button>}
@@ -148,9 +149,9 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     {driver.status === 'APPLYING' && driver.application?.correctionNote && <Alert tone="warning" title="Back with the driver for corrections">
       <p className="whitespace-pre-wrap">{driver.application.correctionNote}</p>
       <p className="mt-1">They return to screening when they send the application again.</p></Alert>}
-    {screener && driver.status === 'APPROVED' && !owner && people.staff.length > 0 && <Alert tone="info" title="Assign a safety staff owner"
-      action={<Button size="sm" variant="outline" onClick={() => start('owner')}>Assign owner</Button>}>
-      <p>The owner looks after this driver from now on, starting with the clearance checklist.</p></Alert>}
+    {screener && driver.status === 'APPROVED' && !owner && people.staff.length > 0 && <Alert tone="info" title="Assign a Safety contact"
+      action={<Button size="sm" variant="outline" onClick={() => start('owner')}>Assign safety contact</Button>}>
+      <p>Their Safety contact looks after this driver from now on, starting with the clearance checklist.</p></Alert>}
     {driver.status === 'CLEARED' && driver.hold?.onHold && (heldDocuments.length > 0 || driver.hold.review || driver.hold.test) && <Alert tone="danger" title="On hold: Dispatch can’t assign this driver">
       <ul className="list-disc space-y-1 pl-5">
         {heldDocuments.map(item => <li key={item.key}>{item.text}</li>)}
@@ -210,10 +211,10 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         <CardHeader title="Safety people" />
         <CardBody className="space-y-5">
           <DescriptionList layout="rows" items={[{ label: 'Safety lead', value: who(driver.safetyLead), emptyLabel: 'Not set' },
-            { label: 'Owner', value: owner ? <>{who(owner.owner) ?? 'A former account'}<span className="block text-[13px] font-normal text-muted-foreground">Since <LocalTime iso={owner.startedAt} format="date" /></span></> : null,
+            { label: 'Safety contact', value: owner ? <>{who(owner.owner) ?? 'A former account'}<span className="block text-[13px] font-normal text-muted-foreground">Since <LocalTime iso={owner.startedAt} format="date" /></span></> : null,
               emptyLabel: OWNABLE.includes(driver.status) ? 'None yet' : 'Assigned after approval' }]} />
           {screener && OWNABLE.includes(driver.status) && <Button variant="outline" className="w-full" disabled={!staff.length} onClick={() => start('owner')}>
-            <UserCheck aria-hidden="true" className="size-4" />{owner ? 'Change owner' : 'Assign owner'}</Button>}
+            <UserCheck aria-hidden="true" className="size-4" />{owner ? 'Change safety contact' : 'Assign safety contact'}</Button>}
           {driver.owners.length > 1 && <div>
             <p className="text-[13px] font-medium text-muted-foreground">Earlier owners</p>
             <ul className="mt-2 space-y-2 text-sm">{driver.owners.filter(row => row.endedAt !== null).map(row => <li key={row.id}>
@@ -241,7 +242,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
           </>}
           {action === 'owner' && <>
             <Select label="Safety staff" name="ownerId" required placeholder="Choose a person" width="full" options={staff.map(person => ({ value: person.id, label: person.name }))} />
-            {owner && <Textarea label="Why the owner is changing" name="reason" required maxLength={500} rows={3} />}
+            {owner && <Textarea label="Why the Safety contact is changing" name="reason" required maxLength={500} rows={3} />}
           </>}
           <Notice message={error} error />
         </form>}

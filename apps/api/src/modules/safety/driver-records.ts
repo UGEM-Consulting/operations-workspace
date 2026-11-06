@@ -16,7 +16,7 @@ export const STALE = 'Someone else changed this driver. Reload and try again.';
 const DUPLICATES: Record<string, string> = {
  UQ_drivers_open_phone: 'Another open driver record already has this phone number.',
  UQ_drivers_open_email: 'Another open driver record already has this email.',
- UQ_driver_owners_open: 'This driver’s owner changed at the same time. Reload and try again.',
+ UQ_driver_owners_open: 'This driver’s Safety contact changed at the same time. Reload and try again.',
  UQ_driver_reports_current: 'Someone else uploaded a report at the same time. Reload and try again.',
 };
 

@@ -21,7 +21,7 @@ export class TestingService {
   if (dto.testedOn > usDay('latest')) throw new BadRequestException('The test date can’t be in the future.');
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, dto.version);
-   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s owner and the Safety manager can record test results.');
+   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety contact and the Safety manager can record test results.');
    if (driver.status !== 'CLEARED' || !driver.clearedAt) throw new ConflictException('Ongoing testing is recorded once the driver is cleared.');
    if (dto.testedOn < usDay('latest', driver.clearedAt)) throw new BadRequestException('The test can’t be dated before the driver was cleared. The pre-employment test belongs to clearance.');
    await em.query(`INSERT INTO driver_tests ("driverId", kind, reason, "testedOn", result, note, "recordedBy") VALUES ($1, $2, $3, $4, $5, $6, $7)`,

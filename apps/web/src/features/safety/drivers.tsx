@@ -65,7 +65,7 @@ export function Drivers({ items, filters, people, canAdd, currentUserId }: { ite
         { key: 'name', label: 'Driver', primary: true, cell: row => <Link href={`/safety/drivers/${row.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={name(row)} secondary={row.phone} /></Link> },
         { key: 'type', label: 'Type', hideBelow: 'md', cell: row => <>{driverTypes[row.driverType]}{license(row) && <span className="block text-[13px] text-muted-foreground">{license(row)}</span>}</> },
         { key: 'lead', label: 'Safety lead', hideBelow: 'lg', cell: row => row.safetyLead ? <>{row.safetyLead.name}{row.safetyLead.id === currentUserId && <span className="text-muted-foreground"> (you)</span>}</> : <span className="text-muted-foreground">Not set</span> },
-        { key: 'owner', label: 'Owner', hideBelow: 'xl', cell: row => row.owner?.name ?? <span className="text-muted-foreground">None yet</span> },
+        { key: 'owner', label: 'Safety contact', hideBelow: 'xl', cell: row => row.owner?.name ?? <span className="text-muted-foreground">None yet</span> },
         { key: 'added', label: 'Added', nowrap: true, muted: true, hideBelow: 'md', cell: row => <LocalTime iso={row.createdAt} format="date" /> },
         { key: 'status', label: 'Status', cell: row => <Badge {...driverBadge(row.status)} /> },
       ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />

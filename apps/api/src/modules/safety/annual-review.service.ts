@@ -25,7 +25,7 @@ const NO_AUTHORIZATION = { message: 'The driver hasn’t signed the background c
  * Yearly reviews of cleared drivers: the owner or Safety manager (or an administrator) pulls a new MVR, reviews the driving
  * record and records the outcome. Every Safety role reads them. Reviews are append-only; the MVR is an ANNUAL_MVR report.
  */
-const NOT_REVIEWER = 'Only the driver’s owner and the Safety manager can record a yearly review.';
+const NOT_REVIEWER = 'Only the driver’s Safety contact and the Safety manager can record a yearly review.';
 
 @Injectable()
 export class AnnualReviewService {

@@ -35,7 +35,7 @@ export class TruckService {
   });
  }
  private async mayChange(em: Parameters<Parameters<typeof writeDriver>[1]>[0], user: User, id: string) {
-  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, the Safety manager and the driver’s owner can change trucks.');
+  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, the Safety manager and the driver’s Safety contact can change trucks.');
  }
  private async truck(em:Parameters<Parameters<typeof writeDriver>[1]>[0], driverId: string, truckId: string) {
   const [row] = await em.query(`SELECT id, "archivedAt" FROM driver_trucks WHERE id = $1 AND "driverId" = $2 FOR UPDATE`, [truckId, driverId]) as { id: string; archivedAt: Date | null }[];

@@ -37,7 +37,10 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with accidents, violations and inspections.
   incidents?: { items: IncidentRow[] };
   // From an API with owner-operator trucks.
-  trucks?: { items: TruckRow[] } }
+  trucks?: { items: TruckRow[] };
+  // From an API with notice letters: the current version of each, so the decision dialogs offer Download letter.
+  noticeLetters?: { PRE_ADVERSE: NoticeLetterVersion | null; FINAL: NoticeLetterVersion | null } }
+export interface NoticeLetterVersion { version: number; pageCount: number }
 export interface TruckRow { id: string; unit: string; vin: string; year: number; make: string; plate: string | null; plateState: string | null; archivedAt: string | null; documents: { id: string; kind: 'LEASE' | 'INSURANCE' | 'REGISTRATION'; expiresOn: string | null; pageCount: number }[] }
 export const ownerDocumentLabels = { LEASE: 'Lease', INSURANCE: 'Insurance', REGISTRATION: 'Registration' } as const;
 export interface IncidentRow { id: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; state: string | null; summary: string; note: string | null; preventable: 'YES' | 'NO' | 'UNDETERMINED' | null; injuries: boolean | null; fatalities: boolean | null; towAway: boolean | null; disposition: 'PENDING' | 'CONVICTED' | 'DISMISSED' | null; outOfService: boolean | null; violationCount: number | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
@@ -88,6 +91,8 @@ export const driverTypes: Record<DriverType, string> = { COMPANY: 'Company drive
 export const licenseTypes: Record<LicenseType, string> = { CDL_A: 'CDL Class A', CDL_B: 'CDL Class B', CDL_C: 'CDL Class C', DL: 'Regular license (DL)' };
 export const DOCUMENT_KINDS: DocumentKind[] = ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'];
 export const documentLabels: Record<DocumentKind, string> = { LICENSE: 'Driver’s license', MEDICAL_CARD: 'Medical card', WORK_AUTHORIZATION: 'Work authorization' };
+/** Work authorization not re-checked when it expires (Form I-9 rules), as the API decides: no date, never expiring. */
+export const NOT_RECHECKED = ['US_PASSPORT', 'GREEN_CARD'];
 export const workAuthorizationTypes: Record<string, string> = { US_PASSPORT: 'US passport', GREEN_CARD: 'Permanent resident card (green card)', WORK_PERMIT: 'Work permit (EAD)', OTHER: 'Another document' };
 /**
  * The scans a driver needs before submitting, for the license class chosen on the page: a regular license (DL) needs no
@@ -130,7 +135,7 @@ export const CLEARANCE_ITEMS: { key: ClearanceKey; label: string; hint: string; 
 export const clearanceResults: Record<string, string> = { NEGATIVE: 'Negative', NOT_NEGATIVE: 'Not negative', CANCELLED: 'Cancelled', NO_VIOLATIONS: 'No violations', VIOLATIONS: 'Violations found' };
 /** What still stands before Cleared (codes from the API), in words. */
 export function clearanceGapLabel(code: string): string {
-  if (code === 'owner') return 'Assign an active safety staff owner';
+  if (code === 'owner') return 'Assign an active Safety contact';
   if (code === 'employers') return 'Get an answer or record a good-faith effort for every previous employer';
   if (code.startsWith('clearance:')) return CLEARANCE_ITEMS.find(item => item.key === code.slice(10))?.todo ?? code;
   if (code.startsWith('expired:')) return `Redo: ${CLEARANCE_ITEMS.find(item => item.key === code.slice(8))?.label ?? code} (more than a year old)`;

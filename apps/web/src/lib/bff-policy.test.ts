@@ -46,6 +46,20 @@ describe('driver screening through the BFF', () => {
   });
 });
 
+describe('notice letters through the BFF', () => {
+  it('allows publishing a letter and serves letters and a driver’s filled-in letter as private files', () => {
+    assert.equal(allowedEndpoint('POST', 'safety/letters'), true);
+    assert.equal(bodyLimit('safety/letters'), 4_400_000);
+    for (const path of [`safety/letters/${ID}/file`, `safety/drivers/${ID}/letters/pre-adverse`, `safety/drivers/${ID}/letters/final`]) {
+      assert.equal(isFileEndpoint(path), true, path);
+      assert.equal(allowedEndpoint('GET', path), true, path);
+      assert.equal(allowedEndpoint('POST', path), false, path);
+    }
+    assert.equal(isFileEndpoint(`safety/drivers/${ID}/letters/other`), false);
+    assert.equal(allowedEndpoint('PATCH', 'safety/letters'), false);
+  });
+});
+
 describe('document renewals through the BFF', () => {
   it('allows renewing, the renewal link and its cancellation, marking a scan as not readable, and the driver page', () => {
     for (const path of [`safety/drivers/${ID}/documents/renew`, `safety/drivers/${ID}/renewals`, `safety/drivers/${ID}/renewals/cancel`, `safety/drivers/${ID}/documents/${ID}/unreadable`, 'driver/renewal'])

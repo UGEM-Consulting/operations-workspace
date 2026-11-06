@@ -1,19 +1,19 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useState, useSyncExternalStore } from 'react';
-import { BadgeCheck, FileText } from 'lucide-react';
+import { BadgeCheck, Check, FileText } from 'lucide-react';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
-import { Notice } from '@/components/ui/alert';
+import { Alert, Notice } from '@/components/ui/alert';
 import { EmptyState } from '@/components/ui/feedback';
-import { Input } from '@/components/ui/field';
+import { Input, Select } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { DOCUMENT_KINDS, documentLabels, RENEWAL_KINDS, workAuthorizationTypes, type DriverDocumentRow, type DriverProfile, type RenewalKind, type RenewalScan } from './types';
+import { DOCUMENT_KINDS, documentLabels, NOT_RECHECKED, RENEWAL_KINDS, workAuthorizationTypes, type DriverDocumentRow, type DriverProfile, type RenewalKind, type RenewalScan } from './types';
 
 const date = (value: string | null) => value ? <LocalTime iso={`${value}T12:00:00Z`} format="date" /> : null;
 const pages = (count: number) => `${count} ${count === 1 ? 'page' : 'pages'}`;
@@ -39,6 +39,8 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
   const toast = useToast();
   const today = useToday();
   const [verifying, setVerifying] = useState<DriverDocumentRow | null>(null);
+  // A work authorization's type, which Safety may correct when checking it (WorkAuthCheckPermitScreen).
+  const [subtype, setSubtype] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   // Always license, medical card, work authorization, so a renewed one keeps its place.
@@ -52,12 +54,15 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
     setPending(true); setError('');
     try {
       await mutate(`safety/drivers/${driver.id}/documents/${verifying.id}/verify`, 'POST', { version: verifying.version, expiresOn: String(form.get('expiresOn') ?? ''),
-        ...(verifying.kind === 'WORK_AUTHORIZATION' ? {} : { number: String(form.get('number') ?? '').trim() }) });
-      toast({ title: `${documentLabels[verifying.kind]} verified` }); setVerifying(null); router.refresh();
+        ...(verifying.kind === 'WORK_AUTHORIZATION' ? (subtype ? { subtype } : {}) : { number: String(form.get('number') ?? '').trim() }) });
+      toast({ title: `${documentLabels[verifying.kind]} ${checking ? 'checked' : 'verified'}` }); setVerifying(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
-  const description = renewals ? 'Licenses and medical cards are renewed here once the driver is cleared. The earlier scan is kept.'
+  // Once the driver is approved the card says Check and Checked, as the renewal dialogs do; screening says Verify.
+  const checking = !!renewals;
+  function open(document: DriverDocumentRow) { setVerifying(document); setSubtype(document.subtype ?? ''); setError(''); }
+  const description = renewals ?'Licenses and medical cards are renewed here once the driver is cleared. The earlier scan is kept.'
     : submitted ? 'Scanned by the driver with their phone. Open each one and record what it shows.' : 'Scanned by the driver with their phone. You can verify them once the driver submits.';
   return <Card id="documents" className="scroll-mt-20">
     <CardHeader title="Documents" description={description} />
@@ -86,16 +91,19 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
         actions = <>{view}<Button size="sm" onClick={() => renewals.renew(kind)}>Renew{label}</Button></>;
       } else if (renewals && document.verifiedAt) {
         // Once the driver is approved: what counts is the date and the page count (RenewDriverPageScreen).
-        meta = <>{document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{pages(document.pageCount)}{document.uploadedBySafety ? ' · uploaded by Safety' : ''}</>;
-        badge = <Badge label={expired ? 'Expired' : 'Checked'} tone={expired ? 'danger' : 'success'} />;
-        actions = <>{view}{renewal && <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>}</>;
+        // A US passport or green card isn't re-checked when it expires (WorkAuthCheckGreenCardScreen).
+        const notRechecked = !!document.subtype && NOT_RECHECKED.includes(document.subtype);
+        meta = <>{notRechecked ? 'Not re-checked when it expires · ' : document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{pages(document.pageCount)}{document.uploadedBySafety ? ' · uploaded by Safety' : ''}</>;
+        badge = <Badge label={expired && !notRechecked ? 'Expired' : 'Checked'} tone={expired && !notRechecked ? 'danger' : 'success'} />;
+        actions = <>{view}{renewal ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
+          : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => open(document)}>Edit{label}</Button>}</>;
       } else {
         meta = <>{pages(document.pageCount)} · {document.uploadedBySafety ? 'uploaded' : 'scanned'} <LocalTime iso={document.createdAt} format="date" />
           {document.verifiedAt && <> · {document.number ? <>No. <span className="font-mono">{document.number}</span> · </> : null}{document.expiresOn ? <>expires {date(document.expiresOn)} · </> : null}verified by {document.verifiedBy ?? 'a former account'}</>}</>;
         badge = document.verifiedAt ? <Badge label={expired ? 'Expired' : 'Verified'} tone={expired ? 'danger' : 'success'} /> : <Badge label="Not verified" tone="neutral" />;
         actions = <>{view}
           {renewal && renewals ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
-            : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => { setVerifying(document); setError(''); }}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : 'Verify'}{label}</Button>}</>;
+            : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => open(document)}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : 'Verify'}{label}</Button>}</>;
       }
       return <li key={document.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
         <FileText aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />
@@ -107,14 +115,22 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
         <span className="flex gap-1">{actions}</span>
       </li>;
     })}</ul> : <CardBody><EmptyState compact title="No documents yet" description="The driver scans them while filling in their application." /></CardBody>}
-    {verifying && <Dialog open onClose={() => setVerifying(null)} busy={pending} title={`Verify ${documentLabels[verifying.kind].toLowerCase()}`}
-      description="Open the document, check it’s readable and belongs to this driver, then record what it shows."
-      actions={<Button type="submit" form="verify-document" disabled={pending}>{pending ? 'Saving…' : 'Mark as verified'}</Button>}>
+    {verifying && <Dialog open onClose={() => setVerifying(null)} busy={pending} title={`${checking ? 'Check' : 'Verify'} the ${documentLabels[verifying.kind].toLowerCase()}`}
+      description={verifying.kind === 'WORK_AUTHORIZATION' ? 'Open it and record what it is. Never record passport, card or A-numbers.' : 'Open the document, check it’s readable and belongs to this driver, then record what it shows.'}
+      actions={<Button type="submit" form="verify-document" disabled={pending}>{pending ? 'Saving…' : checking ? <><Check aria-hidden="true" className="size-4" />Checked</> : 'Mark as verified'}</Button>}>
       <form id="verify-document" onSubmit={verify} className="space-y-4">
         <ViewDocumentButton variant="outline" documents={[{ url: fileUrl(verifying), title: documentLabels[verifying.kind], meta: pages(verifying.pageCount) }]}>Open the {documentLabels[verifying.kind].toLowerCase()}</ViewDocumentButton>
         {verifying.kind === 'WORK_AUTHORIZATION'
-          ? <Input label="Expiration date" name="expiresOn" type="date" optional defaultValue={verifying.expiresOn ?? ''} width="md"
-            hint="Leave it empty if the document doesn’t expire. Don’t record passport, card or A-numbers." />
+          ? <>
+            {/* The driver chose what to give; Safety corrects the type only if the scan shows another document. */}
+            <Select label="Document" value={subtype} onChange={event => setSubtype(event.target.value)} placeholder="Choose a document" width="md" required
+              options={Object.entries(workAuthorizationTypes).map(([value, text]) => ({ value, label: text }))}
+              hint={verifying.subtype ? `The driver chose ${workAuthorizationTypes[verifying.subtype] ?? 'another document'}. Change it if the scan shows another document.` : undefined} />
+            {NOT_RECHECKED.includes(subtype)
+              ? <Alert tone="info" title="No expiration date needed"><p>A US passport or green card isn’t re-checked when it expires (Form I-9 rules), so it never shows in Expiring documents.</p></Alert>
+              : <Input label="Expires" name="expiresOn" type="date" required={subtype === 'WORK_PERMIT'} optional={subtype !== 'WORK_PERMIT'} defaultValue={verifying.expiresOn ?? ''} width="sm"
+                hint={`As printed on the ${subtype === 'WORK_PERMIT' ? 'card' : 'document'}. Expiring documents lists it 60 days before, to re-check it.${subtype === 'WORK_PERMIT' ? '' : ' Leave it empty if it doesn’t expire.'}`} />}
+          </>
           : <>
             <Input label="Document number" name="number" optional defaultValue={verifying.number ?? ''} maxLength={40} autoComplete="off" spellCheck={false} width="full" />
             <Input label="Expiration date" name="expiresOn" type="date" required defaultValue={verifying.expiresOn ?? ''} width="md" hint="As printed on the document. Expiring documents lists it 60 days before it expires." />

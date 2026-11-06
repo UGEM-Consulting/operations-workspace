@@ -21,7 +21,7 @@ export class IncidentService {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, version);
    if (voiding ? !CLEARERS.includes(user.role) : !CLEARERS.includes(user.role) && !await ownsDriver(em, user, id))
-    throw new ForbiddenException(voiding ? 'Only the Safety manager can void an entry.' : 'Only the driver’s owner and the Safety manager can record incidents.');
+    throw new ForbiddenException(voiding ? 'Only the Safety manager can void an entry.' : 'Only the driver’s Safety contact and the Safety manager can record incidents.');
    return work(em, driver);
   });
  }

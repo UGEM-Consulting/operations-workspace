@@ -192,7 +192,7 @@ export class RenewalService {
   return driver;
  }
  private async requireRenewer(em: EntityManager, user: User, driver: Driver) {
-  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, driver.id)) throw new ForbiddenException('Only Safety leads, managers and the driver’s owner can renew documents.');
+  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, driver.id)) throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can renew documents.');
   if (!LEAVABLE.includes(driver.status)) throw new ConflictException('Documents are renewed here once the driver is approved.');
  }
  private async mayRenew(em: EntityManager, user: User, id: string) {

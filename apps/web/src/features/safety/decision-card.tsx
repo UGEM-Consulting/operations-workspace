@@ -1,7 +1,7 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
-import { CircleCheck, CornerUpLeft, FileWarning, XCircle } from 'lucide-react';
+import { CircleCheck, CornerUpLeft, Download, FileWarning, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
@@ -13,7 +13,8 @@ import { PendingHint } from '@/components/ui/pending-hint';
 import { statusLabel } from '@/components/ui/status-badge';
 import { Timeline } from '@/components/ui/timeline';
 import { useToast } from '@/components/ui/toast';
-import { ApiError, errorMessage, mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate, responseError } from '@/lib/client-api';
+import { downloadBlob } from '@/features/documents/pdf';
 import { useToday } from './driver-documents';
 import { CLEARANCE_ITEMS, type DriverProfile, type DriverReviewRow } from './types';
 
@@ -24,7 +25,7 @@ const actions: Record<string, { title: string; tone?: 'success' | 'warning' | 'd
   PRE_ADVERSE: { title: 'Pre-adverse notice sent', tone: 'warning' }, REJECTED: { title: 'Rejected: final notice sent', tone: 'danger' },
 };
 const dialogs: Record<Decision, { title: (name: string) => string; description: string; button: string; done: string }> = {
-  APPROVE: { title: name => `Approve ${name}?`, description: 'The Safety lead then assigns a safety staff owner, who runs the clearance checklist.', button: 'Approve', done: 'Driver approved' },
+  APPROVE: { title: name => `Approve ${name}?`, description: 'The Safety lead then assigns a Safety contact, who runs the clearance checklist.', button: 'Approve', done: 'Driver approved' },
   MORE_INFO: { title: () => 'Send back to screening?', description: 'The Safety lead looks into what you ask and sends the driver to you again.', button: 'Send back', done: 'Sent back to screening' },
   PRE_ADVERSE: { title: () => 'Record the pre-adverse notice', button: 'Record notice', done: 'Pre-adverse notice recorded',
     description: 'Before rejecting a driver because of their MVR or another background report, send them a pre-adverse notice with a copy of the report and “A Summary of Your Rights Under the Fair Credit Reporting Act”. They then have 5 business days to respond. The workspace doesn’t send it for you. After you record it, this card shows the first day the rejection can be final.' },
@@ -63,10 +64,29 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
   const notice = screening.reviews.find(row => row.action === 'PRE_ADVERSE');
   // The browser's date decides only whether the button is offered; the API checks the waiting period again.
   const canReject = !!(finalFrom && waitEndsToday && waitEndsToday >= finalFrom);
+  // The letter for the open dialog, when one is published; the pre-adverse one comes with the driver's current MVR.
+  const letter = decision === 'PRE_ADVERSE' ? driver.noticeLetters?.PRE_ADVERSE ?? null : decision === 'REJECT' ? driver.noticeLetters?.FINAL ?? null : null;
+  // The letter is fetched first, so a refusal (too many downloads, a decision that changed) shows a message instead of
+  // saving an error page as the letter.
+  const [downloading, setDownloading] = useState(false), [letterError, setLetterError] = useState('');
+  async function downloadLetter(kind: 'pre-adverse' | 'final') {
+    const path = `safety/drivers/${driver.id}/letters/${kind}`;
+    setDownloading(true); setLetterError('');
+    try {
+      const response = await fetch(`/api/backend/${path}`, { credentials: 'same-origin' });
+      if (!response.ok) {
+        const json = response.headers.get('content-type')?.includes('application/json') ?? false;
+        throw responseError(path, response.status, json ? await response.json().catch(() => null) : null, json);
+      }
+      downloadBlob(await response.blob(), `${kind}-notice.pdf`);
+    } catch (error) { setLetterError(errorMessage(error, 'The letter couldn’t be prepared. Try again.')); }
+    finally { setDownloading(false); }
+  }
+  const withMvr = decision === 'PRE_ADVERSE' && !!screening.mvr, letterPages = (letter?.pageCount ?? 0) + (withMvr ? screening.mvr!.pageCount : 0);
   const concerns = screening.checks.filter(check => check.result === 'CONCERN').length;
   const clearing = driver.status === 'APPROVED';
   const failed = clearing ? (driver.clearance?.items ?? []).filter(item => item.status === 'BLOCKED' && item.result) : [];
-  function start(next: Decision) { setDecision(next); setError(''); setConflict(false); }
+  function start(next: Decision) { setDecision(next); setError(''); setConflict(false); setLetterError(''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!decision || pending) return;
@@ -121,7 +141,15 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
         {(decision === 'PRE_ADVERSE' || decision === 'REJECT') && <>
           <Textarea label="Reason" name="note" required maxLength={2000} rows={4} defaultValue={decision === 'REJECT' ? notice?.note ?? '' : ''}
             hint={decision === 'REJECT' ? 'Filled in from the pre-adverse notice; change it if your reason changed. Safety only.' : 'Safety only. Never write SSNs, medical or drug test details.'} />
-          <Input label="Date the notice was sent" name="noticeSentOn" type="date" required width="md" defaultValue={today ?? ''} max={today ?? undefined}
+          {/* The published letter filled in for this driver (NoticePreAdverseScreen, NoticeFinalScreen); Safety sends it. */}
+          {letter && <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3">
+            <div className="min-w-0 text-sm"><p className="font-medium">{decision === 'REJECT' ? 'Final letter' : 'Letter'} for {name}</p>
+              <p className="text-[13px] text-muted-foreground">{decision === 'REJECT' ? 'Final notice' : 'Pre-adverse notice'} version {letter.version}, filled in{withMvr ? <> · their MVR pulled {day(screening.mvr!.pulledOn)} attached</> : null} · {letterPages} {letterPages === 1 ? 'page' : 'pages'}</p></div>
+            <Button type="button" variant="outline" disabled={downloading} onClick={() => void downloadLetter(decision === 'REJECT' ? 'final' : 'pre-adverse')}>
+              <Download aria-hidden="true" className="size-4" />{downloading ? 'Preparing…' : 'Download letter'}</Button>
+            {letterError && <p role="alert" className="w-full text-[13px] text-danger">{letterError}</p>}
+          </div>}
+          <Input label="Date you sent it" name="noticeSentOn" type="date" required width="md" defaultValue={today ?? ''} max={today ?? undefined}
             min={decision === 'REJECT' ? finalFrom ?? undefined : undefined} />
           <Checkbox name="noticeSent" required label={decision === 'PRE_ADVERSE' ? 'I sent the driver the pre-adverse notice, a copy of the report and the summary of rights.' : 'I sent the driver the final adverse action notice.'} />
         </>}

@@ -45,12 +45,12 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
     return '—';
   };
   return <div className="space-y-6">
-    <PageHeader title="Expiring documents" description={`Verified licenses, medical cards and work authorizations that have expired or expire within ${data.warningDays} days, and yearly driver reviews that are due. Open the driver to act.`} />
+    <PageHeader title="Expiring documents" description={`Licenses, medical cards and work permits that have expired or expire within ${data.warningDays} days, and yearly driver reviews that are due. Open the driver to act.`} />
     <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       <StatCard label="Expired" value={data.items.filter(item => item.expired).length} detail="Renew or replace them now" href={href('all')} tone="danger" />
       <StatCard label="Within 30 days" value={data.items.filter(item => !item.expired && item.expiresOn <= soon).length} detail="Contact the driver now" href={href('all')} tone="warning" />
       <StatCard label={`Within ${data.warningDays} days`} value={data.items.filter(item => !item.expired && item.expiresOn > soon).length} detail="Coming up" href={href('all')} tone="neutral" />
-      <StatCard label="Yours" value={mine.length} detail="Drivers you own" href={href('mine')} tone="info" />
+      <StatCard label="Yours" value={mine.length} detail="Drivers you’re the Safety contact for" href={href('mine')} tone="info" />
     </div>
     <Card>
       <FilterBar path="/safety/expiring" filters={filters} defaults={EXPIRING_DEFAULTS} statusKey="view" searchLabel="Search driver" statuses={[{ key: 'mine', label: 'My drivers', count: mine.length }, { key: 'all', label: 'All', count: data.items.length }]} />
@@ -61,7 +61,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
           { key: 'document', label: 'Document', cell: item => (documentLabels[item.kind as DocumentKind] ?? ownerDocumentLabels[item.kind as keyof typeof ownerDocumentLabels] ?? 'Document') + (item.truck ? ` · unit ${item.truck}` : '') },
           { key: 'expires', label: 'Expires', nowrap: true, cell: item => <>{day(item.expiresOn)} <Badge label={item.expired ? 'Expired' : 'Expiring'} tone={item.expired ? 'danger' : 'warning'} /></> },
           { key: 'renewal', label: 'Renewal', hideBelow: 'md', cell: renewalState },
-          { key: 'owner', label: 'Owner', hideBelow: 'xl', cell: item => item.owner?.name ?? '—' },
+          { key: 'owner', label: 'Safety contact', hideBelow: 'xl', cell: item => item.owner?.name ?? '—' },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => renewable(item) ? <ExpiringRenewal kind={item.kind as RenewalKind} scan={item.renewal?.scan ?? null} link={item.renewal?.link ?? null} expired={item.expired}
             name={`${item.firstName} ${item.lastName}`.trim()} driver={{ id: item.driverId, firstName: item.firstName, email: item.email ?? null, version: item.version! }} /> : null },
         ]} />
@@ -73,7 +73,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
           { key: 'driver', label: 'Yearly review', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'due', label: 'Due', cell: item => <>{day(item.dueOn)} <Badge label={item.notQualified ? 'Not qualified' : item.overdue ? 'Overdue' : 'Due soon'} tone={item.notQualified || item.overdue ? 'danger' : 'warning'} /></> },
           { key: 'last', label: 'Last review', hideBelow: 'md', cell: item => item.lastReviewedOn ? day(item.lastReviewedOn) : 'None yet' },
-          { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner ?? '—' },
+          { key: 'owner', label: 'Safety contact', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>
     {reviews.tests && reviews.tests.length > 0 && <Card>
@@ -81,7 +81,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
         columns={[
           { key: 'driver', label: 'Test follow-up', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'test', label: 'Latest result', cell: item => <>{item.kind === 'DRUG' ? 'Drug' : 'Alcohol'} · {day(item.testedOn)} <Badge label={item.result === 'REFUSED' ? 'Refused' : 'Not negative'} tone="danger" /></> },
-          { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner ?? '—' },
+          { key: 'owner', label: 'Safety contact', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>}
     {reviews.incidents && reviews.incidents.length > 0 && <Card>
@@ -89,7 +89,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
         columns={[
           { key: 'driver', label: 'Open incidents', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'what', label: 'What', cell: item => <>{item.kind === 'ACCIDENT' ? 'Accident' : 'Violation'} · {day(item.occurredOn)} <Badge label={item.kind === 'ACCIDENT' ? 'Preventability open' : 'Pending'} tone="warning" /></> },
-          { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner ?? '—' },
+          { key: 'owner', label: 'Safety contact', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>}
   </div>;

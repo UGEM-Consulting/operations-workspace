@@ -33,7 +33,7 @@ const navigation = [
   // Driver license, medical card and work authorization scans that expired or expire soon.
   { key: 'expiring', href: '/safety/expiring', label: 'Expiring documents', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   // The consent forms drivers sign; the Safety manager publishes them.
-  { key: 'consents', href: '/safety/consents', label: 'Consent forms', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
+  { key: 'consents', href: '/safety/consents', label: 'Forms and letters', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', section: 'IT', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
   { key: 'lists', href: '/lists', label: 'Lists', section: 'Admin', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'users', href: '/staff-accounts', label: 'Staff accounts', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },

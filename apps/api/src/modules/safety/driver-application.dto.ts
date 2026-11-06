@@ -132,10 +132,12 @@ export class DriverDocumentDto {
 }
 /**
  * Safety's record of what the document shows, against the version the person saw. Empty strings clear a value. The
- * service requires the expiry of a license or medical card and refuses a number for work authorization.
+ * service requires the expiry of a license or medical card and refuses a number for work authorization. For a work
+ * authorization, subtype corrects the type the driver chose (an older page sends none, which keeps it).
  */
 export class VerifyDocumentDto {
  @IsInt() @Min(1) version!: number;
+ @IsOptional() @IsIn(WORK_AUTHORIZATION_TYPES) subtype?: WorkAuthorizationType;
  @text() @IsOptional() @IsString() @MaxLength(40) number?: string;
  @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the expiration as a full date.' }) expiresOn?: string;
 }

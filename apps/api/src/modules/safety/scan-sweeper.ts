@@ -19,6 +19,8 @@ const REPORTS = `SELECT id FROM driver_reports WHERE id = ANY($1::uuid[])`;
 const OWNER_DOCUMENTS = `SELECT id FROM driver_owner_documents WHERE id = ANY($1::uuid[])`;
 // A consent form whose publish never committed; every published version is kept.
 const CONSENTS = `SELECT id FROM driver_consent_documents WHERE id = ANY($1::uuid[])`;
+// A notice letter whose publish never committed; every published version is kept.
+const LETTERS = `SELECT id FROM driver_notice_letters WHERE id = ANY($1::uuid[])`;
 /**
  * Each listed prefix, and which file patterns under it are swept against which rows (both storage layouts). The captured
  * group is the record ID. A file matching no pattern, such as a saved signed copy under drivers/<driver>/signed/, is never touched.
@@ -32,6 +34,7 @@ const SWEPT = [
  { prefix: 'driver-reports/', rules: [{ pattern: new RegExp(`^driver-reports/${U}/(${U})\\.pdf$`), kept: REPORTS }] },
  { prefix: 'driver-consents/', rules: [{ pattern: new RegExp(`^driver-consents/(${U})\\.pdf$`), kept: CONSENTS }] },
  { prefix: 'company-documents/driver-consents/', rules: [{ pattern: new RegExp(`^company-documents/driver-consents/${S}/(${U})\\.pdf$`), kept: CONSENTS }] },
+ { prefix: 'company-documents/notice-letters/', rules: [{ pattern: new RegExp(`^company-documents/notice-letters/${S}/(${U})\\.pdf$`), kept: LETTERS }] },
 ] as const;
 
 /**

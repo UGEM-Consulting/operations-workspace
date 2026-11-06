@@ -152,7 +152,7 @@ export class ClearanceService {
  private write<T>(user: User, id: string, version: number, work: (em: EntityManager, driver: Driver) => Promise<T>) {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, version);
-   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s owner and the Safety manager can work on clearance.');
+   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety contact and the Safety manager can work on clearance.');
    if (driver.status === 'CLEARED') throw new ConflictException('This driver is already cleared.');
    if (driver.status !== 'APPROVED') throw new ConflictException('Clearance starts once the Safety manager approves the driver.');
    return work(em, driver);

@@ -172,7 +172,7 @@ export class DriverAccessService {
   * draft scan was never reviewed. Allowed only before submission.
   */
  async uploadDocument(req: Request, segment: string, dto: DriverDocumentDto) {
-  const kind = DOCUMENT_SEGMENTS[segment];
+  const kind = Object.hasOwn(DOCUMENT_SEGMENTS, segment) ? DOCUMENT_SEGMENTS[segment] : undefined;
   if (!kind) throw new NotFoundException();
   if (!this.storage.enabled) throw new ServiceUnavailableException('Document uploads aren’t available right now. Please contact Safety.');
   if ((kind === 'WORK_AUTHORIZATION') !== !!dto.subtype) throw new BadRequestException(kind === 'WORK_AUTHORIZATION' ? 'Choose which document you’re scanning.' : 'Only work authorization takes a document type.');
