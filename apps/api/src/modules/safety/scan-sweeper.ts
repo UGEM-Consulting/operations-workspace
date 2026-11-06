@@ -9,11 +9,18 @@ import { StorageService } from '../storage/storage.service';
 export const LEFTOVER_SCAN_AGE_MS = 24 * 3600_000;
 const SWEEP_MS = 6 * 3600_000, BATCH = 500;
 const U = '[0-9a-f-]{36}', S = '[a-z]+(?:-[a-z]+)*';
-const SCANS = `SELECT id FROM driver_documents WHERE id = ANY($1::uuid[]) AND NOT ("replacedAt" IS NOT NULL AND "verifiedAt" IS NULL)`;
+// A replaced scan nobody verified goes, unless it was the current scan when the driver sent their application (a
+// renewal replaced it later): that one is kept like a verified one (sentWithApplication).
+const SCANS = `SELECT d.id FROM driver_documents d LEFT JOIN driver_applications a ON a."driverId" = d."driverId" WHERE d.id = ANY($1::uuid[])
+ AND NOT (d."replacedAt" IS NOT NULL AND d."verifiedAt" IS NULL AND NOT (a."submittedAt" IS NOT NULL AND d."createdAt" <= a."submittedAt" AND d."replacedAt" > a."submittedAt"))`;
 // Every MVR row is kept, replaced ones included; only a file no row names (an upload that never committed) is a leftover.
 const REPORTS = `SELECT id FROM driver_reports WHERE id = ANY($1::uuid[])`;
+// An owner-operator document (all versions are kept); only a file no row names is a leftover.
+const OWNER_DOCUMENTS = `SELECT id FROM driver_owner_documents WHERE id = ANY($1::uuid[])`;
 // A consent form whose publish never committed; every published version is kept.
 const CONSENTS = `SELECT id FROM driver_consent_documents WHERE id = ANY($1::uuid[])`;
+// A notice letter whose publish never committed; every published version is kept.
+const LETTERS = `SELECT id FROM driver_notice_letters WHERE id = ANY($1::uuid[])`;
 /**
  * Each listed prefix, and which file patterns under it are swept against which rows (both storage layouts). The captured
  * group is the record ID. A file matching no pattern, such as a saved signed copy under drivers/<driver>/signed/, is never touched.
@@ -22,16 +29,19 @@ const SWEPT = [
  { prefix: 'drivers/', rules: [
   { pattern: new RegExp(`^drivers/${U}/(?:documents/${S}/)?(${U})\\.pdf$`), kept: SCANS },
   { pattern: new RegExp(`^drivers/${U}/reports/${S}/(${U})\\.pdf$`), kept: REPORTS },
+  { pattern: new RegExp(`^drivers/${U}/owner-operator/${S}/(${U})\\.pdf$`), kept: OWNER_DOCUMENTS },
  ] },
  { prefix: 'driver-reports/', rules: [{ pattern: new RegExp(`^driver-reports/${U}/(${U})\\.pdf$`), kept: REPORTS }] },
  { prefix: 'driver-consents/', rules: [{ pattern: new RegExp(`^driver-consents/(${U})\\.pdf$`), kept: CONSENTS }] },
  { prefix: 'company-documents/driver-consents/', rules: [{ pattern: new RegExp(`^company-documents/driver-consents/${S}/(${U})\\.pdf$`), kept: CONSENTS }] },
+ { prefix: 'company-documents/notice-letters/', rules: [{ pattern: new RegExp(`^company-documents/notice-letters/${S}/(${U})\\.pdf$`), kept: LETTERS }] },
 ] as const;
 
 /**
  * Removes driver scan files nothing should keep: a file with no driver_documents row (the API stopped between storing it
  * and committing, or its driver was deleted) and a replaced scan Safety never verified whose best-effort removal failed.
- * Current scans and verified ones (kept when a reopened application replaces them) are never touched, and neither is any
+ * Current scans, verified ones (kept when a reopened application replaces them) and ones the driver sent with their
+ * application (kept when a renewal replaces them) are never touched, and neither is any
  * MVR or consent form (in either storage layout) that a row names, or any saved signed copy. Runs at startup
  * and every 6 hours; overlapping instances are harmless because removal is idempotent. Each file is checked against its
  * own row, and any failure stops the sweep, so a failed query never reads as "nothing is referenced".

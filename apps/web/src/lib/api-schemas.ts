@@ -117,6 +117,10 @@ export const teamViewSchema = z.looseObject({
 export const promotionListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, status: text, version: z.number(), createdAt: text })) });
 
 const safetyPerson = z.looseObject({ id: text, name: text }).nullable();
+// Renewing a license or medical card: an open link (never its token) and a scan the driver sent.
+const renewalLink = z.looseObject({ createdAt: text, expiresAt: text, openedAt: nullableText, expired: z.boolean() });
+const renewalScan = z.looseObject({ id: text, version: z.number(), pageCount: z.number(), createdAt: text, unreadable: z.boolean() });
+const renewalRow = z.looseObject({ kind: z.enum(['LICENSE', 'MEDICAL_CARD']), checked: z.looseObject({ id: text, expiresOn: nullableText, current: z.boolean() }).nullable(), link: renewalLink.nullable(), scan: renewalScan.nullable() });
 const driverRow = z.looseObject({ id: text, firstName: text, lastName: text, phone: text, email: nullableText, driverType: text, status: text, version: z.number(), createdAt: text,
   closedAt: nullableText, safetyLead: safetyPerson, owner: safetyPerson });
 /** GET /safety/people: who can be a driver's Safety lead or owner. */
@@ -133,6 +137,8 @@ export const driverProfileSchema = driverRow.extend({
     // From an API with address and work history; a malformed value is dropped.
     history: z.looseObject({ jobs: z.array(z.looseObject({ id: text, company: text, fromMonth: text })).optional() }).nullable().optional().catch(undefined) }).nullable().optional(),
   documents: z.array(z.looseObject({ id: text, kind: text, pageCount: z.number(), createdAt: text, verifiedAt: nullableText })).optional(),
+  // From an API with renewals; a malformed value is dropped, so the profile still loads without the Renew buttons.
+  renewals: z.array(renewalRow).optional().catch(undefined),
   // From an API with screening and decisions. A malformed value is dropped, so the profile still loads without it.
   screening: z.looseObject({
     checks: z.array(z.looseObject({ key: text, result: z.enum(['PASS', 'CONCERN']), note: nullableText, checkedAt: text, checkedBy: nullableText })),
@@ -148,11 +154,34 @@ export const driverProfileSchema = driverRow.extend({
   clearance: z.looseObject({ items: z.array(z.looseObject({ key: text, status: text, result: nullableText, doneOn: nullableText, note: nullableText })),
     employers: z.array(z.looseObject({ id: text, name: text, fromMonth: text, toMonth: text, requestedOn: nullableText, answeredOn: nullableText, goodFaithOn: nullableText.optional().catch(undefined), goodFaithNote: nullableText.optional().catch(undefined) })), missing: z.array(text) }).optional().catch(undefined),
   assignments: z.array(z.looseObject({ id: text, startedAt: text, endedAt: nullableText, truck: nullableText, mc: text, team: nullableText, dispatcher: text })).optional().catch(undefined),
+  // From an API with yearly reviews, testing, incidents and trucks. A malformed value is dropped and its card isn't shown.
+  annualReviews: z.looseObject({ items: z.array(z.looseObject({ id: text, reviewedOn: text, outcome: text, note: nullableText, reviewer: nullableText,
+    mvr: z.looseObject({ id: text, pulledOn: text, pageCount: z.number() }).nullable() })), dueOn: nullableText, notQualified: z.boolean(), storageEnabled: z.boolean().optional().catch(undefined) }).optional().catch(undefined),
+  // hidden: the results aren't shown to this viewer, so there are no items.
+  testing: z.looseObject({ items: z.array(z.looseObject({ id: text, kind: text, reason: text, testedOn: text, result: text, note: nullableText, voidedAt: nullableText })).optional(),
+    hidden: z.boolean().optional() }).optional().catch(undefined),
+  incidents: z.looseObject({ items: z.array(z.looseObject({ id: text, kind: text, occurredOn: text, summary: text, note: nullableText, voidedAt: nullableText })) }).optional().catch(undefined),
+  hold: z.looseObject({ onHold: z.boolean(), test: z.boolean().nullable(), review: z.boolean(), documents: z.boolean().optional() }).optional().catch(undefined),
+  noticeLetters: z.looseObject({ PRE_ADVERSE: z.looseObject({ version: z.number(), pageCount: z.number() }).nullable(), FINAL: z.looseObject({ version: z.number(), pageCount: z.number() }).nullable() }).optional().catch(undefined),
+  trucks: z.looseObject({ items: z.array(z.looseObject({ id: text, unit: text, vin: text, year: z.number(), make: text, archivedAt: nullableText,
+    documents: z.array(z.looseObject({ id: text, kind: text, expiresOn: nullableText, pageCount: z.number() })).default([]) })) }).optional().catch(undefined),
 });
 
 /** GET /safety/consents: the consent forms drivers sign. */
 export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), canPublish: z.boolean(),
-  kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
+  kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })),
+  // The notice letters, from an API with them; a malformed value is dropped and the page shows the consent forms only.
+  letters: z.array(z.looseObject({ kind: z.enum(['PRE_ADVERSE', 'FINAL']), label: text, versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })).optional().catch(undefined) });
+
+export const trucksSchema = z.looseObject({ today: text, items: z.array(z.looseObject({ id: text, driverId: text, firstName: text, lastName: text, unit: text, vin: text, year: z.number(), make: text, plate: nullableText, plateState: nullableText,
+  archivedAt: nullableText, insuranceExpiresOn: nullableText, registrationExpiresOn: nullableText, hasLease: z.boolean() })) });
+export const dueReviewsSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, owner: nullableText, lastReviewedOn: nullableText, dueOn: text, notQualified: z.boolean(), overdue: z.boolean() })),
+  tests: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, kind: z.enum(['DRUG', 'ALCOHOL']), result: text, testedOn: text, owner: nullableText })).optional().catch(undefined),
+  incidents: z.array(z.looseObject({ incidentId: text, driverId: text, firstName: text, lastName: text, kind: z.enum(['ACCIDENT', 'VIOLATION', 'INSPECTION']), occurredOn: text, owner: nullableText })).optional().catch(undefined) });
+export const expiringSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ documentId: text, driverId: text, kind: text, expiresOn: text, firstName: text, lastName: text, status: text, owner: z.looseObject({ name: text }).nullable().catch(null), expired: z.boolean(),
+  // From an API with renewals: the driver's version and where a license or medical card renewal stands.
+  version: z.number().optional().catch(undefined), email: nullableText.optional().catch(undefined),
+  renewal: z.looseObject({ link: renewalLink.nullable(), scan: renewalScan.nullable() }).nullable().optional().catch(undefined) })) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
 export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN']), id: text,
@@ -182,7 +211,7 @@ export async function readResponse<T>(response: Response, resource: string, sche
 }
 
 /** GET /dispatch/drivers and /team/drivers: cleared drivers and where they work. */
-export const dispatchDriverListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, phone: text, driverType: text, version: z.number(), clearedAt: text,
+export const dispatchDriverListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, phone: text, driverType: text, version: z.number(), clearedAt: text, onHold: z.boolean().optional().catch(undefined),
   assignment: z.looseObject({ mcId: text, mc: text, memberId: text, dispatcher: text }).nullable() })) });
 /** GET /dispatch/drivers/options and /team/drivers/options: MCs and the dispatchers in teams under each. */
 export const dispatchDriverOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean().optional().catch(undefined), dispatchers: z.array(z.looseObject({ id: text, name: text, team: text })) })) });

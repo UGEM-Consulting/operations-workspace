@@ -1,3 +1,4 @@
+import { upper, filled } from './dto-helpers';
 import { Transform, Type } from 'class-transformer';
 import { applyDecorators } from '@nestjs/common';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsBoolean, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
@@ -7,9 +8,7 @@ import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requireme
 import { VERIFICATION_CODE_PATTERN } from '../onboarding/verification-code';
 import { LICENSE_TYPES, type LicenseType, US_STATES, WORK_AUTHORIZATION_TYPES, type WorkAuthorizationType } from './safety.entity';
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : value);
-const upper = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toUpperCase() : value);
 // Drafts may leave any answer empty; a format is checked only once something is entered. Submission checks completeness.
-const filled = (_object: unknown, value: unknown) => value !== undefined && value !== null && value !== '';
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const PHONE = { message: 'Enter a phone number with 7 to 15 digits.' };
 
@@ -133,10 +132,12 @@ export class DriverDocumentDto {
 }
 /**
  * Safety's record of what the document shows, against the version the person saw. Empty strings clear a value. The
- * service requires the expiry of a license or medical card and refuses a number for work authorization.
+ * service requires the expiry of a license or medical card and refuses a number for work authorization. For a work
+ * authorization, subtype corrects the type the driver chose (an older page sends none, which keeps it).
  */
 export class VerifyDocumentDto {
  @IsInt() @Min(1) version!: number;
+ @IsOptional() @IsIn(WORK_AUTHORIZATION_TYPES) subtype?: WorkAuthorizationType;
  @text() @IsOptional() @IsString() @MaxLength(40) number?: string;
  @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the expiration as a full date.' }) expiresOn?: string;
 }

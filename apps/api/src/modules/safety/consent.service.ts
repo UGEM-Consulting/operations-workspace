@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Request } from 'express';
 import { DataSource } from 'typeorm';
-import { executedDocument, inspectPdf } from '../documents/certificate';
+import { executedDocument } from '../documents/certificate';
 import type { ClientContext } from '../documents/client-context';
 import type { ApplicantSignatureDto } from '../documents/documents.dto';
 import type { FileResult } from '../documents/documents.service';
 import { checkedFields } from '../documents/fields';
-import { assertSignatureEmbeds, decodePdf, decodeSignature, sha256 } from '../documents/images';
+import { assertSignatureEmbeds, decodeSignature, sha256 } from '../documents/images';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { CURRENT_LAYOUT, driverConsentKey, StorageService } from '../storage/storage.service';
 import { User } from '../users/user.entity';
@@ -16,6 +16,7 @@ import { CONSENT_KINDS, CONSENT_RULES, consentStatement, DRIVER_ESIGN_CONSENT, D
 import { currentConsents } from './consent-rules';
 import { DriverAccessService } from './driver-access.service';
 import { DECIDERS, driverEvent } from './driver-records';
+import { publishPdfVersion, readPublishedPdf } from './published-pdfs';
 
 /**
  * Driver consent forms: the Safety manager (or an administrator) publishes each form as an immutable PDF version, and
@@ -39,20 +40,12 @@ export class ConsentService {
   if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety manager publishes consent forms.');
   this.requireStorage();
   await onboardingLimit(this.db, `consent-publish:${user.id}`, 10, 3600);
-  const file = decodePdf(dto.file);
-  const pageCount = await inspectPdf(file).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
+  const { file, pageCount } = await readPublishedPdf(dto.file);
   // Acknowledged forms still take a typed name; only a signed one has somewhere to sign. Nobody countersigns.
   const fields = checkedFields(dto.fields, pageCount, { signature: CONSENT_RULES[dto.kind].signature, typedName: true, countersign: false, americanName: false });
   const id = randomUUID(), stored = { id, kind: dto.kind, storageLayout: CURRENT_LAYOUT };
-  await this.storage.put(driverConsentKey(stored), file, 'application/pdf');
-  try {
-   return await this.db.transaction(async em => {
-    // Publishers of one kind take turns, so version numbers stay sequential.
-    await em.query('SELECT pg_advisory_xact_lock(42002032, $1)', [CONSENT_KINDS.indexOf(dto.kind)]);
-    const [{ next }] = await em.query('SELECT COALESCE(MAX(version), 0) + 1 AS next FROM driver_consent_documents WHERE kind = $1', [dto.kind]);
-    return em.getRepository(DriverConsentDocument).save({ id, kind: dto.kind, version: Number(next), title: dto.title, sha256: sha256(file), byteSize: file.length, pageCount, uploadedBy: user.id, storageLayout: CURRENT_LAYOUT, fields });
-   });
-  } catch (error) { await this.storage.remove(driverConsentKey(stored)); throw error; }
+  return publishPdfVersion(this.db, this.storage, { file, key: driverConsentKey(stored), lock: CONSENT_KINDS.indexOf(dto.kind), table: 'driver_consent_documents', kind: dto.kind,
+   save: (em, version) => em.getRepository(DriverConsentDocument).save({ id, kind: dto.kind, version, title: dto.title, sha256: sha256(file), byteSize: file.length, pageCount, uploadedBy: user.id, storageLayout: CURRENT_LAYOUT, fields }) });
  }
 
  async staffFile(id: string): Promise<FileResult> {

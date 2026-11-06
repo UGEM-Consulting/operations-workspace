@@ -1,7 +1,10 @@
-import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
+import type { Request } from 'express';
+import type {} from '../auth/session';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import { Role, User } from '../users/user.entity';
-import { CLOSED_STATUSES, Driver, DriverEvent, DriverEventType, DriverOwner } from './safety.entity';
+import { CLOSED_STATUSES, Driver, DriverEvent, DriverEventType, DriverLink, DriverOwner, type RenewalKind } from './safety.entity';
 
 export const SAFETY_ROLES = [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF];
 /** Who may add leads, change any driver, screen, withdraw and assign owners. Safety staff change only drivers they own. */
@@ -13,7 +16,7 @@ export const STALE = 'Someone else changed this driver. Reload and try again.';
 const DUPLICATES: Record<string, string> = {
  UQ_drivers_open_phone: 'Another open driver record already has this phone number.',
  UQ_drivers_open_email: 'Another open driver record already has this email.',
- UQ_driver_owners_open: 'This driver’s owner changed at the same time. Reload and try again.',
+ UQ_driver_owners_open: 'This driver’s Safety contact changed at the same time. Reload and try again.',
  UQ_driver_reports_current: 'Someone else uploaded a report at the same time. Reload and try again.',
 };
 
@@ -40,6 +43,33 @@ export async function writeDriver<T>(db: DataSource, work: (em: EntityManager) =
   throw error;
  }
 }
+/** Production (and its own deployment purpose) sends links and codes to real addresses; elsewhere only example.test. */
+export const isProduction = (config: ConfigService) => config.get('NODE_ENV') === 'production' || config.get('DEPLOYMENT_PURPOSE') === 'production';
+/**
+ * Stops a driver's open links: every one, or only those of one purpose (and document). True when one was open. The
+ * application link and renewal links are bound to the same email, so an email change stops them all.
+ */
+export async function revokeOpenLinks(em: EntityManager, driverId: string, only: { purpose?: DriverLink['purpose']; documentKind?: RenewalKind } = {}) {
+ return !!(await em.getRepository(DriverLink).update({ driverId, revokedAt: IsNull(), completedAt: IsNull(), ...only }, { revokedAt: new Date() })).affected;
+}
+/**
+ * The link this driver session verified (an hour, then a fresh code). Each caller then applies its own rules: the
+ * application routes need an application link, the renewal routes a renewal link.
+ */
+export async function sessionLink(em: EntityManager, req: Request) {
+ const linkId = req.session?.driverLinkId;
+ if (!linkId || !req.session.expiresAt || req.session.expiresAt <= Date.now()) throw new UnauthorizedException('Please verify your email again.');
+ const link = await em.getRepository(DriverLink).findOneBy({ id: linkId });
+ if (!link) throw new UnauthorizedException('Please verify your email again.');
+ return link;
+}
+/**
+ * Whether an unchecked scan was part of the application the driver sent: the current scan when they submitted. It is kept
+ * when something replaces it (deleting kept scans belongs to the retention job, which isn't authorized), and it is never
+ * a renewal scan waiting for its check.
+ */
+export const sentWithApplication = (document: { createdAt: Date }, submittedAt: Date | null) => !!submittedAt && document.createdAt.getTime() <= submittedAt.getTime();
+
 /** Metadata only: field names, kinds and flags, never values, reasons or notes. */
 export function driverEvent(em: EntityManager, actorId: string | null, driverId: string, event: DriverEventType, metadata: Record<string, unknown>) {
  return em.getRepository(DriverEvent).save({ driverId, actorId, event, metadata });

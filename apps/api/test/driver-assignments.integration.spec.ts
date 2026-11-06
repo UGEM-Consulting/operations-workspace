@@ -13,7 +13,7 @@ import { installSessions } from '../src/modules/auth/session';
 import { hashPassword } from '../src/modules/auth/password';
 import { User, Role, UserStatus } from '../src/modules/users/user.entity';
 import { DispatchModule } from '../src/modules/dispatch/dispatch.module';
-import { usDay } from '../src/modules/safety/screening-rules';
+import { addDays, usDay } from '../src/modules/safety/screening-rules';
 type Agent = ReturnType<typeof request.agent>;
 type Key = 'manager' | 'lead' | 'safety';
 const integration = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -71,7 +71,7 @@ integration('Assigning cleared drivers to dispatch (disposable PostgreSQL)', () 
     await one(`INSERT INTO drivers ("firstName", "lastName", phone, "phoneKey", "driverType", status) VALUES ('Still', 'Approved', '5550109999', '5550109999', 'COMPANY', 'APPROVED') RETURNING id`, []);
     const body = await list(agents.manager, 'dispatch');
     expect(body.items.map((row: { id: string }) => row.id)).toEqual([sam.id]);
-    expect(Object.keys(body.items[0]).sort()).toEqual(['assignment', 'clearedAt', 'clearedBy', 'driverType', 'firstName', 'id', 'lastName', 'licenseType', 'phone', 'version']);
+    expect(Object.keys(body.items[0]).sort()).toEqual(['assignment', 'clearedAt', 'clearedBy', 'driverType', 'firstName', 'id', 'lastName', 'licenseType', 'onHold', 'phone', 'version']);
     expect(JSON.stringify(body)).not.toContain('Safety-only note');
     // Options: active dispatchers in open teams, grouped by MC.
     const options = (await agents.manager.get('/api/dispatch/drivers/options').set(headers).expect(200)).body;
@@ -110,6 +110,42 @@ integration('Assigning cleared drivers to dispatch (disposable PostgreSQL)', () 
     // Only cleared drivers.
     const approved = await one<{ id: string }>(`INSERT INTO drivers ("firstName", "lastName", phone, "phoneKey", "driverType", status) VALUES ('Not', 'Cleared', '5550108888', '5550108888', 'COMPANY', 'APPROVED') RETURNING id`, []);
     await assign(agents.manager, 'dispatch', approved.id, { version: 1, mcId: northwind, memberId: taylor.id, startsOn: today() }).expect(409);
+  });
+
+  it('refuses to assign a driver Safety put on hold, without saying why, until Safety lifts it', async () => {
+    const sam = await cleared('Sam', '5550102600');
+    const first = (await assign(agents.manager, 'dispatch', sam.id, { version: sam.version, mcId: northwind, memberId: taylor.id, startsOn: today() }).expect(201)).body;
+    const recordTest = (result: string, daysAgo: number) => db.query(`INSERT INTO driver_tests ("driverId", kind, reason, "testedOn", result) VALUES ($1, 'DRUG', 'RANDOM', current_date - $2::int, $3)`, [sam.id, daysAgo, result]);
+    // A refused test puts the driver on hold: Dispatch sees only that. Their dispatcher can still hand them over.
+    await recordTest('REFUSED', 1);
+    const row = (await list(agents.manager, 'dispatch')).items[0];
+    expect(row).toMatchObject({ onHold: true, assignment: { dispatcher: 'Taylor Fictional' } });
+    expect(JSON.stringify(row)).not.toMatch(/REFUSED|DRUG/);
+    const handed = (await assign(agents.manager, 'dispatch', sam.id, { version: first.version, mcId: northwind, memberId: jordan.id, startsOn: today(), reason: 'Swap' }).expect(201)).body;
+    expect(handed.version).toBe(first.version + 1);
+    await assign(agents.manager, 'dispatch', sam.id, { version: handed.version, mcId: northwind, memberId: taylor.id, startsOn: today(), reason: 'Back' }).expect(201);
+    // A later negative test lifts it; a Not qualified yearly review puts them back on hold, for team leads too.
+    await recordTest('NEGATIVE', 0);
+    expect((await list(agents.manager, 'dispatch')).items[0].onHold).toBe(false);
+    await db.query(`INSERT INTO driver_annual_reviews ("driverId", "reviewedOn", outcome, note) VALUES ($1, current_date, 'NOT_QUALIFIED', 'Fictional')`, [sam.id]);
+    expect((await list(agents.lead, 'team')).items.find((item: { id: string }) => item.id === sam.id).onHold).toBe(true);
+    // An expired license or medical card holds them too, until a newer checked one is on file: a new scan nobody has
+    // checked yet lifts nothing.
+    await db.query(`INSERT INTO driver_annual_reviews ("driverId", "reviewedOn", outcome) VALUES ($1, current_date, 'QUALIFIED')`, [sam.id]);
+    expect((await list(agents.manager, 'dispatch')).items[0].onHold).toBe(false);
+    const scan = (expiresOn: string | null, checked: boolean) => db.query(`INSERT INTO driver_documents (id, "driverId", kind, "pageCount", sha256, "byteSize", "expiresOn", "createdAt", "verifiedAt")
+      VALUES (gen_random_uuid(), $1, 'MEDICAL_CARD', 1, repeat('a', 64), 10, $2, clock_timestamp(), CASE WHEN $3::boolean THEN now() END) RETURNING id`, [sam.id, expiresOn, checked]);
+    const [old] = await scan(addDays(usDay('earliest'), -2), true);
+    expect((await list(agents.manager, 'dispatch')).items[0].onHold).toBe(true);
+    await db.query(`UPDATE driver_documents SET "replacedAt" = now() WHERE id = $1`, [old.id]);
+    const [unchecked] = await scan(null, false);
+    expect((await list(agents.manager, 'dispatch')).items[0].onHold).toBe(true);
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2, "verifiedAt" = now() WHERE id = $1`, [unchecked.id, addDays(usDay('latest'), 300)]);
+    expect((await list(agents.manager, 'dispatch')).items[0].onHold).toBe(false);
+    // Nobody new takes on a driver who is on hold.
+    const held = await cleared('Held', '5550102601') as { id: string; version: number };
+    await db.query(`INSERT INTO driver_tests ("driverId", kind, reason, "testedOn", result) VALUES ($1, 'ALCOHOL', 'RANDOM', current_date, 'NOT_NEGATIVE')`, [held.id]);
+    expect((await assign(agents.manager, 'dispatch', held.id, { version: held.version, mcId: northwind, memberId: taylor.id, startsOn: today() }).expect(409)).body.message).toMatch(/on hold/);
   });
 
   it('keeps a dispatcher with drivers from leaving or moving to another MC until their drivers are reassigned', async () => {

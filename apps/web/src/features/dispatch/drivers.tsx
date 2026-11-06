@@ -22,6 +22,8 @@ import { driverTypes, licenseTypes, type DriverType, type LicenseType } from '@/
 
 export interface DispatchDriverRow { id: string; firstName: string; lastName: string; phone: string; driverType: DriverType; licenseType: LicenseType | null; version: number;
   clearedAt: string; clearedBy: string | null;
+  // Safety put them on hold (never why): they keep their assignment for the record but can't be assigned or changed.
+  onHold?: boolean;
   assignment: { mcId: string; mc: string; memberId: string; dispatcher: string; teamId: string | null; team: string | null; truck: string | null; startedAt: string } | null }
 export interface DispatchDriverOptions { mcs: { id: string; name: string; mcNumber: string | null; archived?: boolean; dispatchers: { id: string; name: string; teamId: string; team: string }[] }[] }
 
@@ -42,7 +44,9 @@ export function DispatchDrivers({ items, filters, options, teamLead }: { items: 
   const path = teamLead ? '/team/drivers' : '/dispatch/drivers', name = (row: DispatchDriverRow) => `${row.firstName} ${row.lastName}`.trim();
   const query = filters.search.toLowerCase();
   const searched = items.filter(row => `${name(row)} ${row.phone} ${row.assignment?.truck ?? ''} ${row.assignment?.mc ?? ''} ${row.assignment?.dispatcher ?? ''}`.toLowerCase().includes(query));
-  const visible = searched.filter(row => filters.status === 'ALL' || (filters.status === 'READY') === !row.assignment);
+  // A driver on hold can't be taken on, so one with no dispatcher isn't waiting; one already assigned can still be handed over.
+  const ready = (row: typeof searched[number]) => !row.assignment && !row.onHold;
+  const visible = searched.filter(row => filters.status === 'ALL' || (filters.status === 'READY' ? ready(row) : !!row.assignment));
   const dispatchers = options.mcs.find(mc => mc.id === mcId)?.dispatchers ?? [];
   // An archived MC is a choice only for a driver already on it.
   const choices = (row: DispatchDriverRow | null) => options.mcs.filter(mc => !mc.archived || mc.id === row?.assignment?.mcId);
@@ -65,7 +69,7 @@ export function DispatchDrivers({ items, filters, options, teamLead }: { items: 
       : 'Drivers Safety has cleared. Assign each one to an MC and a dispatcher; changes later are kept as history.'} />
     <Card>
       <FilterBar path={path} filters={filters} defaults={DISPATCH_DRIVER_DEFAULTS} searchLabel="Search name, phone, truck, MC or dispatcher" statuses={[
-        { key: 'READY', label: 'Ready to assign', count: searched.filter(row => !row.assignment).length },
+        { key: 'READY', label: 'Ready to assign', count: searched.filter(ready).length },
         { key: 'ASSIGNED', label: teamLead ? 'In your team' : 'Assigned', count: searched.filter(row => row.assignment).length },
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption={filters.status === 'READY' ? 'Drivers ready to assign' : 'Drivers'} className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
@@ -75,8 +79,8 @@ export function DispatchDrivers({ items, filters, options, teamLead }: { items: 
           : <span className="text-muted-foreground">Not assigned</span> },
         { key: 'truck', label: 'Truck', hideBelow: 'xl', muted: true, cell: row => row.assignment?.truck ?? '—' },
         { key: 'cleared', label: 'Cleared', muted: true, nowrap: true, hideBelow: 'lg', cell: row => <><LocalTime iso={row.clearedAt} format="date" />{row.clearedBy ? ` by ${row.clearedBy}` : ''}</> },
-        { key: 'status', label: 'Status', cell: () => <Badge label="Cleared" tone="success" /> },
-        { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: row => <Button size="sm" variant={row.assignment ? 'outline' : 'default'} disabled={!choices(row).length} onClick={() => open(row)}>
+        { key: 'status', label: 'Status', cell: row => row.onHold ? <Badge label="On hold, ask Safety" tone="danger" /> : <Badge label="Cleared" tone="success" /> },
+        { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: row => row.onHold && !row.assignment ? null : <Button size="sm" variant={row.assignment ? 'outline' : 'default'} disabled={!choices(row).length} onClick={() => open(row)}>
           {row.assignment ? 'Change' : 'Assign'}<span className="sr-only"> {name(row)}</span></Button> },
       ]} empty={<EmptyState compact title={filters.status === 'READY' && !filters.search ? 'No drivers waiting' : 'Nothing matches these filters'} description="Drivers appear here once Safety marks them as cleared." />} />
     </Card>

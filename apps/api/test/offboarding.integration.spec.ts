@@ -57,7 +57,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
   }
   const version = async (memberId: string) => (await db.query(`SELECT version FROM dispatch_members WHERE id = $1`, [memberId]))[0].version as number;
   const leave = async (memberId: string, body: Record<string, unknown> = {}, status = 201) => agents.manager.post(`/api/dispatch/members/${memberId}/leave`).set(headers)
-    .send({ version: await version(memberId), leftAt: new Date().toISOString().slice(0, 10), reason: 'Resigned for a job outside logistics.', ...body }).expect(status);
+    .send({ version: await version(memberId), leftAt: usDay('latest'), reason: 'Resigned for a job outside logistics.', ...body }).expect(status);
   const ahead = (days: number) => addDays(usDay('latest'), days);
   const act = async (memberId: string, path: string, body: Record<string, unknown>, status = 201) => agents.manager.post(`/api/dispatch/members/${memberId}/${path}`).set(headers).send({ version: await version(memberId), ...body }).expect(status);
   const alerts = async () => (await db.query(`SELECT kind FROM notification_deliveries ORDER BY "createdAt"`)).map((row: { kind: string }) => row.kind);
@@ -429,6 +429,13 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
   it('refuses to roll back while offboarding or hand-over history exists', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
+    await db.undoLastMigration(); // NoticeLetters, with none here
+    await db.undoLastMigration(); // DocumentRenewals, with none here
+    await db.undoLastMigration(); // OwnerOperatorTrucks, with none here
+    await db.undoLastMigration(); // DriverIncidents, with none here
+    await db.undoLastMigration(); // DriverTesting, with none here
+    await db.undoLastMigration(); // DriverAnnualReviews, with none here
+    await db.undoLastMigration(); // DriverLeft, with none here
     await db.undoLastMigration(); // TeamLeadSignIns, with none here
 
     await db.undoLastMigration(); // WholeTeamSupports, with none here

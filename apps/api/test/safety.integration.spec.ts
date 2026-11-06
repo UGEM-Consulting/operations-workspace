@@ -106,7 +106,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       const me = (await agents[key].get('/api/auth/me').set(headers).expect(200)).body;
       expect(me.landingPage).toBe('/safety/drivers');
       // Every Safety role reads the consent forms; only the Safety manager publishes them.
-      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'consents', 'security']);
+      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'trucks', 'expiring', 'consents', 'security']);
     }
     expect((await agents.admin.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toContain('drivers');
     await agents.dispatch.get('/api/safety/drivers').set(headers).expect(403);
@@ -163,7 +163,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.lead.id }).expect(400);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff.id, reason: 'Again' }).expect(400);
-    expect((await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id }).expect(400)).body.message).toBe('Say why the driver is changing owner.');
+    expect((await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id }).expect(400)).body.message).toBe('Say why the driver’s Safety contact is changing.');
     await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id, reason: 'Balancing workloads' }).expect(201);
     const record = await driver(id);
     expect(record.owner).toMatchObject({ id: users.staff2.id });
@@ -389,6 +389,283 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(JSON.stringify(await events(id))).not.toContain('D1234567');
   });
 
+  it('lists verified scans that expired or expire within 60 days, soonest first, to Safety roles only, with dates and no numbers', async () => {
+    const { id, agent } = await applying();
+    const documents = (await scanAll(agent)).documents as { id: string; kind: string }[];
+    await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: complete, history: history(), ssn: '123456789' }).expect(201);
+    const expiring = async (agent = agents.staff) => (await agent.get('/api/safety/expiring').set(headers).expect(200)).body;
+    const verify = (kind: string, body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/documents/${documents.find(row => row.kind === kind)!.id}/verify`).set(headers).send(body);
+    const today = usDay('latest');
+    // An unverified scan, and one that expires far away, are not listed.
+    expect((await expiring()).items).toEqual([]);
+    await verify('LICENSE', { version: 1, number: 'D1234567', expiresOn: addDays(today, 400) }).expect(201);
+    expect((await expiring()).items).toEqual([]);
+    await verify('MEDICAL_CARD', { version: 1, expiresOn: addDays(today, 30) }).expect(201);
+    await verify('WORK_AUTHORIZATION', { version: 1, subtype: 'WORK_PERMIT', expiresOn: addDays(today, -3) }).expect(201);
+    const body = await expiring();
+    expect(body).toMatchObject({ today, warningDays: 60 });
+    expect(body.items.map((row: { kind: string; expired: boolean }) => [row.kind, row.expired])).toEqual([['WORK_AUTHORIZATION', true], ['MEDICAL_CARD', false]]);
+    expect(JSON.stringify(body)).not.toContain('D1234567');
+    // Non-Safety roles are refused.
+    await agents.dispatch.get('/api/safety/expiring').set(headers).expect(403);
+    // A closed record drops out of the list.
+    const { version } = await driver(id);
+    await agents.lead.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version, reason: 'Fictional withdrawal' }).expect(201);
+    expect((await expiring()).items).toEqual([]);
+  });
+
+  it('marks an approved or cleared driver as left: closes the record, ends the owner and dispatch assignment, frees the contacts and records no private values', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const left = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version, leftOn: usDay('latest'), reason: 'Fictional resignation', ...body });
+    // Only approved or cleared drivers can leave.
+    expect((await left(agents.manager, 1).expect(409)).body.message).toMatch(/approved or cleared/);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '3 days', version = 2 WHERE id = $1`, [id]);
+    const owner = await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '3 days') RETURNING id`, [id, users.staff.id]);
+    const mc = (await db.query(`INSERT INTO mcs (name, "nameKey", "mcNumber") VALUES ('Fictional MC', 'fictional mc', '698741') RETURNING id`))[0].id;
+    const member = (await db.query(`INSERT INTO dispatch_members ("firstName", "lastName", position, status, "joinedAt") VALUES ('Dee', 'Fictional', 'DISPATCHER', 'ACTIVE', '2026-02-01T12:00:00Z') RETURNING id`))[0].id;
+    await db.query(`INSERT INTO driver_assignments ("driverId", "mcId", "memberId", "startedAt") VALUES ($1, $2, $3, now() - interval '2 days')`, [id, mc, member]);
+    try {
+      // Roles and input: the Safety lead and other owners can't; the reason, a real date, not in the future, not before clearance.
+      await left(agents.lead, 2).expect(403);
+      await left(agents.staff2, 2).expect(403);
+      await left(agents.dispatch, 2).expect(403);
+      await left(agents.manager, 2, { reason: ' ' }).expect(400);
+      await left(agents.manager, 2, { leftOn: '2026-13-01' }).expect(400);
+      await left(agents.manager, 2, { leftOn: addDays(usDay('latest'), 1) }).expect(400);
+      await left(agents.manager, 2, { leftOn: addDays(usDay('latest'), -10) }).expect(400);
+      await left(agents.manager, 1).expect(409);
+      expect((await left(agents.manager, 2).expect(201)).body.version).toBe(3);
+      expect(await driver(id)).toMatchObject({ status: 'LEFT', statusReason: 'Fictional resignation', closedAt: expect.any(String), version: 3 });
+      expect((await db.query(`SELECT count(*)::int AS n FROM driver_owners WHERE "driverId" = $1 AND "endedAt" IS NULL`, [id]))[0].n).toBe(0);
+      expect((await db.query(`SELECT count(*)::int AS n FROM driver_assignments WHERE "driverId" = $1 AND "endedAt" IS NULL`, [id]))[0].n).toBe(0);
+      expect((await events(id)).filter(row => row.event === 'LEFT').map(row => row.metadata)).toEqual([{ from: 'CLEARED', assignmentEnded: true, trucksArchived: false }]);
+      expect(JSON.stringify(await events(id))).not.toContain('Fictional resignation');
+      // Closed: no more changes, and the same person can be entered again.
+      await left(agents.manager, 3).expect(409);
+      await agents.lead.patch(`/api/safety/drivers/${id}`).set(headers).send({ version: 3, notes: 'x' }).expect(409);
+      expect((await agents.lead.get('/api/safety/drivers?status=CLOSED').set(headers).expect(200)).body.items.map((row: { status: string }) => row.status)).toEqual(['LEFT']);
+      await add(agents.lead).expect(201);
+    } finally { await db.query('TRUNCATE drivers, dispatch_members, mcs CASCADE'); void owner; }
+  });
+
+  it('lets the current owner mark their own approved driver as left', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '1 day')`, [id, users.staff.id]);
+    await db.query(`INSERT INTO driver_trucks ("driverId", unit, vin, year, make) VALUES ($1, 'T-9', '1FUJGLLB5CLDF9999', 2020, 'Volvo')`, [id]);
+    await agents.staff.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version: 2, leftOn: usDay('latest'), reason: 'Fictional move' }).expect(201);
+    expect(await driver(id)).toMatchObject({ status: 'LEFT' });
+    // Their truck is archived with them, so its VIN is free for the next driver.
+    expect((await db.query(`SELECT "archivedAt" IS NOT NULL AS archived FROM driver_trucks WHERE "driverId" = $1`, [id]))[0].archived).toBe(true);
+    expect((await events(id)).find(row => row.event === 'LEFT')!.metadata).toEqual({ from: 'APPROVED', assignmentEnded: false, trucksArchived: true });
+  });
+
+  it('records yearly reviews of cleared drivers with a new MVR, lists the ones due, and keeps them as history', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const review = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/annual-reviews`).set(headers).send({ version, reviewedOn: day, outcome: 'QUALIFIED', mvr: { file: '', pulledOn: day, paperAuthorization: true }, ...body });
+    const withPdf = async (body: Record<string, unknown> = {}) => ({ mvr: { file: await mvrPdf(), pulledOn: day, paperAuthorization: true, ...body } });
+    await review(agents.manager, 1, await withPdf()).expect(409);
+    // Cleared 400 days ago, so the first yearly review is already overdue.
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '400 days', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '400 days')`, [id, users.staff.id]);
+    const due = async () => (await agents.lead.get('/api/safety/due').set(headers).expect(200)).body;
+    expect((await due()).items).toMatchObject([{ driverId: id, overdue: true, lastReviewedOn: null, notQualified: false }]);
+    await review(agents.lead, 2, await withPdf()).expect(403);
+    await review(agents.staff2, 2, await withPdf()).expect(403);
+    await review(agents.dispatch, 2, await withPdf()).expect(403);
+    // Input: a real date, not in the future, a current MVR, its PDF, and a note unless qualified.
+    await review(agents.manager, 2, { ...await withPdf(), reviewedOn: addDays(day, 1) }).expect(400);
+    await review(agents.manager, 2, { ...await withPdf(), outcome: 'MAYBE' }).expect(400);
+    await review(agents.manager, 2, { ...await withPdf(), outcome: 'NOT_QUALIFIED' }).expect(400);
+    await review(agents.manager, 2, await withPdf({ pulledOn: addDays(day, -120) })).expect(400);
+    await review(agents.manager, 2, await withPdf({ file: Buffer.from('not a pdf').toString('base64') })).expect(400);
+    await review(agents.manager, 2, { mvr: undefined }).expect(400);
+    await review(agents.manager, 2, await withPdf({ paperAuthorization: false })).expect(400);
+    await review(agents.manager, 1, await withPdf()).expect(409);
+    const recorded = (await review(agents.staff, 2, await withPdf()).expect(201)).body;
+    expect(recorded.version).toBe(3);
+    const profile = await driver(id);
+    expect(profile.annualReviews).toMatchObject({ dueOn: addDays(day, 365), notQualified: false, items: [{ reviewedOn: day, outcome: 'QUALIFIED', mvr: { pulledOn: day, pageCount: 1 } }] });
+    // The MVR opens like any report, and the event holds the outcome only.
+    await agents.lead.get(`/api/safety/drivers/${id}/reports/${profile.annualReviews.items[0].mvr.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    expect((await events(id)).filter(row => row.event === 'ANNUAL_REVIEW_RECORDED').map(row => row.metadata)).toEqual([{ outcome: 'QUALIFIED', withMvr: true }]);
+    expect((await due()).items).toEqual([]);
+    // A later review that finds the driver not qualified stays on the list until a qualified one follows; history is append-only.
+    await review(agents.manager, 3, { ...await withPdf(), outcome: 'NOT_QUALIFIED', note: 'Fictional serious violation' }).expect(201);
+    expect((await due()).items).toMatchObject([{ driverId: id, notQualified: true }]);
+    expect(JSON.stringify(await events(id))).not.toContain('Fictional serious violation');
+    await expect(db.query(`UPDATE driver_annual_reviews SET outcome = 'QUALIFIED'`)).rejects.toThrow();
+    expect((await driver(id)).annualReviews.items.map((row: { outcome: string }) => row.outcome)).toEqual(['NOT_QUALIFIED', 'QUALIFIED']);
+  });
+
+  it('records drug and alcohol test results only, lists non-negative ones for follow-up and lets only the manager void an entry', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const test = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/tests`).set(headers).send({ version, kind: 'DRUG', reason: 'RANDOM', testedOn: day, result: 'NEGATIVE', ...body });
+    await test(agents.manager, 1).expect(409);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [id, users.staff.id]);
+    const attention = async (agent = agents.manager) => (await agent.get('/api/safety/due').set(headers).expect(200)).body.tests;
+    await test(agents.lead, 2).expect(403);
+    await test(agents.staff2, 2).expect(403);
+    await test(agents.dispatch, 2).expect(403);
+    await test(agents.manager, 2, { kind: 'URINE' }).expect(400);
+    await test(agents.manager, 2, { reason: 'BORED' }).expect(400);
+    await test(agents.manager, 2, { result: 'POSITIVE' }).expect(400);
+    await test(agents.manager, 2, { testedOn: addDays(day, 1) }).expect(400);
+    await test(agents.manager, 2, { testedOn: addDays(day, -60) }).expect(400);
+    await test(agents.manager, 2, { lab: 'Fictional Lab' }).expect(400);
+    await test(agents.manager, 1).expect(409);
+    expect((await test(agents.staff, 2, { note: 'Fictional collection site', testedOn: addDays(day, -5) }).expect(201)).body.version).toBe(3);
+    expect(await attention()).toEqual([]);
+    // A not-negative drug test needs follow-up; an alcohol negative doesn't clear it, a later drug negative does.
+    await test(agents.manager, 3, { result: 'NOT_NEGATIVE', testedOn: addDays(day, -1) }).expect(201);
+    await test(agents.manager, 4, { kind: 'ALCOHOL', reason: 'FOLLOW_UP' }).expect(201);
+    expect(await attention()).toMatchObject([{ driverId: id, kind: 'DRUG', result: 'NOT_NEGATIVE' }]);
+    // Results are for the manager and the owner only (49 CFR 40.321): the lead and other staff see neither them nor why the driver is on hold.
+    expect(await attention(agents.staff)).toHaveLength(1);
+    expect(await attention(agents.lead)).toEqual([]);
+    expect(await attention(agents.staff2)).toEqual([]);
+    const as = async (agent: Agent) => (await agent.get(`/api/safety/drivers/${id}`).set(headers).expect(200)).body;
+    expect(await as(agents.lead)).toMatchObject({ testing: { hidden: true }, hold: { onHold: false, test: null, review: false } });
+    expect((await as(agents.staff2)).testing).toEqual({ hidden: true });
+    expect(await as(agents.staff)).toMatchObject({ testing: { items: expect.any(Array) }, hold: { onHold: true, test: true } });
+    await test(agents.manager, 5, { reason: 'RETURN_TO_DUTY' }).expect(201);
+    expect(await attention()).toEqual([]);
+    expect((await as(agents.manager)).hold).toEqual({ onHold: false, test: false, review: false, documents: false });
+    // Entries are never edited: only the manager voids, with a reason, and a voided result no longer counts.
+    const items = (await as(agents.manager)).testing.items as { id: string; result: string; voidedAt: string | null }[];
+    expect(items).toHaveLength(4);
+    const refused = items.find(row => row.result === 'NOT_NEGATIVE')!.id;
+    const voidTest = (agent: Agent, version: number, testId: string, reason = 'Entered against the wrong driver') => agent.post(`/api/safety/drivers/${id}/tests/${testId}/void`).set(headers).send({ version, reason });
+    await voidTest(agents.staff, 6, refused).expect(403);
+    await voidTest(agents.manager, 6, refused, ' ').expect(400);
+    await voidTest(agents.manager, 6, refused).expect(201);
+    await voidTest(agents.manager, 7, refused).expect(409);
+    expect((await as(agents.manager)).testing.items.find((row: { id: string }) => row.id === refused)).toMatchObject({ voidedAt: expect.any(String), voidReason: 'Entered against the wrong driver' });
+    // Events name the kind and reason, never the result, the date or notes.
+    expect((await events(id)).filter(row => row.event === 'TEST_RECORDED').map(row => row.metadata)[0]).toEqual({ kind: 'DRUG', reason: 'RANDOM' });
+    expect(JSON.stringify(await events(id))).not.toMatch(/NOT_NEGATIVE|Fictional collection site|wrong driver/);
+  });
+
+  it('records accidents, violations and inspections of cleared drivers, settles open ones once and lets only the manager void', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const incident = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/incidents`).set(headers)
+      .send({ version, kind: 'ACCIDENT', occurredOn: day, state: 'tx', summary: 'Fictional rear-end contact at a dock', preventable: 'UNDETERMINED', injuries: false, fatalities: false, towAway: false, ...body });
+    await incident(agents.manager, 1).expect(409);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [id, users.staff.id]);
+    const attention = async () => (await agents.lead.get('/api/safety/due').set(headers).expect(200)).body.incidents;
+    await incident(agents.lead, 2).expect(403);
+    await incident(agents.staff2, 2).expect(403);
+    await incident(agents.dispatch, 2).expect(403);
+    // Input: a kind, a real past date after clearance, a summary, and only the fields of that kind.
+    await incident(agents.manager, 2, { kind: 'CRASH' }).expect(400);
+    await incident(agents.manager, 2, { occurredOn: addDays(day, 1) }).expect(400);
+    await incident(agents.manager, 2, { occurredOn: addDays(day, -60) }).expect(400);
+    await incident(agents.manager, 2, { summary: ' ' }).expect(400);
+    await incident(agents.manager, 2, { state: 'ZZ' }).expect(400);
+    await incident(agents.manager, 2, { towAway: undefined }).expect(400);
+    await incident(agents.manager, 2, { policeReport: 'R-1' }).expect(400);
+    await incident(agents.manager, 2, { kind: 'VIOLATION', disposition: undefined }).expect(400);
+    await incident(agents.manager, 2, { kind: 'INSPECTION', outOfService: false, violationCount: 99 }).expect(400);
+    await incident(agents.manager, 1).expect(409);
+    expect((await incident(agents.staff, 2).expect(201)).body.version).toBe(3);
+    await incident(agents.manager, 3, { kind: 'VIOLATION', disposition: 'PENDING', summary: 'Fictional speeding citation', preventable: undefined, injuries: undefined, fatalities: undefined, towAway: undefined }).expect(201);
+    await incident(agents.manager, 4, { kind: 'INSPECTION', outOfService: false, violationCount: 0, summary: 'Fictional level 2 inspection, clean', preventable: undefined, injuries: undefined, fatalities: undefined, towAway: undefined }).expect(201);
+    // Open accidents and pending violations wait on the Safety list until settled; a clean inspection never does.
+    expect((await attention()).map((row: { kind: string }) => row.kind).sort()).toEqual(['ACCIDENT', 'VIOLATION']);
+    const items = (await driver(id)).incidents.items as { id: string; kind: string }[];
+    const accident = items.find(row => row.kind === 'ACCIDENT')!.id, violation = items.find(row => row.kind === 'VIOLATION')!.id, inspection = items.find(row => row.kind === 'INSPECTION')!.id;
+    const settle = (agent: Agent, version: number, incidentId: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/incidents/${incidentId}/settle`).set(headers).send({ version, ...body });
+    await settle(agents.lead, 5, accident, { preventable: 'NO' }).expect(403);
+    await settle(agents.manager, 5, accident, {}).expect(400);
+    await settle(agents.manager, 5, accident, { preventable: 'NO', disposition: 'DISMISSED' }).expect(400);
+    await settle(agents.manager, 5, violation, { preventable: 'NO' }).expect(409);
+    await settle(agents.manager, 5, inspection, { disposition: 'DISMISSED' }).expect(409);
+    await settle(agents.staff, 5, accident, { preventable: 'NO' }).expect(201);
+    await settle(agents.manager, 6, accident, { preventable: 'YES' }).expect(409);
+    await settle(agents.manager, 6, violation, { disposition: 'CONVICTED' }).expect(201);
+    expect(await attention()).toEqual([]);
+    expect((await driver(id)).incidents.items.find((row: { id: string }) => row.id === accident)).toMatchObject({ preventable: 'NO', settledAt: expect.any(String) });
+    // Only the manager voids, with a reason; the entry stays in the record.
+    const voidIt = (agent: Agent, version: number, reason = 'Recorded against the wrong driver') => agent.post(`/api/safety/drivers/${id}/incidents/${inspection}/void`).set(headers).send({ version, reason });
+    await voidIt(agents.staff, 7).expect(403);
+    await voidIt(agents.manager, 7, ' ').expect(400);
+    await voidIt(agents.manager, 7).expect(201);
+    await voidIt(agents.manager, 8).expect(409);
+    expect((await driver(id)).incidents.items.find((row: { id: string }) => row.id === inspection)).toMatchObject({ voidedAt: expect.any(String), voidReason: 'Recorded against the wrong driver' });
+    // Events hold the kind only: no summary, notes, dates or outcomes.
+    expect((await events(id)).filter(row => row.event.startsWith('INCIDENT_')).map(row => row.metadata).slice(0, 2)).toEqual([{ kind: 'ACCIDENT' }, { kind: 'VIOLATION' }]);
+    expect(JSON.stringify(await events(id))).not.toMatch(/rear-end|speeding|CONVICTED|wrong driver/);
+  });
+
+  it('keeps an owner-operator’s trucks and their lease, insurance and registration PDFs, listing expiring ones', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const truck = { unit: 'T-101', vin: '1fujgllb5cldf1234', year: 2021, make: 'Freightliner', plate: 'abc1234', plateState: 'tx' };
+    const addTruck = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/trucks`).set(headers).send({ version, ...truck, ...body });
+    await addTruck(agents.lead, 1).expect(409);
+    await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now())`, [id, users.staff.id]);
+    await addTruck(agents.dispatch, 2).expect(403);
+    await addTruck(agents.staff2, 2).expect(403);
+    await addTruck(agents.lead, 2, { vin: '1FUJGLLB5CLDF123I' }).expect(400);
+    await addTruck(agents.lead, 2, { vin: 'SHORT' }).expect(400);
+    await addTruck(agents.lead, 2, { year: 1950 }).expect(400);
+    await addTruck(agents.lead, 2, { plateState: undefined }).expect(400);
+    await addTruck(agents.lead, 2, { unit: ' ' }).expect(400);
+    await addTruck(agents.lead, 1).expect(409);
+    expect((await addTruck(agents.staff, 2).expect(201)).body.version).toBe(3);
+    const trucks = async () => (await driver(id)).trucks.items as { id: string; vin: string; plate: string; plateState: string; documents: { id: string; kind: string; expiresOn: string | null }[]; archivedAt: string | null }[];
+    expect((await trucks())[0]).toMatchObject({ vin: '1FUJGLLB5CLDF1234', plate: 'ABC1234', plateState: 'TX', documents: [] });
+    const truckId = (await trucks())[0].id;
+    // The same VIN can't be listed twice while the first is current.
+    const other = (await add(agents.lead, { ...lead, phone: '+1 (555) 010-2999', email: 'other.driver@example.test' }).expect(201)).body.id;
+    await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [other]);
+    expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck }).expect(409)).body.message).toMatch(/already has this VIN/);
+    // Only owner-operators keep trucks.
+    await db.query(`UPDATE drivers SET "driverType" = 'COMPANY' WHERE id = $1`, [other]);
+    expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck, vin: '2FUJGLLB5CLDF1234' }).expect(409)).body.message).toMatch(/owner-operators/);
+    // Documents: a PDF per kind, an expiration for insurance and registration, replaced files are kept.
+    const file = await mvrPdf();
+    const upload = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/trucks/${truckId}/documents`).set(headers).send({ version, kind: 'INSURANCE', file, expiresOn: addDays(day, 20), ...body });
+    await upload(agents.dispatch, 3).expect(403);
+    await upload(agents.staff2, 3).expect(403);
+    await upload(agents.lead, 3, { expiresOn: undefined }).expect(400);
+    await upload(agents.lead, 3, { kind: 'POLICY' }).expect(400);
+    await upload(agents.lead, 3, { file: Buffer.from('not a pdf').toString('base64') }).expect(400);
+    await upload(agents.lead, 3, { policyNumber: 'P-1' }).expect(400);
+    await upload(agents.lead, 2).expect(409);
+    expect((await upload(agents.staff, 3).expect(201)).body.version).toBe(4);
+    await upload(agents.lead, 4, { kind: 'LEASE', expiresOn: undefined }).expect(201);
+    await upload(agents.lead, 5, { kind: 'REGISTRATION', expiresOn: addDays(day, 300) }).expect(201);
+    const docs = (await trucks())[0].documents;
+    expect(docs.map(row => row.kind).sort()).toEqual(['INSURANCE', 'LEASE', 'REGISTRATION']);
+    const insurance = docs.find(row => row.kind === 'INSURANCE')!.id;
+    await agents.lead.get(`/api/safety/drivers/${id}/trucks/${truckId}/documents/${insurance}/file`).set(headers).expect(200).expect('content-type', 'application/pdf').expect('cache-control', 'no-store, private');
+    await agents.dispatch.get(`/api/safety/drivers/${id}/trucks/${truckId}/documents/${insurance}/file`).set(headers).expect(403);
+    // Insurance expiring within 60 days appears with the other expiring documents; registration far away doesn't.
+    const expiring = (await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items as { kind: string; truck: string | null }[];
+    expect(expiring.map(row => [row.kind, row.truck])).toEqual([['INSURANCE', 'T-101']]);
+    expect(JSON.stringify(expiring)).not.toMatch(/notes|passwordHash/);
+    // A new insurance PDF replaces the current one; the old row is kept.
+    await upload(agents.lead, 6, { expiresOn: addDays(day, 365) }).expect(201);
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items).toEqual([]);
+    expect((await db.query(`SELECT count(*)::int AS n FROM driver_owner_documents WHERE kind = 'INSURANCE'`))[0].n).toBe(2);
+    // The list shows every truck with its dates; archiving removes it from the expiring list and frees the VIN.
+    expect((await agents.staff2.get('/api/safety/trucks').set(headers).expect(200)).body.items).toMatchObject([{ unit: 'T-101', hasLease: true, insuranceExpiresOn: addDays(day, 365), firstName: 'Jordan' }]);
+    await agents.dispatch.get('/api/safety/trucks').set(headers).expect(403);
+    await agents.lead.post(`/api/safety/drivers/${id}/trucks/${truckId}/archive`).set(headers).send({ version: 7 }).expect(201);
+    await agents.lead.post(`/api/safety/drivers/${id}/trucks/${truckId}/archive`).set(headers).send({ version: 8 }).expect(409);
+    await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck }).expect(409);
+    // Events name the action or kind only.
+    expect((await events(id)).filter(row => /^(TRUCK|OWNER_DOCUMENT)/.test(row.event)).map(row => [row.event, row.metadata]).slice(0, 2)).toEqual([['TRUCK_SAVED', { action: 'added' }], ['OWNER_DOCUMENT_UPLOADED', { kind: 'INSURANCE' }]]);
+    expect(JSON.stringify(await events(id))).not.toMatch(/1FUJGL|ABC1234|Freightliner/);
+  });
+
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
@@ -483,6 +760,14 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await db.query(`UPDATE driver_documents SET "verifiedAt" = now() WHERE id = $1`, [replaced]);
     expect(await sweeper.sweep(later)).toBe(0);
     expect(existsSync(file(replaced))).toBe(true);
+    // Owner-operator documents: a file no row names is a leftover; one a row names (current or replaced) is kept.
+    mkdirSync(join(storage, 'drivers', id, 'owner-operator', 'insurance'), { recursive: true });
+    const truck = (await db.query(`INSERT INTO driver_trucks ("driverId", unit, vin, year, make) VALUES ($1, 'T-1', '1FUJGLLB5CLDF1234', 2021, 'Fictional') RETURNING id`, [id]))[0].id as string;
+    const kept = randomUUID(), orphan = randomUUID(), ownerFile = (documentId: string) => join(storage, 'drivers', id, 'owner-operator', 'insurance', `${documentId}.pdf`);
+    writeFileSync(ownerFile(kept), pdf); writeFileSync(ownerFile(orphan), pdf);
+    await db.query(`INSERT INTO driver_owner_documents (id, "driverId", "truckId", kind, "expiresOn", "pageCount", sha256, "byteSize", "replacedAt") VALUES ($1, $2, $3, 'INSURANCE', CURRENT_DATE, 1, repeat('0', 64), 1, now())`, [kept, id, truck]);
+    expect(await sweeper.sweep(later)).toBe(1);
+    expect([existsSync(ownerFile(kept)), existsSync(ownerFile(orphan))]).toEqual([true, false]);
   });
 
   /** A driver who submitted a complete application with every scan, now in Screening. */
@@ -972,10 +1257,252 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await decide(agents.manager, id, { version, ...notice, noticeSentOn: today() }).expect(409);
   });
 
+
+  /** A submitted driver whose scans were checked (the medical card already expired), then cleared and owned by safety staff. */
+  async function clearedWithExpiredCard() {
+    const one = await submitted(), day = usDay('latest');
+    for (const document of one.documents) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
+      .send({ version: 1, ...(document.kind === 'LICENSE' ? { expiresOn: addDays(day, 400) } : document.kind === 'MEDICAL_CARD' ? { expiresOn: addDays(day, -3) } : {}) }).expect(201);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now() - interval '30 days', version = version + 1 WHERE id = $1`, [one.id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now() - interval '30 days')`, [one.id, users.staff.id]);
+    const medical = one.documents.find(row => row.kind === 'MEDICAL_CARD')!.id;
+    return { ...one, medical, version: (await driver(one.id)).version as number };
+  }
+  const medicalFile = (id: string, documentId: string) => join(storage, 'drivers', id, 'documents', 'medical-card', `${documentId}.pdf`);
+  /** Opens a renewal link in a new browser: true in `code` when the emailed code went out. */
+  async function openRenewal(url: string, email = 'jordan.wheeler@example.test') {
+    const agent = request.agent(app.getHttpServer()), token = url.split('#').pop() as string;
+    const before = sent.length;
+    const { challengeId } = (await agent.post('/api/driver/begin').set(headers).send({ token, email }).expect(201)).body;
+    await settle();
+    return { agent, challengeId: challengeId as string, code: sent.length > before ? sent.at(-1)!.code : null };
+  }
+
+  it('renews an expired medical card Safety has in hand: saved checked, the hold lifts and the earlier scan is kept', async () => {
+    const { id, medical, version } = await clearedWithExpiredCard(), day = usDay('latest');
+    expect((await driver(id, agents.manager)).hold).toMatchObject({ onHold: true, documents: true });
+    expect((await driver(id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ checked: { id: medical, expiresOn: addDays(day, -3), current: true }, link: null, scan: null });
+    const renew = (agent: Agent, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/documents/renew`).set(headers)
+      .send({ version, kind: 'MEDICAL_CARD', pages: [page()], expiresOn: addDays(day, 700), confirmed: true, ...body });
+    // Who: Safety leads, the manager, administrators and the owner; not another safety staff member or Dispatch.
+    await renew(agents.staff2, {}).expect(403);
+    await renew(agents.dispatch, {}).expect(403);
+    // What: one PDF or photos, a date still to come, the confirmation, and never the work authorization.
+    await renew(agents.staff, { expiresOn: addDays(day, -1) }).expect(400);
+    await renew(agents.staff, { confirmed: false }).expect(400);
+    await renew(agents.staff, { kind: 'WORK_AUTHORIZATION' }).expect(400);
+    await renew(agents.staff, { file: await mvrPdf() }).expect(400);
+    await renew(agents.staff, { pages: undefined, file: Buffer.from('not a pdf').toString('base64') }).expect(400);
+    await renew(agents.staff, { version: version - 1 }).expect(409);
+    await renew(agents.staff, { pages: undefined, file: await mvrPdf() }).expect(201);
+    const record = await driver(id, agents.manager);
+    expect(record.hold).toMatchObject({ onHold: false, documents: false });
+    expect(record.version).toBe(version + 1);
+    const renewed = record.documents.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD');
+    expect(renewed).toMatchObject({ uploadedBySafety: true, verifiedBy: 'Fictional staff', expiresOn: addDays(day, 700), pageCount: 1, unreadableAt: null });
+    expect(existsSync(medicalFile(id, medical))).toBe(true);
+    expect(existsSync(medicalFile(id, renewed.id))).toBe(true);
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_RENEWED').map(row => row.metadata)).toEqual([{ kind: 'MEDICAL_CARD', pages: 1 }]);
+    expect(JSON.stringify(await events(id))).not.toContain(addDays(day, 700));
+    // The expiring list now counts the renewed card, which is far away.
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.filter((row: { driverId: string }) => row.driverId === id)).toEqual([]);
+  });
+
+  it('sends a renewal link: the driver scans only that document, which lifts nothing until a person checks it', async () => {
+    const { id, version, medical } = await clearedWithExpiredCard(), day = usDay('latest');
+    const link = (agent: Agent, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/renewals`).set(headers).send({ kind: 'MEDICAL_CARD', ...body });
+    await link(agents.staff2, { version }).expect(403);
+    const first = (await link(agents.staff, { version }).expect(201)).body;
+    expect(first.url).toMatch(/\/driver#[a-f0-9]{64}$/);
+    // A new link for the same document stops the first one.
+    const second = (await link(agents.lead, { version: first.version }).expect(201)).body;
+    expect((await openRenewal(first.url)).code).toBeNull();
+    const renewal = await openRenewal(second.url);
+    expect((await renewal.agent.post('/api/driver/verify').set(headers).send({ challengeId: renewal.challengeId, code: renewal.code }).expect(201)).body).toEqual({ verified: true, purpose: 'RENEWAL' });
+    // The session opens only the renewal: never the application or its scans.
+    await renewal.agent.get('/api/driver/application').set(headers).expect(401);
+    await renewal.agent.post('/api/driver/documents/medical-card').set(headers).send({ pages: [page()] }).expect(401);
+    expect((await renewal.agent.get('/api/driver/renewal').set(headers).expect(200)).body).toMatchObject({ kind: 'MEDICAL_CARD', email: 'jordan.wheeler@example.test', sentAt: null, document: null });
+    const scanned = (await renewal.agent.post('/api/driver/renewal').set(headers).send({ pages: [page(), page()] }).expect(201)).body;
+    expect(scanned).toMatchObject({ kind: 'MEDICAL_CARD', sentAt: expect.any(String), document: { pageCount: 2 } });
+    await renewal.agent.post('/api/driver/renewal').set(headers).send({ pages: [page()] }).expect(409);
+    // Sending it moved the driver's version on, so a page Safety opened before can't replace the scan without seeing it.
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/renew`).set(headers)
+      .send({ version: second.version, kind: 'MEDICAL_CARD', pages: [page()], expiresOn: addDays(day, 700), confirmed: true }).expect(409);
+    // Waiting for its check: the expired card still holds them, and both the list and the profile say so.
+    let record = await driver(id, agents.manager);
+    const waiting = record.renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD');
+    expect(waiting).toMatchObject({ checked: { id: medical, current: false }, link: null, scan: { pageCount: 2, unreadable: false, version: 1 } });
+    expect(record.hold).toMatchObject({ onHold: true, documents: true });
+    const listed = (await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.find((row: { driverId: string; kind: string }) => row.driverId === id && row.kind === 'MEDICAL_CARD');
+    expect(listed).toMatchObject({ documentId: medical, expired: true, version: record.version, email: 'jordan.wheeler@example.test', renewal: { link: null, scan: { id: waiting.scan.id } } });
+    // Not readable: never checked, and the next scan replaces it (its file goes; the checked card's stays).
+    await agents.staff2.post(`/api/safety/drivers/${id}/documents/${waiting.scan.id}/unreadable`).set(headers).send({ version: 1 }).expect(403);
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/${waiting.scan.id}/unreadable`).set(headers).send({ version: 1 }).expect(201);
+    await agents.lead.post(`/api/safety/drivers/${id}/documents/${waiting.scan.id}/verify`).set(headers).send({ version: 2, expiresOn: addDays(day, 700) }).expect(409);
+    const third = (await link(agents.staff, { version: record.version }).expect(201)).body;
+    // The new link is out while the unreadable scan is still the current one: the profile reports both.
+    expect((await driver(id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ link: { expired: false }, scan: { id: waiting.scan.id, unreadable: true } });
+    const again = await openRenewal(third.url);
+    await again.agent.post('/api/driver/verify').set(headers).send({ challengeId: again.challengeId, code: again.code }).expect(201);
+    await again.agent.post('/api/driver/renewal').set(headers).send({ pages: [page()] }).expect(201);
+    expect(existsSync(medicalFile(id, waiting.scan.id))).toBe(false);
+    expect(existsSync(medicalFile(id, medical))).toBe(true);
+    // Checked: the date a person read lifts the hold.
+    record = await driver(id, agents.manager);
+    const next = record.renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD').scan;
+    // A date that has passed means they photographed the old card: refused, so the scan can still be marked not readable.
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/documents/${next.id}/verify`).set(headers).send({ version: 1, expiresOn: addDays(day, -1) }).expect(400)).body.message).toMatch(/not readable/);
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/${next.id}/verify`).set(headers).send({ version: 1, expiresOn: addDays(day, 700) }).expect(201);
+    record = await driver(id, agents.manager);
+    expect(record.hold).toMatchObject({ onHold: false, documents: false });
+    expect(record.renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ checked: { id: next.id, current: true }, scan: null });
+    expect((await events(id)).filter(row => ['RENEWAL_LINK_SENT', 'RENEWAL_OPENED', 'DOCUMENT_UNREADABLE'].includes(row.event) || (row.event === 'DOCUMENT_UPLOADED' && row.metadata.renewal)).map(row => [row.event, row.metadata]))
+      .toEqual([['RENEWAL_LINK_SENT', { kind: 'MEDICAL_CARD', resent: false }], ['RENEWAL_LINK_SENT', { kind: 'MEDICAL_CARD', resent: true }], ['RENEWAL_OPENED', { kind: 'MEDICAL_CARD' }],
+        ['DOCUMENT_UPLOADED', { kind: 'MEDICAL_CARD', pages: 2, renewal: true }], ['DOCUMENT_UNREADABLE', { kind: 'MEDICAL_CARD' }], ['RENEWAL_LINK_SENT', { kind: 'MEDICAL_CARD', resent: false }],
+        ['RENEWAL_OPENED', { kind: 'MEDICAL_CARD' }], ['DOCUMENT_UPLOADED', { kind: 'MEDICAL_CARD', pages: 1, renewal: true }]]);
+  });
+
+  it('keeps a scan the driver sent with their application when a renewal replaces it, and never treats it as a renewal scan', async () => {
+    const one = await submitted(), day = usDay('latest');
+    // The medical card from the application is never checked (as for a DL driver, for whom it is optional).
+    for (const document of one.documents.filter(row => row.kind !== 'MEDICAL_CARD')) await agents.lead.post(`/api/safety/drivers/${one.id}/documents/${document.id}/verify`).set(headers)
+      .send({ version: 1, ...(document.kind === 'LICENSE' ? { expiresOn: addDays(day, 400) } : {}) }).expect(201);
+    await db.query(`UPDATE drivers SET status = 'CLEARED', "clearedAt" = now(), version = version + 1 WHERE id = $1`, [one.id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now())`, [one.id, users.staff.id]);
+    const medical = one.documents.find(row => row.kind === 'MEDICAL_CARD')!.id, { version } = await driver(one.id);
+    // Not a scan waiting for a renewal check, so it can't be marked not readable.
+    expect((await driver(one.id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD')).toMatchObject({ checked: null, scan: null });
+    await agents.staff.post(`/api/safety/drivers/${one.id}/documents/${medical}/unreadable`).set(headers).send({ version: 1 }).expect(409);
+    await agents.staff.post(`/api/safety/drivers/${one.id}/documents/renew`).set(headers)
+      .send({ version, kind: 'MEDICAL_CARD', pages: [page()], expiresOn: addDays(day, 700), confirmed: true }).expect(201);
+    // Its file stays, also through the sweep of leftover scans.
+    expect(existsSync(medicalFile(one.id, medical))).toBe(true);
+    await app.get(ScanSweeper).sweep(Date.now() + LEFTOVER_SCAN_AGE_MS + 60_000);
+    expect(existsSync(medicalFile(one.id, medical))).toBe(true);
+  });
+
+  it('stops renewal links when they are cancelled, the email changes or the driver leaves, and offers them only once approved', async () => {
+    const { id, version } = await clearedWithExpiredCard();
+    const link = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/renewals`).set(headers).send({ kind: 'LICENSE', ...body });
+    const cancel = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/renewals/cancel`).set(headers).send({ kind: 'LICENSE', ...body });
+    // Cancelled: no code goes out any more, and cancelling again is refused.
+    const cancelled = (await link({ version }).expect(201)).body;
+    const { version: afterCancel } = (await cancel({ version: cancelled.version }).expect(201)).body;
+    expect((await openRenewal(cancelled.url)).code).toBeNull();
+    await cancel({ version: afterCancel }).expect(409);
+    // The bound email changes: the link stops.
+    const bound = (await link({ version: afterCancel }).expect(201)).body;
+    const { version: changed } = (await agents.lead.patch(`/api/safety/drivers/${id}`).set(headers).send({ version: bound.version, email: 'jordan.w@example.test' }).expect(200)).body;
+    expect((await openRenewal(bound.url)).code).toBeNull();
+    // Leaving revokes it too.
+    const last = (await link({ version: changed }).expect(201)).body;
+    await agents.manager.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version: last.version, leftOn: usDay('latest'), reason: 'Fictional move' }).expect(201);
+    expect((await openRenewal(last.url, 'jordan.w@example.test')).code).toBeNull();
+    // Before approval there is nothing to renew.
+    const fresh = (await add(agents.lead, { ...lead, phone: '555 010 4444', email: 'riley.lead@example.test' }).expect(201)).body;
+    expect((await agents.lead.post(`/api/safety/drivers/${fresh.id}/renewals`).set(headers).send({ version: 1, kind: 'LICENSE' }).expect(409)).body.message).toMatch(/approved/);
+  });
+  it('lets Safety correct a work authorization’s type, and lists only work permits as expiring', async () => {
+    const { id, documents } = await submitted(), day = usDay('latest');
+    const work = documents.find(row => row.kind === 'WORK_AUTHORIZATION')!.id;
+    const verify = (body: Record<string, unknown>) => agents.lead.post(`/api/safety/drivers/${id}/documents/${work}/verify`).set(headers).send(body);
+    const expiring = async () => (await agents.lead.get('/api/safety/expiring').set(headers).expect(200)).body.items.filter((row: { driverId: string }) => row.driverId === id);
+    // A type only on a work authorization, and only one of the four.
+    await agents.lead.post(`/api/safety/drivers/${id}/documents/${documents.find(row => row.kind === 'LICENSE')!.id}/verify`).set(headers).send({ version: 1, subtype: 'WORK_PERMIT', expiresOn: addDays(day, 400) }).expect(400);
+    await verify({ version: 1, subtype: 'VISA' }).expect(400);
+    // A work permit needs its date, even from a page that sends none.
+    await verify({ version: 1, subtype: 'WORK_PERMIT' }).expect(400);
+    // The driver scanned a green card; Safety sees a work permit and records its date: listed 60 days before.
+    await verify({ version: 1, subtype: 'WORK_PERMIT', expiresOn: addDays(day, 20) }).expect(201);
+    expect((await driver(id)).documents.find((row: { kind: string }) => row.kind === 'WORK_AUTHORIZATION')).toMatchObject({ subtype: 'WORK_PERMIT', expiresOn: addDays(day, 20) });
+    expect((await expiring()).map((row: { kind: string }) => row.kind)).toEqual(['WORK_AUTHORIZATION']);
+    // Back to a green card: no date is kept, and it drops out of the list.
+    await verify({ version: 2, subtype: 'GREEN_CARD', expiresOn: addDays(day, 20) }).expect(201);
+    expect((await driver(id)).documents.find((row: { kind: string }) => row.kind === 'WORK_AUTHORIZATION')).toMatchObject({ subtype: 'GREEN_CARD', expiresOn: null });
+    expect(await expiring()).toEqual([]);
+    // An older page sends no type: the recorded one stays.
+    await verify({ version: 3, expiresOn: '' }).expect(201);
+    expect((await driver(id)).documents.find((row: { kind: string }) => row.kind === 'WORK_AUTHORIZATION')).toMatchObject({ subtype: 'GREEN_CARD' });
+    expect((await events(id)).filter(row => row.event === 'DOCUMENT_VERIFIED').map(row => row.metadata))
+      .toEqual([{ kind: 'WORK_AUTHORIZATION', again: false, typeChanged: true }, { kind: 'WORK_AUTHORIZATION', again: true, typeChanged: true }, { kind: 'WORK_AUTHORIZATION', again: true }]);
+  });
+
+  it('publishes notice letters and fills one in for a driver, with their MVR behind the pre-adverse notice', async () => {
+    const one = await awaiting();
+    const letterPdf = async (pages = 2) => { const pdf = await PDFDocument.create(); for (let n = 0; n < pages; n++) pdf.addPage([612, 792]); return Buffer.from(await pdf.save()).toString('base64'); };
+    const fields = [{ page: 1, x: 0.1, y: 0.1, width: 0.3, height: 0.02, kind: 'NAME', signer: 'SIGNER' }, { page: 1, x: 0.1, y: 0.14, width: 0.5, height: 0.02, kind: 'ADDRESS', signer: 'SIGNER' },
+      { page: 1, x: 0.6, y: 0.05, width: 0.25, height: 0.02, kind: 'DATE', signer: 'SIGNER' }];
+    const letter = (agent: Agent, kind: string) => agent.get(`/api/safety/drivers/${one.id}/letters/${kind}`).set(headers).buffer(true).parse((res, done) => { const parts: Buffer[] = []; res.on('data', (part: Buffer) => parts.push(part)); res.on('end', () => done(null, Buffer.concat(parts))); });
+    // Nothing published yet.
+    await letter(agents.manager, 'pre-adverse').expect(404);
+    // Only the Safety manager and administrators publish; a letter takes name, address and date, never a signature.
+    await agents.lead.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(), fields }).expect(403);
+    await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(),
+      fields: [{ ...fields[0], kind: 'SIGNATURE' }] }).expect(400);
+    // A letter takes the name, address and date only: no day, month or year on their own.
+    await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(), fields: [{ ...fields[2], kind: 'DAY' }] }).expect(400);
+    // An address belongs on a letter only, never on a consent form.
+    await agents.manager.post('/api/safety/consents').set(headers).send({ kind: 'CLEARINGHOUSE_CONSENT', title: 'Fictional consent', file: await letterPdf(1), fields: [fields[1]] }).expect(400);
+    const published = (await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'PRE_ADVERSE', title: 'Fictional pre-adverse notice', file: await letterPdf(), fields }).expect(201)).body;
+    expect(published).toMatchObject({ kind: 'PRE_ADVERSE', version: 1, pageCount: 2 });
+    const list = (await agents.staff.get('/api/safety/consents').set(headers).expect(200)).body;
+    expect(list.letters.map((row: { kind: string; versions: unknown[] }) => [row.kind, row.versions.length])).toEqual([['PRE_ADVERSE', 1], ['FINAL', 0]]);
+    expect((await driver(one.id, agents.manager)).noticeLetters).toEqual({ PRE_ADVERSE: { version: 1, pageCount: 2 }, FINAL: null });
+    // Only those who can download a letter are told which ones exist.
+    expect((await driver(one.id, agents.lead)).noticeLetters).toBeUndefined();
+    // The driver's letter: only the deciders, only while a decision is open, the letter's two pages plus the MVR's one.
+    await letter(agents.lead, 'pre-adverse').expect(403);
+    await letter(agents.manager, 'final').expect(409);
+    await letter(agents.manager, 'other').expect(404);
+    // A crafted name is just an unknown letter.
+    await letter(agents.manager, 'constructor').expect(404);
+    const filled = await letter(agents.manager, 'pre-adverse').expect(200).expect('content-type', 'application/pdf').expect('cache-control', 'no-store, private');
+    expect((await PDFDocument.load(filled.body)).getPageCount()).toBe(3);
+    expect((await events(one.id)).filter(row => row.event === 'NOTICE_LETTER_DOWNLOADED').map(row => row.metadata)).toEqual([{ kind: 'PRE_ADVERSE', withMvr: true }]);
+    // Once the pre-adverse notice is recorded, the final letter follows (when published).
+    await decide(agents.manager, one.id, { version: one.version, decision: 'PRE_ADVERSE', note: 'Fictional reason', noticeSent: true, noticeSentOn: today() }).expect(201);
+    await letter(agents.manager, 'final').expect(404);
+    await agents.manager.post('/api/safety/letters').set(headers).send({ kind: 'FINAL', title: 'Fictional final notice', file: await letterPdf(1), fields: [fields[0]] }).expect(201);
+    expect((await PDFDocument.load((await letter(agents.manager, 'final').expect(200)).body)).getPageCount()).toBe(1);
+    // Published versions never change.
+    await expect(db.query(`UPDATE driver_notice_letters SET title = 'x' WHERE id = $1`, [published.id])).rejects.toThrow();
+  });
+
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    // A notice letter downloaded (or one published) keeps NoticeLetters.
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'NOTICE_LETTER_DOWNLOADED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard notice letters');
+    await db.query(`DELETE FROM driver_events WHERE event = 'NOTICE_LETTER_DOWNLOADED'`);
+    await db.undoLastMigration(); // NoticeLetters, with none here
+    // A renewal Safety uploaded (or a renewal link, or a scan marked as not readable) keeps DocumentRenewals.
+    await db.query(`UPDATE driver_documents SET "uploadedBy" = $1 WHERE "driverId" = $2`, [users.staff.id, id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard document renewals');
+    await db.query(`UPDATE driver_documents SET "uploadedBy" = NULL WHERE "driverId" = $1`, [id]);
+    await db.undoLastMigration(); // DocumentRenewals, with none here
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'TRUCK_SAVED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard owner-operator trucks or documents');
+    await db.query(`DELETE FROM driver_events WHERE event = 'TRUCK_SAVED'`);
+    await db.undoLastMigration(); // OwnerOperatorTrucks, with none here
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'INCIDENT_RECORDED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded driver incidents');
+    await db.query(`DELETE FROM driver_events WHERE event = 'INCIDENT_RECORDED'`);
+    await db.undoLastMigration(); // DriverIncidents, with none here
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'TEST_RECORDED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded drug and alcohol test results');
+    await db.query(`DELETE FROM driver_events WHERE event = 'TEST_RECORDED'`);
+    await db.undoLastMigration(); // DriverTesting, with none here
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'ANNUAL_REVIEW_RECORDED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard yearly driver reviews');
+    await db.query(`DELETE FROM driver_events WHERE event = 'ANNUAL_REVIEW_RECORDED'`);
+    await db.undoLastMigration(); // DriverAnnualReviews, with none here
+    await db.query(`UPDATE drivers SET status = 'LEFT', "closedAt" = now() WHERE id = $1`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard drivers marked as left');
+    await db.query(`UPDATE drivers SET status = 'LEAD', "closedAt" = NULL WHERE id = $1`, [id]);
+    await db.undoLastMigration(); // DriverLeft, with none here
     await db.undoLastMigration(); // TeamLeadSignIns, with none here
 
     await db.undoLastMigration(); // WholeTeamSupports, with none here
@@ -1026,6 +1553,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('TeamLeadSignIns1793030000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('NoticeLetters1793100000000');
   });
 });

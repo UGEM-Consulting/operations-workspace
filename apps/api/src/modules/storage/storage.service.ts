@@ -12,8 +12,8 @@ const KEYS = [
  // Layout 1.
  `photos/${U}/${U}\\.jpg`, `documents/${U}\\.pdf`, `drivers/${U}/${U}\\.pdf`, `driver-reports/${U}/${U}\\.pdf`, `driver-consents/${U}\\.pdf`,
  // Layout 2.
- `applicants/${U}/(selfie|id-selfie)/${U}\\.jpg`, `applicants/${U}/signed/${S}-v\\d+\\.pdf`, `company-documents/(onboarding|driver-consents)/${S}/${U}\\.pdf`,
- `drivers/${U}/(documents|reports)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`,
+ `applicants/${U}/(selfie|id-selfie)/${U}\\.jpg`, `applicants/${U}/signed/${S}-v\\d+\\.pdf`, `company-documents/(onboarding|driver-consents|notice-letters)/${S}/${U}\\.pdf`,
+ `drivers/${U}/(documents|reports|owner-operator)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`,
 ];
 const KEY = new RegExp(`^(${KEYS.join('|')})$`);
 // Only these failure codes are logged; raw storage errors can contain bucket paths or credential details.
@@ -78,7 +78,7 @@ export class StorageService {
     catch { /* logged by run() */ }
   }
   /** Stored objects under a prefix and when each was stored. Only API-generated keys are returned; anything else is never touched. */
-  async list(prefix: 'drivers/' | 'driver-reports/' | 'driver-consents/' | 'company-documents/driver-consents/'): Promise<{ key: string; storedAt: Date }[]> {
+  async list(prefix: 'drivers/' | 'driver-reports/' | 'driver-consents/' | 'company-documents/driver-consents/' | 'company-documents/notice-letters/'): Promise<{ key: string; storedAt: Date }[]> {
     const objects = await this.run('listing', async () => {
       if (!this.directory) return (await (await this.gcs()).getFiles({ prefix, autoPaginate: true }))[0].map(file => ({ key: file.name, storedAt: new Date(String(file.metadata.timeCreated)) }));
       const root = join(this.directory, prefix);
@@ -105,8 +105,12 @@ export const driverDocumentKey = (doc: Stored & { driverId: string }) => doc.sto
 /** drivers/<driver>/reports/mvr/<report>.pdf: reports Safety pulls. */
 export const driverReportKey = (report: Stored & { driverId: string }) => report.storageLayout === 1 ? `driver-reports/${report.driverId}/${report.id}.pdf`
  : `drivers/${report.driverId}/reports/${folder(report.kind)}/${report.id}.pdf`;
+/** drivers/<driver>/owner-operator/<kind>/<document>.pdf: an owner-operator's lease, insurance and registration. */
+export const ownerDocumentKey = (doc: { id: string; kind: string; driverId: string }) => `drivers/${doc.driverId}/owner-operator/${folder(doc.kind)}/${doc.id}.pdf`;
 /** company-documents/driver-consents/<kind>/<document>.pdf: the blank consent form versions Safety publishes. */
 export const driverConsentKey = (doc: Stored) => doc.storageLayout === 1 ? `driver-consents/${doc.id}.pdf` : `company-documents/driver-consents/${folder(doc.kind)}/${doc.id}.pdf`;
+/** company-documents/notice-letters/<kind>/<letter>.pdf: the notice letters Safety publishes (always layout 2). */
+export const noticeLetterKey = (doc: { id: string; kind: string }) => `company-documents/notice-letters/${folder(doc.kind)}/${doc.id}.pdf`;
 /** applicants/<application>/signed/<kind>-v<version>.pdf or drivers/<driver>/signed/<kind>-v<version>.pdf: saved signed copies. */
 export const signedCopyKey = (owner: { applicationId: string } | { driverId: string }, doc: { kind: string; version: number }) =>
  `${'applicationId' in owner ? `applicants/${owner.applicationId}` : `drivers/${owner.driverId}`}/signed/${folder(doc.kind)}-v${doc.version}.pdf`;

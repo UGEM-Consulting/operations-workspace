@@ -1,3 +1,4 @@
+import { addDays, usDay } from '../src/modules/safety/screening-rules';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -218,7 +219,7 @@ integration('Team lead sign-ins and team pages (disposable PostgreSQL)', () => {
     const jordan = await dispatcher('Jordan', 'jordan.work@example.test');
     await lead(jordan);
     const member = async () => (await db.query(`SELECT version FROM dispatch_members WHERE id = $1`, [jordan]))[0].version as number;
-    await agents.manager.post(`/api/dispatch/members/${jordan}/leave`).set(headers).send({ version: await member(), leftAt: new Date(Date.now() + 10 * 86400_000).toISOString().slice(0, 10), reason: 'Moving away.' }).expect(201);
+    await agents.manager.post(`/api/dispatch/members/${jordan}/leave`).set(headers).send({ version: await member(), leftAt: addDays(usDay('latest'), 10), reason: 'Moving away.' }).expect(201);
     expect(await open()).toEqual([]);
   });
 
