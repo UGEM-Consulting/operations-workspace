@@ -22,6 +22,7 @@ import { ClearanceCard, ClearanceProgress } from './clearance-card';
 import { AnnualReviewCard } from './annual-review-card';
 import { TestingCard } from './testing-card';
 import { IncidentsCard } from './incidents-card';
+import { TrucksCard } from './trucks-card';
 import { HistoryReview } from './history-review';
 import { ConsentCard } from './consent-card';
 import { DecisionCard } from './decision-card';
@@ -120,6 +121,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         {driver.annualReviews && (driver.status === 'CLEARED' || driver.annualReviews.items.length > 0) && <AnnualReviewCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} />}
         {driver.testing && (driver.status === 'CLEARED' || driver.testing.items.length > 0) && <TestingCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider} />}
         {driver.incidents && (driver.status === 'CLEARED' || driver.incidents.items.length > 0) && <IncidentsCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider} />}
+        {driver.trucks && driver.driverType === 'OWNER_OPERATOR' && (driver.status === 'APPROVED' || driver.status === 'CLEARED' || driver.trucks.items.length > 0) && <TrucksCard driver={driver} canChange={(driver.status === 'APPROVED' || driver.status === 'CLEARED') && (screener || owns)} />}
         <Card>
           <CardHeader title="Details" />
           <CardBody><DescriptionList items={[

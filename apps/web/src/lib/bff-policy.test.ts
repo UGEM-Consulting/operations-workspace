@@ -12,6 +12,8 @@ describe('driver consent forms through the BFF', () => {
     assert.equal(allowedEndpoint('POST', `driver/consents/${ID}/delete`), false);
     for (const path of [`safety/consents/${ID}/file`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/file`, `driver/consents/${ID}/signed`]) assert.equal(isFileEndpoint(path), true, path);
     assert.equal(bodyLimit('safety/consents'), 4_400_000);
+    assert.equal(bodyLimit(`safety/drivers/${ID}/trucks/${ID}/documents`), 4_400_000);
+    assert.equal(isFileEndpoint(`safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`), true);
     assert.equal(bodyLimit(`safety/drivers/${ID}/annual-reviews`), 4_400_000);
     assert.equal(bodyLimit(`driver/consents/${ID}/sign`), 400_000);
   });
@@ -19,7 +21,7 @@ describe('driver consent forms through the BFF', () => {
 
 describe('driver screening through the BFF', () => {
   it('allows the screening and decision mutations, and nothing beside them', () => {
-    for (const path of [`safety/drivers/${ID}/checks/IDENTITY`, `safety/drivers/${ID}/mvr`, `safety/drivers/${ID}/left`, `safety/drivers/${ID}/annual-reviews`, `safety/drivers/${ID}/tests`, `safety/drivers/${ID}/tests/${ID}/void`, `safety/drivers/${ID}/incidents`, `safety/drivers/${ID}/incidents/${ID}/settle`, `safety/drivers/${ID}/incidents/${ID}/void`, `safety/drivers/${ID}/corrections`, `safety/drivers/${ID}/send-for-decision`, `safety/drivers/${ID}/decision`])
+    for (const path of [`safety/drivers/${ID}/checks/IDENTITY`, `safety/drivers/${ID}/mvr`, `safety/drivers/${ID}/left`, `safety/drivers/${ID}/annual-reviews`, `safety/drivers/${ID}/tests`, `safety/drivers/${ID}/trucks`, `safety/drivers/${ID}/trucks/${ID}`, `safety/drivers/${ID}/trucks/${ID}/archive`, `safety/drivers/${ID}/trucks/${ID}/documents`, `safety/drivers/${ID}/tests/${ID}/void`, `safety/drivers/${ID}/incidents`, `safety/drivers/${ID}/incidents/${ID}/settle`, `safety/drivers/${ID}/incidents/${ID}/void`, `safety/drivers/${ID}/corrections`, `safety/drivers/${ID}/send-for-decision`, `safety/drivers/${ID}/decision`])
       assert.equal(allowedEndpoint('POST', path), true, path);
     assert.equal(allowedEndpoint('GET', `safety/drivers/${ID}/decision`), false);
     assert.equal(allowedEndpoint('POST', `safety/drivers/${ID}/checks/identity`), false);

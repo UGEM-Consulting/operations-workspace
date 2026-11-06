@@ -4,9 +4,9 @@ import { EmptyState } from '@/components/ui/feedback';
 import { Table } from '@/components/ui/table';
 import { Badge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
-import { documentLabels, type DocumentKind } from './types';
+import { documentLabels, ownerDocumentLabels, type DocumentKind } from './types';
 
-export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; owner: { name: string } | null; expired: boolean }
+export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; truck?: string | null; owner: { name: string } | null; expired: boolean }
 export interface DueReview { driverId: string; firstName: string; lastName: string; owner: string | null; lastReviewedOn: string | null; dueOn: string; notQualified: boolean; overdue: boolean }
 export interface DueTest { driverId: string; firstName: string; lastName: string; kind: 'DRUG' | 'ALCOHOL'; result: string; testedOn: string; owner: string | null }
 export interface DueIncident { incidentId: string; driverId: string; firstName: string; lastName: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; owner: string | null }
@@ -24,7 +24,7 @@ export function ExpiringDocuments({ data, reviews }: { data: ExpiringList; revie
         empty={<EmptyState title="Nothing is expiring" description="No verified document has expired or expires soon." />}
         columns={[
           { key: 'driver', label: 'Driver', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
-          { key: 'document', label: 'Document', cell: item => documentLabels[item.kind as DocumentKind] ?? 'Document' },
+          { key: 'document', label: 'Document', cell: item => (documentLabels[item.kind as DocumentKind] ?? ownerDocumentLabels[item.kind as keyof typeof ownerDocumentLabels] ?? 'Document') + (item.truck ? ` · unit ${item.truck}` : '') },
           { key: 'expires', label: 'Expires', cell: item => <>{day(item.expiresOn)} <Badge label={item.expired ? 'Expired' : 'Expiring'} tone={item.expired ? 'danger' : 'warning'} /></> },
           { key: 'owner', label: 'Owner', hideBelow: 'md', cell: item => item.owner?.name ?? '—' },
         ]} />

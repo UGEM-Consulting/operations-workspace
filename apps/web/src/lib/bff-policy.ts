@@ -4,7 +4,7 @@ const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test
 // Private files served as-is (JPEG photos and PDFs) instead of JSON.
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
   `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
-  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `driver/documents/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`,
+  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `driver/documents/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
   `safety/consents/${ID}/file`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
 const SCAN = '(license|medical-card|work-authorization)';
 export function allowedEndpoint(method: string, path: string): boolean {
@@ -59,6 +59,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && (match(`safety/drivers/${ID}/documents/${ID}/verify`, path) || match(`safety/drivers/${ID}/(tests|incidents)/${ID}/void`, path) || match(`safety/drivers/${ID}/incidents/${ID}/settle`, path))) ||
     // Screening (checks, the MVR, corrections, the hand-off) and the Safety manager's decision.
     (method === 'POST' && match(`safety/drivers/${ID}/(checks/[A-Z_]+|mvr|corrections|send-for-decision|decision)`, path)) ||
+    // Owner-operators' trucks: add, change, archive, and upload a lease, insurance or registration PDF.
+    (method === 'POST' && match(`safety/drivers/${ID}/trucks(/${ID}(/archive|/documents)?)?`, path)) ||
     // Clearance of an approved driver: checklist items, previous employers and Cleared.
     (method === 'POST' && match(`safety/drivers/${ID}/(clearance/[A-Z_]+|employers|employers/${ID}|employers/${ID}/remove|clear)`, path)) ||
     // Driver consent forms: the Safety manager publishes them; a driver opens and signs them in their application.
@@ -70,7 +72,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`safety/drivers/${ID}/(mvr|annual-reviews)`, path) || path === 'safety/consents') return 4_400_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`safety/drivers/${ID}/(mvr|annual-reviews)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || path === 'safety/consents') return 4_400_000;
   // A list of existing dispatchers, up to 500 rows of text.
   if (path === 'dispatch/existing/check' || path === 'dispatch/existing/add') return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).

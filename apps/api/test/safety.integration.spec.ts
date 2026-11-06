@@ -106,7 +106,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       const me = (await agents[key].get('/api/auth/me').set(headers).expect(200)).body;
       expect(me.landingPage).toBe('/safety/drivers');
       // Every Safety role reads the consent forms; only the Safety manager publishes them.
-      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'expiring', 'consents', 'security']);
+      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'trucks', 'expiring', 'consents', 'security']);
     }
     expect((await agents.admin.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toContain('drivers');
     await agents.dispatch.get('/api/safety/drivers').set(headers).expect(403);
@@ -589,6 +589,70 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(JSON.stringify(await events(id))).not.toMatch(/rear-end|speeding|CONVICTED|wrong driver/);
   });
 
+  it('keeps an owner-operator’s trucks and their lease, insurance and registration PDFs, listing expiring ones', async () => {
+    const { id } = (await add(agents.lead).expect(201)).body;
+    const day = usDay('latest');
+    const truck = { unit: 'T-101', vin: '1fujgllb5cldf1234', year: 2021, make: 'Freightliner', plate: 'abc1234', plateState: 'tx' };
+    const addTruck = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/trucks`).set(headers).send({ version, ...truck, ...body });
+    await addTruck(agents.lead, 1).expect(409);
+    await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_owners ("driverId", "ownerId", "startedAt") VALUES ($1, $2, now())`, [id, users.staff.id]);
+    await addTruck(agents.dispatch, 2).expect(403);
+    await addTruck(agents.staff2, 2).expect(403);
+    await addTruck(agents.lead, 2, { vin: '1FUJGLLB5CLDF123I' }).expect(400);
+    await addTruck(agents.lead, 2, { vin: 'SHORT' }).expect(400);
+    await addTruck(agents.lead, 2, { year: 1950 }).expect(400);
+    await addTruck(agents.lead, 2, { plateState: undefined }).expect(400);
+    await addTruck(agents.lead, 2, { unit: ' ' }).expect(400);
+    await addTruck(agents.lead, 1).expect(409);
+    expect((await addTruck(agents.staff, 2).expect(201)).body.version).toBe(3);
+    const trucks = async () => (await driver(id)).trucks.items as { id: string; vin: string; plate: string; plateState: string; documents: { id: string; kind: string; expiresOn: string | null }[]; archivedAt: string | null }[];
+    expect((await trucks())[0]).toMatchObject({ vin: '1FUJGLLB5CLDF1234', plate: 'ABC1234', plateState: 'TX', documents: [] });
+    const truckId = (await trucks())[0].id;
+    // The same VIN can't be listed twice while the first is current.
+    const other = (await add(agents.lead, { ...lead, phone: '+1 (555) 010-2999', email: 'other.driver@example.test' }).expect(201)).body.id;
+    await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [other]);
+    expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck }).expect(409)).body.message).toMatch(/already has this VIN/);
+    // Only owner-operators keep trucks.
+    await db.query(`UPDATE drivers SET "driverType" = 'COMPANY' WHERE id = $1`, [other]);
+    expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck, vin: '2FUJGLLB5CLDF1234' }).expect(409)).body.message).toMatch(/owner-operators/);
+    // Documents: a PDF per kind, an expiration for insurance and registration, replaced files are kept.
+    const file = await mvrPdf();
+    const upload = (agent: Agent, version: number, body: Record<string, unknown> = {}) => agent.post(`/api/safety/drivers/${id}/trucks/${truckId}/documents`).set(headers).send({ version, kind: 'INSURANCE', file, expiresOn: addDays(day, 20), ...body });
+    await upload(agents.dispatch, 3).expect(403);
+    await upload(agents.staff2, 3).expect(403);
+    await upload(agents.lead, 3, { expiresOn: undefined }).expect(400);
+    await upload(agents.lead, 3, { kind: 'POLICY' }).expect(400);
+    await upload(agents.lead, 3, { file: Buffer.from('not a pdf').toString('base64') }).expect(400);
+    await upload(agents.lead, 3, { policyNumber: 'P-1' }).expect(400);
+    await upload(agents.lead, 2).expect(409);
+    expect((await upload(agents.staff, 3).expect(201)).body.version).toBe(4);
+    await upload(agents.lead, 4, { kind: 'LEASE', expiresOn: undefined }).expect(201);
+    await upload(agents.lead, 5, { kind: 'REGISTRATION', expiresOn: addDays(day, 300) }).expect(201);
+    const docs = (await trucks())[0].documents;
+    expect(docs.map(row => row.kind).sort()).toEqual(['INSURANCE', 'LEASE', 'REGISTRATION']);
+    const insurance = docs.find(row => row.kind === 'INSURANCE')!.id;
+    await agents.lead.get(`/api/safety/drivers/${id}/trucks/${truckId}/documents/${insurance}/file`).set(headers).expect(200).expect('content-type', 'application/pdf').expect('cache-control', 'no-store, private');
+    await agents.dispatch.get(`/api/safety/drivers/${id}/trucks/${truckId}/documents/${insurance}/file`).set(headers).expect(403);
+    // Insurance expiring within 60 days appears with the other expiring documents; registration far away doesn't.
+    const expiring = (await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items as { kind: string; truck: string | null }[];
+    expect(expiring.map(row => [row.kind, row.truck])).toEqual([['INSURANCE', 'T-101']]);
+    expect(JSON.stringify(expiring)).not.toMatch(/notes|passwordHash/);
+    // A new insurance PDF replaces the current one; the old row is kept.
+    await upload(agents.lead, 6, { expiresOn: addDays(day, 365) }).expect(201);
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items).toEqual([]);
+    expect((await db.query(`SELECT count(*)::int AS n FROM driver_owner_documents WHERE kind = 'INSURANCE'`))[0].n).toBe(2);
+    // The list shows every truck with its dates; archiving removes it from the expiring list and frees the VIN.
+    expect((await agents.staff2.get('/api/safety/trucks').set(headers).expect(200)).body.items).toMatchObject([{ unit: 'T-101', hasLease: true, insuranceExpiresOn: addDays(day, 365), firstName: 'Jordan' }]);
+    await agents.dispatch.get('/api/safety/trucks').set(headers).expect(403);
+    await agents.lead.post(`/api/safety/drivers/${id}/trucks/${truckId}/archive`).set(headers).send({ version: 7 }).expect(201);
+    await agents.lead.post(`/api/safety/drivers/${id}/trucks/${truckId}/archive`).set(headers).send({ version: 8 }).expect(409);
+    await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck }).expect(409);
+    // Events name the action or kind only.
+    expect((await events(id)).filter(row => /^(TRUCK|OWNER_DOCUMENT)/.test(row.event)).map(row => [row.event, row.metadata]).slice(0, 2)).toEqual([['TRUCK_SAVED', { action: 'added' }], ['OWNER_DOCUMENT_UPLOADED', { kind: 'INSURANCE' }]]);
+    expect(JSON.stringify(await events(id))).not.toMatch(/1FUJGL|ABC1234|Freightliner/);
+  });
+
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
     const { id, agent } = await applying();
     const license = ((await scanAll(agent)).documents as { id: string; kind: string }[]).find(row => row.kind === 'LICENSE')!.id;
@@ -683,6 +747,14 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await db.query(`UPDATE driver_documents SET "verifiedAt" = now() WHERE id = $1`, [replaced]);
     expect(await sweeper.sweep(later)).toBe(0);
     expect(existsSync(file(replaced))).toBe(true);
+    // Owner-operator documents: a file no row names is a leftover; one a row names (current or replaced) is kept.
+    mkdirSync(join(storage, 'drivers', id, 'owner-operator', 'insurance'), { recursive: true });
+    const truck = (await db.query(`INSERT INTO driver_trucks ("driverId", unit, vin, year, make) VALUES ($1, 'T-1', '1FUJGLLB5CLDF1234', 2021, 'Fictional') RETURNING id`, [id]))[0].id as string;
+    const kept = randomUUID(), orphan = randomUUID(), ownerFile = (documentId: string) => join(storage, 'drivers', id, 'owner-operator', 'insurance', `${documentId}.pdf`);
+    writeFileSync(ownerFile(kept), pdf); writeFileSync(ownerFile(orphan), pdf);
+    await db.query(`INSERT INTO driver_owner_documents (id, "driverId", "truckId", kind, "expiresOn", "pageCount", sha256, "byteSize", "replacedAt") VALUES ($1, $2, $3, 'INSURANCE', CURRENT_DATE, 1, repeat('0', 64), 1, now())`, [kept, id, truck]);
+    expect(await sweeper.sweep(later)).toBe(1);
+    expect([existsSync(ownerFile(kept)), existsSync(ownerFile(orphan))]).toEqual([true, false]);
   });
 
   /** A driver who submitted a complete application with every scan, now in Screening. */
@@ -1176,6 +1248,10 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'TRUCK_SAVED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard owner-operator trucks or documents');
+    await db.query(`DELETE FROM driver_events WHERE event = 'TRUCK_SAVED'`);
+    await db.undoLastMigration(); // OwnerOperatorTrucks, with none here
     await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'INCIDENT_RECORDED', '{}')`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard recorded driver incidents');
     await db.query(`DELETE FROM driver_events WHERE event = 'INCIDENT_RECORDED'`);
@@ -1242,6 +1318,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('DriverIncidents1793070000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('OwnerOperatorTrucks1793080000000');
   });
 });

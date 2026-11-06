@@ -13,7 +13,7 @@ const KEYS = [
  `photos/${U}/${U}\\.jpg`, `documents/${U}\\.pdf`, `drivers/${U}/${U}\\.pdf`, `driver-reports/${U}/${U}\\.pdf`, `driver-consents/${U}\\.pdf`,
  // Layout 2.
  `applicants/${U}/(selfie|id-selfie)/${U}\\.jpg`, `applicants/${U}/signed/${S}-v\\d+\\.pdf`, `company-documents/(onboarding|driver-consents)/${S}/${U}\\.pdf`,
- `drivers/${U}/(documents|reports)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`,
+ `drivers/${U}/(documents|reports|owner-operator)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`,
 ];
 const KEY = new RegExp(`^(${KEYS.join('|')})$`);
 // Only these failure codes are logged; raw storage errors can contain bucket paths or credential details.
@@ -105,6 +105,8 @@ export const driverDocumentKey = (doc: Stored & { driverId: string }) => doc.sto
 /** drivers/<driver>/reports/mvr/<report>.pdf: reports Safety pulls. */
 export const driverReportKey = (report: Stored & { driverId: string }) => report.storageLayout === 1 ? `driver-reports/${report.driverId}/${report.id}.pdf`
  : `drivers/${report.driverId}/reports/${folder(report.kind)}/${report.id}.pdf`;
+/** drivers/<driver>/owner-operator/<kind>/<document>.pdf: an owner-operator's lease, insurance and registration. */
+export const ownerDocumentKey = (doc: { id: string; kind: string; driverId: string }) => `drivers/${doc.driverId}/owner-operator/${folder(doc.kind)}/${doc.id}.pdf`;
 /** company-documents/driver-consents/<kind>/<document>.pdf: the blank consent form versions Safety publishes. */
 export const driverConsentKey = (doc: Stored) => doc.storageLayout === 1 ? `driver-consents/${doc.id}.pdf` : `company-documents/driver-consents/${folder(doc.kind)}/${doc.id}.pdf`;
 /** applicants/<application>/signed/<kind>-v<version>.pdf or drivers/<driver>/signed/<kind>-v<version>.pdf: saved signed copies. */

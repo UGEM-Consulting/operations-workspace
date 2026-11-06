@@ -28,6 +28,8 @@ const navigation = [
   { key: 'dispatchdrivers', href: '/dispatch/drivers', label: 'Drivers', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   // Safety onboards drivers; every Safety role reads all driver records, and the service decides who changes what.
   { key: 'drivers', href: '/safety/drivers', label: 'Drivers', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
+  // Owner-operators' trucks with their lease, insurance and registration documents.
+  { key: 'trucks', href: '/safety/trucks', label: 'Trucks', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   // Driver license, medical card and work authorization scans that expired or expire soon.
   { key: 'expiring', href: '/safety/expiring', label: 'Expiring documents', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   // The consent forms drivers sign; the Safety manager publishes them.

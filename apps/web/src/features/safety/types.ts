@@ -29,7 +29,11 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with ongoing drug and alcohol testing.
   testing?: { items: TestRow[] };
   // From an API with accidents, violations and inspections.
-  incidents?: { items: IncidentRow[] } }
+  incidents?: { items: IncidentRow[] };
+  // From an API with owner-operator trucks.
+  trucks?: { items: TruckRow[] } }
+export interface TruckRow { id: string; unit: string; vin: string; year: number; make: string; plate: string | null; plateState: string | null; archivedAt: string | null; documents: { id: string; kind: 'LEASE' | 'INSURANCE' | 'REGISTRATION'; expiresOn: string | null; pageCount: number }[] }
+export const ownerDocumentLabels = { LEASE: 'Lease', INSURANCE: 'Insurance', REGISTRATION: 'Registration' } as const;
 export interface IncidentRow { id: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; state: string | null; summary: string; note: string | null; preventable: 'YES' | 'NO' | 'UNDETERMINED' | null; injuries: boolean | null; fatalities: boolean | null; towAway: boolean | null; disposition: 'PENDING' | 'CONVICTED' | 'DISMISSED' | null; outOfService: boolean | null; violationCount: number | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface TestRow { id: string; kind: 'DRUG' | 'ALCOHOL'; reason: string; testedOn: string; result: 'NEGATIVE' | 'NOT_NEGATIVE' | 'CANCELLED' | 'REFUSED'; note: string | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }

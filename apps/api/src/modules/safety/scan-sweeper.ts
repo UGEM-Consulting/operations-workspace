@@ -12,6 +12,8 @@ const U = '[0-9a-f-]{36}', S = '[a-z]+(?:-[a-z]+)*';
 const SCANS = `SELECT id FROM driver_documents WHERE id = ANY($1::uuid[]) AND NOT ("replacedAt" IS NOT NULL AND "verifiedAt" IS NULL)`;
 // Every MVR row is kept, replaced ones included; only a file no row names (an upload that never committed) is a leftover.
 const REPORTS = `SELECT id FROM driver_reports WHERE id = ANY($1::uuid[])`;
+// An owner-operator document (all versions are kept); only a file no row names is a leftover.
+const OWNER_DOCUMENTS = `SELECT id FROM driver_owner_documents WHERE id = ANY($1::uuid[])`;
 // A consent form whose publish never committed; every published version is kept.
 const CONSENTS = `SELECT id FROM driver_consent_documents WHERE id = ANY($1::uuid[])`;
 /**
@@ -22,6 +24,7 @@ const SWEPT = [
  { prefix: 'drivers/', rules: [
   { pattern: new RegExp(`^drivers/${U}/(?:documents/${S}/)?(${U})\\.pdf$`), kept: SCANS },
   { pattern: new RegExp(`^drivers/${U}/reports/${S}/(${U})\\.pdf$`), kept: REPORTS },
+  { pattern: new RegExp(`^drivers/${U}/owner-operator/${S}/(${U})\\.pdf$`), kept: OWNER_DOCUMENTS },
  ] },
  { prefix: 'driver-reports/', rules: [{ pattern: new RegExp(`^driver-reports/${U}/(${U})\\.pdf$`), kept: REPORTS }] },
  { prefix: 'driver-consents/', rules: [{ pattern: new RegExp(`^driver-consents/(${U})\\.pdf$`), kept: CONSENTS }] },

@@ -154,6 +154,8 @@ export const driverProfileSchema = driverRow.extend({
 export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), canPublish: z.boolean(),
   kinds: z.array(z.looseObject({ kind: text, label: text, signature: z.boolean(), versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })) });
 
+export const trucksSchema = z.looseObject({ today: text, items: z.array(z.looseObject({ id: text, driverId: text, firstName: text, lastName: text, unit: text, vin: text, year: z.number(), make: text, plate: nullableText, plateState: nullableText,
+  archivedAt: nullableText, insuranceExpiresOn: nullableText, registrationExpiresOn: nullableText, hasLease: z.boolean() })) });
 export const dueReviewsSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, owner: nullableText, lastReviewedOn: nullableText, dueOn: text, notQualified: z.boolean(), overdue: z.boolean() })),
   tests: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, kind: z.enum(['DRUG', 'ALCOHOL']), result: text, testedOn: text, owner: nullableText })).optional().catch(undefined),
   incidents: z.array(z.looseObject({ incidentId: text, driverId: text, firstName: text, lastName: text, kind: z.enum(['ACCIDENT', 'VIOLATION', 'INSPECTION']), occurredOn: text, owner: nullableText })).optional().catch(undefined) });

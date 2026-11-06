@@ -16,6 +16,8 @@ import { AnnualReviewDto } from './annual-review.dto';
 import { TestingService } from './testing.service';
 import { RecordTestDto, VoidTestDto } from './testing.dto';
 import { IncidentService } from './incident.service';
+import { TruckService } from './truck.service';
+import { ArchiveTruckDto, OwnerDocumentDto, TruckDto } from './truck.dto';
 import { RecordIncidentDto, SettleIncidentDto, VoidIncidentDto } from './incident.dto';
 import { DecisionDto, RequestCorrectionsDto, ScreeningCheckDto, SendForDecisionDto, UploadMvrDto } from './screening.dto';
 import { ScreeningService } from './screening.service';
@@ -35,7 +37,7 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService) {}
+ constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService) {}
  // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
  @Get('consents') consentList(@Req() req: AuthRequest) { return this.consents.list(req.currentUser); }
  @Post('consents') publishConsent(@Req() req: AuthRequest, @Body() dto: PublishConsentDto) { return this.consents.publish(req.currentUser, dto); }
@@ -49,9 +51,16 @@ class SafetyController {
  // The record plus its yearly reviews (cleared drivers).
  @Get('drivers/:id') async driver(@Param('id', ParseUUIDPipe) id: string) {
   const driver = await this.safety.driver(id);
-  return { ...driver, annualReviews: await this.annual.forDriver(id, driver.clearedAt), testing: await this.testing.forDriver(id), incidents: await this.incidents.forDriver(id) };
+  return { ...driver, annualReviews: await this.annual.forDriver(id, driver.clearedAt), testing: await this.testing.forDriver(id), incidents: await this.incidents.forDriver(id), trucks: await this.trucks.forDriver(id) };
  }
  // Yearly reviews that are due or overdue, and drivers whose last review found them not qualified.
+ // Owner-operators' trucks and their lease, insurance and registration PDFs (no-store files; every open is recorded).
+ @Get('trucks') truckList() { return this.trucks.list(); }
+ @Post('drivers/:id/trucks') addTruck(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: TruckDto) { return this.trucks.add(req.currentUser, id, dto); }
+ @Post('drivers/:id/trucks/:truckId') updateTruck(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Body() dto: TruckDto) { return this.trucks.update(req.currentUser, id, truckId, dto); }
+ @Post('drivers/:id/trucks/:truckId/archive') archiveTruck(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Body() dto: ArchiveTruckDto) { return this.trucks.archive(req.currentUser, id, truckId, dto); }
+ @Post('drivers/:id/trucks/:truckId/documents') uploadOwnerDocument(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Body() dto: OwnerDocumentDto) { return this.trucks.upload(req.currentUser, id, truckId, dto); }
+ @Get('drivers/:id/trucks/:truckId/documents/:documentId/file') @FileResponse() async ownerDocument(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('truckId', ParseUUIDPipe) truckId: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.trucks.file(req.currentUser, id, truckId, documentId)); }
  @Get('due') async due() { return { ...await this.annual.due(), tests: await this.testing.attention(), incidents: await this.incidents.attention() }; }
  // Drug and alcohol test results (results only): the owner and Safety manager record; only the manager voids.
  @Post('drivers/:id/tests') recordTest(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RecordTestDto) { return this.testing.record(req.currentUser, id, dto); }
@@ -110,5 +119,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, AnnualReviewService, TestingService, IncidentService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService] })
+@Module({ imports: [EmailModule, StorageModule], controllers: [SafetyController, DriverController], providers: [SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
 export class SafetyModule {}

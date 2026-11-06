@@ -50,12 +50,15 @@ export class SafetyService {
   */
  async expiring() {
   const today = usDay('latest');
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn",
-    x."firstName", x."lastName", x.status, ${person('o')} AS owner
-   FROM driver_documents d JOIN drivers x ON x.id = d."driverId"
+  const items: Record<string, unknown>[] = await this.db.query(`SELECT e."documentId", e."driverId", e.kind, e."expiresOn", e.truck, x."firstName", x."lastName", x.status, ${person('o')} AS owner FROM (
+    SELECT d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn", NULL::text AS truck
+    FROM driver_documents d WHERE d."replacedAt" IS NULL AND d."verifiedAt" IS NOT NULL AND d."expiresOn" IS NOT NULL
+    UNION ALL
+    SELECT o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), t.unit
+    FROM driver_owner_documents o JOIN driver_trucks t ON t.id = o."truckId" WHERE o."replacedAt" IS NULL AND o."expiresOn" IS NOT NULL AND t."archivedAt" IS NULL
+   ) e JOIN drivers x ON x.id = e."driverId"
    LEFT JOIN driver_owners w ON w."driverId" = x.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
-   WHERE d."replacedAt" IS NULL AND d."verifiedAt" IS NOT NULL AND d."expiresOn" IS NOT NULL AND d."expiresOn" <= $1
-    AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT') ORDER BY d."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]);
+   WHERE e."expiresOn" <= $1 AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT') ORDER BY e."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]);
   return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expired: (item.expiresOn as string) < today })) };
  }
  async expiringCount(): Promise<number> { return (await this.expiring()).items.length; }
