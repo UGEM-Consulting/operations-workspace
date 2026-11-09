@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { CreateMcDto, UpdateMcDto } from './lists.dto';
-import { JobTitle, ListEvent, ListEventType, ListKind, listNameKey, Mc } from './lists.entity';
+import { INDEPENDENT_NOT_MC, isIndependent, JobTitle, ListEvent, ListEventType, ListKind, listNameKey, Mc } from './lists.entity';
 
 type Item = Mc | JobTitle;
 const TABLES: Record<ListKind, { entity: typeof Mc | typeof JobTitle; table: string; column: string; label: string }> = {
@@ -68,9 +68,9 @@ export class ListsService {
   });
  }
 
- // "Independent" is a fixed choice in forms, never an MC entry.
+ // "Independent" is never an MC: it's a team choice under an MC (section 31).
  private checkName(kind: ListKind, name: string) {
-  if (kind === 'MC' && listNameKey(name) === 'independent') throw new BadRequestException('Independent is already a fixed choice; it isn’t added as an MC.');
+  if (kind === 'MC' && isIndependent(name)) throw new BadRequestException(INDEPENDENT_NOT_MC.staff);
  }
  private async write<T>(work: (manager: EntityManager) => Promise<T>): Promise<T> {
   try { return await this.db.transaction(work); }

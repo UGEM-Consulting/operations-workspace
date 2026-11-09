@@ -1,7 +1,7 @@
 import { createItRequest } from '../it/create-request';
 import { createMemberForApproval, createSupportForApproval, supportedDispatcher, supportedTeam } from '../dispatch/create-member';
 import { NO_MC } from '../dispatch/dispatch.entity';
-import { listNameKey } from '../lists/lists.entity';
+import { INDEPENDENT_NOT_MC, isIndependent } from '../lists/lists.entity';
 import { acceptPaperwork } from '../dispatch/existing.service';
 import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
 import { askedAs, provisioningDetails, requiredApplicantFields } from './application-requirements';
@@ -195,7 +195,7 @@ export class ReviewService {
    if (!support && !catchUpMemberId && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
    // Independent is a team choice under an MC, never an MC (an older page may still offer it).
-   if (input.employment && listNameKey(input.employment.mcName) === listNameKey('Independent')) throw new BadRequestException('Choose the MC they will dispatch for. Independent is chosen as their team.');
+   if (input.employment && isIndependent(input.employment.mcName)) throw new BadRequestException(INDEPENDENT_NOT_MC.staff);
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
    // Under the invitation lock, so the applicant cannot upload or sign concurrently.
    const documents = await documentStatus(em,id,this.storage.enabled);

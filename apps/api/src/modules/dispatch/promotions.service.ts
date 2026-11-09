@@ -7,7 +7,8 @@ import { createItRequest } from '../it/create-request';
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
-import { ledTeams, lockTeam, onNotice } from './create-member';
+import { lastDayPassedSql, lastDaySql, ledTeams, lockTeam, onNotice } from './create-member';
+import { usDay } from '../safety/screening-rules';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
 
@@ -30,14 +31,17 @@ export class PromotionsService {
  async team(user: User) {
   const teams = await this.scope(this.db, user);
   const ids = teams.map(team => team.id);
-  const dispatchers = ids.length ? await this.db.query(`SELECT d.id, ${name('d')} AS name, d.status, a."teamId", jt.name AS "jobTitle", (t."leadMemberId" = d.id) AS lead
+  // lastDay: on notice (they show as leaving); hasApplication: only someone with an approved application can be promoted,
+  // because IT setup starts from it (a support added by hand has one once their paperwork is accepted).
+  const dispatchers = ids.length ? await this.db.query(`SELECT d.id, ${name('d')} AS name, d.status, a."teamId", jt.name AS "jobTitle", (t."leadMemberId" = d.id) AS lead, ${lastDaySql('d')}, ${lastDayPassedSql('d', '$2')}
    FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" JOIN teams t ON t.id = a."teamId" LEFT JOIN job_titles jt ON jt.id = d."jobTitleId"
-   WHERE a."teamId" = ANY($1) AND a."endedAt" IS NULL AND d.status <> 'LEFT' AND d.position = 'DISPATCHER' ORDER BY lower(d."firstName"), lower(d."lastName")`, [ids]) : [];
+   WHERE a."teamId" = ANY($1) AND a."endedAt" IS NULL AND d.status <> 'LEFT' AND d.position = 'DISPATCHER' ORDER BY lower(d."firstName"), lower(d."lastName")`, [ids, usDay('earliest')]) : [];
   const supports = ids.length ? await this.db.query(`SELECT s.id, ${name('s')} AS name, s."supportType", s.status, l."dispatcherId", l."teamId", l."startedAt" AS since,
+    ${lastDaySql('s')}, ${lastDayPassedSql('s', '$3')}, s."applicationId" IS NOT NULL AS "hasApplication",
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_support_links x WHERE x."supportId" = s.id) > 1 AS "sinceKnown",
     (SELECT json_build_object('id', p.id, 'createdAt', p."createdAt") FROM promotion_requests p WHERE p."supportId" = s.id AND p.status = 'PENDING') AS pending
    FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN existing_member_records e ON e."memberId" = s.id
-   WHERE (l."dispatcherId" = ANY($1) OR l."teamId" = ANY($2)) AND l."endedAt" IS NULL AND s.status <> 'LEFT' ORDER BY lower(s."firstName")`, [dispatchers.map((row: { id: string }) => row.id), ids]) : [];
+   WHERE (l."dispatcherId" = ANY($1) OR l."teamId" = ANY($2)) AND l."endedAt" IS NULL AND s.status <> 'LEFT' ORDER BY lower(s."firstName")`, [dispatchers.map((row: { id: string }) => row.id), ids, usDay('earliest')]) : [];
   // Only for people still in their teams: a support assisting one of their dispatchers or the whole team, or a promoted support now one.
   const requests = ids.length ? await this.db.query(`SELECT p.id, p.status, p.reason, p.note, p."createdAt", p."decidedAt", ${name('s')} AS support
    FROM promotion_requests p JOIN dispatch_members s ON s.id = p."supportId" WHERE p."requestedBy" = $1 AND s.status <> 'LEFT' AND (EXISTS (SELECT 1 FROM member_assignments a
@@ -52,6 +56,8 @@ export class PromotionsService {
    const support = await this.supportInScope(em, user, dto.supportId);
    if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support or updater can be promoted.');
    if (await onNotice(em, dto.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted.');
+   // Refused here rather than at the decision, which needs the application for IT setup and could only decline.
+   if (!support.applicationId) throw new ConflictException('Their paperwork isn’t accepted yet, so they can’t be promoted. Ask a dispatch manager to send their catch-up link.');
    const request = await em.getRepository(PromotionRequest).save({ supportId: dto.supportId, requestedBy: user.id, reason: dto.reason });
    await this.event(em, user, 'PROMOTION_REQUESTED', dto.supportId, { requestId: request.id });
    return { id: request.id };
@@ -157,11 +163,11 @@ export class PromotionsService {
  /** A support assisting a dispatcher in one of the team lead's teams, or one of those teams as a whole; outside that scope looks the same as not existing. */
  private async supportInScope(em: EntityManager, user: User, supportId: string, lock = true) {
   const teams = (await this.scope(em, user)).map(team => team.id);
-  const [support] = await em.query(`SELECT s.id, s.position, s.status, coalesce(l."teamId", a."teamId") AS "teamId" FROM dispatch_members s
+  const [support] = await em.query(`SELECT s.id, s.position, s.status, s."applicationId", coalesce(l."teamId", a."teamId") AS "teamId" FROM dispatch_members s
    JOIN member_support_links l ON l."supportId" = s.id AND l."endedAt" IS NULL
    LEFT JOIN member_assignments a ON a."memberId" = l."dispatcherId" AND a."endedAt" IS NULL WHERE s.id = $1${lock ? ' FOR UPDATE OF s' : ''}`, [supportId]);
   if (!support || !teams.includes(support.teamId)) throw new NotFoundException('This person isn’t in your team.');
-  return support as { id: string; position: string; status: string; teamId: string };
+  return support as { id: string; position: string; status: string; applicationId: string | null; teamId: string };
  }
 
  private async write<T>(work: (em: EntityManager) => Promise<T>): Promise<T> {

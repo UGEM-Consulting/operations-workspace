@@ -4,6 +4,7 @@ import { IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Match
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
 import { DRIVER_TYPES, type DriverType, LICENSE_TYPES, type LicenseType, US_STATES } from './safety.entity';
+import { NoSsn } from './pii';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const lower = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toLowerCase() : value);
 const present = (_object: unknown, value: unknown) => value !== undefined;
@@ -25,7 +26,7 @@ export class CreateDriverDto {
  @upper() @ValidateIf(given) @IsIn(US_STATES, { message: 'Choose a US state.' }) licenseState?: string | null;
  @ValidateIf(given) @IsInt() @Min(0) @Max(60) experienceYears?: number | null;
  @text() @ValidateIf(given) @IsString() @MaxLength(100) source?: string | null;
- @text() @ValidateIf(given) @IsString() @MaxLength(2000) notes?: string | null;
+ @NoSsn() @text() @ValidateIf(given) @IsString() @MaxLength(2000) notes?: string | null;
  @ValidateIf(given) @IsUUID() safetyLeadId?: string | null;
 }
 /** Send only what changed; null clears an optional field. */
@@ -40,12 +41,12 @@ export class UpdateDriverDto {
  @upper() @ValidateIf(given) @IsIn(US_STATES, { message: 'Choose a US state.' }) licenseState?: string | null;
  @ValidateIf(given) @IsInt() @Min(0) @Max(60) experienceYears?: number | null;
  @text() @ValidateIf(given) @IsString() @MaxLength(100) source?: string | null;
- @text() @ValidateIf(given) @IsString() @MaxLength(2000) notes?: string | null;
+ @NoSsn() @text() @ValidateIf(given) @IsString() @MaxLength(2000) notes?: string | null;
  @ValidateIf(given) @IsUUID() safetyLeadId?: string | null;
 }
 export class WithdrawDriverDto {
  @IsInt() @Min(1) version!: number;
- @text() @IsString() @MinLength(1, { message: 'Say why the driver is withdrawn.' }) @MaxLength(500) reason!: string;
+ @NoSsn() @text() @IsString() @MinLength(1, { message: 'Say why the driver is withdrawn.' }) @MaxLength(500) reason!: string;
 }
 export class ReopenDriverDto {
  @IsInt() @Min(1) version!: number;
@@ -54,12 +55,12 @@ export class ReopenDriverDto {
 export class AssignOwnerDto {
  @IsInt() @Min(1) version!: number;
  @IsUUID() ownerId!: string;
- @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+ @NoSsn() @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 
 /** Marks an approved or cleared driver as Left: the last day they worked for the company, and why (staff text, no health or other private details). */
 export class MarkLeftDto {
  @IsInt() @Min(1) version!: number;
  @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Enter the last day as a full date.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) leftOn!: string;
- @text() @IsString() @MinLength(1, { message: 'Say why the driver left.' }) @MaxLength(500) reason!: string;
+ @NoSsn() @text() @IsString() @MinLength(1, { message: 'Say why the driver left.' }) @MaxLength(500) reason!: string;
 }

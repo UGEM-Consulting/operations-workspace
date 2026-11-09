@@ -1010,9 +1010,20 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const agent = request.agent(app.getHttpServer());
       await agent.post('/api/auth/login').set(headers).send({ email: account.email, password }).expect(200);
       const view = (await agent.get('/api/team').set(headers).expect(200)).body;
-      expect(view.supports).toEqual([expect.objectContaining({ id: sky, teamId, dispatcherId: null })]);
-      const sent = await agent.post('/api/team/promotions').set(headers).send({ supportId: sky, reason: 'Ready to dispatch.' }).expect(201);
-      expect((await agent.get('/api/team').set(headers).expect(200)).body.requests).toHaveLength(1);
+      expect(view.supports).toEqual([expect.objectContaining({ id: sky, teamId, dispatcherId: null, hasApplication: false, lastDay: null, lastDayPassed: false })]);
+      // Added by hand with no accepted paperwork: the request is refused, since IT setup starts from their application.
+      expect((await agent.post('/api/team/promotions').set(headers).send({ supportId: sky, reason: 'Ready to dispatch.' }).expect(409)).body.message).toMatch(/paperwork isn’t accepted/);
+      expect((await agent.get('/api/team').set(headers).expect(200)).body.requests).toHaveLength(0);
+      // Someone on notice shows as leaving, with their last day.
+      const lastDay = addDays(usDay('latest'), 10), version = (await agents.manager.get(`/api/dispatch/members/${sky}`).set(headers).expect(200)).body.version;
+      await agents.manager.post(`/api/dispatch/members/${sky}/leave`).set(headers).send({ version, leftAt: `${lastDay}T12:00:00.000Z`, reason: 'Moving away.' }).expect(201);
+      expect((await agent.get('/api/team').set(headers).expect(200)).body.supports).toEqual([expect.objectContaining({ id: sky, lastDay, lastDayPassed: false })]);
+      // Once the last day has passed (and before the sweep lets them leave), the team lead is told.
+      const passed = addDays(usDay('earliest'), -1);
+      await db.query(`UPDATE member_notices SET "lastDay" = $1 WHERE "memberId" = $2 AND "finishedAt" IS NULL`, [passed, sky]);
+      expect((await agent.get('/api/team').set(headers).expect(200)).body.supports).toEqual([expect.objectContaining({ id: sky, lastDay: passed, lastDayPassed: true })]);
+      const [{ id: sentId }] = await db.query(`INSERT INTO promotion_requests ("supportId",reason,"requestedBy") VALUES ($1,'Ready',$2) RETURNING id`, [sky, account.id]);
+      const sent = { body: { id: sentId } };
       const promotions = (await agents.manager.get('/api/dispatch/promotions').set(headers).expect(200)).body.items as Row[];
       expect(promotions.find(row => row.id === sent.body.id)).toMatchObject({ wholeTeam: 'Red team', dispatcher: null, mc: 'Northwind Freight', team: 'Red team', teamId, dispatcherPlaced: true });
     });

@@ -9,7 +9,9 @@ const nullableText = z.string().nullable();
 const fields = z.record(z.string(), z.unknown());
 
 export class ApiResponseError extends Error {
-  constructor(readonly resource: string) { super(`Unexpected ${resource} response`); this.name = 'ApiResponseError'; }
+  // A plain field (not a parameter property) so Node can load this file in tests.
+  readonly resource: string;
+  constructor(resource: string) { super(`Unexpected ${resource} response`); this.name = 'ApiResponseError'; this.resource = resource; }
 }
 
 // Returns the parsed value: loose objects keep every field, and a `.catch()` fallback (an optional field from a newer
@@ -110,8 +112,9 @@ export const memberProfileSchema = z.looseObject({
 /** GET /team: a team lead's own team. */
 export const teamViewSchema = z.looseObject({
   teams: z.array(z.looseObject({ id: text, name: text, mc: text })),
-  dispatchers: z.array(z.looseObject({ id: text, name: text, status: text, teamId: text, lead: z.boolean() })),
-  supports: z.array(z.looseObject({ id: text, name: text, status: text, dispatcherId: nullableText, since: text, pending: z.looseObject({ id: text, createdAt: text }).nullable() })),
+  dispatchers: z.array(z.looseObject({ id: text, name: text, status: text, teamId: text, lead: z.boolean(), lastDay: nullableText.optional().catch(undefined), lastDayPassed: z.boolean().optional().catch(undefined) })),
+  supports: z.array(z.looseObject({ id: text, name: text, status: text, dispatcherId: nullableText, since: text, pending: z.looseObject({ id: text, createdAt: text }).nullable(),
+    lastDay: nullableText.optional().catch(undefined), lastDayPassed: z.boolean().optional().catch(undefined), hasApplication: z.boolean().optional().catch(undefined) })),
   requests: z.array(z.looseObject({ id: text, status: text, reason: text, note: nullableText, createdAt: text, support: text })),
 });
 /** GET /dispatch/promotions */
@@ -220,4 +223,4 @@ export async function readResponse<T>(response: Response, resource: string, sche
 export const dispatchDriverListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, phone: text, driverType: text, version: z.number(), clearedAt: text, onHold: z.boolean().optional().catch(undefined),
   assignment: z.looseObject({ mcId: text, mc: text, memberId: text, dispatcher: text }).nullable() })) });
 /** GET /dispatch/drivers/options and /team/drivers/options: MCs and the dispatchers in teams under each. */
-export const dispatchDriverOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean().optional().catch(undefined), dispatchers: z.array(z.looseObject({ id: text, name: text, team: text })) })) });
+export const dispatchDriverOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean().optional().catch(undefined), dispatchers: z.array(z.looseObject({ id: text, name: text, team: nullableText })) })) });

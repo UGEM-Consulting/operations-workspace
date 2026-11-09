@@ -111,6 +111,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   beforeEach(async () => {
     await settle(); sent.length = 0; mails.length = 0; telegramSent.length = 0; blockedChats.clear();
     await db.query('TRUNCATE users, staff_sessions, driver_sessions, driver_challenges, login_attempts, staff_mfa, drivers, safety_reminder_runs CASCADE');
+    // Another suite may have left the stored Telegram offset past this suite's fake updates.
+    await db.query('UPDATE telegram_poll_state SET "updateOffset" = 0');
     const passwordHash = await hashPassword(password);
     for (const key of Object.keys(ROLES) as Key[]) {
       users[key] = await db.getRepository(User).save({ firstName: 'Fictional', lastName: key, email: `safety.${key}@example.test`, role: ROLES[key], status: UserStatus.ACTIVE, passwordHash });
@@ -154,6 +156,18 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(row).toEqual({ event: 'CREATED', metadata: { fields: ['firstName', 'lastName', 'phone', 'email', 'driverType', 'licenseType', 'licenseState', 'experienceYears', 'source'] } });
     expect(JSON.stringify(await events(created.id))).not.toContain('Wheeler');
     expect((await agents.staff.get('/api/safety/drivers').set(headers).expect(200)).body.items).toHaveLength(2);
+  });
+
+  it('keeps Social Security numbers out of notes and reasons', async () => {
+    for (const notes of ['Number 123-45-6789', 'Card 123.45.6789', 'ss# 123456789', 'SS no. 123456789', 'soc sec 123 45 6789', 'Social Security number: 123456789'])
+      expect((await add(agents.lead, { ...lead, notes }).expect(400)).body.message).toEqual([expect.stringMatching(/Remove the Social Security number/)]);
+    // Phone numbers (with a country code or the usual groups), ZIP codes and DOT numbers aren't mistaken for one.
+    const { id } = (await add(agents.lead, { ...lead, notes: 'Call 214-555-0100 or +996 555 12 3456. ZIP 75201-1234, DOT 1234567.' }).expect(201)).body;
+    expect((await agents.lead.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version: 1, reason: 'Gave SSN 123-45-6789 by phone' }).expect(400)).body.message)
+      .toEqual([expect.stringMatching(/Remove the Social Security number/)]);
+    // The correction message is shown to the driver, so it refuses one too.
+    expect((await agents.lead.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version: 1, message: 'SSN 123-45-6789 doesn’t match your card' }).expect(400)).body.message)
+      .toEqual([expect.stringMatching(/Remove the Social Security number/)]);
   });
 
   it('edits with version checks; Safety staff read every driver but change only the ones they own', async () => {

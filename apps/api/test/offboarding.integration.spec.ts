@@ -324,7 +324,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     const row = (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === taylor.memberId);
     expect(row).toMatchObject({ status: 'ACTIVE', lastDay, lastDayPassed: false, driversToReassign: 0, supportsToReassign: 1, itRemoval: 'SCHEDULED' });
     // Nobody new is placed with someone leaving.
-    await agents.manager.post(`/api/dispatch/members/${support}/reassign`).set(headers).send({ version: await version(support), dispatcherId: taylor.memberId, startedAt: usDay('earliest'), reason: 'Testing.' }).expect(400);
+    await agents.manager.post(`/api/dispatch/members/${support}/reassign`).set(headers).send({ version: await version(support), dispatcherId: taylor.memberId, startedAt: usDay('earliest'), reason: 'Testing.' }).expect(409);
     // IT plans; nothing can be completed yet.
     const removal = await removalOf(taylor.memberId);
     let detail = (await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body;
