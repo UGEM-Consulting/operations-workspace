@@ -39,7 +39,7 @@ export const mfaStatusSchema = z.looseObject({ enabled: z.boolean(), required: z
 /** GET /staff/telegram: own Telegram alert connection. */
 export const staffTelegramSchema = z.looseObject({ available: z.boolean(), connected: z.boolean(), username: nullableText, alerts: z.array(z.string()).transform(list => list.filter((kind): kind is StaffAlert => (STAFF_ALERTS as readonly string[]).includes(kind))) });
 /** Staff alert kinds this page can describe; an unknown kind from a newer API is left out. */
-export const STAFF_ALERTS = ['REVIEW_WAITING', 'IT_SETUP_WAITING', 'IT_REMOVAL_WAITING'] as const;
+export const STAFF_ALERTS = ['REVIEW_WAITING', 'IT_SETUP_WAITING', 'IT_REMOVAL_WAITING', 'SAFETY_REMINDER', 'SAFETY_WEEKLY'] as const;
 export type StaffAlert = typeof STAFF_ALERTS[number];
 
 /** GET /onboarding/applications/:id */
@@ -118,7 +118,7 @@ export const promotionListSchema = z.looseObject({ items: z.array(z.looseObject(
 
 const safetyPerson = z.looseObject({ id: text, name: text }).nullable();
 // Renewing a license or medical card: an open link (never its token) and a scan the driver sent.
-const renewalLink = z.looseObject({ createdAt: text, expiresAt: text, openedAt: nullableText, expired: z.boolean() });
+const renewalLink = z.looseObject({ createdAt: text, expiresAt: text, openedAt: nullableText, expired: z.boolean(), fromReminder: z.boolean().optional().catch(undefined) });
 const renewalScan = z.looseObject({ id: text, version: z.number(), pageCount: z.number(), createdAt: text, unreadable: z.boolean() });
 const renewalRow = z.looseObject({ kind: z.enum(['LICENSE', 'MEDICAL_CARD']), checked: z.looseObject({ id: text, expiresOn: nullableText, current: z.boolean() }).nullable(), link: renewalLink.nullable(), scan: renewalScan.nullable() });
 const driverRow = z.looseObject({ id: text, firstName: text, lastName: text, phone: text, email: nullableText, driverType: text, status: text, version: z.number(), createdAt: text,
@@ -162,6 +162,9 @@ export const driverProfileSchema = driverRow.extend({
     hidden: z.boolean().optional() }).optional().catch(undefined),
   incidents: z.looseObject({ items: z.array(z.looseObject({ id: text, kind: text, occurredOn: text, summary: text, note: nullableText, voidedAt: nullableText })) }).optional().catch(undefined),
   hold: z.looseObject({ onHold: z.boolean(), test: z.boolean().nullable(), review: z.boolean(), documents: z.boolean().optional() }).optional().catch(undefined),
+  // From an API with expiration reminders; a malformed value is dropped and the Reminders card isn't shown.
+  reminders: z.looseObject({ telegramAvailable: z.boolean(), emailAvailable: z.boolean(), telegramConnected: z.boolean(), telegramLinkedAt: nullableText,
+    items: z.array(z.looseObject({ kind: text, step: z.number(), dueOn: text, createdAt: text, channel: z.enum(['EMAIL', 'TELEGRAM']), status: text, failureCode: nullableText, sentAt: nullableText })) }).optional().catch(undefined),
   noticeLetters: z.looseObject({ PRE_ADVERSE: z.looseObject({ version: z.number(), pageCount: z.number() }).nullable(), FINAL: z.looseObject({ version: z.number(), pageCount: z.number() }).nullable() }).optional().catch(undefined),
   trucks: z.looseObject({ items: z.array(z.looseObject({ id: text, unit: text, vin: text, year: z.number(), make: text, archivedAt: nullableText,
     documents: z.array(z.looseObject({ id: text, kind: text, expiresOn: nullableText, pageCount: z.number() })).default([]) })) }).optional().catch(undefined),
@@ -181,6 +184,8 @@ export const dueReviewsSchema = z.looseObject({ today: text, warningDays: z.numb
 export const expiringSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ documentId: text, driverId: text, kind: text, expiresOn: text, firstName: text, lastName: text, status: text, owner: z.looseObject({ name: text }).nullable().catch(null), expired: z.boolean(),
   // From an API with renewals: the driver's version and where a license or medical card renewal stands.
   version: z.number().optional().catch(undefined), email: nullableText.optional().catch(undefined),
+  // From an API with expiration reminders: how the driver was last reminded about this document.
+  reminded: z.looseObject({ channel: z.enum(['EMAIL', 'TELEGRAM']), status: text, failureCode: nullableText.optional().catch(undefined), at: text }).nullable().optional().catch(undefined),
   renewal: z.looseObject({ link: renewalLink.nullable(), scan: renewalScan.nullable() }).nullable().optional().catch(undefined) })) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */

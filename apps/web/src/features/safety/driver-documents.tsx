@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { DOCUMENT_KINDS, documentLabels, NOT_RECHECKED, RENEWAL_KINDS, workAuthorizationTypes, type DriverDocumentRow, type DriverProfile, type RenewalKind, type RenewalScan } from './types';
+import { latestReminder } from './reminder-words';
 
 const date = (value: string | null) => value ? <LocalTime iso={`${value}T12:00:00Z`} format="date" /> : null;
 const pages = (count: number) => `${count} ${count === 1 ? 'page' : 'pages'}`;
@@ -81,7 +82,10 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
         badge = <Badge label="Waiting for your check" tone="warning" />;
         actions = <>{view}<Button size="sm" onClick={() => renewals.check(kind, scan)}>Check it{label}</Button></>;
       } else if (renewal && renewals && renewal.link) {
-        meta = <>{scan ? 'Last scan not readable' : expired ? 'Expired' : 'Expires'}{scan ? null : <> {date(checkedOn)}</>} · link sent <LocalTime iso={renewal.link.createdAt} format="date" />, {renewal.link.expired ? 'no longer works' : <>works until <LocalTime iso={renewal.link.expiresAt} format="date" /></>}</>;
+        // A link an expiration reminder made says so, with how that reminder went out (a link Safety sent is never replaced by one).
+        const reminded = latestReminder(driver, document.kind, checkedOn), link = renewal.link;
+        const sentWith = link.fromReminder ? `link sent with the ${reminded?.channel === 'TELEGRAM' ? 'Telegram' : reminded?.channel === 'EMAIL' ? 'email' : 'expiration'} reminder` : 'link sent';
+        meta = <>{scan ? 'Last scan not readable' : expired ? 'Expired' : 'Expires'}{scan ? null : <> {date(checkedOn)}</>} · {sentWith} <LocalTime iso={link.createdAt} format="date" />, {link.expired ? 'no longer works' : <>works until <LocalTime iso={link.expiresAt} format="date" /></>}</>;
         badge = <Badge label={renewal.link.expired ? 'Link expired' : 'Link sent'} tone={renewal.link.expired ? 'neutral' : 'info'} />;
         actions = <>{view}{renewal.link.expired ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
           : <Button size="sm" variant="outline" onClick={() => renewals.cancelLink(kind)}>Cancel link{label}</Button>}</>;
@@ -93,7 +97,9 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
         // Once the driver is approved: what counts is the date and the page count (RenewDriverPageScreen).
         // A US passport or green card isn't re-checked when it expires (WorkAuthCheckGreenCardScreen).
         const notRechecked = !!document.subtype && NOT_RECHECKED.includes(document.subtype);
-        meta = <>{notRechecked ? 'Not re-checked when it expires · ' : document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{pages(document.pageCount)}{document.uploadedBySafety ? ' · uploaded by Safety' : ''}</>;
+        const reminded = latestReminder(driver, document.kind, document.expiresOn);
+        meta = <>{notRechecked ? 'Not re-checked when it expires · ' : document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{pages(document.pageCount)}{document.uploadedBySafety ? ' · uploaded by Safety' : ''}
+          {reminded && reminded.status === 'SENT' && <> · reminded by {reminded.channel === 'TELEGRAM' ? 'Telegram' : 'email'} <LocalTime iso={reminded.sentAt ?? reminded.createdAt} format="date" /></>}</>;
         badge = <Badge label={expired && !notRechecked ? 'Expired' : 'Checked'} tone={expired && !notRechecked ? 'danger' : 'success'} />;
         actions = <>{view}{renewal ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
           : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => open(document)}>Edit{label}</Button>}</>;

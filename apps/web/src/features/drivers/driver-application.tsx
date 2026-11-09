@@ -14,6 +14,7 @@ import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
 import { DriverRenewal, type DriverRenewalView } from './driver-renewal';
 import { historyMissing, type DriverHistory } from './history-rules';
 import { HistoryEditor, historySection, HistorySections, type HistoryEditing } from './history-section';
+import { DriverTelegram } from './driver-telegram';
 
 export interface DriverApplicationView { email: string; expiresAt: string; status: 'DRAFT' | 'SUBMITTED'; fields: Record<string, string>; version: number; ssnLast4: string | null; submittedAt: string | null; ssnAvailable: boolean;
   // From an API with document scanning; absent on an older one.
@@ -170,6 +171,7 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
     <CheckCircle2 aria-hidden="true" className="size-8 text-success" />
     <h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Application sent</h1>
     <p className="text-sm text-muted-foreground">Thank you. Safety received your application{view.submittedAt ? <> on <LocalTime iso={view.submittedAt} format="date" /></> : null} and will contact you about the next steps. You can close this page.</p>
+    <DriverTelegram />
   </Card>;
   function read() {
     const data = new FormData(form.current!);

@@ -123,10 +123,13 @@ export class UpdatesService implements OnApplicationBootstrap, BeforeApplication
   if (text === '/stop') {
    await em.getRepository(ApplicantUpdateSettings).update({ telegramChatId: chatId }, { telegramChatId: null, telegramUsername: null, telegramLinkedAt: null, telegram: false, email: true });
    await em.getRepository(StaffTelegramLink).delete({ chatId });
+   // A driver's reminders (driver_telegram_links, in the safety module) stop the same way; the event names no chat.
+   const [stopped]: [{ driverId: string }[], number] = await em.query('DELETE FROM driver_telegram_links WHERE "chatId" = $1 RETURNING "driverId"', [chatId]);
+   for (const { driverId } of stopped) await em.query(`INSERT INTO driver_events ("driverId", "actorId", event, metadata) VALUES ($1, NULL, 'TELEGRAM_STOPPED', '{}')`, [driverId]);
    return [chatId, 'You will no longer get UGEM updates here.'];
   }
   const token = /^\/start ([A-Za-z0-9_-]{43})$/.exec(text)?.[1];
-  if (!token) return [chatId, 'This bot sends UGEM updates. Use the Connect Telegram button on your application page, or in Account security if you work at UGEM, to start.'];
+  if (!token) return [chatId, 'This bot sends UGEM updates. Use the Connect Telegram button on your application page or driver page, or in Account security if you work at UGEM, to start.'];
   const username = message.from?.username && /^[A-Za-z0-9_]{5,32}$/.test(message.from.username) ? message.from.username : null;
   const fresh = { tokenHash: hash(token), consumedAt: IsNull(), expiresAt: MoreThan(new Date()) };
   const staff = await em.getRepository(StaffTelegramLinkToken).findOne({ where: fresh, lock: { mode: 'pessimistic_write' } });
@@ -137,6 +140,17 @@ export class UpdatesService implements OnApplicationBootstrap, BeforeApplication
    await em.query(`INSERT INTO staff_telegram_links ("userId","chatId",username,"linkedAt") VALUES ($1,$2,$3,now())
     ON CONFLICT ("userId") DO UPDATE SET "chatId"=EXCLUDED."chatId", username=EXCLUDED.username, "linkedAt"=now()`, [staff.userId, chatId, username]);
    return [chatId, 'Connected. You will get UGEM Workspace alerts here. Send /stop to turn them off.'];
+  }
+  // A driver's reminder link (from their own page, or made by Safety and sent by them). One chat belongs to one driver.
+  const [driverToken]: { id: string; driverId: string }[] = await em.query(`SELECT id, "driverId" FROM driver_telegram_link_tokens
+   WHERE "tokenHash" = $1 AND "consumedAt" IS NULL AND "expiresAt" > now() FOR UPDATE`, [hash(token)]);
+  if (driverToken) {
+   await em.query('UPDATE driver_telegram_link_tokens SET "consumedAt" = now() WHERE id = $1', [driverToken.id]);
+   await em.query('DELETE FROM driver_telegram_links WHERE "chatId" = $1 AND "driverId" <> $2', [chatId, driverToken.driverId]);
+   await em.query(`INSERT INTO driver_telegram_links ("driverId","chatId",username,"linkedAt") VALUES ($1,$2,$3,now())
+    ON CONFLICT ("driverId") DO UPDATE SET "chatId"=EXCLUDED."chatId", username=EXCLUDED.username, "linkedAt"=now()`, [driverToken.driverId, chatId, username]);
+   await em.query(`INSERT INTO driver_events ("driverId", "actorId", event, metadata) VALUES ($1, NULL, 'TELEGRAM_CONNECTED', '{}')`, [driverToken.driverId]);
+   return [chatId, 'Connected. UGEM Safety will remind you here before your driver’s license or medical card expires. Send /stop to turn this off.'];
   }
   const link = await em.getRepository(TelegramLinkToken).findOne({ where: fresh, lock: { mode: 'pessimistic_write' } });
   if (!link) return [chatId, 'This connect link has expired or was already used. Press Connect Telegram again to get a new one.'];

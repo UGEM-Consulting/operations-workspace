@@ -1,7 +1,7 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ellipsis, FileUp, Pencil, RotateCcw, UserCheck, UserMinus, type LucideIcon } from 'lucide-react';
+import { Ellipsis, FileUp, Pencil, RotateCcw, Send, UserCheck, UserMinus, type LucideIcon } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu } from '@/components/ui/dropdown-menu';
@@ -31,10 +31,12 @@ import { DriverDocuments } from './driver-documents';
 import { cancelRenewalLink, CheckRenewalDialog, RenewDialog, renewalWords } from './renew-document';
 import { DriverForm, driverBody } from './driver-form';
 import { ScreeningCard } from './screening-card';
+import { OneTimeLinkDialog } from './one-time-link-dialog';
+import { RemindersCard } from './reminders-card';
 import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, testReasons, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
   type RenewalKind, type RenewalScan, type SafetyPeople, type SafetyPerson } from './types';
 
-type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left';
+type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left' | 'telegram';
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', LEFT: 'Marked as left', REOPENED: 'Reopened as a lead',
   SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Safety contact assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
@@ -45,10 +47,12 @@ const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'D
   ANNUAL_REVIEW_RECORDED: 'Yearly review recorded', TEST_RECORDED: 'Test result recorded', TEST_VOIDED: 'Test result voided', INCIDENT_RECORDED: 'Incident recorded', INCIDENT_UPDATED: 'Incident settled',
   INCIDENT_VOIDED: 'Incident voided', OWNER_DOCUMENT_UPLOADED: 'Truck document uploaded', OWNER_DOCUMENT_VIEWED: 'Truck document opened',
   RENEWAL_LINK_SENT: 'Renewal link created', RENEWAL_LINK_CANCELLED: 'Renewal link cancelled', RENEWAL_OPENED: 'Driver opened a renewal link', DOCUMENT_RENEWED: 'Document renewed',
-  DOCUMENT_UNREADABLE: 'Scan marked as not readable' };
+  DOCUMENT_UNREADABLE: 'Scan marked as not readable', TELEGRAM_LINK_CREATED: 'Telegram link for reminders created', TELEGRAM_CONNECTED: 'Driver connected Telegram for reminders',
+  TELEGRAM_STOPPED: 'Driver turned off Telegram reminders' };
 const truckActions: Record<string, string> = { added: 'Truck added', updated: 'Truck updated', archived: 'Truck archived' };
 const eventTitle = (row: DriverEventRow) => row.event === 'TRUCK_SAVED' ? truckActions[row.metadata.action ?? ''] ?? 'Truck saved'
-  : row.event === 'DOCUMENT_UPLOADED' && row.metadata.renewal ? 'Driver sent a renewed document' : events[row.event] ?? 'Other change';
+  : row.event === 'DOCUMENT_UPLOADED' && row.metadata.renewal ? 'Driver sent a renewed document' : row.event === 'RENEWAL_LINK_SENT' && row.metadata.reminder ? 'Renewal link sent with a reminder'
+  : events[row.event] ?? 'Other change';
 const employerActions: Record<string, string> = { 'from-application': 'added from the application', added: 'added', requested: 'asked', answered: 'answered', 'good-faith': 'good-faith effort recorded', updated: 'dates changed', removed: 'removed', archived: 'archived' };
 const results: Record<string, string> = { PASS: 'passed', CONCERN: 'concern' };
 const otherKinds: Record<string, string> = { DRUG: 'drug', ALCOHOL: 'alcohol', ACCIDENT: 'accident', VIOLATION: 'violation', INSPECTION: 'inspection', LEASE: 'lease', INSURANCE: 'insurance', REGISTRATION: 'registration' };
@@ -58,7 +62,8 @@ const who = (person: SafetyPerson | null) => person ? `${person.name}${person.ac
 function eventMeta(row: DriverEventRow) {
   const fields = row.event === 'UPDATED' && row.metadata.fields?.length ? ` · ${row.metadata.fields.map(field => fieldLabels[field] ?? field).join(', ')}` : '';
   // Steps the driver takes have no staff actor.
-  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED', 'CONSENT_SIGNED', 'RENEWAL_OPENED'].includes(row.event) ? 'Driver' : 'Someone');
+  const actor = row.actor ?? (['APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'DOCUMENT_UPLOADED', 'CONSENT_SIGNED', 'RENEWAL_OPENED', 'TELEGRAM_CONNECTED', 'TELEGRAM_STOPPED'].includes(row.event) ? 'Driver'
+    : row.event === 'RENEWAL_LINK_SENT' && row.metadata.reminder ? 'Workspace' : 'Someone');
   const check = row.metadata.check ? ` · ${screeningChecks.find(item => item.key === row.metadata.check)?.label ?? row.metadata.check}: ${row.metadata.result ? results[row.metadata.result] ?? statusLabel(row.metadata.result) : 'cleared'}` : '';
   return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${kindLabel(row.metadata.kind)}` : ''}{row.metadata.reason ? ` · ${testReasons[row.metadata.reason]?.toLowerCase() ?? 'other reason'}` : ''}
     {row.metadata.outcome ? ` · ${outcomes[row.metadata.outcome] ?? 'outcome recorded'}` : ''}{row.metadata.withMvr === false ? ' · no MVR attached' : ''}
@@ -104,7 +109,18 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     try { await cancelRenewalLink(renewalDriver, kind); toast({ title: 'Link cancelled', description: 'It no longer works.' }); router.refresh(); }
     catch (error) { toast({ tone: 'danger', title: 'The link wasn’t cancelled', description: errorMessage(error, 'Reload and try again.') }); }
   }
-  function start(next: Action) { setAction(next); setError(''); }
+  // Expiration reminders: while the driver isn't on Telegram, Safety can make a one-time link (7 days) to send them.
+  const [telegramLink, setTelegramLink] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [linking, setLinking] = useState(false);
+  const canLinkTelegram = canRenew && !!driver.reminders?.telegramAvailable && !driver.reminders.telegramConnected;
+  async function createTelegramLink() {
+    if (linking) return;
+    setLinking(true);
+    try { setTelegramLink(await mutate<{ url: string; expiresAt: string }>(`safety/drivers/${driver.id}/telegram-link`, 'POST', { version: driver.version })); }
+    catch (error) { toast({ tone: 'danger', title: 'The link wasn’t created', description: errorMessage(error, 'Reload and try again.') }); }
+    finally { setLinking(false); }
+  }
+  function start(next: Action) { if (next === 'telegram') { void createTelegramLink(); return; } setAction(next); setError(''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending || !action) return;
@@ -121,7 +137,8 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
-  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change safety contact' : 'Assign safety contact', left: `Mark ${name} as left?` };
+  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change safety contact' : 'Assign safety contact', left: `Mark ${name} as left?`,
+    telegram: 'Telegram link for reminders' };
   const staff = people.staff.filter(person => person.id !== owner?.owner?.id);
   // One main button (the next thing the record needs, else Edit) and the rest under More actions, with what ends the record last.
   const actions: { action: Action; label: string; icon: LucideIcon; danger?: boolean }[] = [
@@ -129,6 +146,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     ...(canEdit ? [{ action: 'edit' as const, label: 'Edit details', icon: Pencil }] : []),
     ...(screener && WITHDRAWABLE.includes(driver.status) ? [{ action: 'withdraw' as const, label: 'Withdraw', icon: UserMinus, danger: true }] : []),
     ...(screener && OWNABLE.includes(driver.status) && staff.length > 0 ? [{ action: 'owner' as const, label: owner ? 'Change safety contact' : 'Assign safety contact', icon: UserCheck }] : []),
+    ...(canLinkTelegram ? [{ action: 'telegram' as const, label: 'Telegram link for reminders', icon: Send }] : []),
     ...(clearing && (decider || owns) ? [{ action: 'left' as const, label: 'Mark as left', icon: UserMinus, danger: true }] : [])];
   // An expired license or medical card makes Renew the main button (RenewDriverPageScreen).
   const main = renewFirst || actions[0]?.danger ? null : actions[0] ?? null, more = actions.filter(item => item !== main);
@@ -207,6 +225,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
           { label: 'Truck', value: assignment.truck, emptyLabel: 'No truck yet' }, { label: 'Since', value: <LocalTime iso={assignment.startedAt} format="date" /> }]} />
           : <p className="text-sm text-muted-foreground">Waiting for Dispatch to assign an MC and a dispatcher.</p>}</CardBody>
       </Card>}
+      {driver.reminders && clearing && <RemindersCard driver={driver} onLink={canLinkTelegram ? () => void createTelegramLink() : undefined} pending={linking} />}
       <Card>
         <CardHeader title="Safety people" />
         <CardBody className="space-y-5">
@@ -226,6 +245,9 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       </Card>
       </div>
     </div>
+    {telegramLink && <OneTimeLinkDialog link={telegramLink} email={driver.email} title={`Telegram link for ${driver.firstName || name}’s reminders`} onClose={() => { setTelegramLink(null); router.refresh(); }}
+      description={`Send it to ${driver.firstName || name} yourself, by text. It opens our bot in Telegram; once they tap Start, reminders go there instead of email.`}
+      footer={<>It works once, until <LocalTime iso={telegramLink.expiresAt} format="date" />. It only connects reminders: it doesn’t open their documents or application.</>} />}
     {renewing && <RenewDialog driver={renewalDriver} kind={renewing.kind} expired={expiredRenewals.some(row => row.kind === renewing.kind)}
       openLink={driver.renewals?.find(row => row.kind === renewing.kind)?.link ?? null} initialHow={renewing.how} onClose={() => setRenewing(null)} />}
     {checking && <CheckRenewalDialog driver={renewalDriver} kind={checking.kind} scan={checking.scan} onClose={() => setChecking(null)}

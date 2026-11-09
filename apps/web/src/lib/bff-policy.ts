@@ -60,6 +60,9 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && match(`safety/drivers/${ID}/(documents/renew|renewals|renewals/cancel|documents/${ID}/unreadable)`, path)) ||
     // A driver's renewal link: which document, and sending its scan.
     ((method === 'GET' || method === 'POST') && path === 'driver/renewal') ||
+    // Expiration reminders on Telegram: the driver connects their own chat; Safety makes a one-time link to send.
+    (method === 'GET' && path === 'driver/telegram') || (method === 'POST' && ['driver/telegram/connect', 'driver/telegram/check'].includes(path)) ||
+    (method === 'POST' && match(`safety/drivers/${ID}/telegram-link`, path)) ||
     (method === 'POST' && (match(`safety/drivers/${ID}/documents/${ID}/verify`, path) || match(`safety/drivers/${ID}/(tests|incidents)/${ID}/void`, path) || match(`safety/drivers/${ID}/incidents/${ID}/settle`, path))) ||
     // Screening (checks, the MVR, corrections, the hand-off) and the Safety manager's decision.
     (method === 'POST' && match(`safety/drivers/${ID}/(checks/[A-Z_]+|mvr|corrections|send-for-decision|decision)`, path)) ||

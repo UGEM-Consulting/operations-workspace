@@ -10,7 +10,7 @@ export interface DriverRow { id: string; firstName: string; lastName: string; ph
 export interface DriverOwnerRow { id: string; startedAt: string; endedAt: string | null; reason: string | null; owner: SafetyPerson | null; assignedBy: string | null }
 export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean; resent?: boolean; emailChanged?: boolean; kind?: string; reopened?: boolean;
   check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string; item?: string; status?: string; action?: string; truck?: boolean;
-  reason?: string; outcome?: string; withMvr?: boolean; renewal?: boolean }; createdAt: string; actor: string | null }
+  reason?: string; outcome?: string; withMvr?: boolean; renewal?: boolean; reminder?: boolean; channel?: string }; createdAt: string; actor: string | null }
 export interface DriverProfile extends DriverRow { experienceYears: number | null; source: string | null; notes: string | null; statusReason: string | null; updatedAt: string;
   addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[];
   // From an API with driver applications; absent on an older one.
@@ -39,7 +39,11 @@ export interface DriverProfile extends DriverRow { experienceYears: number | nul
   // From an API with owner-operator trucks.
   trucks?: { items: TruckRow[] };
   // From an API with notice letters: the current version of each, so the decision dialogs offer Download letter.
-  noticeLetters?: { PRE_ADVERSE: NoticeLetterVersion | null; FINAL: NoticeLetterVersion | null } }
+  noticeLetters?: { PRE_ADVERSE: NoticeLetterVersion | null; FINAL: NoticeLetterVersion | null };
+  // From an API with expiration reminders: how the driver gets them, and what was sent (newest first).
+  reminders?: DriverReminders }
+export interface DriverReminderRow { kind: string; step: number; dueOn: string; createdAt: string; channel: 'EMAIL' | 'TELEGRAM'; status: string; failureCode: string | null; sentAt: string | null }
+export interface DriverReminders { telegramAvailable: boolean; emailAvailable: boolean; telegramConnected: boolean; telegramLinkedAt: string | null; items: DriverReminderRow[] }
 export interface NoticeLetterVersion { version: number; pageCount: number }
 export interface TruckRow { id: string; unit: string; vin: string; year: number; make: string; plate: string | null; plateState: string | null; archivedAt: string | null; documents: { id: string; kind: 'LEASE' | 'INSURANCE' | 'REGISTRATION'; expiresOn: string | null; pageCount: number }[] }
 export const ownerDocumentLabels = { LEASE: 'Lease', INSURANCE: 'Insurance', REGISTRATION: 'Registration' } as const;
@@ -47,7 +51,7 @@ export interface IncidentRow { id: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INS
 export interface TestRow { id: string; kind: 'DRUG' | 'ALCOHOL'; reason: string; testedOn: string; result: 'NEGATIVE' | 'NOT_NEGATIVE' | 'CANCELLED' | 'REFUSED'; note: string | null; recordedBy: string | null; voidedAt: string | null; voidReason: string | null }
 export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }
 export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean; storageEnabled?: boolean }
-export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST';
+export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST' | 'E_VERIFY';
 export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null }
 export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null;
   // From an API with address and work history: where the employer came from, and how to reach them.
@@ -68,7 +72,8 @@ export interface DriverDocumentRow { id: string; kind: DocumentKind; subtype: st
   uploadedBySafety?: boolean; unreadableAt?: string | null }
 export type RenewalKind = 'LICENSE' | 'MEDICAL_CARD';
 export const RENEWAL_KINDS: RenewalKind[] = ['LICENSE', 'MEDICAL_CARD'];
-export interface RenewalLink { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean }
+// fromReminder: an expiration reminder made it (from an API with reminders), rather than someone in Safety.
+export interface RenewalLink { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean; fromReminder?: boolean }
 export interface RenewalScan { id: string; version: number; pageCount: number; createdAt: string; unreadable: boolean }
 export interface RenewalRow { kind: RenewalKind; checked: { id: string; expiresOn: string | null; current: boolean } | null; link: RenewalLink | null; scan: RenewalScan | null }
 export interface SafetyPeople { leads: { id: string; name: string; role: string }[]; staff: { id: string; name: string; role: string }[] }
@@ -118,7 +123,8 @@ export const screeningChecks: { key: ScreeningCheckKey; label: string; hint: str
  * The clearance checklist in the order the owner works through it. Result-based items (the drug test and the Clearinghouse
  * query) take a result that sets the status; `optional` explains when an item can be not needed.
  */
-export const CLEARANCE_ITEMS: { key: ClearanceKey; label: string; hint: string; dialog: string; todo: string; optional?: string; results?: Record<string, { label: string; description?: string }> }[] = [
+// companyOnly: only company drivers (UGEM employees) need it; for an owner-operator it shows as not needed.
+export const CLEARANCE_ITEMS: { key: ClearanceKey; label: string; hint: string; dialog: string; todo: string; optional?: string; companyOnly?: boolean; results?: Record<string, { label: string; description?: string }> }[] = [
   { key: 'DRUG_TEST', label: 'Pre-employment drug test', hint: 'Result and date from the lab’s report. Only a negative result clears.', todo: 'Record the drug test result',
     dialog: 'Record the result from the lab’s report. Keep the report itself in the drug testing program’s records, not here.',
     results: { NEGATIVE: { label: 'Negative' }, NOT_NEGATIVE: { label: 'Not negative', description: 'The driver can’t be cleared. The Safety manager decides what happens next.' }, CANCELLED: { label: 'Cancelled', description: 'The test needs to be taken again.' } } },
@@ -131,8 +137,17 @@ export const CLEARANCE_ITEMS: { key: ClearanceKey; label: string; hint: string; 
     dialog: 'Check that the examiner who signed the medical card is listed on the National Registry of Certified Medical Examiners.' },
   { key: 'ROAD_TEST', label: 'Road test or equivalent', hint: 'A road test certificate, or a CDL accepted in its place.', todo: 'Finish the road test',
     dialog: 'Record the road test, or a CDL you accept in its place.', optional: 'No road test is needed for this driver’s license.' },
+  { key: 'E_VERIFY', label: 'E-Verify', hint: 'Within 3 business days of the first day of work, after Form I-9 is complete. Record the result from E-Verify.', todo: 'Finish E-Verify', companyOnly: true,
+    dialog: 'Record what E-Verify shows. The case number stays in E-Verify and on the Form I-9, not here.',
+    results: { EMPLOYMENT_AUTHORIZED: { label: 'Employment authorized', description: 'Completes this item.' },
+      TENTATIVE_NONCONFIRMATION: { label: 'Tentative nonconfirmation', description: 'Stays in progress while the driver takes action. Don’t stop them working or delay their start.' },
+      FINAL_NONCONFIRMATION: { label: 'Final nonconfirmation', description: 'Blocks clearance. The Safety manager decides what happens next.' },
+      CASE_CLOSED: { label: 'Case closed another way', description: 'Created in error or a duplicate. Add a note and run a new case.' } } },
 ];
-export const clearanceResults: Record<string, string> = { NEGATIVE: 'Negative', NOT_NEGATIVE: 'Not negative', CANCELLED: 'Cancelled', NO_VIOLATIONS: 'No violations', VIOLATIONS: 'Violations found' };
+/** Whether this clearance item applies to the driver: E-Verify only to company drivers. */
+export const clearanceApplies = (item: { companyOnly?: boolean }, driver: { driverType: DriverType }) => !item.companyOnly || driver.driverType === 'COMPANY';
+export const clearanceResults: Record<string, string> = { NEGATIVE: 'Negative', NOT_NEGATIVE: 'Not negative', CANCELLED: 'Cancelled', NO_VIOLATIONS: 'No violations', VIOLATIONS: 'Violations found',
+  EMPLOYMENT_AUTHORIZED: 'Employment authorized', TENTATIVE_NONCONFIRMATION: 'Tentative nonconfirmation', FINAL_NONCONFIRMATION: 'Final nonconfirmation', CASE_CLOSED: 'Case closed' };
 /** What still stands before Cleared (codes from the API), in words. */
 export function clearanceGapLabel(code: string): string {
   if (code === 'owner') return 'Assign an active Safety contact';

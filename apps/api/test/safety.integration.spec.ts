@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jpeg, pdfText, png } from './documents.fixtures';
@@ -28,6 +30,8 @@ import { addDays, usDay } from '../src/modules/safety/screening-rules';
 import { addMonths } from '../src/modules/safety/history-rules';
 import { PDFDocument } from 'pdf-lib';
 import { completeMfa, enrolForTest } from './mfa-helpers';
+import { ReminderService } from '../src/modules/safety/reminders';
+import { UpdatesService } from '../src/modules/updates/updates.service';
 type Agent = ReturnType<typeof request.agent>;
 type Key = 'admin' | 'manager' | 'lead' | 'staff' | 'staff2' | 'dispatch';
 const ROLES: Record<Key, Role> = { admin: Role.SYSTEM_ADMIN, manager: Role.SAFETY_MANAGER, lead: Role.SAFETY_LEAD, staff: Role.SAFETY_STAFF, staff2: Role.SAFETY_STAFF, dispatch: Role.DISPATCHER_MANAGER };
@@ -41,9 +45,17 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   const add = (agent: Agent, body: Record<string, unknown> = lead) => agent.post('/api/safety/drivers').set(headers).send(body);
   const driver = async (id: string, agent = agents.lead) => (await agent.get(`/api/safety/drivers/${id}`).set(headers).expect(200)).body;
   // Captures code emails instead of opening an SMTP connection; background work is awaited by settle().
-  const sent: { to: string; code: string }[] = [], tasks: Promise<void>[] = [];
+  // Reminder emails go to `mails`; Telegram messages to a local fake of the Bot API (`telegramSent`, with any button).
+  const sent: { to: string; code: string }[] = [], tasks: Promise<void>[] = [], mails: { to: string; subject: string; text: string }[] = [];
   const email = { enabled: true, onModuleInit: () => undefined, onApplicationShutdown: async () => undefined,
-    sendVerificationCode: async (to: string, code: string) => { sent.push({ to, code }); return true; }, runInBackground: (task: () => Promise<void>) => { tasks.push(task()); } };
+    sendVerificationCode: async (to: string, code: string) => { sent.push({ to, code }); return true; }, runInBackground: (task: () => Promise<void>) => { tasks.push(task()); },
+    sendStatusUpdate: async (to: string, content: { subject: string; text: string }) => { mails.push({ to, subject: content.subject, text: content.text }); return true as const; } };
+  let telegram: Server, nextUpdate = 900;
+  // Chats that blocked the bot: the fake answers 403, as Telegram does.
+  const blockedChats = new Set<string>();
+  const botToken = `12345678:${randomBytes(24).toString('base64url')}`, telegramUpdates: { update_id: number; message: unknown }[] = [];
+  const telegramSent: { chat_id: string; text: string; reply_markup?: { inline_keyboard: { text: string; url: string }[][] } }[] = [];
+  const tell = (text: string, chat: number) => telegramUpdates.push({ update_id: nextUpdate++, message: { text, chat: { id: chat, type: 'private' }, from: { username: `fictional_${chat}` } } });
   const settle = async () => { await Promise.all(tasks.splice(0)); };
   // Fictional scans: structurally valid JPEG pages carrying fictional camera metadata the API must strip.
   const storage = mkdtempSync(join(tmpdir(), 'driver-documents-'));
@@ -75,9 +87,18 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   const events = async (id: string) => (await db.query(`SELECT event, metadata FROM driver_events WHERE "driverId" = $1 ORDER BY "createdAt"`, [id])) as { event: string; metadata: Record<string, unknown> }[];
 
   beforeAll(async () => {
+    telegram = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => {
+      const input = JSON.parse(body || '{}'), method = req.url?.split('/').pop(), reply = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (req.url?.split('/')[1] !== `bot${botToken}`) return reply(401, { ok: false });
+      if (method === 'getUpdates') return reply(200, { ok: true, result: telegramUpdates.filter(update => update.update_id >= input.offset).slice(0, input.limit ?? 100) });
+      if (method === 'sendMessage' && blockedChats.has(String(input.chat_id))) return reply(403, { ok: false });
+      if (method === 'sendMessage') { telegramSent.push({ chat_id: String(input.chat_id), text: input.text, reply_markup: input.reply_markup }); return reply(200, { ok: true, result: {} }); }
+      reply(404, { ok: false }); }); });
+    await new Promise<void>(resolve => telegram.listen(0, '127.0.0.1', resolve));
     env = validateEnvironment({ NODE_ENV: 'test', DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://localhost/operations_m2_test', CORS_ORIGINS: 'http://localhost:3000',
       WEB_ORIGIN: 'http://localhost:3000', SESSION_SECRET: randomBytes(32).toString('hex'), BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64'), PII_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
-      STORAGE_DRIVER: 'local', STORAGE_LOCAL_DIR: storage });
+      STORAGE_DRIVER: 'local', STORAGE_LOCAL_DIR: storage,
+      TELEGRAM_DELIVERY: 'bot', TELEGRAM_BOT_TOKEN: botToken, TELEGRAM_BOT_USERNAME: 'ugem_updates_bot', TELEGRAM_API_BASE: `http://127.0.0.1:${(telegram.address() as AddressInfo).port}` });
     headers = { 'x-workspace-key': env.BFF_SHARED_SECRET, origin: env.WEB_ORIGIN, 'x-csrf-protection': '1' };
     if (!new URL(env.DATABASE_URL).pathname.endsWith('_test')) throw new Error('Dedicated _test database required');
     db = await new DataSource(databaseOptions(env)).initialize(); await db.runMigrations();
@@ -85,10 +106,11 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       .overrideProvider(EmailService).useValue(email).compile();
     app = module.createNestApplication(); closeSessions = installSessions(app, env); configureApp(app, env.CORS_ORIGINS); await app.init();
     app.get(DriverSignedCopies).archive.stop(); // Tests run the signed-copy job themselves.
+    app.get(ReminderService).beforeApplicationShutdown(); // And the reminder run, at the times they choose.
   }, 30000);
   beforeEach(async () => {
-    await settle(); sent.length = 0;
-    await db.query('TRUNCATE users, staff_sessions, driver_sessions, driver_challenges, login_attempts, staff_mfa, drivers CASCADE');
+    await settle(); sent.length = 0; mails.length = 0; telegramSent.length = 0; blockedChats.clear();
+    await db.query('TRUNCATE users, staff_sessions, driver_sessions, driver_challenges, login_attempts, staff_mfa, drivers, safety_reminder_runs CASCADE');
     const passwordHash = await hashPassword(password);
     for (const key of Object.keys(ROLES) as Key[]) {
       users[key] = await db.getRepository(User).save({ firstName: 'Fictional', lastName: key, email: `safety.${key}@example.test`, role: ROLES[key], status: UserStatus.ACTIVE, passwordHash });
@@ -99,7 +121,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       if (secret) expect((await completeMfa(agents[key], headers, db, users[key].id, secret)).status).toBe(200);
     }
   });
-  afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE drivers CASCADE'); await db.query(`DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.destroy(); } rmSync(storage, { recursive: true, force: true }); });
+  afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE drivers CASCADE'); await db.query(`DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`); await db.destroy(); } telegram?.close(); rmSync(storage, { recursive: true, force: true }); });
 
   it('shows Drivers to Safety roles and administrators only, landing Safety roles on it', async () => {
     for (const key of ['manager', 'lead', 'staff'] as const) {
@@ -1469,10 +1491,192 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await expect(db.query(`UPDATE driver_notice_letters SET title = 'x' WHERE id = $1`, [published.id])).rejects.toThrow();
   });
 
+  it('records E-Verify for company drivers only: the result and the case date, after the I-9, never a case number', async () => {
+    const { id } = (await add(agents.lead, { ...lead, driverType: 'COMPANY' }).expect(201)).body;
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    let { version } = (await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201)).body;
+    const everify = (body: Record<string, unknown>) => agents.staff.post(`/api/safety/drivers/${id}/clearance/E_VERIFY`).set(headers).send({ version, doneOn: today(), ...body });
+    expect((await driver(id)).clearance.missing).toContain('clearance:E_VERIFY');
+    // A result, never a status; only after the Form I-9; a closed case needs a note; and a case number has no field.
+    await everify({ status: 'COMPLETED' }).expect(400);
+    expect((await everify({ result: 'EMPLOYMENT_AUTHORIZED' }).expect(400)).body.message).toMatch(/Form I-9/);
+    await everify({ result: 'NEGATIVE', i9Complete: true }).expect(400);
+    await everify({ result: 'EMPLOYMENT_AUTHORIZED', i9Complete: true, caseNumber: '2026123456789AB' }).expect(400);
+    expect((await everify({ result: 'CASE_CLOSED', i9Complete: true }).expect(400)).body.message).toMatch(/closed/);
+    // A tentative nonconfirmation stays in progress; a final one blocks clearance (and counts for the Safety manager).
+    ({ version } = (await everify({ result: 'TENTATIVE_NONCONFIRMATION', i9Complete: true }).expect(201)).body);
+    expect((await driver(id)).clearance.items).toEqual([expect.objectContaining({ key: 'E_VERIFY', status: 'IN_PROGRESS', result: 'TENTATIVE_NONCONFIRMATION', doneOn: today() })]);
+    ({ version } = (await everify({ result: 'FINAL_NONCONFIRMATION', i9Complete: true }).expect(201)).body);
+    expect((await driver(id)).clearance.items[0]).toMatchObject({ status: 'BLOCKED' });
+    ({ version } = (await everify({ result: 'EMPLOYMENT_AUTHORIZED', i9Complete: true }).expect(201)).body);
+    expect((await driver(id)).clearance.missing).not.toContain('clearance:E_VERIFY');
+    // An owner-operator isn't an employee: E-Verify isn't asked of them, and can't be recorded.
+    const other = (await add(agents.lead, { ...lead, phone: '555 010 2222', email: 'owner.operator@example.test' }).expect(201)).body;
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [other.id]);
+    expect((await driver(other.id)).clearance.missing).not.toContain('clearance:E_VERIFY');
+    expect((await agents.manager.post(`/api/safety/drivers/${other.id}/clearance/E_VERIFY`).set(headers).send({ version: 1, result: 'EMPLOYMENT_AUTHORIZED', i9Complete: true, doneOn: today() }).expect(400)).body.message)
+      .toMatch(/Owner-operators/);
+    const recorded = (await events(id)).filter(row => row.event === 'CLEARANCE_RECORDED');
+    expect(recorded.map(row => row.metadata)).toEqual([{ item: 'E_VERIFY', status: 'IN_PROGRESS' }, { item: 'E_VERIFY', status: 'BLOCKED' }, { item: 'E_VERIFY', status: 'COMPLETED' }]);
+  });
+
+  /** A cleared driver (Safety contact: staff) whose checked medical card expires in `days` days. */
+  async function clearedExpiringIn(days: number) {
+    const one = await clearedWithExpiredCard();
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [one.medical, addDays(usDay('latest'), days)]);
+    return one;
+  }
+  // The Safety manager gets the Monday summary; switched off where a test counts the other messages.
+  const quietManager = () => db.query(`UPDATE users SET status = 'INACTIVE' WHERE role::text = 'SAFETY_MANAGER'`);
+  // A time on the given Eastern day before and after 8 AM there (in either daylight saving setting).
+  const at = (day: string, hourUtc: number) => new Date(`${day}T${String(hourUtc).padStart(2, '0')}:00:00Z`);
+  const deliveries = () => db.query(`SELECT d.channel, d.status, d."failureCode", r.audience, r.kind, r.step FROM safety_reminder_deliveries d
+    LEFT JOIN safety_reminders r ON r.id = d."reminderId" ORDER BY d."createdAt", r.audience`) as Promise<{ channel: string; status: string; failureCode: string | null; audience: string | null; kind: string | null; step: number | null }[]>;
+
+  it('reminds the Safety contact and the driver once a step, from 8 AM Eastern, by email with a fresh renewal link', async () => {
+    const { id, medical } = await clearedExpiringIn(20), reminders = app.get(ReminderService), day = usDay('latest');
+    await quietManager();
+    expect(await reminders.run(at(day, 11))).toEqual([]); // 6 or 7 AM Eastern: too early
+    const ids = await reminders.run(at(day, 17));
+    expect(ids).toHaveLength(2);
+    expect(await reminders.run(at(day, 18))).toEqual([]); // Once a day, whichever instance gets there first.
+    await reminders.deliver(ids);
+    expect(await deliveries()).toEqual([
+      { channel: 'EMAIL', status: 'SENT', failureCode: null, audience: 'DRIVER', kind: 'MEDICAL_CARD', step: 30 },
+      { channel: 'EMAIL', status: 'SENT', failureCode: null, audience: null, kind: null, step: null }]);
+    // The Safety contact's message names the driver by first name and last initial; the driver's carries a working renewal link.
+    const staffMail = mails.find(mail => mail.to === users.staff.email)!, driverMail = mails.find(mail => mail.to === 'jordan.wheeler@example.test')!;
+    expect(staffMail.subject).toBe('Documents to renew');
+    expect(staffMail.text).toContain('Jordan W.: medical card expires in 20 days.');
+    expect(staffMail.text).not.toMatch(/Wheeler|555|example\.test\/driver/);
+    expect(driverMail.subject).toMatch(/^Your DOT medical card expires on /);
+    const url = /http:\/\/localhost:3000\/driver#[0-9a-f]{64}/.exec(driverMail.text)![0];
+    expect(driverMail.text).not.toMatch(/Jordan|Wheeler/);
+    const opened = await openRenewal(url);
+    expect(opened.code).toBeTruthy();
+    expect((await events(id)).filter(row => row.event === 'RENEWAL_LINK_SENT').map(row => row.metadata)).toEqual([{ kind: 'MEDICAL_CARD', resent: false, reminder: true, channel: 'EMAIL' }]);
+    // The driver's page and Expiring documents say how they were reminded.
+    const profile = await driver(id);
+    expect(profile.reminders).toMatchObject({ telegramConnected: false, items: [expect.objectContaining({ kind: 'MEDICAL_CARD', step: 30, channel: 'EMAIL', status: 'SENT' })] });
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.find((item: { documentId: string }) => item.documentId === medical).reminded)
+      .toMatchObject({ channel: 'EMAIL', status: 'SENT' });
+    // The next step (7 days) is reminded once more; a step already reminded isn't.
+    expect(await reminders.run(at(addDays(day, 1), 17))).toEqual([]);
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [medical, addDays(day, 7)]);
+    const next = await reminders.run(at(addDays(day, 2), 17));
+    expect(next).toHaveLength(2);
+    // Renewed before the message went out: nothing is sent, and no link is made.
+    await db.query(`UPDATE driver_documents SET "replacedAt" = now() WHERE id = $1`, [medical]);
+    await db.query(`INSERT INTO driver_documents (id, "driverId", kind, "pageCount", sha256, "byteSize", "storageLayout", "createdAt", "verifiedAt", "verifiedBy", "expiresOn")
+      SELECT gen_random_uuid(), "driverId", kind, "pageCount", sha256, "byteSize", "storageLayout", now(), now(), $2, $3 FROM driver_documents WHERE id = $1`, [medical, users.staff.id, addDays(day, 700)]);
+    mails.length = 0;
+    await reminders.deliver(next);
+    expect((await deliveries()).slice(2)).toEqual([
+      expect.objectContaining({ audience: 'DRIVER', status: 'SKIPPED', failureCode: 'RENEWED', step: 7 }),
+      // The Safety contact's message lists only what is still due, so with nothing left it isn't sent either.
+      expect.objectContaining({ audience: null, status: 'SKIPPED', failureCode: 'CLOSED' })]);
+    expect(mails).toEqual([]);
+  });
+
+  it('never replaces a link Safety sent, and skips a reminder whose date was corrected or whose renewal scan arrived', async () => {
+    const { id, medical, version } = await clearedExpiringIn(20), reminders = app.get(ReminderService), day = usDay('latest');
+    await quietManager();
+    // Safety sent a renewal link by hand: the reminder points to it and makes none, so it keeps working.
+    const own = (await agents.staff.post(`/api/safety/drivers/${id}/renewals`).set(headers).send({ version, kind: 'MEDICAL_CARD' }).expect(201)).body;
+    await reminders.deliver(await reminders.run(at(day, 17)));
+    const driverMail = mails.find(mail => mail.to === 'jordan.wheeler@example.test')!;
+    expect(driverMail.text).toContain('Use the link UGEM Safety sent you; it works until');
+    expect(driverMail.text).not.toMatch(/\/driver#/);
+    expect((await openRenewal(own.url)).code).toBeTruthy();
+    expect((await driver(id)).renewals.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD').link).toMatchObject({ fromReminder: false });
+    expect((await events(id)).filter(row => row.event === 'RENEWAL_LINK_SENT')).toHaveLength(1);
+    // A date corrected before the next reminder went out: it isn't sent with the old date.
+    await agents.staff.post(`/api/safety/drivers/${id}/renewals/cancel`).set(headers).send({ version: own.version, kind: 'MEDICAL_CARD' }).expect(201);
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [medical, addDays(day, 3)]);
+    const corrected = await reminders.run(at(addDays(day, 1), 17));
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [medical, addDays(day, 4)]);
+    mails.length = 0;
+    await reminders.deliver(corrected);
+    expect((await deliveries()).find(row => row.audience === 'DRIVER' && row.step === 7)).toMatchObject({ status: 'SKIPPED', failureCode: 'CHANGED' });
+    expect(mails.filter(mail => mail.to === 'jordan.wheeler@example.test')).toEqual([]);
+  });
+
+  it('sends a reminder by email when the driver blocked the bot, and drops that chat', async () => {
+    const { id, version } = await clearedExpiringIn(0), reminders = app.get(ReminderService), day = usDay('latest');
+    await quietManager();
+    const link = (await agents.staff.post(`/api/safety/drivers/${id}/telegram-link`).set(headers).send({ version }).expect(201)).body;
+    tell(`/start ${link.url.split('start=')[1]}`, 7201);
+    await app.get(UpdatesService).pollTelegram();
+    blockedChats.add('7201');
+    mails.length = 0;
+    await reminders.deliver(await reminders.run(at(day, 17)));
+    expect((await deliveries()).find(row => row.audience === 'DRIVER')).toMatchObject({ channel: 'EMAIL', status: 'SENT' });
+    expect(mails.find(mail => mail.to === 'jordan.wheeler@example.test')!.text).toMatch(/\/driver#[0-9a-f]{64}/);
+    expect((await driver(id)).reminders).toMatchObject({ telegramConnected: false });
+    expect((await events(id)).find(row => row.event === 'TELEGRAM_STOPPED')!.metadata).toEqual({ blocked: true });
+  });
+
+  it('sends reminders by Telegram once connected: drivers through a one-time link, with a button; /stop goes back to email', async () => {
+    const { id, version } = await clearedExpiringIn(0), reminders = app.get(ReminderService), day = usDay('latest');
+    await quietManager();
+    // Safety makes a link for the driver (only those who may renew), shown once.
+    await agents.staff2.post(`/api/safety/drivers/${id}/telegram-link`).set(headers).send({ version }).expect(403);
+    const link = (await agents.staff.post(`/api/safety/drivers/${id}/telegram-link`).set(headers).send({ version }).expect(201)).body;
+    expect(link.url).toMatch(/^https:\/\/t\.me\/ugem_updates_bot\?start=[A-Za-z0-9_-]{43}$/);
+    tell(`/start ${link.url.split('start=')[1]}`, 7001);
+    await app.get(UpdatesService).pollTelegram();
+    expect((await driver(id)).reminders).toMatchObject({ telegramConnected: true });
+    expect(telegramSent.at(-1)).toMatchObject({ chat_id: '7001', text: expect.stringMatching(/^Connected\. UGEM Safety will remind you/) });
+    // The Safety contact is on Telegram too.
+    await db.query(`INSERT INTO staff_telegram_links ("userId", "chatId") VALUES ($1, '7002')`, [users.staff.id]);
+    telegramSent.length = 0;
+    await reminders.deliver(await reminders.run(at(day, 17)));
+    const toDriver = telegramSent.find(message => message.chat_id === '7001')!, toStaff = telegramSent.find(message => message.chat_id === '7002')!;
+    expect(toDriver.text).toMatch(/^Your DOT medical card expires today/);
+    expect(toDriver.text).not.toMatch(/Jordan|http/);
+    expect(toDriver.reply_markup?.inline_keyboard[0][0]).toMatchObject({ text: 'Send the new one', url: expect.stringMatching(/\/driver#[0-9a-f]{64}$/) });
+    expect(toStaff.text).toContain('Jordan W.: medical card expires today.');
+    expect(mails).toEqual([]);
+    // /stop ends the driver's Telegram reminders; the next ones go by email.
+    tell('/stop', 7001);
+    await app.get(UpdatesService).pollTelegram();
+    expect((await driver(id)).reminders).toMatchObject({ telegramConnected: false });
+    expect((await events(id)).map(row => row.event)).toEqual(expect.arrayContaining(['TELEGRAM_LINK_CREATED', 'TELEGRAM_CONNECTED', 'TELEGRAM_STOPPED']));
+  });
+
+  it('lets a driver connect Telegram from their own page while their verified session lasts', async () => {
+    const { agent } = await applying();
+    expect((await agent.get('/api/driver/telegram').set(headers).expect(200)).body).toEqual({ available: true, connected: false });
+    const { url } = (await agent.post('/api/driver/telegram/connect').set(headers).send({}).expect(201)).body;
+    tell(`/start ${url.split('start=')[1]}`, 7101);
+    expect((await agent.post('/api/driver/telegram/check').set(headers).send({}).expect(201)).body).toEqual({ available: true, connected: true });
+    // Without a driver session there is nothing to connect.
+    await request(app.getHttpServer()).get('/api/driver/telegram').set(headers).expect(401);
+  });
+
+  it('sends the Safety manager a Monday summary of counts only', async () => {
+    await clearedExpiringIn(-2);
+    const reminders = app.get(ReminderService);
+    // The next Monday, Eastern: the summary goes with that morning's reminders.
+    let monday = usDay('latest');
+    while (new Date(`${monday}T12:00:00Z`).getUTCDay() !== 1) monday = addDays(monday, 1);
+    await reminders.deliver(await reminders.run(at(monday, 17)));
+    const summary = mails.find(mail => mail.to === users.manager.email && mail.subject === 'Safety this week')!;
+    expect(summary.text).toContain('Expired: 1 document, 1 driver on hold.');
+    expect(summary.text).not.toMatch(/Jordan|Wheeler/);
+  });
+
   it('keeps the migrations from discarding driver documents, applications, driver records or Safety accounts', async () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    // An E-Verify result (or a driver's Telegram connection, or a reminder) keeps SafetyReminders.
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_clearance_items ("driverId", key, status, result, "doneOn", "updatedAt") VALUES ($1, 'E_VERIFY', 'COMPLETED', 'EMPLOYMENT_AUTHORIZED', now(), now())`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard driver Telegram connections, reminders or E-Verify results');
+    await db.query(`DELETE FROM driver_clearance_items WHERE "driverId" = $1`, [id]);
+    await db.query(`UPDATE drivers SET status = 'APPLYING' WHERE id = $1`, [id]);
+    await db.undoLastMigration(); // SafetyReminders, with none here
     // A notice letter downloaded (or one published) keeps NoticeLetters.
     await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'NOTICE_LETTER_DOWNLOADED', '{}')`, [id]);
     await expect(db.undoLastMigration()).rejects.toThrow('Cannot discard notice letters');
@@ -1553,6 +1757,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('NoticeLetters1793100000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyReminders1793110000000');
   });
 });

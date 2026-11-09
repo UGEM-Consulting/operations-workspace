@@ -37,5 +37,8 @@ export class TelegramClient {
   throw new TelegramError(response.status === 403 ? 'FORBIDDEN' : response.status === 429 ? 'RATE_LIMITED' : response.status >= 500 ? 'SERVER' : 'REJECTED');
  }
  getUpdates(offset: number, limit: number) { return this.call<TelegramUpdate[]>('getUpdates', { offset, timeout: 0, limit, allowed_updates: ['message'] }); }
- sendMessage(chatId: string, text: string) { return this.call<unknown>('sendMessage', { chat_id: chatId, text, link_preview_options: { is_disabled: true } }); }
+ /** Plain text, and optionally one button that opens a link (driver reminders). */
+ sendMessage(chatId: string, text: string, button?: { text: string; url: string }) {
+  return this.call<unknown>('sendMessage', { chat_id: chatId, text, link_preview_options: { is_disabled: true }, ...(button ? { reply_markup: { inline_keyboard: [[button]] } } : {}) });
+ }
 }

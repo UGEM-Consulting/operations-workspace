@@ -4,7 +4,7 @@ import { Role, User } from '../users/user.entity';
 import { AddEmployerDto, ClearanceItemDto, UpdateEmployerDto } from './clearance.dto';
 import { DriverVersionDto } from './driver-application.dto';
 import { driverEvent, lockOpenDriver, ownsDriver, writeDriver } from './driver-records';
-import { CLEARANCE_ITEMS, CLEARANCE_OPTIONAL, CLEARANCE_RESULTS, type ClearanceKey, type ClearanceStatus, Driver, DriverClearanceItem, DriverPreviousEmployer } from './safety.entity';
+import { CLEARANCE_ITEMS, CLEARANCE_OPTIONAL, CLEARANCE_RESULTS, type ClearanceKey, type ClearanceStatus, Driver, DriverClearanceItem, DriverPreviousEmployer, everifyNeeded } from './safety.entity';
 import { addDays, usDay } from './screening-rules';
 
 /** Who may run clearance besides the driver's current owner. */
@@ -25,14 +25,16 @@ function employersProblem(status: string, employers: EmployerAnswers[]): string 
 /**
  * What still stands between an approved driver and Cleared, as codes the web turns into words: `owner` (no active safety
  * staff owner), `clearance:<KEY>` (an item not completed or not needed), `expired:<KEY>` (done, but more than a year ago)
- * and `employers` (the item is done but an employer added or changed since doesn't allow it). Empty means ready.
+ * and `employers` (the item is done but an employer added or changed since doesn't allow it). Empty means ready. E-Verify
+ * counts only for a company driver (everifyNeeded), and a case doesn't go out of date.
  */
-export function clearanceGaps(items: { key: string; status: string; doneOn: string | null }[], hasOwner: boolean, employers: EmployerAnswers[]): string[] {
+export function clearanceGaps(items: { key: string; status: string; doneOn: string | null }[], hasOwner: boolean, employers: EmployerAnswers[], driver: { driverType: Driver['driverType'] }): string[] {
  const gaps = hasOwner ? [] : ['owner'], oldest = oldestDate();
  for (const key of CLEARANCE_ITEMS) {
+  if (key === 'E_VERIFY' && !everifyNeeded(driver)) continue;
   const item = items.find(row => row.key === key);
   if (item?.status !== 'COMPLETED' && item?.status !== 'NOT_NEEDED') gaps.push(`clearance:${key}`);
-  else if (item.doneOn && item.doneOn < oldest) gaps.push(`expired:${key}`);
+  else if (key !== 'E_VERIFY' && item.doneOn && item.doneOn < oldest) gaps.push(`expired:${key}`);
   else if (key === 'PREVIOUS_EMPLOYERS' && employersProblem(item.status, employers)) gaps.push('employers');
  }
  return gaps;
@@ -59,6 +61,7 @@ export class ClearanceService {
   if (!CLEARANCE_ITEMS.includes(key as ClearanceKey)) throw new NotFoundException();
   const item = key as ClearanceKey, results = CLEARANCE_RESULTS[item];
   return this.write(user, id, dto.version, async (em, driver) => {
+   if (item === 'E_VERIFY' && !everifyNeeded(driver)) throw new BadRequestException('Owner-operators aren’t UGEM employees, so E-Verify isn’t needed for them.');
    const items = em.getRepository(DriverClearanceItem), note = dto.note || null;
    let status: ClearanceStatus | null, result: string | null = null;
    if (results) {
@@ -67,6 +70,8 @@ export class ClearanceService {
     else {
      if (!(dto.result in results)) throw new BadRequestException('Choose one of the results.');
      result = dto.result; status = results[dto.result];
+     if (item === 'E_VERIFY' && !dto.i9Complete) throw new BadRequestException('Confirm that the driver’s Form I-9 is complete. E-Verify comes after it.');
+     if (result === 'CASE_CLOSED' && !note) throw new BadRequestException('Say why the case was closed, then run a new case.');
     }
    } else {
     if (dto.result !== undefined) throw new BadRequestException('This item has no result to record.');
@@ -139,7 +144,7 @@ export class ClearanceService {
  async clear(user: User, id: string, dto: DriverVersionDto) {
   return this.write(user, id, dto.version, async (em, driver) => {
    const items = await em.getRepository(DriverClearanceItem).findBy({ driverId: id });
-   const missing = clearanceGaps(items, await hasActiveOwner(em, id), await em.getRepository(DriverPreviousEmployer).findBy({ driverId: id }));
+   const missing = clearanceGaps(items, await hasActiveOwner(em, id), await em.getRepository(DriverPreviousEmployer).findBy({ driverId: id }), driver);
    if (missing.length) throw new BadRequestException({ message: missing.includes('owner') ? 'Assign an active safety staff owner first.' : 'Finish every clearance item first.', missing });
    const now = new Date();
    await em.getRepository(Driver).update(id, { status: 'CLEARED', clearedAt: now, clearedBy: user.id, version: driver.version + 1 });
