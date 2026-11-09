@@ -7,7 +7,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Checklist } from '@/components/ui/checklist';
 import { Dialog } from '@/components/ui/dialog';
 import { Notice } from '@/components/ui/alert';
-import { Input, RadioGroup, Textarea } from '@/components/ui/field';
+import { Checkbox, Input, RadioGroup, Textarea } from '@/components/ui/field';
 import { EmptyState, Progress } from '@/components/ui/feedback';
 import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
@@ -15,7 +15,7 @@ import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { useToday } from './driver-documents';
-import { CLEARANCE_ITEMS, clearanceGapLabel, clearanceResults, type ClearanceItemRow, type ClearanceKey, type DriverProfile, type EmployerRow } from './types';
+import { CLEARANCE_ITEMS, clearanceApplies, clearanceGapLabel, clearanceResults, type ClearanceItemRow, type ClearanceKey, type DriverProfile, type EmployerRow } from './types';
 
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
 const month = (value: string) => new Date(`${value}-15T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
@@ -34,8 +34,9 @@ function itemMeta(item: ClearanceItemRow | undefined, key: ClearanceKey, employe
 
 /**
  * Clearance of an approved driver: the fixed checklist and the previous employers Safety asks about the driver's safety
- * record. Results only: the dialogs say to keep drug test and medical details out. `canWork` is the driver's owner, the
- * Safety manager or an administrator while the driver is approved; everyone else in Safety reads it.
+ * record. Results only: the dialogs say to keep drug test, medical and immigration details out. E-Verify applies to
+ * company drivers only and shows as not needed for an owner-operator. `canWork` is the driver's owner, the Safety manager
+ * or an administrator while the driver is approved; everyone else in Safety reads it.
  */
 export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canWork: boolean }) {
   const router = useRouter();
@@ -60,7 +61,8 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
       const base = `safety/drivers/${driver.id}`;
       if (editing.kind === 'item') {
         const rule = CLEARANCE_ITEMS.find(item => item.key === editing.key)!;
-        const body = rule.results ? (result ? { result } : { status: null }) : { status: status || null };
+        // E-Verify: the I-9 confirmation is sent only when the person ticked it now, so a changed result is confirmed again.
+        const body = rule.results ? (result ? { result, ...(editing.key === 'E_VERIFY' && form.get('i9Complete') === 'on' ? { i9Complete: true } : {}) } : { status: null }) : { status: status || null };
         await mutate(`${base}/clearance/${editing.key}`, 'POST', { version: driver.version, ...body, ...(value('doneOn') ? { doneOn: value('doneOn') } : {}), note: value('note') });
       } else if (editing.kind === 'add') await mutate(`${base}/employers`, 'POST', { version: driver.version, name: value('name'), fromMonth: value('fromMonth'), toMonth: value('toMonth'), ...(value('requestedOn') ? { requestedOn: value('requestedOn') } : {}) });
       else if (editing.kind === 'employer') await mutate(`${base}/employers/${editing.employer.id}`, 'POST', { version: driver.version, requestedOn: value('requestedOn') || null, answeredOn: value('answeredOn') || null,
@@ -75,9 +77,10 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
   const showDate = rule ? (rule.results ? !!result : status === 'COMPLETED') : false;
   return <>
     <Card>
-      <CardHeader title="Clearance" description="What has to be on file before this driver can run loads. Results only: drug test and medical details stay out of the workspace." />
+      <CardHeader title="Clearance" description="What has to be on file before this driver can run loads. Results only: drug test, medical and immigration details stay out of the workspace." />
       <Checklist className="mt-3 border-t border-border" items={CLEARANCE_ITEMS.map(item => {
         const row = items.get(item.key);
+        if (!clearanceApplies(item, driver)) return { id: item.key, title: item.label, description: 'Only for company drivers, who are UGEM employees.', status: 'NOT_NEEDED', meta: 'Not needed: owner-operator (not an employee)' };
         return { id: item.key, title: item.label, description: item.hint, status: row?.status ?? 'PENDING', note: row?.note ?? undefined, meta: itemMeta(row, item.key, clearance.employers),
           action: canWork ? <Button size="sm" variant="outline" onClick={() => open({ kind: 'item', key: item.key })}>{row ? 'Edit' : 'Record'}<span className="sr-only">: {item.label}</span></Button> : undefined };
       })} />
@@ -108,9 +111,12 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
         {rule && !rule.results && <RadioGroup name="status" label="Status" value={status} onChange={setStatus} options={[
           ...(current ? [{ value: '', label: 'Not started' }] : []), { value: 'IN_PROGRESS', label: 'In progress' }, { value: 'BLOCKED', label: 'Blocked', description: 'Say what is in the way.' },
           { value: 'COMPLETED', label: 'Completed' }, ...(rule.optional ? [{ value: 'NOT_NEEDED', label: 'Not needed', description: rule.optional }] : [])]} />}
-        {showDate && <Input label={rule?.results ? 'Date of the result' : 'Date completed'} name="doneOn" type="date" width="sm" required max={today ?? undefined} defaultValue={current?.doneOn ?? today ?? undefined} />}
-        {rule && <Textarea label="Note" name="note" rows={2} maxLength={1000} optional={!(status === 'BLOCKED' || status === 'NOT_NEEDED') || !!rule.results}
-          required={!rule.results && (status === 'BLOCKED' || status === 'NOT_NEEDED')} defaultValue={current?.note ?? ''} hint="No medical details, substances, levels or violation details." />}
+        {showDate && <Input label={rule?.key === 'E_VERIFY' ? 'Date the case was created' : rule?.results ? 'Date of the result' : 'Date completed'} name="doneOn" type="date" width="sm" required max={today ?? undefined} defaultValue={current?.doneOn ?? today ?? undefined}
+          hint={rule?.key === 'E_VERIFY' ? 'Within 3 business days of their first day of work.' : undefined} />}
+        {rule?.key === 'E_VERIFY' && !!result && <Checkbox name="i9Complete" required label={`${driver.firstName}’s Form I-9 is complete.`} />}
+        {rule && <Textarea label="Note" name="note" rows={2} maxLength={1000} optional={(!(status === 'BLOCKED' || status === 'NOT_NEEDED') || !!rule.results) && result !== 'CASE_CLOSED'}
+          required={(!rule.results && (status === 'BLOCKED' || status === 'NOT_NEEDED')) || result === 'CASE_CLOSED'} defaultValue={current?.note ?? ''}
+          hint={rule.key === 'E_VERIFY' ? 'No case numbers, document numbers or immigration details.' : 'No medical details, substances, levels or violation details.'} />}
         {editing.kind === 'add' && <>
           <Input label="Employer" name="name" required maxLength={200} width="full" />
           <div className="flex flex-wrap gap-4">
@@ -141,7 +147,8 @@ export function ClearanceProgress({ driver, canWork }: { driver: DriverProfile; 
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const clearance = driver.clearance!, name = `${driver.firstName} ${driver.lastName}`.trim();
-  const finished = CLEARANCE_ITEMS.filter(item => done(clearance.items.find(row => row.key === item.key)?.status) && !clearance.missing.includes(`expired:${item.key}`)).length;
+  // An item that doesn't apply (E-Verify for an owner-operator) counts as done.
+  const finished = CLEARANCE_ITEMS.filter(item => !clearanceApplies(item, driver) || (done(clearance.items.find(row => row.key === item.key)?.status) && !clearance.missing.includes(`expired:${item.key}`))).length;
   async function clear() {
     if (pending) return;
     setPending(true); setError('');

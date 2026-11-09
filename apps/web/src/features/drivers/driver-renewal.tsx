@@ -5,6 +5,7 @@ import { Card } from '@/components/ui/card';
 import { LocalTime } from '@/components/ui/local-time';
 import { mutate } from '@/lib/client-api';
 import { DocumentScanner } from './document-scanner';
+import { DriverTelegram } from './driver-telegram';
 
 export interface DriverRenewalView { kind: 'LICENSE' | 'MEDICAL_CARD'; email: string; expiresAt: string; sentAt: string | null; documentsEnabled: boolean;
   document: { id: string; pageCount: number; createdAt: string } | null }
@@ -29,6 +30,7 @@ export function DriverRenewal({ view: initial, focusHeading, onEnded }: { view: 
     <CheckCircle2 aria-hidden="true" className="size-8 text-success" />
     <h1 ref={heading} tabIndex={-1} className="text-2xl font-normal outline-none">Sent to Safety</h1>
     <p className="text-sm text-muted-foreground">Thank you. Safety received your {word}{view.document ? <> ({view.document.pageCount} {view.document.pageCount === 1 ? 'page' : 'pages'})</> : null} on <LocalTime iso={view.sentAt} format="date" /> and checks it before it counts. Your earlier {word} stays in your file. You can close this page.</p>
+    <DriverTelegram />
   </Card>;
   return <Card className="space-y-6 p-6 sm:p-8">
     <div className="space-y-2">

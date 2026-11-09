@@ -22,7 +22,8 @@ export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SA
  'LINK_SENT', 'LINK_CANCELLED', 'APPLICATION_VERIFIED', 'APPLICATION_SUBMITTED', 'SSN_REVEALED', 'DOCUMENT_UPLOADED', 'DOCUMENT_VERIFIED', 'DOCUMENT_VIEWED',
  'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED',
  'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT', 'ANNUAL_REVIEW_RECORDED', 'TEST_RECORDED', 'TEST_VOIDED', 'INCIDENT_RECORDED', 'INCIDENT_UPDATED', 'INCIDENT_VOIDED', 'TRUCK_SAVED', 'OWNER_DOCUMENT_UPLOADED', 'OWNER_DOCUMENT_VIEWED',
- 'RENEWAL_LINK_SENT', 'RENEWAL_LINK_CANCELLED', 'RENEWAL_OPENED', 'DOCUMENT_RENEWED', 'DOCUMENT_UNREADABLE', 'NOTICE_LETTER_DOWNLOADED'] as const;
+ 'RENEWAL_LINK_SENT', 'RENEWAL_LINK_CANCELLED', 'RENEWAL_OPENED', 'DOCUMENT_RENEWED', 'DOCUMENT_UNREADABLE', 'NOTICE_LETTER_DOWNLOADED',
+ 'TELEGRAM_LINK_CREATED', 'TELEGRAM_CONNECTED', 'TELEGRAM_STOPPED'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -255,10 +256,11 @@ export function earliestFinalRejection(noticeSentOn: string): string {
 
 /**
  * What has to be on file before an approved driver can run loads. The owner records results only: drug test and medical
- * details stay out of the workspace. The drug test and the Clearinghouse query take a result, which sets the status; the
- * others take a status. No row means not started.
+ * details stay out of the workspace. The drug test, the Clearinghouse query and E-Verify take a result, which sets the
+ * status; the others take a status. No row means not started. E-Verify is for company drivers (UGEM employees) only: an
+ * owner-operator doesn't need it, without anyone recording that (everifyNeeded).
  */
-export const CLEARANCE_ITEMS = ['DRUG_TEST', 'CLEARINGHOUSE', 'PREVIOUS_EMPLOYERS', 'MEDICAL_REGISTRY', 'ROAD_TEST'] as const;
+export const CLEARANCE_ITEMS = ['DRUG_TEST', 'CLEARINGHOUSE', 'PREVIOUS_EMPLOYERS', 'MEDICAL_REGISTRY', 'ROAD_TEST', 'E_VERIFY'] as const;
 export type ClearanceKey = typeof CLEARANCE_ITEMS[number];
 export const CLEARANCE_STATUSES = ['IN_PROGRESS', 'BLOCKED', 'COMPLETED', 'NOT_NEEDED'] as const;
 export type ClearanceStatus = typeof CLEARANCE_STATUSES[number];
@@ -268,7 +270,10 @@ export const CLEARANCE_OPTIONAL: readonly ClearanceKey[] = ['PREVIOUS_EMPLOYERS'
 export const CLEARANCE_RESULTS: Partial<Record<ClearanceKey, Record<string, ClearanceStatus>>> = {
  DRUG_TEST: { NEGATIVE: 'COMPLETED', NOT_NEGATIVE: 'BLOCKED', CANCELLED: 'IN_PROGRESS' },
  CLEARINGHOUSE: { NO_VIOLATIONS: 'COMPLETED', VIOLATIONS: 'BLOCKED' },
+ // A tentative nonconfirmation stays open while the driver takes action; a closed case needs a note and a new case.
+ E_VERIFY: { EMPLOYMENT_AUTHORIZED: 'COMPLETED', TENTATIVE_NONCONFIRMATION: 'IN_PROGRESS', FINAL_NONCONFIRMATION: 'BLOCKED', CASE_CLOSED: 'IN_PROGRESS' },
 };
+export const everifyNeeded = (driver: { driverType: DriverType }) => driver.driverType === 'COMPANY';
 @Entity('driver_clearance_items')
 export class DriverClearanceItem {
  @PrimaryColumn('uuid') driverId!: string;
@@ -314,5 +319,25 @@ export class DriverAssignment {
  @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
  @Column('varchar', { length: 500, nullable: true }) reason!: string | null;
  @Column('uuid', { nullable: true }) actorId!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+/** A driver's private chat with the company bot, for expiration reminders only. One chat belongs to one driver. */
+@Entity('driver_telegram_links')
+export class DriverTelegramLink {
+ @PrimaryColumn('uuid') driverId!: string;
+ @Column('varchar', { length: 32 }) chatId!: string;
+ @Column('varchar', { length: 32, nullable: true }) username!: string | null;
+ @Column('timestamptz') linkedAt!: Date;
+}
+/** One-time Telegram connect links for a driver: from their own page (createdBy null) or made by Safety to send. Only the SHA-256 is stored. */
+@Entity('driver_telegram_link_tokens')
+export class DriverTelegramLinkToken {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') driverId!: string;
+ @Column('char', { length: 64 }) tokenHash!: string;
+ @Column('timestamptz') expiresAt!: Date;
+ @Column('timestamptz', { nullable: true }) consumedAt!: Date | null;
+ @Column('uuid', { nullable: true }) createdBy!: string | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }

@@ -157,5 +157,7 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
 }
 /** Which alerts a role receives, for the Account security description. */
 function alertsFor(role: Role): string[] {
-  return [...(role === Role.DISPATCHER_MANAGER || role === Role.SYSTEM_ADMIN ? ['REVIEW_WAITING'] : []), ...(role === Role.IT_SPECIALIST ? ['IT_SETUP_WAITING', 'IT_REMOVAL_WAITING'] : [])];
+  return [...(role === Role.DISPATCHER_MANAGER || role === Role.SYSTEM_ADMIN ? ['REVIEW_WAITING'] : []), ...(role === Role.IT_SPECIALIST ? ['IT_SETUP_WAITING', 'IT_REMOVAL_WAITING'] : []),
+    // Safety reminders (safety/reminders.ts): the Safety contact's morning message, and the Safety manager's (also for drivers with no contact) plus the Monday summary.
+    ...(role === Role.SAFETY_STAFF ? ['SAFETY_REMINDER'] : []), ...(role === Role.SAFETY_MANAGER ? ['SAFETY_REMINDER', 'SAFETY_WEEKLY'] : [])];
 }

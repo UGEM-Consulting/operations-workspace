@@ -16,6 +16,7 @@ import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDoc
 import { currentConsents, missingConsents } from './consent-rules';
 import { addDays, missingForDecision, usDay } from './screening-rules';
 import { CLEARERS, clearanceGaps, hasActiveOwner } from './clearance.service';
+import { driverReminded, renewalScanWhere } from './reminded';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
 /** Scans are listed as expiring this many days before their expiration date. */
@@ -74,7 +75,9 @@ export class SafetyService {
    const row = renewals.find(entry => entry.driverId === item.driverId && entry.kind === item.kind);
    return row ? { link: row.link, scan: row.scan } : null;
   };
-  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expired: (item.expiresOn as string) < today, renewal: renewal(item) })) };
+  // How each driver was last reminded about their own license or medical card (drivers get no others).
+  const reminded = await driverReminded(this.db.manager, renewable.map(item => item.documentId as string));
+  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expiresOn: item.expiresOn as string, expired: (item.expiresOn as string) < today, renewal: renewal(item), reminded: reminded.get(item.documentId as string) ?? null })) };
  }
  /** For the sidebar: the same documents, counted, without the details the page shows. */
  async expiringCount(): Promise<number> {
@@ -88,16 +91,15 @@ export class SafetyService {
   * its check or that nobody could read (never a scan from their application: sentWithApplication).
   */
  private async renewals(driverIds: string[]): Promise<{ driverId: string; kind: RenewalKind; checked: { id: string; expiresOn: string | null; current: boolean } | null;
-  link: { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean } | null; scan: { id: string; version: number; pageCount: number; createdAt: string; unreadable: boolean } | null }[]> {
+  link: { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean; fromReminder: boolean } | null; scan: { id: string; version: number; pageCount: number; createdAt: string; unreadable: boolean } | null }[]> {
   if (!driverIds.length) return [];
   return this.db.query(`SELECT x."driverId", k.kind,
     (SELECT json_build_object('id', c.id, 'expiresOn', to_char(c."expiresOn", 'YYYY-MM-DD'), 'current', c."replacedAt" IS NULL) FROM driver_documents c
      WHERE c."driverId" = x."driverId" AND c.kind = k.kind AND c."verifiedAt" IS NOT NULL ORDER BY c."createdAt" DESC LIMIT 1) AS checked,
-    (SELECT json_build_object('createdAt', l."createdAt", 'expiresAt', l."expiresAt", 'openedAt', l."openedAt", 'expired', l."expiresAt" <= now()) FROM driver_links l
+    (SELECT json_build_object('createdAt', l."createdAt", 'expiresAt', l."expiresAt", 'openedAt', l."openedAt", 'expired', l."expiresAt" <= now(), 'fromReminder', l."createdBy" IS NULL) FROM driver_links l
      WHERE l."driverId" = x."driverId" AND l.purpose = 'RENEWAL' AND l."documentKind" = k.kind AND l."revokedAt" IS NULL AND l."completedAt" IS NULL) AS link,
     (SELECT json_build_object('id', n.id, 'version', n.version, 'pageCount', n."pageCount", 'createdAt', n."createdAt", 'unreadable', n."unreadableAt" IS NOT NULL) FROM driver_documents n
-     WHERE n."driverId" = x."driverId" AND n.kind = k.kind AND n."replacedAt" IS NULL AND n."verifiedAt" IS NULL AND n."uploadedBy" IS NULL
-      AND n."createdAt" > coalesce((SELECT a."submittedAt" FROM driver_applications a WHERE a."driverId" = x."driverId"), '-infinity')) AS scan
+     WHERE ${renewalScanWhere('x."driverId"', 'k.kind')}) AS scan
    FROM unnest($1::uuid[]) x("driverId") CROSS JOIN (VALUES ('LICENSE'), ('MEDICAL_CARD')) k(kind)`, [driverIds]);
  }
 
@@ -153,7 +155,7 @@ export class SafetyService {
   const notice = driver.status === 'PRE_ADVERSE' ? reviews.find((row: { action: string }) => row.action === 'PRE_ADVERSE') : null;
   const owner = owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null;
   return { ...driver, owner, owners, activity, link: link ?? null, application: application ?? null, documents, renewals,
-   clearance: { items: clearanceItems, employers, missing: clearanceGaps(clearanceItems, activeOwner, employers) }, assignments,
+   clearance: { items: clearanceItems, employers, missing: clearanceGaps(clearanceItems, activeOwner, employers, driver) }, assignments,
    screening: { checks, mvr: mvr ?? null, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null },
    consents: { signatures: consents, missing: consentsMissing, authorizationSigned: consents.some((row: { kind: string }) => row.kind === 'BACKGROUND_AUTHORIZATION') } };
  }

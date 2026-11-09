@@ -1,4 +1,7 @@
 import Link from 'next/link';
+import { Send } from 'lucide-react';
+import { Alert } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/feedback';
 import { LocalTime } from '@/components/ui/local-time';
@@ -8,11 +11,14 @@ import { FilterBar } from '@/components/ui/filter-bar';
 import { PageHeader, StatCard } from '@/components/workspace-ui';
 import { queueHref } from '@/lib/navigation';
 import { ExpiringRenewal } from './expiring-renewal';
+import { reminderOutcome } from './reminder-words';
 import { documentLabels, ownerDocumentLabels, type DocumentKind, type RenewalKind, type RenewalLink, type RenewalScan } from './types';
 
 export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; truck?: string | null; owner: { id?: string; name: string } | null; expired: boolean;
   // From an API with renewals: the driver's version and email, and, for an approved or cleared driver's license or medical card, where its renewal stands.
-  version?: number; email?: string | null; renewal?: { link: RenewalLink | null; scan: RenewalScan | null } | null }
+  version?: number; email?: string | null; renewal?: { link: RenewalLink | null; scan: RenewalScan | null } | null;
+  // From an API with expiration reminders: how the driver was last reminded about this document (licenses and medical cards only).
+  reminded?: { channel: 'EMAIL' | 'TELEGRAM'; status: string; failureCode?: string | null; at: string } | null }
 export interface DueReview { driverId: string; firstName: string; lastName: string; owner: string | null; lastReviewedOn: string | null; dueOn: string; notQualified: boolean; overdue: boolean }
 export interface DueTest { driverId: string; firstName: string; lastName: string; kind: 'DRUG' | 'ALCOHOL'; result: string; testedOn: string; owner: string | null }
 export interface DueIncident { incidentId: string; driverId: string; firstName: string; lastName: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; owner: string | null }
@@ -28,8 +34,11 @@ export const EXPIRING_DEFAULTS: Record<string, string> = { view: 'all', search: 
 /**
  * Safety › Expiring documents (designed as ExpiringDocumentsScreen): verified scans that have expired or expire soon,
  * soonest first, with counts and a My drivers view for owners. An expired license or medical card puts the driver on hold.
+ * Reminders go out by themselves (ReminderStaffScreen): `telegram` is the viewer's own connection, when they get Safety
+ * reminders, so someone not connected is asked to connect (ReminderStaffNotConnectedScreen).
  */
-export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { data: ExpiringList; reviews: DueList; meId: string; screener: boolean; filters: Record<string, string> }) {
+export function ExpiringDocuments({ data, reviews, meId, screener, filters, telegram }: { data: ExpiringList; reviews: DueList; meId: string; screener: boolean; filters: Record<string, string>;
+  telegram?: { available: boolean; connected: boolean; email: string } }) {
   const mine = data.items.filter(item => item.owner?.id === meId), soon = addDays(data.today, 30);
   const query = (filters.search ?? '').toLowerCase();
   const shown = (filters.view === 'mine' ? mine : data.items).filter(item => `${item.firstName} ${item.lastName}`.toLowerCase().includes(query));
@@ -45,7 +54,10 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
     return '—';
   };
   return <div className="space-y-6">
-    <PageHeader title="Expiring documents" description={`Licenses, medical cards and work permits that have expired or expire within ${data.warningDays} days, and yearly driver reviews that are due. Open the driver to act.`} />
+    <PageHeader title="Expiring documents" description={`Licenses, medical cards and work permits that have expired or expire within ${data.warningDays} days, and yearly driver reviews that are due. Reminders go out by themselves; open the driver to act.`} />
+    {telegram?.available && !telegram.connected && <Alert tone="info" title="Get your reminders on Telegram"
+      action={<Button size="sm" asChild><Link href="/account/security"><Send aria-hidden="true" className="size-4" />Connect my Telegram</Link></Button>}>
+      <p>Until you connect, reminders about your drivers’ documents go to {telegram.email}.</p></Alert>}
     <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       <StatCard label="Expired" value={data.items.filter(item => item.expired).length} detail="Renew or replace them now" href={href('all')} tone="danger" />
       <StatCard label="Within 30 days" value={data.items.filter(item => !item.expired && item.expiresOn <= soon).length} detail="Contact the driver now" href={href('all')} tone="warning" />
@@ -61,6 +73,10 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters }: { 
           { key: 'document', label: 'Document', cell: item => (documentLabels[item.kind as DocumentKind] ?? ownerDocumentLabels[item.kind as keyof typeof ownerDocumentLabels] ?? 'Document') + (item.truck ? ` · unit ${item.truck}` : '') },
           { key: 'expires', label: 'Expires', nowrap: true, cell: item => <>{day(item.expiresOn)} <Badge label={item.expired ? 'Expired' : 'Expiring'} tone={item.expired ? 'danger' : 'warning'} /></> },
           { key: 'renewal', label: 'Renewal', hideBelow: 'md', cell: renewalState },
+          // Drivers are reminded about their license and medical card only; the rest go to Safety (ReminderStaffScreen).
+          ...(data.items.some(item => item.reminded !== undefined) ? [{ key: 'reminded', label: 'Driver reminded', hideBelow: 'lg' as const, cell: (item: ExpiringItem) => item.reminded
+            ? <>{reminderOutcome({ ...item.reminded, failureCode: item.reminded.failureCode ?? null })} · <LocalTime iso={item.reminded.at} format="date" /></>
+            : item.truck || !['LICENSE', 'MEDICAL_CARD'].includes(item.kind) ? <span className="text-muted-foreground">Staff only</span> : '—' }] : []),
           { key: 'owner', label: 'Safety contact', hideBelow: 'xl', cell: item => item.owner?.name ?? '—' },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => renewable(item) ? <ExpiringRenewal kind={item.kind as RenewalKind} scan={item.renewal?.scan ?? null} link={item.renewal?.link ?? null} expired={item.expired}
             name={`${item.firstName} ${item.lastName}`.trim()} driver={{ id: item.driverId, firstName: item.firstName, email: item.email ?? null, version: item.version! }} /> : null },

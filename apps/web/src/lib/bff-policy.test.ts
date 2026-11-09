@@ -60,6 +60,18 @@ describe('notice letters through the BFF', () => {
   });
 });
 
+describe('expiration reminders through the BFF', () => {
+  it('allows the driver’s own Telegram connection and Safety’s one-time link, and nothing else', () => {
+    assert.equal(allowedEndpoint('GET', 'driver/telegram'), true);
+    for (const path of ['driver/telegram/connect', 'driver/telegram/check', `safety/drivers/${ID}/telegram-link`]) assert.equal(allowedEndpoint('POST', path), true, path);
+    assert.equal(allowedEndpoint('POST', 'driver/telegram'), false);
+    assert.equal(allowedEndpoint('GET', 'driver/telegram/connect'), false);
+    assert.equal(allowedEndpoint('GET', `safety/drivers/${ID}/telegram-link`), false);
+    assert.equal(allowedEndpoint('POST', 'driver/telegram/disconnect'), false);
+    assert.equal(bodyLimit(`safety/drivers/${ID}/telegram-link`), 16384);
+  });
+});
+
 describe('document renewals through the BFF', () => {
   it('allows renewing, the renewal link and its cancellation, marking a scan as not readable, and the driver page', () => {
     for (const path of [`safety/drivers/${ID}/documents/renew`, `safety/drivers/${ID}/renewals`, `safety/drivers/${ID}/renewals/cancel`, `safety/drivers/${ID}/documents/${ID}/unreadable`, 'driver/renewal'])

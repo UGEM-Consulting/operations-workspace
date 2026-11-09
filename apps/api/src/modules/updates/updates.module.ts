@@ -15,5 +15,5 @@ class StaffTelegramController {
  @Post('check') @HttpCode(200) check(@Req() req: AuthRequest) { return this.notifications.telegramCheck(req.currentUser); }
  @Post('disconnect') @HttpCode(200) disconnect(@Req() req: AuthRequest) { return this.notifications.telegramDisconnect(req.currentUser); }
 }
-@Module({ imports: [EmailModule], controllers: [StaffTelegramController], providers: [UpdatesService, NotificationsService, TelegramClient], exports: [UpdatesService, NotificationsService] })
+@Module({ imports: [EmailModule], controllers: [StaffTelegramController], providers: [UpdatesService, NotificationsService, TelegramClient], exports: [UpdatesService, NotificationsService, TelegramClient] })
 export class UpdatesModule {}

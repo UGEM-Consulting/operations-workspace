@@ -11,7 +11,8 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import type { StaffAlert } from '@/lib/api-schemas';
 export interface StaffTelegram { available: boolean; connected: boolean; username: string | null; alerts: StaffAlert[] }
 const alertText: Record<StaffAlert, string> = { REVIEW_WAITING: 'an application assigned to you is waiting for review', IT_SETUP_WAITING: 'a new IT setup checklist is waiting',
-  IT_REMOVAL_WAITING: 'a dispatcher has left and their accounts are waiting to be removed' };
+  IT_REMOVAL_WAITING: 'a dispatcher has left and their accounts are waiting to be removed', SAFETY_REMINDER: 'your drivers’ documents or yearly reviews come due',
+  SAFETY_WEEKLY: 'it’s Monday, with the week’s Safety summary' };
 type Pending = 'link' | 'check' | 'disconnect' | null;
 // The connect link works once, for 30 minutes; after that it is dropped from the page.
 const LINK_MS = 30 * 60_000;
@@ -42,9 +43,10 @@ export function TelegramAlerts({ initial }: { initial: StaffTelegram }) {
     finally { setPending(null); }
   }
   const connect = () => void run('link', async () => { setLink((await mutate<{ url: string }>('staff/telegram/connect', 'POST')).url); return null; }, () => 'Your connect link is ready. It works once, for 30 minutes.');
+  const safety = data.alerts.includes('SAFETY_REMINDER');
   const what = data.alerts.length ? `when ${data.alerts.map(alert => alertText[alert]).join(', or when ')}` : 'about work waiting for you';
   return <Card>
-    <CardHeader title="Telegram alerts" description={`A Telegram message ${what}. Alerts link to the workspace and never include names or personal details.`}
+    <CardHeader title="Telegram alerts" description={`A Telegram message ${what}. Alerts link to the workspace and never include personal details${safety ? '; Safety reminders name drivers by first name and last initial only' : ''}.${safety && !data.connected ? ' Until you connect, Safety reminders come by email.' : ''}`}
       actions={<Badge label={data.connected ? 'Connected' : 'Off'} tone={data.connected ? 'success' : 'neutral'} />} />
     <CardBody className="space-y-4">
       {!data.available ? <p className="text-sm text-muted-foreground">Telegram alerts are not switched on for this workspace yet.</p>

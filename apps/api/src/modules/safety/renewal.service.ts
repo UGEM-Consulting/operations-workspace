@@ -23,6 +23,19 @@ export const renewalWords: Record<RenewalKind, string> = { LICENSE: 'driver’s 
 const CLOSED_LINK = 'This link is no longer available. Please contact Safety.';
 
 /**
+ * A renewal link for one document, bound to the driver's email, replacing an open one for that document. Safety makes one
+ * to send (createdBy), and so does an expiration reminder (createdBy null). The caller holds the driver lock and bumps the
+ * version. The raw token is only in the returned URL.
+ */
+export async function createRenewalLink(em: EntityManager, driver: Driver, kind: RenewalKind, createdBy: string | null, origin: string) {
+ const resent = await revokeOpenLinks(em, driver.id, { purpose: 'RENEWAL', documentKind: kind });
+ const token = randomBytes(32).toString('hex');
+ const link = await em.getRepository(DriverLink).save({ driverId: driver.id, tokenHash: digest(token), email: driver.email!, createdBy, purpose: 'RENEWAL', documentKind: kind,
+  expiresAt: new Date(Date.now() + RENEWAL_LINK_DAYS * 86400_000) });
+ return { resent, expiresAt: link.expiresAt, url: `${origin}/driver#${token}` };
+}
+
+/**
  * Renewing an approved or cleared driver's license or medical card (designed as the Renewing a document group). Safety
  * leads, the Safety manager, administrators and the driver's owner either upload the renewed document with the date
  * printed on it (saved already checked), or send the driver a link to scan only that document, which a person then
@@ -78,13 +91,10 @@ export class RenewalService {
    const driver = await this.lockRenewable(em, user, id, dto.version);
    if (!driver.email) throw new BadRequestException('Add the driver’s email first. The link works only with that address.');
    if (!isProduction(this.config) && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
-   const resent = await revokeOpenLinks(em, id, { purpose: 'RENEWAL', documentKind: dto.kind });
-   const token = randomBytes(32).toString('hex');
-   const link = await em.getRepository(DriverLink).save({ driverId: id, tokenHash: digest(token), email: driver.email, createdBy: user.id, purpose: 'RENEWAL', documentKind: dto.kind,
-    expiresAt: new Date(Date.now() + RENEWAL_LINK_DAYS * 86400_000) });
+   const link = await createRenewalLink(em, driver, dto.kind, user.id, webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]);
    await em.getRepository(Driver).update(id, { version: driver.version + 1 });
-   await driverEvent(em, user.id, id, 'RENEWAL_LINK_SENT', { kind: dto.kind, resent });
-   return { id, version: driver.version + 1, expiresAt: link.expiresAt, url: `${webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]}/driver#${token}` };
+   await driverEvent(em, user.id, id, 'RENEWAL_LINK_SENT', { kind: dto.kind, resent: link.resent });
+   return { id, version: driver.version + 1, expiresAt: link.expiresAt, url: link.url };
   });
  }
 
