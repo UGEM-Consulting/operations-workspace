@@ -112,6 +112,20 @@ integration('Assigning cleared drivers to dispatch (disposable PostgreSQL)', () 
     await assign(agents.manager, 'dispatch', approved.id, { version: 1, mcId: northwind, memberId: taylor.id, startsOn: today() }).expect(409);
   });
 
+  it('assigns drivers to an independent dispatcher (an MC with no team), but never to someone with no MC or to a team lead outside their team', async () => {
+    const indy = await member('Indy', null, northwind), nomc = await member('Nomc', null, null);
+    const sam = await cleared('Sam', '5550102600');
+    const options = (await agents.manager.get('/api/dispatch/drivers/options').set(headers).expect(200)).body.mcs;
+    expect(options.find((row: { name: string }) => row.name === 'Northwind Freight').dispatchers).toContainEqual({ id: indy.id, name: 'Indy Fictional', teamId: null, team: null });
+    expect(JSON.stringify(options)).not.toContain(nomc.id);
+    // Independent under Northwind, so not under Lakeside; a team lead can't reach them.
+    await assign(agents.manager, 'dispatch', sam.id, { version: sam.version, mcId: lakeside, memberId: indy.id, startsOn: today() }).expect(400);
+    await assign(agents.manager, 'dispatch', sam.id, { version: sam.version, mcId: northwind, memberId: nomc.id, startsOn: today() }).expect(400);
+    await assign(agents.lead, 'team', sam.id, { version: sam.version, mcId: northwind, memberId: indy.id, startsOn: today() }).expect(400);
+    await assign(agents.manager, 'dispatch', sam.id, { version: sam.version, mcId: northwind, memberId: indy.id, startsOn: today() }).expect(201);
+    expect((await list(agents.manager, 'dispatch')).items[0].assignment).toMatchObject({ mc: 'Northwind Freight', dispatcher: 'Indy Fictional', team: null });
+  });
+
   it('refuses to assign a driver Safety put on hold, without saying why, until Safety lifts it', async () => {
     const sam = await cleared('Sam', '5550102600');
     const first = (await assign(agents.manager, 'dispatch', sam.id, { version: sam.version, mcId: northwind, memberId: taylor.id, startsOn: today() }).expect(201)).body;

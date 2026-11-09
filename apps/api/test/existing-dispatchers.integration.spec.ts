@@ -89,7 +89,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
   });
   it('checks every row without saving, and groups the same unmatched text into one choice', async () => {
     const rows = [base(2, 'Ready', { team: 'red  TEAM' }), base(3, 'Spelled', { mc: 'Northwind Frieght', team: '' }), base(4, 'Again', { mc: 'northwind frieght', team: '' }), base(5, 'Lost', { team: 'Chen' }), base(6, 'Title', { jobTitle: 'Sr dispatcher' }),
-      base(7, 'Dated', { startedOn: 'Marhc 2024' }), base(8, 'Future', { startedOn: '2099-01-01' }), base(9, 'Solo', { mc: 'Independent', team: '' }), base(10, 'Real', { companyEmail: 'real@company.com' })];
+      base(7, 'Dated', { startedOn: 'Marhc 2024' }), base(8, 'Future', { startedOn: '2099-01-01' }), base(9, 'Solo', { team: 'Independent' }), base(10, 'Real', { companyEmail: 'real@company.com' })];
     const { body } = await check(rows);
     const status = (row: number) => body.rows.find((item: Row) => item.row === row);
     expect(status(2).status).toBe('READY');
@@ -424,8 +424,18 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect((await list()).find(row => row.id === id)).toMatchObject({ placed: false, mc: 'No MC yet', startDateKnown: false });
       const [event] = await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'EXISTING_ADDED' AND "memberId" = $1`, [id]);
       expect(event.metadata).toMatchObject({ noStartDate: true, noMc: true });
-      const solo = (await add([base(2, 'Solo', { mc: 'Independent', team: '' })])).body.members[0].id;
-      expect((await list()).find(row => row.id === solo)).toMatchObject({ placed: true, mc: null });
+      // Independent is a team choice: under an MC with no team. In the MC column it means no MC yet.
+      const solo = (await add([base(2, 'Solo', { team: 'Independent' })])).body.members[0].id;
+      expect((await list()).find(row => row.id === solo)).toMatchObject({ placed: true, mc: 'Northwind Freight', team: null });
+      const unplaced = (await add([base(2, 'Unsure', { mc: 'Independent', team: '' })])).body.members[0].id;
+      expect((await list()).find(row => row.id === unplaced)).toMatchObject({ placed: false, mc: 'No MC yet' });
+      // Like a blank MC, a team in the row still brings its MC rather than being dropped.
+      const teamed = (await check([base(3, 'Teamed', { mc: 'Independent', team: 'Red team' })])).body;
+      expect(teamed.rows[0]).toMatchObject({ status: 'READY' });
+      expect(teamed.counts).toMatchObject({ ready: 1, mcFromTeam: 1, noMc: 0 });
+      // A period with no MC, from before Independent became a team choice, reads as no MC yet too.
+      await db.query(`UPDATE member_assignments SET "mcId" = NULL, "teamId" = NULL WHERE "memberId" = $1`, [solo]);
+      expect((await list()).find(row => row.id === solo)).toMatchObject({ placed: false, mc: 'No MC yet', team: null });
     });
     it('keeps a second upload from adding someone with no MC twice', async () => {
       await add([missing(2, 'Nomc')]);
@@ -541,11 +551,11 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect(new Date(link.endedAt).getTime()).toBeLessThanOrEqual(new Date(placed.startedAt).getTime());
       expect((await page(id)).existing.undatedPeriodId).toBeNull();
     });
-    it('doesn’t call a blank MC with an unfound team the same as Independent', async () => {
-      await add([base(2, 'Solo', { mc: 'Independent', team: '' })]);
+    it('doesn’t call a blank MC with an unfound team the same as an independent dispatcher', async () => {
+      await add([base(2, 'Solo', { team: 'Independent' })]);
       const row = (await check([missing(2, 'Solo', { team: 'Chen' })])).body.rows[0];
       expect(row).toMatchObject({ status: 'CHOICE', sameName: false });
-      const file = (await check([base(2, 'Twin', { mc: 'Independent', team: '' }), missing(3, 'Twin', { team: 'Chen' })])).body.rows;
+      const file = (await check([base(2, 'Twin', { team: 'Independent' }), missing(3, 'Twin', { team: 'Chen' })])).body.rows;
       expect(file[1]).toMatchObject({ status: 'CHOICE', sameName: false });
       // Once chosen, the MC is known and the usual check applies.
       await add([base(2, 'Chosen')]);
@@ -570,12 +580,12 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const [approved] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Approved','Fictional','DISPATCHER','ACTIVE',now()) RETURNING id`);
       expect((await list()).find(row => row.id === approved.id)).toMatchObject({ addedByHand: false });
     });
-    it('tells IT someone had no MC yet, not that they were Independent', async () => {
-      const nomc = (await add([missing(2, 'Nomc', { companyEmail: 'nomc@example.test' })])).body.members[0].id, solo = (await add([base(2, 'Solo', { mc: 'Independent', team: '' })])).body.members[0].id;
+    it('tells IT someone had no MC yet, and an independent dispatcher’s MC', async () => {
+      const nomc = (await add([missing(2, 'Nomc', { companyEmail: 'nomc@example.test' })])).body.members[0].id, solo = (await add([base(2, 'Solo', { team: 'Independent' })])).body.members[0].id;
       for (const id of [nomc, solo]) { const { version } = await page(id); await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: usDay('latest'), reason: 'Moved away' }).expect(201); }
       const profile = async (id: string) => (await db.query(`SELECT profile FROM it_removal_requests WHERE "memberId" = $1`, [id]))[0].profile;
       expect((await profile(nomc)).mcName).toBe('No MC yet');
-      expect((await profile(solo)).mcName).toBeNull();
+      expect(await profile(solo)).toMatchObject({ mcName: 'Northwind Freight', teamName: null });
     });
     it('makes a promotion choose an MC when the dispatcher has none, and hides an unrecorded date from the team lead', async () => {
       const [mc] = [await mcId('Northwind Freight')];
@@ -697,8 +707,10 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const member = (await list()).find(row => row.dispatcherId === lead)!;
       expect(member.supportType).toBe('UPDATER');
       const [{ id: requestId }] = await db.query(`INSERT INTO promotion_requests ("supportId",reason) VALUES ($1,'Ready') RETURNING id`, [member.id]);
-      const [title] = await db.query(`SELECT id FROM job_titles LIMIT 1`);
-      await agents.manager.post(`/api/dispatch/promotions/${requestId}/decide`).set(headers).send({ version: 1, decision: 'APPROVE', mcId: null, teamId: null, jobTitleId: title.id }).expect(201);
+      const [title] = await db.query(`SELECT id FROM job_titles LIMIT 1`), [northwind] = await db.query(`SELECT id FROM mcs LIMIT 1`);
+      // A promotion needs an MC; no team is Independent under it.
+      await agents.manager.post(`/api/dispatch/promotions/${requestId}/decide`).set(headers).send({ version: 1, decision: 'APPROVE', mcId: null, teamId: null, jobTitleId: title.id }).expect(400);
+      await agents.manager.post(`/api/dispatch/promotions/${requestId}/decide`).set(headers).send({ version: 1, decision: 'APPROVE', mcId: northwind.id, teamId: null, jobTitleId: title.id }).expect(201);
       expect((await page(member.id as string))).toMatchObject({ position: 'DISPATCHER', supportType: 'SUPPORT' });
       // A person promoted to dispatcher no longer reads as an updater on what they applied through.
       expect((await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body.member).toMatchObject({ position: 'DISPATCHER' });

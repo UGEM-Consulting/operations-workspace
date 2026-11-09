@@ -24,7 +24,8 @@ interface Checked { rows: { row: number; name: string; position: string; support
 interface Added { added: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
 const STEPS = ['Upload the file', 'Check the rows', 'Add dispatchers'];
 const key = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
-const INDEPENDENT = 'Independent', NO_TEAM = 'No team yet', NO_MC = 'No MC yet';
+// Independent is a team choice under an MC (no team), never an MC; the API reads it the same in a file's team column.
+const INDEPENDENT = 'Independent', NO_MC = 'No MC yet';
 /** The notice above the rows: what will be added with details missing, and which MCs came from a team. */
 function missingNote({ noStartDate = 0, noMc = 0, mcFromTeam = 0 }: Checked['counts']) {
   const rows = (count: number) => `${count} ${count === 1 ? 'row' : 'rows'}`, has = (count: number) => count === 1 ? 'has' : 'have';
@@ -66,7 +67,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
   function choose(choice: Checked['choices'][number], value: string) {
     if (!value) return;
     const field = choice.field === 'mc' ? 'mc' : choice.field === 'team' ? 'team' : 'jobTitle';
-    void check(rows.map(row => !choice.rows.includes(row.row) ? row : value === NO_MC ? { ...row, mc: NO_MC, team: '' } : { ...row, [field]: value, ...(choice.field === 'mc' && value === INDEPENDENT ? { team: '' } : {}) }));
+    void check(rows.map(row => !choice.rows.includes(row.row) ? row : value === NO_MC ? { ...row, mc: NO_MC, team: '' } : { ...row, [field]: value }));
   }
   async function add() {
     setBusy(true); setError('');
@@ -100,9 +101,9 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
       <ul className="mt-3 divide-y divide-border border-t border-border">{checked.choices.map(choice => {
         const mc = options.mcs.find(item => key(item.name) === key(choice.mc ?? ''));
         const mcOf = (id: string) => options.mcs.find(item => item.id === id)?.name;
-        const choices = choice.field === 'mc' ? [{ value: INDEPENDENT, label: INDEPENDENT }, { value: NO_MC, label: NO_MC }, ...options.mcs.map(item => ({ value: item.name, label: item.name }))]
+        const choices = choice.field === 'mc' ? [{ value: NO_MC, label: NO_MC }, ...options.mcs.map(item => ({ value: item.name, label: item.name }))]
           : choice.field === 'team' && !choice.mc ? [...options.teams.filter(item => mcOf(item.mcId)).map(item => ({ value: item.name, label: `${item.name} · ${mcOf(item.mcId)}` })), ...(choice.forSupports ? [] : [{ value: NO_MC, label: NO_MC }])]
-          : choice.field === 'team' ? [{ value: NO_TEAM, label: NO_TEAM }, ...options.teams.filter(item => item.mcId === mc?.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))]
+          : choice.field === 'team' ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...options.teams.filter(item => item.mcId === mc?.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))]
           : options.jobTitles.map(item => ({ value: item.name, label: item.name }));
         const what = choice.field === 'mc' ? 'MC' : choice.field === 'team' ? 'Team' : 'Job title';
         return <li key={`${choice.field}-${choice.forSupports}-${choice.mc}-${choice.text}`} className="flex flex-wrap items-end justify-between gap-3 px-4 py-3 sm:px-5">
@@ -176,8 +177,10 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
       {support ? <><RadioGroup name="assisting" label="They assist" value={assisting} onChange={setAssisting} options={[{ value: 'DISPATCHER', label: 'One dispatcher' }, { value: 'TEAM', label: 'A whole team', description: 'Everyone on the team, with no one dispatcher.' }]} />
         {assisting === 'TEAM' ? <Select name="supportsTeam" label="Team" required placeholder="Choose a team" width="full" options={options.teams.map(item => ({ value: item.id, label: [item.name, options.mcs.find(mcItem => mcItem.id === item.mcId)?.name].filter(Boolean).join(' · ') }))} hint="They work where the team works." />
           : <Select name="supports" label="Dispatcher they assist" required placeholder="Choose a dispatcher" width="full" options={options.dispatchers.map(item => ({ value: item.id, label: item.mc ? `${item.name} · ${item.mc}` : item.name }))} hint="They work where their dispatcher works." />}</>
-        : <><div className="grid gap-4 sm:grid-cols-2"><Select name="mc" label="MC" required value={mc} placeholder="Choose an MC" width="full" onChange={event => setMc(event.target.value)} options={[{ value: INDEPENDENT, label: INDEPENDENT }, { value: NO_MC, label: NO_MC }, ...options.mcs.map(item => ({ value: item.name, label: item.name }))]} />
-          <Select name="team" label="Team" width="full" placeholder={mc === INDEPENDENT ? 'Independent has no team' : mc === NO_MC ? 'Set with their MC later' : mc ? 'No team yet' : 'Choose an MC first'} disabled={!chosenMc} options={options.teams.filter(item => item.mcId === chosenMc?.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))} /></div>
+        : <><div className="grid gap-4 sm:grid-cols-2"><Select name="mc" label="MC" required value={mc} placeholder="Choose an MC" width="full" onChange={event => setMc(event.target.value)} options={[...options.mcs.map(item => ({ value: item.name, label: item.name })), { value: NO_MC, label: NO_MC }]} />
+          <Select name="team" label="Team" width="full" required={!!chosenMc} placeholder={mc === NO_MC ? 'Set with their MC later' : mc ? 'Choose a team' : 'Choose an MC first'} disabled={!chosenMc}
+            hint={chosenMc ? 'Independent: works for this MC, not in a team.' : undefined}
+            options={chosenMc ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...options.teams.filter(item => item.mcId === chosenMc.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))] : []} /></div>
           <Select name="jobTitle" label="Job title" required placeholder="Choose a job title" options={options.jobTitles.map(item => ({ value: item.name, label: item.name }))} /></>}
       <Card><CardHeader title="Accounts" description="What you know now. IT uses these when they leave, so add them if you can." /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" /><Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" /><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" hint="Digits only." /><span className="max-sm:hidden" />
         <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /><Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /></CardBody></Card>

@@ -1,6 +1,7 @@
 import { createItRequest } from '../it/create-request';
 import { createMemberForApproval, createSupportForApproval, supportedDispatcher, supportedTeam } from '../dispatch/create-member';
 import { NO_MC } from '../dispatch/dispatch.entity';
+import { listNameKey } from '../lists/lists.entity';
 import { acceptPaperwork } from '../dispatch/existing.service';
 import { ItOnboardingRequest, ItOnboardingTask, itStatus } from '../it/it.entity';
 import { askedAs, provisioningDetails, requiredApplicantFields } from './application-requirements';
@@ -141,7 +142,7 @@ export class ReviewService {
  }
  /** Current dispatchers (not left or leaving, including those in IT setup) with where they work now, plus the one already picked. */
  async dispatcherOptions(current: string | null) {
-  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.status, CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, n.id IS NOT NULL AS leaving
+  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.status, CASE WHEN a."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, n.id IS NOT NULL AS leaving
    FROM dispatch_members d LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    LEFT JOIN member_notices n ON n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL
@@ -193,6 +194,8 @@ export class ReviewService {
    if ((input.supportsMemberId || input.supportsTeamId) && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher or team is confirmed during approval.');
    if (!support && !catchUpMemberId && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
+   // Independent is a team choice under an MC, never an MC (an older page may still offer it).
+   if (input.employment && listNameKey(input.employment.mcName) === listNameKey('Independent')) throw new BadRequestException('Choose the MC they will dispatch for. Independent is chosen as their team.');
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
    // Under the invitation lock, so the applicant cannot upload or sign concurrently.
    const documents = await documentStatus(em,id,this.storage.enabled);

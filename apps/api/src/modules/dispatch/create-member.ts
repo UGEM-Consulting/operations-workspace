@@ -12,7 +12,8 @@ export async function memberPlace(em: EntityManager, id: string): Promise<{ mcNa
   const [row] = await em.query(`SELECT m.name AS mc, t.name AS team FROM mcs m LEFT JOIN teams t ON t.id = $2 WHERE m.id = $1`, [current.mcId, current.teamId]);
   return { mcName: row?.mc ?? null, teamName: row?.team ?? null };
  }
- if (current) return { mcName: null, teamName: null };
+ // A period with no MC predates Independent becoming a team choice; nobody was recorded that way, but it reads as no MC yet.
+ if (current) return { mcName: NO_MC, teamName: null };
  const link = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
  if (link?.teamId) {
   const [team] = await em.query(`SELECT m.name AS mc, t.name AS team FROM teams t JOIN mcs m ON m.id = t."mcId" WHERE t.id = $1`, [link.teamId]);
@@ -26,9 +27,10 @@ export async function memberPlace(em: EntityManager, id: string): Promise<{ mcNa
 /**
  * Called only inside the approval transaction: the approved dispatcher becomes a member record (no login), ONBOARDING
  * until IT completes setup (see activateMember), placed by
- * matching the confirmed MC, team lead and job title text to the managed lists. Unmatched or "Independent" text leaves
- * that part empty for a manager to set, as do archived list entries. The unique applicationId keeps it to one member per
- * application.
+ * matching the confirmed MC, team lead and job title text to the managed lists. An MC that doesn't match an active one
+ * leaves them with no MC yet (no period) for a manager to set; a team lead text of "Independent", or one that matches no
+ * team of that MC, places them under the MC with no team (Independent). The unique applicationId keeps it to one member
+ * per application.
  */
 export async function createMemberForApproval(em: EntityManager, application: DispatcherApplication, fields: ApplicationFields, employment: EmploymentAssignments, approvedAt: Date) {
  const first = fields.preferredAmericanFirstName?.trim() || fields.firstName?.trim() || 'Dispatcher';
@@ -50,7 +52,7 @@ export async function createMemberForApproval(em: EntityManager, application: Di
  const team = locked && !locked.archivedAt && locked.mcId === mc?.id ? locked : null;
  const member = await em.getRepository(DispatchMember).save({ applicationId: application.id, firstName: first.slice(0, 100), lastName: last.slice(0, 100),
   position: 'DISPATCHER', status: 'ONBOARDING', jobTitleId: jobTitle?.id ?? null, joinedAt: approvedAt });
- await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: mc?.id ?? null, teamId: team?.id ?? null, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
+ if (mc) await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: mc.id, teamId: team?.id ?? null, startedAt: approvedAt, reason: 'Joined after onboarding was approved.' });
  return member;
 }
 

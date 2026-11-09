@@ -22,7 +22,7 @@ import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
 import { SignIn } from './sign-in';
 import { signInItems } from './sign-in-status';
-import { assists, supportName, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
+import { assists, supportName, underMc, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
 
 type LinkResult = { memberId: string; name: string; email?: string; url?: string; problem?: string };
 const name = (row: { firstName: string; lastName: string }) => `${row.firstName} ${row.lastName}`;
@@ -83,7 +83,7 @@ export function PaperworkTable({ list, search }: { list: PaperworkList; search: 
     <div className="grid grid-cols-2 gap-4 p-4 sm:p-5 lg:grid-cols-4">{[['Link to create', list.counts.toCreate], ['Link sent', list.counts.sent], ['Waiting for you', list.counts.waiting], ['Paperwork finished', list.counts.finished]].map(([label, value]) => <div key={label} className="rounded-lg border bg-card p-4 shadow-xs"><p className="text-xs font-medium text-muted-foreground">{label}</p><p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p></div>)}</div>
     <Table caption="Dispatchers with outstanding paperwork" className="border-t border-border" rows={rows} rowKey={row => row.id} columns={[
       { key: 'pick', label: 'Select', srOnly: true, cell: row => row.state === 'TO_CREATE' ? <input type="checkbox" className="size-4 accent-primary" aria-label={`Select ${name(row)}`} checked={picked.includes(row.id)} onChange={event => setPicked(current => event.target.checked ? [...current, row.id] : current.filter(id => id !== row.id))} /> : null },
-      { key: 'name', label: 'Dispatcher', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={name(row)} secondary={row.position === 'SUPPORT' ? `${supportName(row)} for ${assists(row)}` : [row.mc ?? 'Independent', row.team].filter(Boolean).join(' · ')} /></Link> },
+      { key: 'name', label: 'Dispatcher', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={name(row)} secondary={row.position === 'SUPPORT' ? `${supportName(row)} for ${assists(row)}` : (underMc(row.mc) ? `${row.mc} · ${row.team ?? 'Independent'}` : 'No MC yet')} /></Link> },
       { key: 'nda', label: 'NDA', cell: row => <DocBadge doc={row.nda} /> }, { key: 'sop', label: 'SOP', cell: row => <DocBadge doc={row.sop} /> },
       { key: 'link', label: 'Link', hideBelow: 'lg', muted: true, cell: linkText }, { key: 'status', label: 'Status', cell: state }]}
       empty={<EmptyState compact title={term ? 'Nothing matches this search' : 'Nothing outstanding'} description={term ? 'Try another search.' : 'Everyone added by hand has finished their paperwork, or nobody has been added yet.'} />}

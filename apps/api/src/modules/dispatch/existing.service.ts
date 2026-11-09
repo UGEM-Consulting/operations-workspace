@@ -77,7 +77,7 @@ export class ExistingDispatchersService {
    this.db.query(`SELECT t.id, t.name, t."mcId", CASE WHEN l.id IS NULL THEN NULL ELSE l."firstName" || ' ' || l."lastName" END AS lead
     FROM teams t LEFT JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE t."archivedAt" IS NULL ORDER BY t."nameKey"`),
    this.db.query(`SELECT id, name FROM job_titles WHERE "archivedAt" IS NULL ORDER BY "nameKey"`)]);
-  const dispatchers = await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc FROM dispatch_members d
+  const dispatchers = await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN a."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc FROM dispatch_members d
    LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId"
    WHERE d.position = 'DISPATCHER' AND d.status <> 'LEFT' AND NOT EXISTS (SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
    ORDER BY lower(d."firstName"), lower(d."lastName")`);
@@ -158,11 +158,13 @@ export class ExistingDispatchersService {
     else if (!already && !row.differentPerson) { problems.push(`Same ${label} as row ${earlier}. Left out unless you say they’re different people.`); sameName = true; }
    };
    if (position === 'DISPATCHER') {
-    const mcText = text(row.mc), teamText = text(row.team), titleText = text(row.jobTitle), independent = listNameKey(mcText) === listNameKey(INDEPENDENT);
-    const named = listNameKey(mcText) !== listNameKey(NO_MC) && !!mcText, wantsTeam = !!teamText && listNameKey(teamText) !== listNameKey(NOT_LISTED_TEAM);
+    // Independent is a team choice under an MC (section 31): in the MC column it counts as a blank MC, so a team in the row
+    // still brings its MC and with none they have no MC yet; in the team column (like No team yet) it means no team under the row's MC.
+    const mcRaw = text(row.mc), mcText = listNameKey(mcRaw) === listNameKey(INDEPENDENT) ? '' : mcRaw, teamText = text(row.team), titleText = text(row.jobTitle);
+    const named = listNameKey(mcText) !== listNameKey(NO_MC) && !!mcText, wantsTeam = !!teamText && ![NOT_LISTED_TEAM, INDEPENDENT].map(listNameKey).includes(listNameKey(teamText));
     const mc = named ? known.mcs.get(listNameKey(mcText)) : undefined;
     let teamMc: string | null = null;
-    if (named && !independent && !mc) choice({ field: 'mc', text: mcText }, row.row);
+    if (named && !mc) choice({ field: 'mc', text: mcText }, row.row);
     mcId = mc?.id ?? null;
     if (!named) {
      // Every team belongs to one MC, so a team with no MC brings its MC. "No MC yet" says to leave them out of any team for now.
@@ -176,13 +178,12 @@ export class ExistingDispatchersService {
      const team = matchingTeams(known.teams.filter(item => item.mcId === mc.id), teamText)[0];
      if (team) teamId = team.id; else choice({ field: 'team', text: teamText, mc: mc.name }, row.row);
     }
-    if (independent && teamText && ![INDEPENDENT, NOT_LISTED_TEAM].map(listNameKey).includes(listNameKey(teamText))) problems.push('An Independent dispatcher has no team.');
     jobTitleId = known.titles.get(listNameKey(titleText)) ?? null;
     // A position it can't read says so once: it may not be a dispatcher at all, so nothing is asked about a job title until it's corrected.
     if (positionKnown && !titleText) problems.push('Job title is empty.');
     else if (positionKnown && !jobTitleId) choice({ field: 'jobTitle', text: titleText }, row.row);
-    // A blank MC with a team we can't find is still to be chosen, so it can't match anyone's MC yet: least of all Independent's, which is also blank.
-    const mcPending = !named && !noMc && !mcFromTeam, mcName = independent ? null : mc?.name ?? teamMc ?? mcText, nameKey = listNameKey(name);
+    // A blank MC with a team we can't find is still to be chosen, so it can't match anyone's MC yet.
+    const mcPending = !named && !noMc && !mcFromTeam, mcName = mc?.name ?? teamMc ?? mcText, nameKey = listNameKey(name);
     // Someone with no MC yet could be anyone of that name, so setting their MC with a second upload can't add them twice.
     const sameNames = known.members.filter(item => item.position === 'DISPATCHER' && listNameKey(item.name) === nameKey);
     if (!already && !row.differentPerson && sameNames.some(item => !item.placed || noMc)) {
@@ -281,7 +282,7 @@ export class ExistingDispatchersService {
     }
     const [first, ...rest] = result.name.split(' ');
     const member = await em.getRepository(DispatchMember).save({ applicationId: null, firstName: text(row.firstName) || first, lastName: text(row.lastName) || rest.join(' '), position: result.position, supportType: result.supportType, status: 'ACTIVE', jobTitleId: result.jobTitleId, joinedAt: startedAt });
-    if (result.position === 'DISPATCHER') { if (hasPeriod) await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: result.mcId, teamId: result.teamId, startedAt, reason: 'Added as an existing dispatcher.', actorId: user.id }); }
+    if (result.position === 'DISPATCHER') { if (hasPeriod && result.mcId) await em.getRepository(MemberAssignment).save({ memberId: member.id, mcId: result.mcId, teamId: result.teamId, startedAt, reason: 'Added as an existing dispatcher.', actorId: user.id }); }
     else {
      const dispatcherId = result.supportsTeamId ? null : result.supportsMemberId ?? added.get(result.supportsRow!) ?? null;
      if (!dispatcherId && !result.supportsTeamId) throw new ConflictException('A dispatcher changed while this was being added. Check the rows again.');
@@ -306,7 +307,7 @@ export class ExistingDispatchersService {
  async paperwork(user: User) {
   const rows: { id: string; firstName: string; lastName: string; position: string; supportType: string; mc: string | null; team: string | null; wholeTeam: string | null; dispatcher: string | null; personalEmail: string | null; acceptedAt: Date | null;
    paper: { kind: string; signedOn: string }[]; signed: string[]; invitationId: string | null; expiresAt: Date | null; openedAt: Date | null; consumedAt: Date | null; applicationId: string | null; applicationStatus: string | null; managerId: string | null; accessUntil: Date | null; returnEmail: string | null }[] = await this.db.query(`
-   SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", CASE WHEN st.id IS NOT NULL THEN sm.name WHEN x.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
+   SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", CASE WHEN st.id IS NOT NULL THEN sm.name WHEN x."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher, r."personalEmail", r."acceptedAt",
     coalesce((SELECT json_agg(json_build_object('kind', p.kind, 'signedOn', p."signedOn"::text)) FROM member_paper_documents p WHERE p."memberId" = d.id), '[]') AS paper,
     coalesce((SELECT json_agg(DISTINCT c.kind) FROM document_signatures s JOIN company_documents c ON c.id = s."documentId" WHERE s."applicationId" = a.id AND s."signerRole" = 'APPLICANT'), '[]') AS signed,
     i.id AS "invitationId", i."expiresAt", i."openedAt", i."consumedAt", a.id AS "applicationId", a.status AS "applicationStatus", a."assignedManagerId" AS "managerId", a."applicantAccessUntil" AS "accessUntil", i.email AS "returnEmail"

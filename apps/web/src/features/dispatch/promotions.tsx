@@ -17,12 +17,13 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { PROMOTION_DEFAULTS } from '@/lib/navigation';
-import { aSupport, assists, supportName, type Choice, type TeamRow } from './types';
+import { aSupport, assists, supportName, underMc, type Choice, type TeamRow } from './types';
 
 export interface PromotionRow { id: string; status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED'; reason: string; note: string | null; version: number; createdAt: string; decidedAt: string | null;
   itRequestId: string | null; supportId: string; support: string; supportType?: string; dispatcherId: string | null; dispatcher: string | null; wholeTeam?: string | null; mcId: string | null; mc: string | null; dispatcherPlaced?: boolean; teamId: string | null; team: string | null;
   requestedBy: string | null; decidedBy: string | null }
 
+// The team select's value for Independent (no team) under the chosen MC; Independent is never an MC (section 31).
 const INDEPENDENT = 'INDEPENDENT';
 /**
  * Dispatch › Promotions: team leads' requests for a support to become a dispatcher. Approving picks where they will work
@@ -48,7 +49,7 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
     setPending(true); setError('');
     try {
       await mutate(`dispatch/promotions/${deciding.row.id}/decide`, 'POST', { version: deciding.row.version, decision: deciding.decision, ...(form.note?.trim() ? { note: form.note } : {}),
-        ...(deciding.decision === 'APPROVE' ? { mcId: form.mcId === INDEPENDENT ? null : form.mcId || null, teamId: form.teamId || null, jobTitleId: form.jobTitleId } : {}) });
+        ...(deciding.decision === 'APPROVE' ? { mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, jobTitleId: form.jobTitleId } : {}) });
       toast(deciding.decision === 'APPROVE' ? { title: `${deciding.row.support} is now a dispatcher`, description: 'Their IT setup request was created.' } : { title: 'Request declined' });
       setDeciding(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
@@ -64,7 +65,7 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
         { key: 'ALL', label: 'All', count: searched.length }]} />
       <Table caption="Promotion requests" className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
         { key: 'support', label: 'Person', primary: true, cell: row => <Link href={`/dispatch/dispatchers/${row.supportId}`} className="block rounded-sm hover:underline"><Person name={row.support} secondary={row.dispatcher || row.wholeTeam ? `${supportName(row)} for ${assists(row)}` : supportName(row)} /></Link> },
-        { key: 'team', label: 'Team', hideBelow: 'md', cell: row => row.team ? <>{row.team}<span className="block text-[13px] text-muted-foreground">{row.mc}</span></> : <span className="text-muted-foreground">{row.mc ?? (row.dispatcherPlaced === false ? 'No MC yet' : 'Independent')}</span> },
+        { key: 'team', label: 'Team', hideBelow: 'md', cell: row => row.team ? <>{row.team}<span className="block text-[13px] text-muted-foreground">{row.mc}</span></> : <span className="text-muted-foreground">{underMc(row.mc) ? <>Independent<span className="block text-[13px]">{row.mc}</span></> : 'No MC yet'}</span> },
         { key: 'reason', label: 'Why', hideBelow: 'lg', cell: row => <><p className="line-clamp-2 text-sm">{row.reason}</p><p className="text-[13px] text-muted-foreground">by {row.requestedBy ?? 'a team lead'} · <LocalTime iso={row.createdAt} format="date" /></p></> },
         { key: 'status', label: 'Status', cell: row => <StatusBadge status={row.status} /> },
         { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: row => row.status === 'PENDING' ? <span className="flex justify-end gap-1">
@@ -80,10 +81,11 @@ export function Promotions({ items, filters, mcs, teams, jobTitles }: { items: P
       <form id="promotion-decision" onSubmit={decide} className="space-y-4">
         <div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Why they’re ready</p><p className="mt-1 whitespace-pre-wrap text-muted-foreground">{deciding.row.reason}</p></div>
         {deciding.decision === 'APPROVE' && <>
-          {/* With no MC to default to, one nobody picked must never become Independent. */}
-          <Select label="MC" name="mcId" value={mcId} required={needsMc} placeholder={needsMc ? 'Choose an MC' : undefined} onChange={event => setMcId(event.target.value)} width="full" options={[{ value: needsMc ? INDEPENDENT : '', label: 'Independent' }, ...mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))]} />
-          <Select key={mcId} label="Team" name="teamId" defaultValue={teamChoices.some(team => team.id === deciding.row.teamId) ? deciding.row.teamId ?? '' : ''} disabled={!mcId || mcId === INDEPENDENT} placeholder="No team" width="full"
-            options={teamChoices.map(team => ({ value: team.id, label: team.name }))} hint="Starts from the team they work with now." />
+          {/* Starts from where they work now; with no MC to start from, the MC is picked. */}
+          <Select label="MC" name="mcId" value={mcId} required placeholder="Choose an MC" onChange={event => setMcId(event.target.value)} width="full" options={mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))} />
+          <Select key={mcId} label="Team" name="teamId" required disabled={!mcId} placeholder={mcId ? 'Choose a team' : 'Choose an MC first'} width="full"
+            defaultValue={teamChoices.some(team => team.id === deciding.row.teamId) ? deciding.row.teamId ?? '' : !needsMc && !deciding.row.teamId && mcId ? INDEPENDENT : ''}
+            options={mcId ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...teamChoices.map(team => ({ value: team.id, label: team.name }))] : []} hint="Starts from the team they work with now. Independent: works for this MC, not in a team." />
           <Select label="Job title" name="jobTitleId" required placeholder="Choose a job title" width="full" options={jobTitles.filter(title => !title.archived).map(title => ({ value: title.id, label: title.name }))} />
         </>}
         <Textarea label={deciding.decision === 'DECLINE' ? 'Note for the team lead' : 'Note'} optional={deciding.decision === 'APPROVE'} required={deciding.decision === 'DECLINE'} name="note" maxLength={1000} rows={3} />

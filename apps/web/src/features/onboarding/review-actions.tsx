@@ -18,7 +18,7 @@ import { shortName } from '@/features/documents/signed-documents';
 import { EmploymentPicker, pickedEmployment, type EmploymentOptions } from './employment-picker';
 import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem, StaffDocuments, type SupportChoice } from './types';
 import { Select } from '@/components/ui/field';
-import { supportName, supportWord } from '@/features/dispatch/types';
+import { supportName, supportWord, underMc } from '@/features/dispatch/types';
 type Action='APPROVE'|'REQUEST_CHANGES'|'REJECT';
 type Employment={mcName:string;teamLead:string;jobTitle:string};
 const titles:Record<Action,string>={APPROVE:'Approve application',REQUEST_CHANGES:'Request corrections',REJECT:'Reject application'};
@@ -102,7 +102,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
        {wholeTeam?<Select label="Team" name="supportsTeamId" value={supportsTeamId} onChange={event=>{setSupportsTeamId(event.target.value);setEmploymentConfirmed(false);}} placeholder="Choose a team" required width="full"
         options={(supports.teamOptions??[]).map(option=>({value:option.id,label:[option.name,option.mc].filter(Boolean).join(' · ')+(option.archived?' (archived)':'')}))} hint="They work where the team works, with no MC or job title of their own."/>
        :<Select label="Dispatcher they assist" name="supportsMemberId" value={supportsId} onChange={event=>{setSupportsId(event.target.value);setEmploymentConfirmed(false);}} placeholder="Choose a dispatcher" required width="full"
-        options={supports.options.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')+(option.leaving?' (leaving)':option.status==='ONBOARDING'?' (onboarding)':'')}))}
+        options={supports.options.map(option=>({value:option.id,label:[option.name,option.mc??'No MC yet',underMc(option.mc)?option.team??'Independent':null].filter(Boolean).join(' · ')+(option.leaving?' (leaving)':option.status==='ONBOARDING'?' (onboarding)':'')}))}
         hint="They work where their dispatcher works, with no MC, team or job title of their own."/>}
        <Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label={wholeTeam?'This is the team they will assist.':'This is the dispatcher they will assist.'}/>
       </>:options?<EmploymentPicker options={options} original={initial} onChange={next=>{setEmployment(next);setEmploymentConfirmed(false);}} disabled={blocked}/>
@@ -121,7 +121,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   actions={<Button form="review-decision" type="submit" variant={action==='REJECT'?'destructive':'default'}>{busy?'Recording decision…':catchUpName?(action==='APPROVE'?'Accept paperwork':'Ask for changes'):titles[action]}</Button>}>
   <form id="review-decision" onSubmit={decide} className="space-y-5">
    <PendingHint pending={busy}/>
-   {action==='APPROVE'&&supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">{supportName({supportType})} for {wholeTeam?(team?.name??'the chosen team'):(dispatcher?.name??'the chosen dispatcher')}</p><p className="mt-1 text-muted-foreground">{wholeTeam?team?.mc:[dispatcher?.mc??'Independent',dispatcher?.team].filter(Boolean).join(' · ')}. No IT setup.</p></div>}
+   {action==='APPROVE'&&supports&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">{supportName({supportType})} for {wholeTeam?(team?.name??'the chosen team'):(dispatcher?.name??'the chosen dispatcher')}</p><p className="mt-1 text-muted-foreground">{wholeTeam?team?.mc:(underMc(dispatcher?.mc)?`${dispatcher!.mc} · ${dispatcher!.team??'Independent'}`:'No MC yet')}. No IT setup.</p></div>}
    {action==='APPROVE'&&!supports&&!catchUpName&&<div className="rounded-md bg-muted px-4 py-3 text-sm"><p className="font-medium">Final assignments</p><p className="mt-1 text-muted-foreground">{employment.mcName.trim()} · {employment.teamLead.trim()} · {employment.jobTitle.trim()}</p></div>}
    {action==='APPROVE'&&countersign&&<div className="space-y-3 rounded-md border border-border p-4"><p className="text-[15px] font-semibold">Countersign the NDA for the company</p>
     {countersigned?<p className="flex items-center gap-2 text-sm text-success"><CircleCheck aria-hidden="true" className="size-4"/>Ready. It’s added when you approve.</p>:<p className="text-sm text-muted-foreground">Read the signed {countersign.title} and sign it for UGEM.</p>}

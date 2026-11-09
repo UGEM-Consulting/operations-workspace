@@ -271,6 +271,81 @@ integration('Staff two-step verification (isolated PostgreSQL database only)', (
     await client.post('/api/auth/logout').set(headers).send({}).expect(204);
   });
 
+  it('sets up a new authenticator, confirmed with a current or recovery code, keeping the old one until the new one works', async () => {
+    const client = agent();
+    await login(client, users.admin).expect(200);
+    const { secret, recoveryCodes } = await enrolViaApi(client);
+    const other = agent();
+    await login(other, users.admin).expect(200);
+    await clearReplay(users.admin.id);
+    await verify(other, totpCode(secret)).expect(200);
+    // Starting needs a code: from the current authenticator, or a recovery code (used up).
+    await client.post('/api/auth/mfa/replacement').set(headers).send({}).expect(400);
+    await client.post('/api/auth/mfa/replacement').set(headers).send({ code: '000000' }).expect(401);
+    const first = await client.post('/api/auth/mfa/replacement').set(headers).send({ code: recoveryCodes[0] }).expect(200);
+    // Started again (another tab, a reload): the first QR code is refused as replaced, before its code is checked or counted.
+    const started = await client.post('/api/auth/mfa/replacement').set(headers).send({ code: recoveryCodes[2] }).expect(200);
+    expect(started.body.qrCode).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(started.body.replacementId).not.toBe(first.body.replacementId);
+    const replaced = (first.body.manualKey as string).replace(/\s/g, '');
+    for (let attempt = 0; attempt < 6; attempt++)
+      await client.post('/api/auth/mfa/replacement/confirm').set(headers).send({ code: totpCode(replaced), replacementId: first.body.replacementId }).expect(409);
+    const fresh = (started.body.manualKey as string).replace(/\s/g, '');
+    expect(fresh).not.toBe(secret);
+    const confirm = (code: string) => client.post('/api/auth/mfa/replacement/confirm').set(headers).send({ code, replacementId: started.body.replacementId });
+    // Until the new one is confirmed, the old one still signs in; its codes don't confirm the new one.
+    await clearReplay(users.admin.id);
+    const meanwhile = agent();
+    await login(meanwhile, users.admin).expect(200);
+    await verify(meanwhile, totpCode(secret)).expect(200);
+    await confirm(totpCode(secret)).expect(401);
+    await confirm(totpCode(fresh)).expect(200);
+    // This session continues; the others end.
+    await client.get('/api/auth/me').set(headers).expect(200);
+    await other.get('/api/auth/me').set(headers).expect(401);
+    await meanwhile.get('/api/auth/me').set(headers).expect(401);
+    // Only the new one works now; recovery codes stay.
+    await clearReplay(users.admin.id);
+    const later = agent();
+    await login(later, users.admin).expect(200);
+    await verify(later, totpCode(secret)).expect(401);
+    await verify(later, recoveryCodes[1]).expect(200);
+    await confirm(totpCode(fresh)).expect(409);
+    const audit = await events(users.admin.id);
+    expect(audit.map(event => event.type)).toContain('MFA_AUTHENTICATOR_REPLACED');
+    expect(JSON.stringify(audit)).not.toContain(fresh);
+  }, 30000);
+
+  it('lets someone who signed in with a recovery code start a new authenticator once without another code', async () => {
+    const client = agent();
+    await login(client, users.admin).expect(200);
+    const { recoveryCodes } = await enrolViaApi(client);
+    const lost = agent();
+    await login(lost, users.admin).expect(200);
+    await verify(lost, recoveryCodes[0]).expect(200);
+    await lost.post('/api/auth/mfa/replacement').set(headers).send({}).expect(200);
+    // The shortcut works once; another start needs a code.
+    await lost.post('/api/auth/mfa/replacement').set(headers).send({}).expect(400);
+    // A session that signed in with the authenticator never has the shortcut.
+    await client.post('/api/auth/mfa/replacement').set(headers).send({}).expect(400);
+  }, 30000);
+
+  it('says two-step verification isn’t on, and spends no recovery code once setups are limited', async () => {
+    const plain = agent();
+    await login(plain, users.manager).expect(200);
+    expect((await plain.post('/api/auth/mfa/replacement').set(headers).send({ code: '123456' }).expect(400)).body.message).toMatch(/isn’t on/);
+    const client = agent();
+    await login(client, users.admin).expect(200);
+    const { recoveryCodes } = await enrolViaApi(client);
+    // Past the setup limit, the refusal comes before the code check: the recovery code still signs in afterwards.
+    await db.query(`INSERT INTO login_attempts (key, attempts, "expiresAt") VALUES ($1, 50, now() + interval '1 hour') ON CONFLICT (key) DO UPDATE SET attempts = 50, "expiresAt" = EXCLUDED."expiresAt"`,
+      [attemptKey('mfa-enrol', users.admin.id)]);
+    await client.post('/api/auth/mfa/replacement').set(headers).send({ code: recoveryCodes[0] }).expect(429);
+    const later = agent();
+    await login(later, users.admin).expect(200);
+    await verify(later, recoveryCodes[0]).expect(200);
+  }, 30000);
+
   it('refuses to roll back the migration while secrets or security events exist', async () => {
     await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.admin.id);
     const runner = db.createQueryRunner();

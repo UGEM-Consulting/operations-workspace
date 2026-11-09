@@ -28,7 +28,7 @@ import { middayIso } from '@/lib/navigation';
 import { ExistingAccountsCard, ExistingPaperworkCard, useCatchUpLink } from './paperwork';
 import { signInItems } from './sign-in-status';
 import { SignIn } from './sign-in';
-import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign } from './types';
+import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
 
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
 const memberPhotos = (id: string, selfie: boolean, idSelfie: boolean, name: string): ViewablePhoto[] => [...(selfie ? [{ src: selfieUrl(id), title: `Selfie · ${name}`, alt: `Selfie of ${name}` }] : []), ...(idSelfie ? [{ src: idSelfieUrl(id), title: `Selfie holding an ID · ${name}`, meta: 'Check that the face and name match the ID.', alt: `Selfie of ${name} holding an ID` }] : [])];
@@ -36,6 +36,7 @@ const memberPhotos = (id: string, selfie: boolean, idSelfie: boolean, name: stri
 type Action = 'place' | 'startDate' | 'supportType' | 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact';
 // The Eastern date, as the API uses to tell a notice from leaving today; the browser's own date could promise the wrong one.
 const today = (at = Date.now()) => new Date(at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+// Independent is a team choice under an MC (no team), never an MC (section 31): the team select's value for no team.
 const NOTICE_MAX_DAYS = 90, INDEPENDENT = 'INDEPENDENT';
 const noticeLimit = () => today(Date.now() + NOTICE_MAX_DAYS * 86400_000);
 const LastDay = ({ day }: { day: string }) => <LocalTime iso={middayIso(day)} format="date" />;
@@ -80,9 +81,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     try {
       if (action === 'reassign') await mutate(`dispatch/members/${member.id}/reassign`, 'POST', { version: member.version, ...(assisting === 'TEAM' ? { teamId: form.teamId } : { dispatcherId: form.dispatcherId }), startedAt: form.startedAt, reason: form.reason });
       else if (action === 'supportType') await mutate(`dispatch/members/${member.id}/support-type`, 'POST', { version: member.version, supportType: otherType });
-      else if (action === 'place') await mutate(`dispatch/members/${member.id}/place`, 'POST', { version: member.version, mcId: form.mcId === INDEPENDENT ? null : form.mcId, teamId: form.teamId || null, ...(form.startedAt ? { startedAt: form.startedAt } : {}) });
+      else if (action === 'place') await mutate(`dispatch/members/${member.id}/place`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, ...(form.startedAt ? { startedAt: form.startedAt } : {}) });
       else if (action === 'startDate') await mutate(`dispatch/members/${member.id}/start-date`, 'POST', { version: member.version, startedOn: form.startedOn, ...(form.reason?.trim() ? { reason: form.reason } : {}) });
-      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId || null, teamId: form.teamId || null, startedAt: form.startedAt, reason: form.reason });
+      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
       else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) ? { emailAfter } : {}) });
       else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
@@ -102,11 +103,12 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     catch (error) { setRemoving(null); toast({ tone: 'danger', title: 'Not removed', description: errorMessage(error, 'Reload the page and try again.') }); }
     finally { setPending(null); }
   }
-  const where = (row: { mc: string | null; team: string | null }) => row.mc ? `${row.mc}${row.team ? ` · ${row.team}` : ''}` : 'Independent';
+  // Under an MC with no team is Independent; no MC at all predates that and reads as no MC yet.
+  const where = (row: { mc: string | null; team: string | null }) => row.mc ? `${row.mc} · ${row.team ?? 'Independent'}` : 'No MC yet';
   const progress = accounts?.total ? <Progress label="IT setup" value={accounts.done ?? 0} max={accounts.total} /> : null;
   // Someone with IT setup (finished or not) gets an IT removal checklist when marked as left; supports never had accounts.
   const existing = member.existing ?? null;
-  // Added with details missing: no MC yet is never shown as Independent, and the day they were added never as their start date.
+  // Added with details missing: no MC yet, and the day they were added never shown as their start date.
   const noMc = !!existing && !support && !current && !member.history.length, startKnown = existing?.startDateKnown !== false, undated = existing?.undatedPeriodId ?? null;
   const when = (row: { id: string; startedAt: string }) => row.id === undated ? 'Started on a date not recorded' : <LocalTime iso={row.startedAt} format="date" />;
   const startAction = { label: startKnown ? 'Correct start date' : 'Add start date', icon: Calendar, onSelect: () => start('startDate') };
@@ -121,7 +123,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const catchUp = useCatchUpLink(member), needsLink = !!existing && !existing.acceptedAt && !!existing.personalEmail && !existing.catchUp?.started;
   const actions: Record<'lastDay' | 'reassign' | 'place' | 'link' | 'move', { label: string; icon: LucideIcon; onClick: () => void; outline?: boolean }> = {
     lastDay: { label: 'Change last day', icon: Calendar, outline: true, onClick: () => start('lastDay') }, reassign: { label: 'Change who they assist', icon: Route, onClick: () => start('reassign') },
-    place: { label: 'Set MC and team', icon: Route, onClick: () => start('place') }, link: { label: catchUp.label, icon: Link2, onClick: catchUp.create }, move: { label: 'Move to another MC or team', icon: Route, onClick: () => start('move') } };
+    place: { label: 'Set MC and team', icon: Route, onClick: () => start('place') }, link: { label: catchUp.label, icon: Link2, onClick: catchUp.create }, move: { label: current && !current.mc ? 'Set MC and team' : 'Move to another MC or team', icon: Route, onClick: () => start('move') } };
   const mainKey = onNotice ? 'lastDay' : support ? 'reassign' : noMc ? 'place' : needsLink ? 'link' : 'move', main = actions[mainKey];
   const others = [...(needsLink ? ['link' as const] : []), ...(support ? ['reassign' as const] : noMc ? ['place' as const] : !onNotice ? ['move' as const] : [])].filter(key => key !== mainKey);
   const ending = onNotice ? [{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') }, ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]
@@ -136,7 +138,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         <PrivateImage src={selfieUrl(member.id)} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></PhotoButton> : <Avatar name={name} size="lg" />}
       <div className="min-w-0 flex-1"><PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><Badge label={badge.label} tone={badge.tone} />{existing && <Badge label="Added by hand" tone="neutral" />}{notice && <Badge label={notice.passed ? 'Last day passed' : `Leaving ${new Date(middayIso(notice.lastDay)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`} tone={notice.passed ? 'danger' : 'warning'} />}</span>}
         meta={[support ? (supportOf ? <>{called} for {assists(supportOf)} · {supportOf.wholeTeam ? supportOf.mc : where(supportOf)}</> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No dispatcher')
-          : current ? (current.id === undated ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : noMc ? 'No MC yet' : 'No MC or team',
+          : current ? (current.id === undated || !current.mc ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : noMc ? 'No MC yet' : 'No MC or team',
           ...(support ? [] : [member.leadOf ? `Team lead of ${member.leadOf.name}` : member.jobTitle?.name ?? 'Dispatcher']),
           notice ? <>Last day <LastDay day={notice.lastDay} /></> : existing ? (startKnown ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : 'Start date not recorded') : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
         action={open && <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
@@ -257,14 +259,14 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           <CardBody><DescriptionList layout="rows" items={[
             { label: 'Position', value: called },
             { label: 'Assists', value: supportOf?.wholeTeam ? `Everyone on ${supportOf.wholeTeam}` : supportOf ? <Link href={`/dispatch/dispatchers/${supportOf.dispatcherId}`} className="text-primary underline-offset-4 hover:underline">{supportOf.dispatcher}</Link> : null, emptyLabel: 'No dispatcher' },
-            { label: 'MC', value: supportOf ? supportOf.mc ?? 'Independent' : null, emptyLabel: '—' },
-            { label: 'Team', value: supportOf?.team, emptyLabel: 'No team' },
+            { label: 'MC', value: supportOf ? supportOf.mc ?? 'No MC yet' : null, emptyLabel: '—' },
+            { label: 'Team', value: supportOf ? supportOf.team ?? (underMc(supportOf.mc) ? 'Independent (no team)' : null) : null, emptyLabel: '—' },
             { label: 'Since', value: supportOf ? (supportOf.id === undated ? 'Not recorded' : <LocalTime iso={supportOf.startedAt} format="date" />) : null, emptyLabel: '—' }]} /></CardBody>
         </Card> : <Card>
           <CardHeader title="Now" actions={open && <Button variant="ghost" size="sm" onClick={() => start('title')}>Change job title</Button>} />
           <CardBody><DescriptionList layout="rows" items={[
-            { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : current ? 'Independent' : null, emptyLabel: noMc ? 'No MC yet' : 'None' },
-            { label: 'Team', value: current?.team, emptyLabel: 'No team' },
+            { label: 'MC', value: current?.mc ? `${current.mc}${current.mcNumber ? ` · MC ${current.mcNumber}` : ''}` : null, emptyLabel: 'No MC yet' },
+            { label: 'Team', value: current?.mc ? current.team ?? 'Independent (no team)' : null, emptyLabel: '—' },
             { label: 'Job title', value: member.jobTitle?.name, emptyLabel: 'Not set' },
             { label: 'Since', value: current ? (current.id === undated ? 'Not recorded' : <LocalTime iso={current.startedAt} format="date" />) : null, emptyLabel: '—' },
             // Which team they lead; when they started leading isn't recorded.
@@ -313,13 +315,15 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     </div>
     {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' || action === 'removeNow' ? 'danger' : undefined} size={action === 'leave' && removesAccess ? 'lg' : undefined} closeLabel={action === 'cancel' ? 'Keep notice' : undefined}
       title={action === 'supportType' ? `Change ${name} to ${otherName}?` : action === 'place' ? `Set ${name}’s MC and team` : action === 'startDate' ? `${startKnown ? 'Correct' : 'Add'} ${name}’s start date` : action === 'reassign' ? `Change who ${name} assists` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
-      description={action === 'supportType' ? `Only what they’re called changes. They keep assisting ${supportOf ? assists(supportOf) : 'their dispatcher'}, with the same MC and team.` : action === 'place' ? 'Where they work now. They can be given drivers once they have a team.' : action === 'startDate' ? (startKnown ? `Now ${new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}. Their first period in the history changes with it; later moves stay as they are.` : 'Their start date here, from payroll or an offer letter.') : action === 'reassign' ? `${supportOf ? `Now ${assists(supportOf)}. ` : ''}Their MC and team follow whoever they assist, and the current one stays in the history.` : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
+      description={action === 'supportType' ? `Only what they’re called changes. They keep assisting ${supportOf ? assists(supportOf) : 'their dispatcher'}, with the same MC and team.` : action === 'place' ? 'Where they work now. Once they have an MC, in a team or independent, they can be given drivers.' : action === 'startDate' ? (startKnown ? `Now ${new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}. Their first period in the history changes with it; later moves stay as they are.` : 'Their start date here, from payroll or an offer letter.') : action === 'reassign' ? `${supportOf ? `Now ${assists(supportOf)}. ` : ''}Their MC and team follow whoever they assist, and the current one stays in the history.` : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
       actions={<Button type="submit" form="member-action" variant={action === 'leave' || action === 'removeNow' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'supportType' ? `Change to ${otherName}` : action === 'place' ? 'Save MC and team' : action === 'startDate' ? 'Save start date' : action === 'reassign' ? 'Save' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? (noticeDay ? 'Record notice' : 'Mark as left') : action === 'lastDay' ? 'Change last day' : action === 'cancel' ? 'Cancel notice' : action === 'removeNow' ? 'Remove access now' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
         {action === 'place' && <>
-          {/* Nothing chosen to begin with: an MC nobody picked must never become Independent. */}
-          <div className="grid gap-4 sm:grid-cols-2"><Select label="MC" name="mcId" required placeholder="Choose an MC" value={mcId} onChange={event => setMcId(event.target.value)} width="full" options={[{ value: INDEPENDENT, label: 'Independent' }, ...mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))]} />
-            <Select key={mcId} label="Team" optional name="teamId" disabled={!teamChoices.length} placeholder={mcId === INDEPENDENT ? 'Independent has no team' : mcId ? 'No team yet' : 'Choose an MC first'} width="full" options={teamChoices.map(team => ({ value: team.id, label: team.lead ? `${team.name} · ${team.lead.name}` : team.name }))} /></div>
+          {/* Nothing chosen to begin with: the MC and the team (or Independent) are both picked. */}
+          <div className="grid gap-4 sm:grid-cols-2"><Select label="MC" name="mcId" required placeholder="Choose an MC" value={mcId} onChange={event => setMcId(event.target.value)} width="full" options={mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))} />
+            <Select key={mcId} label="Team" name="teamId" required disabled={!mcId} placeholder={mcId ? 'Choose a team' : 'Choose an MC first'} width="full"
+            options={mcId ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...teamChoices.map(team => ({ value: team.id, label: team.lead ? `${team.name} · ${team.lead.name}` : team.name }))] : []}
+            hint={mcId ? 'Independent: works for this MC, not in a team.' : undefined} /></div>
           <Input label="Working there since" optional name="startedAt" type="date" max={today()} width="full" hint="Leave empty if you don’t know. It then follows their start date." />
         </>}
         {action === 'startDate' && <>
@@ -333,15 +337,16 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             options={teams.filter(team => !team.archived && team.name !== supportOf?.wholeTeam).map(team => ({ value: team.id, label: `${team.name} · ${team.mc.name}` }))} />
             : <>{dispatchersFailed && <Alert tone="danger"><p>Couldn’t load dispatchers. Reload the page.</p></Alert>}
           <Select label="New dispatcher" name="dispatcherId" required placeholder="Choose a dispatcher" width="full"
-            options={dispatchers.filter(option => option.id !== supportOf?.dispatcherId).map(option => ({ value: option.id, label: [option.name, option.mc ?? 'Independent', option.team].filter(Boolean).join(' · ') }))} /></>}
+            options={dispatchers.filter(option => option.id !== supportOf?.dispatcherId).map(option => ({ value: option.id, label: [option.name, option.mc ?? 'No MC yet', underMc(option.mc) ? option.team ?? 'Independent' : null].filter(Boolean).join(' · ') }))} /></>}
           <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
           <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Blake needed help with updates." />
         </>}
         {action === 'move' && <>
-          <Select label="MC" name="mcId" value={mcId} onChange={event => setMcId(event.target.value)} width="full"
-            options={[{ value: '', label: 'Independent' }, ...mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))]} />
-          <Select key={mcId} label="Team" name="teamId" defaultValue={teamChoices.some(team => team.id === current?.teamId) ? current?.teamId ?? '' : ''} disabled={!mcId} placeholder="No team" width="full"
-            options={teamChoices.map(team => ({ value: team.id, label: team.name }))} hint={!mcId ? 'Independent dispatchers have no team.' : teamChoices.length ? undefined : 'This MC has no teams yet.'} />
+          <Select label="MC" name="mcId" required placeholder="Choose an MC" value={mcId} onChange={event => setMcId(event.target.value)} width="full"
+            options={mcs.filter(mc => !mc.archived).map(mc => ({ value: mc.id, label: mc.name }))} />
+          <Select key={mcId} label="Team" name="teamId" required disabled={!mcId} defaultValue={current?.mcId === mcId ? (current?.teamId && teamChoices.some(team => team.id === current.teamId) ? current.teamId : current?.teamId ? '' : INDEPENDENT) : ''} placeholder={mcId ? 'Choose a team' : 'Choose an MC first'} width="full"
+            options={mcId ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...teamChoices.map(team => ({ value: team.id, label: team.lead ? `${team.name} · ${team.lead.name}` : team.name }))] : []}
+            hint={mcId ? 'Independent: works for this MC, not in a team.' : undefined} />
           {member.leadOf && <p className="rounded-md bg-warning-background px-3 py-2 text-sm text-warning">{name} leads {member.leadOf.name}. Moving to another team ends that.</p>}
           <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
           <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Lakeside needed more dispatchers." />

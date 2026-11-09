@@ -14,7 +14,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PaperworkTable } from '@/features/dispatch/paperwork';
-import { assists, fullName, memberBadge, missingDetails, supportName, toReassign, type MemberList, type PaperworkList } from '@/features/dispatch/types';
+import { assists, fullName, underMc, memberBadge, missingDetails, supportName, toReassign, type MemberList, type PaperworkList } from '@/features/dispatch/types';
 export const metadata = { title: 'Dispatchers' };
 /** Dispatch › Dispatchers: every dispatch member record (no login), with where they work now. */
 export default async function DispatchersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -50,16 +50,16 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
         { key: 'ALL', label: 'All', count: searched.length }]} />
       {paperworkNow ? <PaperworkTable list={paperwork} search={filters.search} /> : <Table caption="Dispatchers, supports and updaters" className="border-t border-border" rows={visible} rowKey={member => member.id} columns={[
         { key: 'name', label: 'Name', primary: true, cell: member => <Link href={`/dispatch/dispatchers/${member.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={fullName(member)} secondary={member.lead ? 'Team lead' : member.position === 'SUPPORT' ? `${supportName(member)} for ${assists(member)}` : 'Dispatcher'} /></Link> },
-        { key: 'mc', label: 'MC', cell: member => member.mc ?? <span className="text-muted-foreground">{member.placed === false ? '—' : 'Independent'}</span> },
+        { key: 'mc', label: 'MC', cell: member => member.mc ?? <span className="text-muted-foreground">No MC yet</span> },
         ...(leavingNow ? [
           { key: 'lastDay', label: 'Last day', nowrap: true, cell: (member: MemberList['items'][number]) => <LocalTime iso={middayIso(member.lastDay!)} format="date" /> },
           { key: 'reassign', label: 'To reassign', cell: (member: MemberList['items'][number]) => toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0) },
           { key: 'it', label: 'IT removal', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.itRemoval ? <Badge label={member.itRemoval === 'SCHEDULED' ? 'Scheduled' : member.itRemoval === 'COMPLETED' ? 'Completed' : 'In progress'} tone={member.itRemoval === 'COMPLETED' ? 'success' : 'info'} /> : <span className="text-muted-foreground">No accounts</span> },
         ] : missingNow ? [
-          { key: 'team', label: 'Team', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">—</span> },
+          { key: 'team', label: 'Team', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">{underMc(member.mc) ? 'Independent' : '—'}</span> },
           { key: 'started', label: 'Started', nowrap: true, cell: (member: MemberList['items'][number]) => member.startDateKnown === false ? <span className="text-muted-foreground">Not recorded</span> : <LocalTime iso={member.joinedAt} format="date" /> },
         ] : [
-          { key: 'team', label: 'Team', hideBelow: 'md' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">No team</span> },
+          { key: 'team', label: 'Team', hideBelow: 'md' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">{underMc(member.mc) ? 'Independent' : '—'}</span> },
           { key: 'title', label: 'Job title', hideBelow: 'lg' as const, muted: true, cell: (member: MemberList['items'][number]) => member.position === 'SUPPORT' ? supportName(member) : member.jobTitle ?? 'Not set' },
           { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'xl' as const, cell: (member: MemberList['items'][number]) => member.sinceKnown === false ? 'Not recorded' : <LocalTime iso={member.since} format="date" /> },
         ]),

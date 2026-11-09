@@ -51,6 +51,7 @@ export default async function Page({searchParams}:{searchParams:Promise<Record<s
     {/* Phones hide the Progress column, so the step's button sits under the name there. */}
     {!task.completedAt&&<div className="md:hidden"><SignInTaskButton task={signInTask(task)}/></div>}</div>:<Link href={task.kind==='REMOVAL'?`/it/tasks/removals/${task.id}`:`/it/tasks/${task.id}`} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={task.name??'Dispatcher'} secondary={task.email??undefined}/></Link>},
    {key:'kind',label:'Task',cell:task=><Badge label={task.kind==='REMOVAL'?'Removal':task.kind==='SIGN_IN'?'Sign-in':'Setup'} tone={task.kind==='REMOVAL'||task.signIn==='TURN_OFF'?'danger':'info'}/>},
+   // Snapshots keep what they said: a removal recorded before 2026-11-09 left the MC empty for Independent; later ones say No MC yet.
    {key:'mc',label:'MC',hideBelow:'lg',cell:task=>task.mc??<span className="text-muted-foreground">Independent</span>},
    {key:'progress',label:'Progress',hideBelow:'md',cell:task=>task.kind==='SIGN_IN'?(task.completedAt?<span className="text-muted-foreground">Done</span>:<SignInTaskButton task={signInTask(task)}/>):<Progress compact className="w-40" label={`${task.kind==='REMOVAL'?'Removal':'Setup'} for ${task.name??'dispatcher'}`} value={task.done} max={task.total}/>},
    {key:'status',label:'Status',cell:task=>task.scheduled?<Badge label="Scheduled" tone="info"/>:<StatusBadge status={task.status}/>},

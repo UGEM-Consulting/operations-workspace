@@ -72,10 +72,11 @@ export class UpdateTeamDto {
  @ValidateIf((_object: unknown, value: unknown) => value !== undefined && value !== null) @IsUUID() leadMemberId?: string | null;
  @IsOptional() @IsBoolean() archived?: boolean;
 }
-/** A move closes the current MC and team on startedAt and opens the new one. mcId null means Independent (no team). */
+/** A move closes the current MC and team on startedAt and opens the new one. No teamId means Independent (no team) under that MC. */
 export class MoveMemberDto {
  @IsInt() @Min(1) version!: number;
- @ValidateIf((_object: unknown, value: unknown) => value !== null) @IsUUID() mcId!: string | null;
+ // Every period names an MC: Independent is a team choice under it (section 31).
+ @IsUUID(undefined, { message: 'Choose the MC they dispatch for.' }) mcId!: string;
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher is moving.' }) @MaxLength(500) reason!: string;
@@ -83,7 +84,7 @@ export class MoveMemberDto {
 /** Their first MC and team, for someone added with none. startedAt is optional: left out, the period follows their start date. */
 export class PlaceMemberDto {
  @IsInt() @Min(1) version!: number;
- @ValidateIf((_object: unknown, value: unknown) => value !== null) @IsUUID() mcId!: string | null;
+ @IsUUID(undefined, { message: 'Choose the MC they dispatch for.' }) mcId!: string;
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
  @IsOptional() @IsDateString({ strict: true }) startedAt?: string;
 }
@@ -145,12 +146,12 @@ export class CreatePromotionDto {
 export class PromotionQueryDto {
  @IsOptional() @IsIn(['PENDING', 'APPROVED', 'DECLINED', 'CANCELLED', 'ALL']) status?: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED' | 'ALL';
 }
-/** Approving sets where they will work: mcId null means Independent (no team). Declining needs a note. */
+/** Approving sets where they will work: an MC, and a team of it or none (Independent). Declining needs a note. */
 export class DecidePromotionDto {
  @IsInt() @Min(1) version!: number;
  @IsIn(['APPROVE', 'DECLINE']) decision!: 'APPROVE' | 'DECLINE';
  @text() @IsOptional() @IsString() @MaxLength(1000) note?: string;
- @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() mcId?: string | null;
+ @ValidateIf((object: DecidePromotionDto) => object.decision === 'APPROVE') @IsUUID(undefined, { message: 'Choose the MC they will dispatch for.' }) mcId?: string;
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
  @IsOptional() @IsUUID() jobTitleId?: string;
 }

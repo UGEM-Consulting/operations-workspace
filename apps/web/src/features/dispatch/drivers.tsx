@@ -25,7 +25,7 @@ export interface DispatchDriverRow { id: string; firstName: string; lastName: st
   // Safety put them on hold (never why): they keep their assignment for the record but can't be assigned or changed.
   onHold?: boolean;
   assignment: { mcId: string; mc: string; memberId: string; dispatcher: string; teamId: string | null; team: string | null; truck: string | null; startedAt: string } | null }
-export interface DispatchDriverOptions { mcs: { id: string; name: string; mcNumber: string | null; archived?: boolean; dispatchers: { id: string; name: string; teamId: string; team: string }[] }[] }
+export interface DispatchDriverOptions { mcs: { id: string; name: string; mcNumber: string | null; archived?: boolean; dispatchers: { id: string; name: string; teamId: string | null; team: string | null }[] }[] }
 
 /**
  * Drivers Safety has cleared, for Dispatch: the ones waiting for an MC and a dispatcher and the ones already working with
@@ -91,7 +91,7 @@ export function DispatchDrivers({ items, filters, options, teamLead }: { items: 
         <Select label="MC" name="mcId" required value={mcId} onChange={event => setMcId(event.target.value)} placeholder="Choose an MC" width="full"
           options={choices(assigning).map(mc => ({ value: mc.id, label: `${mc.mcNumber ? `${mc.name} · MC ${mc.mcNumber}` : mc.name}${mc.archived ? ' (archived)' : ''}` }))} />
         <Select key={mcId} label="Dispatcher" name="memberId" required disabled={!mcId} placeholder="Choose a dispatcher" width="full" defaultValue={assigning.assignment?.mcId === mcId ? assigning.assignment.memberId : undefined}
-          options={dispatchers.map(person => ({ value: person.id, label: `${person.name} · ${person.team}` }))} hint={teamLead ? 'Active dispatchers in your team.' : 'Active dispatchers in teams under this MC.'} />
+          options={dispatchers.map(person => ({ value: person.id, label: `${person.name} · ${person.team ?? 'Independent'}` }))} hint={teamLead ? 'Active dispatchers in your team.' : 'Active dispatchers under this MC, in a team or independent.'} />
         <Input label="Starts on" name="startsOn" type="date" required width="sm" max={today ?? undefined} defaultValue={today ?? undefined} />
         <Input label="Truck" name="truck" optional maxLength={40} width="md" defaultValue={assigning.assignment?.truck ?? ''} hint="Unit number, for example 233." />
         {assigning.assignment && <Textarea label="Why it’s changing" name="reason" required maxLength={500} rows={2} />}

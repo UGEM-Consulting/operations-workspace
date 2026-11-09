@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardFooter, CardHeader } from '@/components/ui/card';
 import { DescriptionList } from '@/components/ui/description-list';
@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/status-badge';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { ResendCode, type EmailCodeSent } from './email-code';
 import { MfaSetup, RecoveryCodes } from './mfa-setup';
+import { NewAuthenticatorDialog } from './new-authenticator';
 import { PasswordChangeForm } from './password-change-form';
 export interface MfaStatus { enabled: boolean; required: boolean; policy: string; enabledAt: string | null; recoveryCodesRemaining: number;
   method?: 'TOTP' | 'EMAIL' | null; emailCodesAvailable?: boolean; email?: string }
@@ -62,11 +63,16 @@ export function PasswordSettings({ account }: { account: string }) {
   </Card>;
 }
 
-export function AccountSecurity({ status }: { status: MfaStatus }) {
+export function AccountSecurity({ status, newAuthenticator = false }: { status: MfaStatus; newAuthenticator?: boolean }) {
   const router = useRouter();
   const [settingUp, setSettingUp] = useState(false);
   const [codes, setCodes] = useState<string[] | null>(null);
-  const [dialog, setDialog] = useState<'codes' | 'off' | null>(null);
+  // Arriving from the sign-in offer after a recovery code (NewAuthenticatorAfterRecoveryScreen): start straight away.
+  const startNew = newAuthenticator && status.enabled && status.method !== 'EMAIL';
+  const [dialog, setDialog] = useState<'codes' | 'off' | 'new' | null>(startNew ? 'new' : null);
+  const [afterRecovery, setAfterRecovery] = useState(startNew);
+  // The address loses the flag, so a reload doesn't start again.
+  useEffect(() => { if (newAuthenticator) window.history.replaceState(null, '', '/account/security'); }, [newAuthenticator]);
   // Turning MFA on or off regenerates this session; a full navigation discards the old router cache.
   // eslint-disable-next-line @next/next/no-location-assign-relative-destination
   const reload = () => window.location.assign('/account/security');
@@ -84,6 +90,9 @@ export function AccountSecurity({ status }: { status: MfaStatus }) {
           : settingUp ? <MfaSetup doneLabel="Done" onComplete={reload} onCancel={() => setSettingUp(false)} />
           : <div className="space-y-3"><p className="text-sm text-muted-foreground">Turning it on ends your other signed-in sessions.</p><Button onClick={() => setSettingUp(true)}>Set up two-step verification</Button></div>}
       </CardBody>
+      {/* Anyone with an authenticator, administrators included, can move to a new one (NewAuthenticatorAccountScreen). */}
+      {status.enabled && !viaEmail && <CardFooter><p className="text-[13px] leading-5 text-muted-foreground">Changed phones or removed UGEM Workspace from your app? Set up a new one; the old one stops working.</p>
+        <Button variant="outline" onClick={() => { setAfterRecovery(false); setDialog('new'); }}><Smartphone aria-hidden="true" className="size-4" />Set up a new authenticator</Button></CardFooter>}
     </Card>
     {status.enabled && (codes ? <Card>
       <CardHeader title="New recovery codes" description="Your old codes no longer work." />
@@ -99,6 +108,7 @@ export function AccountSecurity({ status }: { status: MfaStatus }) {
     </Card>}
     {dialog === 'codes' && <CodeDialog viaEmail={viaEmail} title="Make new recovery codes?" description={`Your current recovery codes stop working. Enter ${viaEmail ? 'the code we email you' : 'a code from your authenticator app'} to continue.`} action="Make new codes" pendingLabel="Making codes…"
       onClose={() => setDialog(null)} onSubmit={async code => { const result = await mutate('auth/mfa/recovery-codes', 'POST', { code }); setDialog(null); setCodes(result.recoveryCodes); }} />}
+    {dialog === 'new' && <NewAuthenticatorDialog afterRecovery={afterRecovery} onClose={() => setDialog(null)} />}
     {dialog === 'off' && <CodeDialog viaEmail={viaEmail} danger recovery title="Turn off two-step verification?" description="Your other signed-in sessions will end, and only your password will protect your account." action="Turn off" pendingLabel="Turning off…"
       onClose={() => setDialog(null)} onSubmit={async code => { await mutate('auth/mfa/disable', 'POST', { code }); reload(); }} />}
   </>;

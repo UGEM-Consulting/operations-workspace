@@ -58,6 +58,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
+    await db.undoLastMigration(); // NewAuthenticator, with none here
     await db.undoLastMigration(); // NoticeLetters, with none here
     await db.undoLastMigration(); // DocumentRenewals, with none here
     await db.undoLastMigration(); // OwnerOperatorTrucks, with none here
@@ -90,12 +91,13 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const long = 'X'.repeat(120);
     await approved(['Zed', 'North'], { mcName: 'Northwind Freight', teamLead: long, jobTitle: 'Dispatcher' });
     await approved(['Zed', 'Lake'], { mcName: 'Lakeside Carriers', teamLead: long, jobTitle: 'Dispatcher' });
-    await db.runMigrations(); expect(await latest()).toBe('NoticeLetters1793100000000');
+    await db.runMigrations(); expect(await latest()).toBe('NewAuthenticator1793120000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
       ['Casey Morgan', 'Lakeside Carriers', 'Lee Lead team (Lakeside Carriers)', false, null],
-      ['Indy Pendent', null, null, false, 'Dispatcher'],
+      // The backfill gave an Independent approval a period with no MC; since Independent became a team choice, that reads as No MC yet.
+      ['Indy Pendent', 'No MC yet', null, false, 'Dispatcher'],
       ['Lee Lead', 'Northwind Freight', 'Lee Lead team (Northwind Freight)', true, 'Dispatcher'],
       ['Sam Rivera', 'Northwind Freight', 'Lee Lead team (Northwind Freight)', false, 'Dispatcher'],
       ['Zed Lake', 'Lakeside Carriers', `${'X'.repeat(75)} team (Lakeside Carriers)`, false, 'Dispatcher'],
@@ -107,7 +109,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('NoticeLetters1793100000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('NewAuthenticator1793120000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -143,6 +145,9 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
 
     // A lead must be a dispatcher in the team.
     await agents.manager.patch(`/api/dispatch/teams/${red.id}`).set(headers).send({ version: 1, leadMemberId: taylor.id }).expect(400);
+    // Independent is a team choice under an MC: approval's 'Independent' MC text left them with no MC yet, and a move needs an MC.
+    expect((await agents.manager.get(`/api/dispatch/members/${taylor.id}`).set(headers).expect(200)).body.history).toEqual([]);
+    await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 2, mcId: null, startedAt: '2026-02-01', reason: 'No MC' }).expect(400);
     await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 2, mcId: northwind, teamId: blue.id, startedAt: '2026-02-01', reason: 'Joined a team' }).expect(400);
     await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 2, mcId: northwind, teamId: red.id, startedAt: '2025-12-01', reason: 'Too early' }).expect(400);
     await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 2, mcId: northwind, teamId: red.id, startedAt: '2099-01-01', reason: 'Future' }).expect(400);
@@ -160,8 +165,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const profile = (await agents.manager.get(`/api/dispatch/members/${taylor.id}`).set(headers).expect(200)).body;
     expect(profile.history.map((row: { mc: string | null; team: string | null; endedAt: string | null; reason: string; movedBy: string | null }) => [row.mc, row.team, row.endedAt?.slice(0, 10) ?? null, row.reason, row.movedBy])).toEqual([
       ['Lakeside Carriers', 'Blue team', null, 'Lakeside needed more dispatchers', 'Fictional Staff'],
-      ['Northwind Freight', 'Red team', '2026-06-01', 'Joined a team', 'Fictional Staff'],
-      [null, null, '2026-02-01', 'Joined after onboarding was approved.', null]]);
+      ['Northwind Freight', 'Red team', '2026-06-01', 'Joined a team', 'Fictional Staff']]);
     expect(profile.leadOf).toBeNull();
     expect((await agents.manager.get('/api/dispatch/teams').set(headers).expect(200)).body.items.find((team: { id: string }) => team.id === red.id)).toMatchObject({ lead: null, members: 0, version: 3 });
     await agents.manager.patch(`/api/dispatch/teams/${red.id}`).set(headers).send({ version: 3, archived: true }).expect(200);
@@ -169,7 +173,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Leaving closes the assignment; the record stays and can't be moved again.
     await agents.manager.post(`/api/dispatch/members/${taylor.id}/leave`).set(headers).send({ version: 4, leftAt: '2026-09-30', reason: 'Resigned' }).expect(201);
     expect((await agents.manager.get('/api/dispatch/members?status=LEFT').set(headers).expect(200)).body).toMatchObject({ items: [{ id: taylor.id, status: 'LEFT' }], counts: { active: 0, left: 1 } });
-    await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 5, mcId: null, startedAt: '2026-10-01', reason: 'Back' }).expect(409);
+    await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 5, mcId: northwind, startedAt: '2026-10-01', reason: 'Back' }).expect(409);
 
     const events = await db.query(`SELECT event, metadata FROM dispatch_events ORDER BY "createdAt", event`);
     expect(events.map((row: { event: string }) => row.event)).toEqual(['TEAM_CREATED', 'TEAM_CREATED', 'MEMBER_MOVED', 'TEAM_UPDATED', 'MEMBER_MOVED', 'TEAM_ARCHIVED', 'MEMBER_LEFT']);
@@ -223,7 +227,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // A support works where their dispatcher works.
     expect(await byName('Sky')).toMatchObject({ position: 'SUPPORT', status: 'ACTIVE', mc: 'Northwind Freight', team: 'Red team', teamId: red.id, dispatcher: 'Avery Fictional' });
     expect((await agents.manager.get(`/api/dispatch/members/${avery.id}`).set(headers).expect(200)).body.supports.map((row: { name: string }) => row.name)).toEqual(['Sky Fictional']);
-    await agents.manager.post(`/api/dispatch/members/${sky.id}/move`).set(headers).send({ version: 1, mcId: null, startedAt: '2026-04-01', reason: 'Try' }).expect(400);
+    await agents.manager.post(`/api/dispatch/members/${sky.id}/move`).set(headers).send({ version: 1, mcId: northwind, startedAt: '2026-04-01', reason: 'Try' }).expect(400);
     await agents.manager.post(`/api/dispatch/members/${sky.id}/reassign`).set(headers).send({ version: 1, dispatcherId: avery.id, startedAt: '2026-04-01', reason: 'Same' }).expect(400);
     await agents.manager.post(`/api/dispatch/members/${sky.id}/reassign`).set(headers).send({ version: 1, dispatcherId: sky.id, startedAt: '2026-04-01', reason: 'Self' }).expect(400);
     await agents.manager.post(`/api/dispatch/members/${avery.id}/reassign`).set(headers).send({ version: 1, dispatcherId: blake.id, startedAt: '2026-04-01', reason: 'Not a support' }).expect(400);
@@ -302,7 +306,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   it('matches only active list entries when placing an approved dispatcher', async () => {
     await mc('Northwind Freight'); await db.query(`INSERT INTO job_titles (name,"nameKey","archivedAt") VALUES ('Dispatcher','dispatcher',now())`);
     await db.query('UPDATE mcs SET "archivedAt" = now()');
-    expect(await placed('Jordan', 'Independent', false)).toMatchObject({ mc: null, teamId: null, jobTitle: null });
+    expect(await placed('Jordan', 'Independent', false)).toMatchObject({ mc: 'No MC yet', teamId: null, jobTitle: null });
   });
 
   it('shows a promoted support with their own MC and team, and cleans up when people leave', async () => {
@@ -316,11 +320,11 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
       return byName(first);
     };
     const sky = await support('Sky'), river = await support('River');
-    // Sky was promoted (as the promotion does): the support link ended and they work at Independent on their own.
+    // Sky was promoted the old way (as Independent, a period with no MC): the support link ended, and that period reads as No MC yet.
     await db.query(`UPDATE member_support_links SET "endedAt" = '2026-04-01T12:00:00Z' WHERE "supportId" = $1`, [sky.id]);
     await db.query(`UPDATE dispatch_members SET position = 'DISPATCHER', status = 'ONBOARDING' WHERE id = $1`, [sky.id]);
     await db.query(`INSERT INTO member_assignments ("memberId","mcId","teamId","startedAt") VALUES ($1,NULL,NULL,'2026-04-01T12:00:00Z')`, [sky.id]);
-    expect(await byName('Sky')).toMatchObject({ position: 'DISPATCHER', mc: null, teamId: null, dispatcher: null });
+    expect(await byName('Sky')).toMatchObject({ position: 'DISPATCHER', mc: 'No MC yet', teamId: null, dispatcher: null });
     expect(await byName('River')).toMatchObject({ position: 'SUPPORT', mc: 'Northwind Freight', teamId: red.id, dispatcher: 'Avery Fictional' });
 
     // A dispatcher with supports can't leave until their supports are reassigned.
@@ -342,6 +346,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.manager.patch(`/api/dispatch/teams/${blue.id}`).set(headers).send({ version: 1, leadMemberId: blake.id }).expect(200);
     // The state DispatcherContacts left behind: a backfilled lead moved back to ONBOARDING while still leading.
     await db.query(`UPDATE dispatch_members SET status = 'ONBOARDING' WHERE id = $1`, [avery.id]);
+    await db.undoLastMigration(); // NewAuthenticator, with none here
     await db.undoLastMigration(); // NoticeLetters, with none here
     await db.undoLastMigration(); // DocumentRenewals, with none here
     await db.undoLastMigration(); // OwnerOperatorTrucks, with none here
@@ -373,6 +378,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
+    await db.undoLastMigration(); // NewAuthenticator, with none here
     await db.undoLastMigration(); // NoticeLetters, with none here
     await db.undoLastMigration(); // DocumentRenewals, with none here
     await db.undoLastMigration(); // OwnerOperatorTrucks, with none here

@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, KeyRound, Mail, Smartphone } from 'lucide-react';
+import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/field';
 import { ApiError, errorMessage, mutate } from '@/lib/client-api';
@@ -29,6 +30,8 @@ export function MfaVerifyForm() {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const [failures, setFailures] = useState(0);
+  // Signed in with a recovery code and using an authenticator: offer a new one (NewAuthenticatorAfterRecoveryScreen).
+  const [recovered, setRecovered] = useState<{ remaining: number; landingPage: string } | null>(null);
   const started = useRef(false);
   async function load(resend = false) {
     setLoadError(''); setResending(resend);
@@ -48,10 +51,22 @@ export function MfaVerifyForm() {
     const code = String(new FormData(event.currentTarget).get('code') ?? '').trim();
     try {
       const data = await mutate('auth/mfa/verify', 'POST', { code });
-      // After a recovery code, show the remaining codes so the user can replace them.
+      // After a recovery code: an authenticator user is offered a new authenticator; email-code users see their remaining codes.
+      if (data.recoveryCodesRemaining !== undefined && challenge?.method === 'TOTP') { setRecovered({ remaining: data.recoveryCodesRemaining, landingPage: data.landingPage }); return; }
       window.location.assign(data.recoveryCodesRemaining === undefined ? data.landingPage : '/account/security');
     } catch (error) { setError(signInExpired(error instanceof Error ? error.message : 'Unable to verify the code')); setPending(false); setFailures(count => count + 1); }
   }
+  if (recovered) return <>
+    <SignInHeading icon={KeyRound} title="You signed in with a recovery code" description={`That code can’t be used again. You have ${recovered.remaining} left.`} />
+    <div className="mt-6 space-y-4">
+      <Alert tone="info" title="Lost your authenticator?"><p>If you removed UGEM Workspace from your authenticator app or changed phones, set up a new one now. The old one stops working.</p></Alert>
+      {/* A full navigation: the session was just regenerated. */}
+      {/* eslint-disable-next-line @next/next/no-location-assign-relative-destination */}
+      <Button size="lg" className="w-full" onClick={() => window.location.assign('/account/security?new-authenticator=1')}><Smartphone aria-hidden="true" className="size-4" />Set up a new authenticator</Button>
+      <Button size="lg" variant="ghost" className="w-full" onClick={() => window.location.assign(recovered.landingPage)}>Not now, continue to the workspace</Button>
+      <p className="text-[13px] leading-5 text-muted-foreground">You can also do this later in Account security.</p>
+    </div>
+  </>;
   const email = challenge?.method === 'EMAIL' ? challenge : null;
   const heading = recovery
     ? <SignInHeading icon={KeyRound} title="Two-step verification" description="Enter one of the recovery codes you saved when you set up two-step verification." />

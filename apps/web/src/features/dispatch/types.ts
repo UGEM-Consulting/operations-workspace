@@ -11,6 +11,10 @@ export interface TeamDetail { id: string; name: string; version: number; archive
   helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[] }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
 export type SupportType = 'SUPPORT' | 'UPDATER';
+/** What the API sends as the MC of someone who has none yet (never a list entry). */
+export const NO_MC = 'No MC yet';
+/** Under a real MC with no team is Independent; someone with no MC yet has no team either. */
+export const underMc = (mc: string | null | undefined) => !!mc && mc !== NO_MC;
 /** What someone in the support position is called. An older API sends nothing, and they're all Support then. */
 export const supportName = (row: { supportType?: string | null }) => row.supportType === 'UPDATER' ? 'Updater' : 'Support';
 /** The same in a sentence: "this updater", "as a support". */

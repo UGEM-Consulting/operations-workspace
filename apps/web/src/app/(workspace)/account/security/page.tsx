@@ -7,7 +7,7 @@ import { SavedSignatureSettings, type SavedSignature } from '@/features/auth/sav
 export const metadata = { title: 'Account security' };
 // Managers and administrators countersign NDAs during approval, so they can keep a saved signature.
 const APPROVERS = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER'];
-export default async function AccountSecurityPage() {
+export default async function AccountSecurityPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const identity = await requirePage('security');
   const approver = APPROVERS.includes(identity.user.role);
   const [response, signatureResponse, telegramResponse] = await Promise.all([apiRequest('auth/mfa'), approver ? apiRequest('staff/signature') : null, apiRequest('staff/telegram')]);
@@ -18,5 +18,5 @@ export default async function AccountSecurityPage() {
   const telegram = telegramResponse.ok ? await readResponse<StaffTelegram>(telegramResponse, 'Telegram alerts', staffTelegramSchema) : null;
   const telegramFailed = !telegramResponse.ok && telegramResponse.status !== 404;
   return <div className="space-y-6"><PageHeader eyebrow="Your account" title="Account security" description="How you sign in to the workspace, and your saved signature for approvals." />
-    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} />{telegram && <TelegramAlerts initial={telegram} />}{telegramFailed && <TelegramAlertsUnavailable />}{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
+    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} newAuthenticator={(await searchParams)['new-authenticator'] === '1'} />{telegram && <TelegramAlerts initial={telegram} />}{telegramFailed && <TelegramAlertsUnavailable />}{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
 }
