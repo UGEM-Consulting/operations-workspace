@@ -1,6 +1,7 @@
 import { text, upper, filled } from './dto-helpers';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { US_STATES } from './safety.entity';
+import { NoSsn } from './pii';
 export const INCIDENT_KINDS = ['ACCIDENT', 'VIOLATION', 'INSPECTION'] as const;
 type Kind = typeof INCIDENT_KINDS[number];
 const only = (kind: Kind) => (object: { kind?: Kind }) => object.kind === kind;
@@ -14,8 +15,8 @@ export class RecordIncidentDto {
  @IsIn(INCIDENT_KINDS) kind!: Kind;
  @IsString() @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Enter the date it happened.' }) occurredOn!: string;
  @upper() @IsOptional() @IsString() @ValidateIf(filled) @IsIn(US_STATES, { message: 'Choose a state.' }) state?: string;
- @text() @IsString() @MinLength(1, { message: 'Say what happened in a line.' }) @MaxLength(200) summary!: string;
- @text() @IsOptional() @IsString() @ValidateIf(filled) @MaxLength(1000) note?: string;
+ @NoSsn() @text() @IsString() @MinLength(1, { message: 'Say what happened in a line.' }) @MaxLength(200) summary!: string;
+ @NoSsn() @text() @IsOptional() @IsString() @ValidateIf(filled) @MaxLength(1000) note?: string;
  // Accidents (preventability starts undetermined unless Safety already decided).
  @ValidateIf(only('ACCIDENT')) @IsIn(['YES', 'NO', 'UNDETERMINED']) preventable?: 'YES' | 'NO' | 'UNDETERMINED';
  @ValidateIf(only('ACCIDENT')) @IsBoolean() injuries?: boolean;
@@ -35,5 +36,5 @@ export class SettleIncidentDto {
 }
 export class VoidIncidentDto {
  @IsInt() @Min(1) version!: number;
- @text() @IsString() @MinLength(1, { message: 'Say why this entry is being voided.' }) @MaxLength(500) reason!: string;
+ @NoSsn() @text() @IsString() @MinLength(1, { message: 'Say why this entry is being voided.' }) @MaxLength(500) reason!: string;
 }

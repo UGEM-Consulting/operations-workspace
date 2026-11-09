@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { EntityManager, IsNull } from 'typeorm';
 import type { ApplicationFields, DispatcherApplication } from '../onboarding/entities';
 import { EmploymentAssignments } from '../onboarding/entities';
@@ -79,6 +79,10 @@ export function paperworkTimeEnded(link: { consumedAt: Date | null; status: stri
  return !!link.consumedAt && ['INVITED', 'DRAFT', 'CHANGES_REQUESTED'].includes(link.status) && link.applicantAccessUntil.getTime() <= Date.now();
 }
 
+/** SQL columns for a member's open notice: its last day, and whether that day has passed (dayParam: the Pacific date, as the sweep uses). */
+export const lastDaySql = (alias: string) => `(SELECT n."lastDay"::text FROM member_notices n WHERE n."memberId" = ${alias}.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AS "lastDay"`;
+export const lastDayPassedSql = (alias: string, dayParam: string) => `coalesce((SELECT n."lastDay" < ${dayParam}::date FROM member_notices n WHERE n."memberId" = ${alias}.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL), false) AS "lastDayPassed"`;
+
 /** On notice: nobody new is placed with them and they take on no new role. */
 export async function onNotice(em: EntityManager, memberId: string) {
  const [row] = await em.query(`SELECT 1 FROM member_notices WHERE "memberId" = $1 AND "cancelledAt" IS NULL AND "finishedAt" IS NULL`, [memberId]);
@@ -92,7 +96,7 @@ export async function onNotice(em: EntityManager, memberId: string) {
 export async function supportedDispatcher(em: EntityManager, id: string) {
  const dispatcher = await em.getRepository(DispatchMember).findOne({ where: { id }, lock: { mode: 'pessimistic_read' } });
  if (!dispatcher || dispatcher.position !== 'DISPATCHER' || dispatcher.status === 'LEFT') throw new BadRequestException('Choose a current dispatcher for this support.');
- if (await onNotice(em, id)) throw new BadRequestException('This dispatcher is leaving. Choose another dispatcher for this support.');
+ if (await onNotice(em, id)) throw new ConflictException('This dispatcher is leaving. Choose another dispatcher for this support.');
  return dispatcher;
 }
 

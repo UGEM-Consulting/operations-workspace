@@ -93,7 +93,7 @@ export class DriverAssignmentsService {
    if (!member || member.position !== 'DISPATCHER' || member.status !== 'ACTIVE' || !placed || placed.mcId !== mc.id || (placed.teamId && (!team || team.archivedAt || team.mcId !== mc.id))
     || (scope && (!team || !scope.teamIds.includes(team.id)))) throw new BadRequestException(scope ? 'Choose an active dispatcher in your team.' : 'Choose an active dispatcher under this MC.');
    // Someone leaving keeps the drivers they have, but takes on no new ones.
-   if (current?.memberId !== member.id && await onNotice(em, member.id)) throw new BadRequestException('This dispatcher is leaving. Choose another dispatcher.');
+   if (current?.memberId !== member.id && await onNotice(em, member.id)) throw new ConflictException('This dispatcher is leaving. Choose another dispatcher.');
    const truck = dto.truck || null;
    if (current && current.mcId === mc.id && current.memberId === member.id && current.truck === truck) throw new BadRequestException('The driver already works with this MC, dispatcher and truck.');
    if (current && !dto.reason) throw new BadRequestException('Say why the driver is changing MC, dispatcher or truck.');

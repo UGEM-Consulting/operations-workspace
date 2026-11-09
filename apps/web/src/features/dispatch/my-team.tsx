@@ -13,13 +13,16 @@ import { Badge, StatusBadge } from '@/components/ui/status-badge';
 import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
+import { middayIso } from '@/lib/navigation';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { aSupport, memberBadge, supportName, type MemberStatus } from './types';
 
 export interface TeamView {
   teams: { id: string; name: string; mc: string }[];
-  dispatchers: { id: string; name: string; status: MemberStatus; teamId: string; jobTitle: string | null; lead: boolean }[];
-  supports: { id: string; name: string; status: MemberStatus; dispatcherId: string | null; teamId?: string | null; since: string; sinceKnown?: boolean; supportType?: string; pending: { id: string; createdAt: string } | null }[];
+  // lastDay: on notice. An older API sends neither field, and everyone shows as before.
+  dispatchers: { id: string; name: string; status: MemberStatus; teamId: string; jobTitle: string | null; lead: boolean; lastDay?: string | null; lastDayPassed?: boolean }[];
+  supports: { id: string; name: string; status: MemberStatus; dispatcherId: string | null; teamId?: string | null; since: string; sinceKnown?: boolean; supportType?: string; pending: { id: string; createdAt: string } | null;
+    lastDay?: string | null; lastDayPassed?: boolean; hasApplication?: boolean }[];
   requests: { id: string; status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED'; reason: string; note: string | null; createdAt: string; decidedAt: string | null; support: string }[];
 }
 
@@ -51,7 +54,15 @@ export function MyTeam({ data }: { data: TeamView }) {
     catch (error) { toast({ tone: 'danger', title: 'Not cancelled', description: errorMessage(error, 'Reload the page and try again.') }); }
     finally { setPending(null); }
   }
-  const promotion = (support: TeamView['supports'][number]) => support.pending ? <span className="flex items-center gap-2"><Badge label="Requested" tone="info" /><Button size="sm" variant="ghost" disabled={!!pending} onClick={() => void cancel(support.pending!.id)}>{pending === support.pending.id ? 'Cancelling…' : 'Cancel'}<span className="sr-only"> the request for {support.name}</span></Button></span>
+  // Someone leaving, or added by hand with no accepted paperwork, can't be promoted: say why instead of offering the request.
+  // Past the last day they leave once nobody is assigned to them, so the team lead knows to reassign their drivers.
+  const status = (row: { status: MemberStatus; lastDay?: string | null; lastDayPassed?: boolean }) => row.lastDayPassed
+    ? <span className="flex flex-wrap items-center gap-2"><Badge label="Last day passed" tone="danger" /><span className="text-[13px] text-muted-foreground">leaves once nobody is assigned to them</span></span>
+    : row.lastDay ? <span className="flex flex-wrap items-center gap-2"><Badge label="Leaving" tone="warning" /><span className="text-[13px] text-muted-foreground">last day <LocalTime iso={middayIso(row.lastDay)} format="date" /></span></span>
+    : <Badge {...memberBadge(row.status)} />;
+  const promotion = (support: TeamView['supports'][number]) => !support.pending && support.lastDay ? null
+    : !support.pending && support.hasApplication === false ? <span className="text-[13px] text-muted-foreground">Promotion after their paperwork is accepted</span>
+    : support.pending ? <span className="flex items-center gap-2"><Badge label="Requested" tone="info" /><Button size="sm" variant="ghost" disabled={!!pending} onClick={() => void cancel(support.pending!.id)}>{pending === support.pending.id ? 'Cancelling…' : 'Cancel'}<span className="sr-only"> the request for {support.name}</span></Button></span>
     : <Button size="sm" variant="outline" onClick={() => { setRequesting(support); setError(''); }}>Request promotion<span className="sr-only"> for {support.name}</span></Button>;
   const one = data.teams.length === 1 ? data.teams[0] : null, dispatcherCount = data.dispatchers.filter(row => row.teamId === one?.id).length;
   if (!data.teams.length) return <div className="space-y-6"><PageHeader title="My team" />
@@ -67,16 +78,16 @@ export function MyTeam({ data }: { data: TeamView }) {
             {wholeTeam.length > 0 && <Card><CardHeader title="Assist the whole team" description="They work with everyone here, not one dispatcher." />
               <Table className="mt-3 border-t border-border" caption="Whole team supports and updaters" rows={wholeTeam} rowKey={support => support.id} columns={[
                 { key: 'name', label: 'Name', primary: true, cell: support => <Person name={support.name} secondary={supportName(support)} /> },
-                { key: 'status', label: 'Status', cell: support => <Badge {...memberBadge(support.status)} /> },
+                { key: 'status', label: 'Status', cell: status },
                 { key: 'request', label: 'Promotion', srOnly: true, action: true, align: 'right', cell: promotion }]} /></Card>}
             <Card><CardHeader title="Dispatchers" />
               <Table className="mt-3 border-t border-border" caption="Dispatchers and who assists them" rows={data.dispatchers.filter(row => row.teamId === team.id)} rowKey={dispatcher => dispatcher.id} columns={[
                 { key: 'name', label: 'Name', primary: true, cell: dispatcher => <Person name={dispatcher.name} secondary={dispatcher.lead ? 'Dispatcher, team lead' : 'Dispatcher'} /> },
                 { key: 'assisted', label: 'Assisted by', cell: dispatcher => {
                   const assisting = data.supports.filter(support => support.dispatcherId === dispatcher.id);
-                  return assisting.length ? <ul className="space-y-2">{assisting.map(support => <li key={support.id} className="flex flex-wrap items-center gap-2"><span>{support.name}, {supportName(support)}</span>{promotion(support)}</li>)}</ul> : '—';
+                  return assisting.length ? <ul className="space-y-2">{assisting.map(support => <li key={support.id} className="flex flex-wrap items-center gap-2"><span>{support.name}, {supportName(support)}</span>{support.lastDay && status(support)}{promotion(support)}</li>)}</ul> : '—';
                 } },
-                { key: 'status', label: 'Status', cell: dispatcher => <Badge {...memberBadge(dispatcher.status)} /> }]} /></Card>
+                { key: 'status', label: 'Status', cell: status }]} /></Card>
           </section>;
         })}
       </div>

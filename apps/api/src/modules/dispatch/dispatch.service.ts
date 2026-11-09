@@ -7,7 +7,7 @@ import { AddContactDto, ChangeLastDayDto, CreateTeamDto, LeaveMemberDto, NoticeA
 import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberContact, MemberNotice, MemberStartDateChange, MemberSupportLink, NO_MC, positionLabel, PromotionRequest, Team } from './dispatch.entity';
 import { ApplicationActivity, Invitation } from '../onboarding/entities';
 import { sharedSignIns } from './account-details';
-import { lockCatchUpLinks, lockTeam, memberPlace, onNotice, paperworkTimeEnded, supportedDispatcher, supportedTeam } from './create-member';
+import { lastDaySql, lockCatchUpLinks, lockTeam, memberPlace, onNotice, paperworkTimeEnded, supportedDispatcher, supportedTeam } from './create-member';
 import { addDays, usDay } from '../safety/screening-rules';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } from '../it/it.entity';
 import { DriverAssignment } from '../safety/safety.entity';
@@ -68,7 +68,7 @@ export class DispatchService {
  async team(id: string) {
   const person = `d.id, d."firstName", d."lastName", d.status, d.position, d."supportType", d.version,
    EXISTS(SELECT 1 FROM dispatcher_applications a JOIN applicant_photos p ON p."applicationId" = a.id AND p.kind = 'SELFIE' AND p."createdAt" <= a."submittedAt" WHERE a.id = d."applicationId" AND a.status = 'APPROVED') AS photo,
-   (SELECT n."lastDay"::text FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AS "lastDay"`;
+   ${lastDaySql('d')}`;
   // The three reads don't depend on each other, so they run at once.
   const [[team], dispatchers, helpers] = await Promise.all([
    this.db.query(`SELECT t.id, t.name, t.version, t."archivedAt" IS NOT NULL AS archived, t."leadMemberId" AS "leadId", json_build_object('id', m.id, 'name', m.name, 'archived', m."archivedAt" IS NOT NULL) AS mc
@@ -116,7 +116,7 @@ export class DispatchService {
     const placed = candidate && await em.getRepository(MemberAssignment).existsBy({ memberId: candidate.id, teamId: id, endedAt: IsNull() });
     if (dto.leadMemberId && !(placed && candidate.position === 'DISPATCHER' && candidate.status === 'ACTIVE'))
      throw new BadRequestException('The team lead must be an active dispatcher in this team.');
-    if (dto.leadMemberId && await onNotice(em, dto.leadMemberId)) throw new BadRequestException('This dispatcher is leaving, so they can’t become the team lead.');
+    if (dto.leadMemberId && await onNotice(em, dto.leadMemberId)) throw new ConflictException('This dispatcher is leaving, so they can’t become the team lead.');
     team.leadMemberId = dto.leadMemberId; fields.push('leadMemberId');
    }
    const archive = dto.archived === undefined || dto.archived === (team.archivedAt !== null) ? null : dto.archived;

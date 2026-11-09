@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
-import { listNameKey } from '../lists/lists.entity';
+import { INDEPENDENT_NOT_MC, isIndependent, listNameKey } from '../lists/lists.entity';
 import type { ApplicationFields } from './entities';
 
 /** A team choice, never an MC: they dispatch for the MC directly, with no team (section 31, approved 2026-11-09). */
@@ -37,6 +37,8 @@ function teamChoices(options: Options, mc: string) {
 export async function settleApplicantEmployment(em: EntityManager, before: ApplicationFields, after: ApplicationFields) {
  const mcMoved = !same(before.mcName, after.mcName), teamMoved = mcMoved || !same(before.teamLead, after.teamLead), titleMoved = !same(before.jobTitle, after.jobTitle);
  if (!mcMoved && !teamMoved && !titleMoved) return;
+ // An older page may still offer Independent as an MC: say where it moved rather than that it isn't on the list.
+ if (mcMoved && isIndependent(after.mcName)) throw new BadRequestException(INDEPENDENT_NOT_MC.applicant);
  const options = await applicantEmploymentOptions(em);
  if (mcMoved && after.mcName?.trim()) after.mcName = choose(after.mcName, [...options.mcs, NOT_LISTED], 'MC');
  if (teamMoved && after.teamLead?.trim()) after.teamLead = choose(after.teamLead, teamChoices(options, after.mcName ?? ''), 'team');

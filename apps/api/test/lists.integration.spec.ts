@@ -84,7 +84,7 @@ integration('Managed lists (disposable PostgreSQL)', () => {
     expect(created).toMatchObject({ name: 'North Star Express', mcNumber: '123456', dotNumber: null, archived: false, version: 1 });
     expect((await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'north star EXPRESS' }).expect(409)).body.message).toBe('An MC with this name already exists.');
     expect((await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'Another Carrier', mcNumber: '123456' }).expect(409)).body.message).toBe('Another MC already has this MC number.');
-    expect((await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'independent' }).expect(400)).body.message).toMatch(/fixed choice/);
+    expect((await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'independent' }).expect(400)).body.message).toMatch(/Independent isn’t an MC/);
     await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'Bad Number', mcNumber: '12ab' }).expect(400);
 
     await agents.manager.patch(`/api/lists/mcs/${created.id}`).set(headers).send({ version: 2, name: 'Renamed' }).expect(409);

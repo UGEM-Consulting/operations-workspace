@@ -412,7 +412,9 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // Names only: no MC or DOT numbers anywhere in what the applicant receives.
   expect(JSON.stringify(own.body)).not.toMatch(/7654321|1234567|mcNumber|dotNumber/);
   const save=(version:number,body:object)=>applicant.patch('/api/applicant/draft').set(headers).send({version,...body});
-  for(const body of [{mcName:'Typed Carrier'},{mcName:'Pick Freight',teamLead:'Blue team'},{jobTitle:'Typed title'},{mcName:'Independent',teamLead:'Red team'}])expect((await save(0,body).expect(400)).body.message).toMatch(/isn't on the list/);
+  for(const body of [{mcName:'Typed Carrier'},{mcName:'Pick Freight',teamLead:'Blue team'},{jobTitle:'Typed title'}])expect((await save(0,body).expect(400)).body.message).toMatch(/isn't on the list/);
+  // Independent as the MC says where it moved: a team choice under the MC.
+  expect((await save(0,{mcName:'Independent',teamLead:'Red team'}).expect(400)).body.message).toMatch(/Independent isn’t an MC.*Independent \(no team\) as your team/);
   const saved=await save(0,{mcName:' pick  FREIGHT ',teamLead:'red TEAM',jobTitle:'pick title'}).expect(200);
   expect(saved.body.application.fields).toMatchObject({mcName:'Pick Freight',teamLead:'Red team',jobTitle:'Pick title'});
   // A new MC needs a team from that MC, and the choices that leave it to the manager always work.

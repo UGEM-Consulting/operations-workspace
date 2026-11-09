@@ -2,6 +2,7 @@ import { text, filled } from './dto-helpers';
 import { Type } from 'class-transformer';
 import { IsBase64, IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { MAX_PDF_BYTES } from '../documents/documents.dto';
+import { NoSsn } from './pii';
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The new MVR for a yearly review: a base64 PDF and the date it was pulled. */
@@ -16,6 +17,6 @@ export class AnnualReviewDto {
  @IsInt() @Min(1) version!: number;
  @IsString() @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the date of the review.' }) reviewedOn!: string;
  @IsIn(['QUALIFIED', 'NOT_QUALIFIED']) outcome!: 'QUALIFIED' | 'NOT_QUALIFIED';
- @text() @IsOptional() @IsString() @ValidateIf(filled) @MaxLength(1000) note?: string;
+ @NoSsn() @text() @IsOptional() @IsString() @ValidateIf(filled) @MaxLength(1000) note?: string;
  @IsOptional() @ValidateNested() @Type(() => AnnualMvrDto) mvr?: AnnualMvrDto;
 }

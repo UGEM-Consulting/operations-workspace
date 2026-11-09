@@ -8,6 +8,10 @@ export type ListEventType = typeof LIST_EVENTS[number];
 /** Names compare ignoring case and repeated spaces, so "Northwind  freight" and "Northwind Freight" are one entry. */
 export function listName(value: string) { return value.trim().replace(/\s+/g, ' '); }
 export function listNameKey(value: string) { return listName(value).toLowerCase(); }
+/** "Independent" is never an MC: it's a team choice under an MC (section 31). An older page may still send it as one. */
+export const isIndependent = (value: string | undefined) => listNameKey(value ?? '') === 'independent';
+export const INDEPENDENT_NOT_MC = { staff: 'Independent isn’t an MC. Choose the MC they dispatch for; Independent is chosen as their team.',
+ applicant: 'Independent isn’t an MC. Choose the MC you dispatch for, then Independent (no team) as your team.' };
 
 @Entity('mcs')
 export class Mc {

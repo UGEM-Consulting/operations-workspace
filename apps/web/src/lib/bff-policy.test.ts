@@ -115,7 +115,8 @@ describe('driver clearance and dispatch assignment through the BFF', () => {
 
 describe('offboarding and manager hand-over through the BFF', () => {
   it('allows the IT task list, the removal checklist and the hand-over routes, and nothing beside them', () => {
-    assert.equal(allowedEndpoint('GET', 'it/tasks'), true);
+    // The task list is read by the server page only.
+    assert.equal(allowedEndpoint('GET', 'it/tasks'), false);
     assert.equal(allowedEndpoint('GET', `it/removals/${ID}`), true);
     assert.equal(allowedEndpoint('PATCH', `it/removals/${ID}/tasks/SHARED_PASSWORDS`), true);
     assert.equal(allowedEndpoint('PATCH', `it/removals/${ID}/tasks/shared`), false);
