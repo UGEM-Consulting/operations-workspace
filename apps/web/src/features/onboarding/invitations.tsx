@@ -9,6 +9,7 @@ import { LocalTime } from '@/components/ui/local-time';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { useToast } from '@/components/ui/toast';
 import { Badge } from '@/components/ui/status-badge';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Person } from '@/components/ui/avatar';
 import { FilterBar } from '@/components/ui/filter-bar';
 import { PageHeader } from '@/components/workspace-ui';
@@ -20,7 +21,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { INVITATION_DEFAULTS } from '@/lib/navigation';
 import { Invitation, readApi, type DispatcherOption } from './types';
 import { EmploymentPicker, type Employment, type EmploymentOptions } from './employment-picker';
-import { supportName, supportWord } from '@/features/dispatch/types';
+import { supportName, supportWord, underMc } from '@/features/dispatch/types';
 const NO_EMPLOYMENT: Employment = { mcName: '', teamLead: '', jobTitle: '' };
 const PATH='/onboarding/invitations';
 // Invitation states in the manager's words; the badges use the same labels as the tabs.
@@ -74,7 +75,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
   if(revoking.id===linkId){setUrl('');setLinkId('');setLinkOpen(false);}
   setRevoking(null);toast({title:'Invitation revoked',description:'Its link can no longer be used.'});await refreshRows();}catch(error){setRevokeError(errorMessage(error,'Unable to revoke invitation.'));}finally{setPending(null);}}
  const search=filters.search.toLowerCase();
- const matches=(row:Invitation)=>`${row.email??''} ${row.expectedEmail??''} ${row.mcName??''} ${row.teamLead??''}`.toLowerCase().includes(search);
+ const matches=(row:Invitation)=>`${row.email??''} ${row.expectedEmail??''} ${row.mcName??''} ${row.teamLead??''} ${row.applicationReference??''}`.toLowerCase().includes(search);
  const searched=rows.filter(matches),visible=searched.filter(row=>filters.status==='ALL'||row.status===filters.status);
  const filtered=filters.search!==''||filters.status!=='ALL';
  return <div className="space-y-6">
@@ -85,11 +86,16 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
   {error&&<Alert tone="warning"><p>{error}</p></Alert>}
   {url&&!linkOpen&&<Alert tone={copied?'info':'warning'} title={copied?'Latest invitation link':'Your new link has not been copied'} action={<Button size="sm" variant="outline" onClick={()=>setLinkOpen(true)}>Show link</Button>}><p>It expires in {linkDays} days and can’t be shown again after you leave this page.</p></Alert>}
   <Card>
-   <FilterBar path={PATH} filters={filters} defaults={INVITATION_DEFAULTS} searchLabel="Search email or MC" statuses={[
+   <FilterBar path={PATH} filters={filters} defaults={INVITATION_DEFAULTS} searchLabel="Search email, MC or reference" statuses={[
     ...STATUSES.map(([key,label])=>({key,label,count:searched.filter(row=>row.status===key).length})),{key:'ALL',label:'All',count:searched.length}]}/>
    <Table caption="Invitations in your scope" className="border-t border-border" rows={visible} rowKey={row=>row.id} columns={[
     {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<Person name={row.email} secondary="Verified email" avatar={false}/>
      :<Person name={row.status==='PENDING'?'Not opened yet':'Not claimed yet'} secondary={row.expectedEmail?`For ${row.expectedEmail}`:'Anyone with the link'} avatar={false}/>},
+    // Once they verify their email, the reference they return with, to copy and send them while they fill in the form (InvitationReferenceScreen).
+    ...(rows.some(row=>row.applicationReference!==undefined)?[{key:'reference',label:'Application reference',cell:(row:Invitation)=>row.applicationReference
+     ?<span className="inline-flex flex-wrap items-center gap-1"><span className="font-mono text-[13px]" title={row.applicationReference}>{row.applicationReference.slice(0,8)}…{row.applicationReference.slice(-4)}</span>
+      <CopyButton text={row.applicationReference} label="Copy" size="sm" variant="ghost" onCopied={()=>toast({title:'Reference copied',description:`They return with it and a code sent to ${row.email??'their verified email'}.`})}/></span>
+     :['PENDING','OPENED'].includes(row.status)?<span className="text-[13px] text-muted-foreground">After they verify their email</span>:<span className="text-muted-foreground">—</span>}]:[]),
     {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>(row.member??row).position==='SUPPORT'?`${supportName(row.member??row)} for ${row.supportsTeam?.name??row.supports?.name??'a dispatcher'}`:[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||(row.member?'Dispatcher':'Applicant provides')},
     {key:'status',label:'Status',cell:row=><InvitationBadge status={row.status}/>},
     {key:'created',label:'Created',nowrap:true,muted:true,hideBelow:'lg',cell:row=><LocalTime iso={row.createdAt} format="date"/>},
@@ -112,7 +118,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
     {dispatchers&&position!=='DISPATCHER'&&options&&assisting==='TEAM'&&<Select label="Team" name="supportsTeamId" value={supportsTeamId} onChange={event=>setSupportsTeamId(event.target.value)} required placeholder="Choose a team" width="full"
      options={options.teams.map(team=>({value:team.id,label:[team.name,mcName(team.mcId)].filter(Boolean).join(' · ')}))} hint="You can confirm or change this at approval."/>}
     {dispatchers&&position!=='DISPATCHER'&&assisting!=='TEAM'&&<Select label="Dispatcher they assist" name="supportsMemberId" value={supportsId} onChange={event=>setSupportsId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
-     options={dispatchers.map(option=>({value:option.id,label:[option.name,option.mc??'Independent',option.team].filter(Boolean).join(' · ')}))} hint={dispatchers.length?undefined:'There are no dispatcher records yet.'}/>}
+     options={dispatchers.map(option=>({value:option.id,label:[option.name,option.mc??'No MC yet',underMc(option.mc)?option.team??'Independent':null].filter(Boolean).join(' · ')}))} hint={dispatchers.length?undefined:'There are no dispatcher records yet.'}/>}
     {options&&position==='DISPATCHER'&&<fieldset className="space-y-3 border-t border-border pt-4"><legend className="float-left mb-1 w-full text-sm font-medium">Employment</legend>
      <p className="text-[13px] leading-5 text-muted-foreground">Pre-fills the applicant’s answers. You confirm them again at approval.</p>
      <EmploymentPicker optional options={options} original={NO_EMPLOYMENT} onChange={setEmployment}/></fieldset>}

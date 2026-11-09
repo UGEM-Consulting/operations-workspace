@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Req } from '@nestjs/common';
 import { Role } from '../users/user.entity';
-import { MfaChallengeDto, MfaCodeDto, MfaEnrolmentDto, MfaPolicyDto } from './mfa.dto';
+import { MfaChallengeDto, MfaCodeDto, MfaEnrolmentDto, MfaPolicyDto, MfaReplacementConfirmDto, MfaReplacementDto } from './mfa.dto';
 import { MfaService } from './mfa.service';
 import { AllowPendingMfa, Roles, STAFF } from './policy';
 import { AuthRequest } from './session';
@@ -29,6 +29,11 @@ export class MfaController {
   manageCode(@Req() req: AuthRequest) { return this.mfa.sendManageCode(req.currentUser); }
   @Roles(...STAFF) @Post('auth/mfa/recovery-codes') @HttpCode(200)
   recoveryCodes(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.regenerateRecoveryCodes(req.currentUser, input.code); }
+  // A new authenticator replacing the current one (Account security): started with a code, kept apart until its first code.
+  @Roles(...STAFF) @Post('auth/mfa/replacement') @HttpCode(200)
+  beginReplacement(@Body() input: MfaReplacementDto, @Req() req: AuthRequest) { return this.mfa.beginReplacement(req, input.code); }
+  @Roles(...STAFF) @Post('auth/mfa/replacement/confirm') @HttpCode(200)
+  confirmReplacement(@Body() input: MfaReplacementConfirmDto, @Req() req: AuthRequest) { return this.mfa.confirmReplacement(req, input.code, input.replacementId); }
   @Roles(...STAFF) @Post('auth/mfa/disable') @HttpCode(200)
   disable(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.disable(req.currentUser, input.code, req); }
   @Roles(Role.SYSTEM_ADMIN) @Post('users/:id/mfa/reset') @HttpCode(200)

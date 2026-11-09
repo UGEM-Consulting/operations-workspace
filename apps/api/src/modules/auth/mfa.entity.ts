@@ -12,6 +12,9 @@ export class StaffMfa {
   @Column({ type: 'timestamptz', nullable: true }) confirmedAt!: Date | null;
   // Highest accepted TOTP time step; codes for this or earlier steps are replays.
   @Column({ type: 'bigint', nullable: true, select: false }) lastUsedStep!: string | null;
+  // A new authenticator being set up while this one stays in use (NewAuthenticator1793120000000), until its first code is confirmed.
+  @Column({ type: 'text', nullable: true, select: false }) pendingSecretCiphertext!: string | null;
+  @Column({ type: 'timestamptz', nullable: true, select: false }) pendingCreatedAt!: Date | null;
   @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
   @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }
@@ -26,7 +29,7 @@ export class StaffRecoveryCode {
 export enum SecurityEventType {
   MFA_ENROLLED = 'MFA_ENROLLED', MFA_DISABLED = 'MFA_DISABLED', MFA_RESET_BY_ADMIN = 'MFA_RESET_BY_ADMIN',
   MFA_RECOVERY_CODE_USED = 'MFA_RECOVERY_CODE_USED', MFA_RECOVERY_CODES_REGENERATED = 'MFA_RECOVERY_CODES_REGENERATED',
-  MFA_LOCKED_OUT = 'MFA_LOCKED_OUT', MFA_POLICY_CHANGED = 'MFA_POLICY_CHANGED',
+  MFA_LOCKED_OUT = 'MFA_LOCKED_OUT', MFA_POLICY_CHANGED = 'MFA_POLICY_CHANGED', MFA_AUTHENTICATOR_REPLACED = 'MFA_AUTHENTICATOR_REPLACED',
   // Account administration (actor = administrator) and self-service password changes. Field names only, never values.
   USER_CREATED = 'USER_CREATED', USER_ROLE_CHANGED = 'USER_ROLE_CHANGED', USER_STATUS_CHANGED = 'USER_STATUS_CHANGED',
   USER_EMAIL_CHANGED = 'USER_EMAIL_CHANGED', USER_NAME_CHANGED = 'USER_NAME_CHANGED', USER_PASSWORD_SET = 'USER_PASSWORD_SET',

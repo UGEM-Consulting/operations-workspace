@@ -115,7 +115,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
      {label:'Legal name',value:[profile.legalFirstName,profile.legalLastName].filter(Boolean).join(' ')},
      {label:'Personal email',value:profile.personalEmail&&<><span className="block break-all">{profile.personalEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.personalEmail} label="Copy email" size="sm" variant="ghost"/></span></>},
      {label:'Personal phone',value:profile.personalPhoneNumber,mono:true},
-     {label:'MC / Independent',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle},
+     {label:'MC',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle},
      // Recorded in the Google Workspace and RingCentral tasks; the manager sees these on the employee details.
      {label:'Company email',value:request.companyEmail,emptyLabel:'Set in the Google Workspace task'},
      {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber,mono:true,emptyLabel:'Set in the RingCentral task'},

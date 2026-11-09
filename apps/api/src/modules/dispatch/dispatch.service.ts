@@ -137,7 +137,7 @@ export class DispatchService {
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'LEFT' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a.id IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a.id IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
+    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a."mcId" IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a."mcId" IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", coalesce(st.id, t.id) AS "teamId", coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
     ${companyEmailSql()} AS "companyEmail",
@@ -219,7 +219,7 @@ export class DispatchService {
   // Who a support has assisted over time (the open row is now, with that dispatcher's or team's MC and team); a dispatcher's supports now.
   const supportHistory = member.position === 'SUPPORT' ? await this.db.query(`SELECT l.id, l."startedAt", l."endedAt", l.reason, d.id AS "dispatcherId",
     CASE WHEN d.id IS NULL THEN NULL ELSE d."firstName" || ' ' || d."lastName" END AS dispatcher, d.status AS "dispatcherStatus", lt.id AS "wholeTeamId", lt.name AS "wholeTeam",
-    CASE WHEN lt.id IS NOT NULL THEN lm.name WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(lt.name, t.name) AS team,
+    CASE WHEN lt.id IS NOT NULL THEN lm.name WHEN a."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(lt.name, t.name) AS team,
     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
    FROM member_support_links l LEFT JOIN dispatch_members d ON d.id = l."dispatcherId" LEFT JOIN teams lt ON lt.id = l."teamId" LEFT JOIN mcs lm ON lm.id = lt."mcId" LEFT JOIN users u ON u.id = l."actorId"
    LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
@@ -279,8 +279,8 @@ export class DispatchService {
    if (member.position === 'SUPPORT') throw new BadRequestException('Supports and updaters work where their dispatcher works. Change their dispatcher instead.');
    let startedAt = day(dto.startedAt);
    const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
-   if (dto.mcId) await this.activeMc(em, dto.mcId);
-   const teamId = dto.mcId ? dto.teamId ?? null : null;
+   await this.activeMc(em, dto.mcId);
+   const teamId = dto.teamId ?? null;
    // Teams are locked after the member and in id order (the one they join, the one they lead and may leave), so two
    // moves can't deadlock. Which team this member leads can't change meanwhile: setting a lead locks the member first.
    const led = await em.getRepository(Team).findOneBy({ leadMemberId: id });
@@ -293,6 +293,8 @@ export class DispatchService {
    if (current?.mcId !== dto.mcId && await em.getRepository(DriverAssignment).existsBy({ memberId: id, endedAt: IsNull() }))
     throw new ConflictException('This dispatcher still has drivers under this MC. Reassign their drivers first.');
    if (current) startedAt = notBefore(startedAt, current.startedAt, 'The move can’t start before the current MC and team did.');
+   // Someone approved with no MC yet gets their first MC and team here: not before they joined.
+   else startedAt = notBefore(startedAt, member.joinedAt, 'The move can’t start before they joined.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
    const leadCleared = await this.clearLead(em, id, teamId);
@@ -326,8 +328,8 @@ export class DispatchService {
    const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
    if (!record) throw new BadRequestException('Only someone added by hand can start with no MC.');
    if (await em.getRepository(MemberAssignment).existsBy({ memberId: id })) throw new ConflictException('This dispatcher already has an MC. Move them instead.');
-   if (dto.mcId) await this.activeMc(em, dto.mcId);
-   const teamId = dto.mcId ? dto.teamId ?? null : null;
+   await this.activeMc(em, dto.mcId);
+   const teamId = dto.teamId ?? null;
    if (teamId) {
     const team = await lockTeam(em, teamId);
     if (!team || team.archivedAt || team.mcId !== dto.mcId) throw new BadRequestException('Choose an active team of the selected MC.');

@@ -72,6 +72,14 @@ describe('expiration reminders through the BFF', () => {
   });
 });
 
+describe('a new authenticator through the BFF', () => {
+  it('allows starting and confirming it, and nothing else', () => {
+    for (const path of ['auth/mfa/replacement', 'auth/mfa/replacement/confirm']) assert.equal(allowedEndpoint('POST', path), true, path);
+    assert.equal(allowedEndpoint('GET', 'auth/mfa/replacement'), false);
+    assert.equal(allowedEndpoint('POST', 'auth/mfa/replacement/cancel'), false);
+  });
+});
+
 describe('document renewals through the BFF', () => {
   it('allows renewing, the renewal link and its cancellation, marking a scan as not readable, and the driver page', () => {
     for (const path of [`safety/drivers/${ID}/documents/renew`, `safety/drivers/${ID}/renewals`, `safety/drivers/${ID}/renewals/cancel`, `safety/drivers/${ID}/documents/${ID}/unreadable`, 'driver/renewal'])

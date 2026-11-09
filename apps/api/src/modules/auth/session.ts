@@ -17,6 +17,8 @@ declare module 'express-session' {
     // Password accepted, a further step outstanding: a forced password change or the second factor. Grants no staff
     // access: userId stays unset. The field name predates the password stage and is kept for running sessions.
     mfaPending: { userId: string; authVersion: number; stage: MfaStage; expiresAt: number };
+    // When this session signed in with a recovery code: for a short while it may start a new authenticator without another code.
+    mfaRecoveredAt: number;
   }
 }
 /** Steps after a correct password: a forced password change, then the authenticator code or enrolment. */

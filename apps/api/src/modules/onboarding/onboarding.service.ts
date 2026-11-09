@@ -86,12 +86,17 @@ export class OnboardingService {
   // A support invitation shows the dispatcher or whole team they will assist.
   const ids = [...new Set(rows.map(row => row.supportsMemberId).filter((id): id is string => !!id))];
   // Once someone is a member, what they're called is on their record: a change or a promotion never reaches the invitation.
-  const members: { invitationId: string; position: string; supportType: string }[] = rows.length ? await this.db.query(`SELECT a."invitationId", d.position, d."supportType" FROM dispatcher_applications a JOIN dispatch_members d ON d."applicationId" = a.id WHERE a."invitationId" = ANY($1)`, [rows.map(row => row.id)]) : [];
-  const memberOf = new Map(members.map(({ invitationId, position, supportType }) => [invitationId, { position, supportType }]));
+  // The same read gives the application reference, shown once the applicant verified their email, so the manager can send it
+  // while they're still filling in the form (InvitationReferenceScreen). Only the reference: never their answers.
+  const applications: { invitationId: string; id: string; position: string | null; supportType: string | null }[] = rows.length ? await this.db.query(`SELECT a."invitationId", a.id, d.position, d."supportType"
+   FROM dispatcher_applications a LEFT JOIN dispatch_members d ON d."applicationId" = a.id WHERE a."invitationId" = ANY($1)`, [rows.map(row => row.id)]) : [];
+  const memberOf = new Map(applications.filter(row => row.position).map(({ invitationId, position, supportType }) => [invitationId, { position: position!, supportType: supportType! }]));
+  const claimed = new Set(rows.filter(row => row.consumedAt).map(row => row.id));
+  const referenceOf = new Map(applications.filter(row => claimed.has(row.invitationId)).map(row => [row.invitationId, row.id]));
   const names: Record<string,string> = ids.length ? Object.fromEntries((await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name FROM dispatch_members WHERE id = ANY($1)`, [ids])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
   const teamIds = [...new Set(rows.map(row => row.supportsTeamId).filter((id): id is string => !!id))];
   const teamNames: Record<string,string> = teamIds.length ? Object.fromEntries((await this.db.query(`SELECT id, name FROM teams WHERE id = ANY($1)`, [teamIds])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
-  return rows.map(row => ({ ...row, status: invitationStatus(row), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
+  return rows.map(row => ({ ...row, status: invitationStatus(row), applicationReference: referenceOf.get(row.id) ?? null, member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
  }
  async revoke(user: User, id: string) {
   await this.db.transaction(async em => {
@@ -217,7 +222,7 @@ export class OnboardingService {
  }
  /** What the manager has on file, shown to someone catching up: names only, never MC or DOT numbers. */
  private async onFile(em: EntityManager, memberId: string) {
-  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a.id IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(st.name, t.name) AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
+  const [place]: { mc: string | null; team: string | null; jobTitle: string | null; dispatcher: string | null }[] = await em.query(`SELECT CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, coalesce(st.name, t.name) AS team, j.name AS "jobTitle", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher
    FROM dispatch_members d LEFT JOIN job_titles j ON j.id = d."jobTitleId"
    LEFT JOIN member_support_links l ON l."supportId" = d.id AND l."endedAt" IS NULL LEFT JOIN dispatch_members sd ON sd.id = l."dispatcherId" LEFT JOIN teams st ON st.id = l."teamId" LEFT JOIN mcs sm ON sm.id = st."mcId"
    LEFT JOIN member_assignments a ON a."memberId" = coalesce(sd.id, d.id) AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId" WHERE d.id = $1`,[memberId]);

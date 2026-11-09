@@ -39,20 +39,21 @@ export class DriverAssignmentsService {
  }
 
  /**
-  * MCs with the active dispatchers in teams under each (a team lead: only their teams), for the Assign dialog. An archived
+  * MCs with their active dispatchers, in a team or independent (no team), for the Assign dialog (a team lead: only their
+  * teams). An archived
   * MC is listed (marked) only while drivers still work with it, because they may stay on it; nobody new is placed there.
   */
  async options(user: User | null) {
   const scope = await this.scope(this.db.manager, user);
-  const rows: { mcId: string; mc: string; mcNumber: string | null; archived: boolean; memberId: string; dispatcher: string; teamId: string; team: string }[] = await this.db.query(`SELECT m.id AS "mcId", m.name AS mc, m."mcNumber", m."archivedAt" IS NOT NULL AS archived,
+  const rows: { mcId: string; mc: string; mcNumber: string | null; archived: boolean; memberId: string; dispatcher: string; teamId: string | null; team: string | null }[] = await this.db.query(`SELECT m.id AS "mcId", m.name AS mc, m."mcNumber", m."archivedAt" IS NOT NULL AS archived,
     x.id AS "memberId", ${name('x')} AS dispatcher, t.id AS "teamId", t.name AS team
-   FROM member_assignments ma JOIN dispatch_members x ON x.id = ma."memberId" JOIN teams t ON t.id = ma."teamId" JOIN mcs m ON m.id = t."mcId"
-   WHERE ma."endedAt" IS NULL AND x.status = 'ACTIVE' AND x.position = 'DISPATCHER' AND t."archivedAt" IS NULL AND ma."mcId" = m.id
+   FROM member_assignments ma JOIN dispatch_members x ON x.id = ma."memberId" JOIN mcs m ON m.id = ma."mcId" LEFT JOIN teams t ON t.id = ma."teamId"
+   WHERE ma."endedAt" IS NULL AND x.status = 'ACTIVE' AND x.position = 'DISPATCHER' AND (ma."teamId" IS NULL OR (t."archivedAt" IS NULL AND t."mcId" = m.id))
     AND NOT EXISTS(SELECT 1 FROM member_notices n WHERE n."memberId" = x.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
     AND (m."archivedAt" IS NULL OR EXISTS(SELECT 1 FROM driver_assignments a WHERE a."mcId" = m.id AND a."endedAt" IS NULL))
     AND ($1::uuid[] IS NULL OR t.id = ANY($1::uuid[]))
    ORDER BY m."nameKey", lower(x."firstName"), lower(x."lastName")`, [scope?.teamIds ?? null]);
-  const mcs = new Map<string, { id: string; name: string; mcNumber: string | null; archived: boolean; dispatchers: { id: string; name: string; teamId: string; team: string }[] }>();
+  const mcs = new Map<string, { id: string; name: string; mcNumber: string | null; archived: boolean; dispatchers: { id: string; name: string; teamId: string | null; team: string | null }[] }>();
   for (const row of rows) {
    const mc = mcs.get(row.mcId) ?? { id: row.mcId, name: row.mc, mcNumber: row.mcNumber, archived: row.archived, dispatchers: [] };
    mc.dispatchers.push({ id: row.memberId, name: row.dispatcher, teamId: row.teamId, team: row.team });
@@ -87,9 +88,10 @@ export class DriverAssignmentsService {
    if (!mc || (mc.archivedAt && current?.mcId !== mc.id)) throw new BadRequestException('Choose an active MC.');
    const member = await em.getRepository(DispatchMember).findOne({ where: { id: dto.memberId }, lock: { mode: 'pessimistic_read' } });
    const placed = member && await em.getRepository(MemberAssignment).findOneBy({ memberId: member.id, endedAt: IsNull() });
+   // In a team of this MC, or independent (no team) under it; a team lead only within their teams.
    const team = placed?.teamId ? await lockTeam(em, placed.teamId) : null;
-   if (!member || member.position !== 'DISPATCHER' || member.status !== 'ACTIVE' || !team || team.archivedAt || placed?.mcId !== mc.id || team.mcId !== mc.id
-    || (scope && !scope.teamIds.includes(team.id))) throw new BadRequestException(scope ? 'Choose an active dispatcher in your team.' : 'Choose an active dispatcher in a team under this MC.');
+   if (!member || member.position !== 'DISPATCHER' || member.status !== 'ACTIVE' || !placed || placed.mcId !== mc.id || (placed.teamId && (!team || team.archivedAt || team.mcId !== mc.id))
+    || (scope && (!team || !scope.teamIds.includes(team.id)))) throw new BadRequestException(scope ? 'Choose an active dispatcher in your team.' : 'Choose an active dispatcher under this MC.');
    // Someone leaving keeps the drivers they have, but takes on no new ones.
    if (current?.memberId !== member.id && await onNotice(em, member.id)) throw new BadRequestException('This dispatcher is leaving. Choose another dispatcher.');
    const truck = dto.truck || null;

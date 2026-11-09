@@ -57,6 +57,12 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const inv=await create();const stored=await db.getRepository(Invitation).createQueryBuilder('i').addSelect('i.tokenHash').where('i.id=:id',{id:inv.id}).getOneOrFail();expect(stored.tokenHash).toBe(digest(inv.token));
   expect(await db.getRepository(DispatcherApplication).count()).toBe(1);
   const list=await manager.get('/api/onboarding/invitations').set(headers).expect(200);expect(list.body[0].status).toBe('PENDING');expect(list.body[0].tokenHash).toBeUndefined();
+  // The application reference shows once the applicant verified their email, never before (InvitationReferenceScreen).
+  expect(list.body[0].applicationReference).toBeNull();
+  const claimant=request.agent(app.getHttpServer());await verify(claimant,inv.token);
+  const [{id:reference}]=await db.query('SELECT id FROM dispatcher_applications WHERE "invitationId"=$1',[inv.id]);
+  const claimed=(await manager.get('/api/onboarding/invitations').set(headers).expect(200)).body[0];
+  expect(claimed.applicationReference).toBe(reference);expect(claimed.fields).toBeUndefined();
   expect((await other.get('/api/onboarding/invitations').set(headers)).body).toHaveLength(0);
   expect((await admin.get('/api/onboarding/invitations').set(headers)).body).toHaveLength(1);
   await other.post(`/api/onboarding/invitations/${inv.id}/revoke`).set(headers).send({}).expect(404);
@@ -124,7 +130,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await applicant.post('/api/applicant/submit').set(headers).send({...answers,version:1}).expect(201);
   return {invitation,applicant,id:verified.id,version:2};
  }
- const decision=(agent:Agent,id:string,body:Record<string,unknown>)=>agent.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...body,...(body.decisionType==='APPROVE'&&!('employment' in body)?{employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}}:{})});
+ const decision=(agent:Agent,id:string,body:Record<string,unknown>)=>agent.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...body,...(body.decisionType==='APPROVE'&&!('employment' in body)?{employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'}}:{})});
  it('completes request changes â†’ private correction draft â†’ resubmit â†’ approve with traceable histories',async()=>{
   const flow=await submittedApplication();
   await decision(manager,flow.id,{version:2,decisionType:'REQUEST_CHANGES',reason:'Please correct your Telegram tag.',requestedFields:['telegram']}).expect(201);
@@ -374,7 +380,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const begin=await applicant.post('/api/applicant/begin').set(headers).send({token,email:payload.email}).expect(201);
   const code=await issueDemoCode(db,begin.body.challengeId,'test');
   const verified=await applicant.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);const id=verified.body.applicationId;
-  await applicant.patch('/api/applicant/draft').set(headers).send({version:0,...answers,accurate:undefined,mcName:'Fictional MC',teamLead:'No team yet',jobTitle:'Dispatcher'}).expect(200);
+  await applicant.patch('/api/applicant/draft').set(headers).send({version:0,...answers,accurate:undefined,mcName:'Fictional MC',teamLead:'Independent',jobTitle:'Dispatcher'}).expect(200);
   await applicant.post('/api/applicant/logout').set(headers).send({}).expect(201);
   const resume=await applicant.post('/api/applicant/begin').set(headers).send({applicationId:id,email:payload.email}).expect(201);
   const resumeCode=await issueDemoCode(db,resume.body.challengeId,'test');await applicant.post('/api/applicant/verify').set(headers).send({challengeId:resume.body.challengeId,code:resumeCode}).expect(201);
@@ -387,6 +393,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const employment={mcName:'Final fictional MC',teamLead:'Fictional lead',jobTitle:'Senior Dispatcher'};
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:5,decisionType:'APPROVE',confirmed:true,employment}).expect(400);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:5,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{...employment,teamLead:''}}).expect(400);
+  // Independent is chosen as the team under an MC, never as the MC (an older page may still send it).
+  expect((await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:5,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{...employment,mcName:'Independent',teamLead:'Independent'}}).expect(400)).body.message).toMatch(/Independent is chosen as their team/);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:5,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment}).expect(201);
   const detail=await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200);expect(detail.body.readyForIt).toBe(true);expect(detail.body.invitation).toMatchObject(employment);
   expect(detail.body.application.fields.mcName).toBe('Fictional corrected MC');expect(detail.body.reviews[1].employment).toEqual(employment);
@@ -410,11 +418,13 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   // A new MC needs a team from that MC, and the choices that leave it to the manager always work.
   await save(1,{mcName:'Pick Other'}).expect(400);
   await save(1,{mcName:'Not listed',teamLead:'Not listed',jobTitle:'Not listed'}).expect(200);
-  await save(2,{mcName:'Pick Other',teamLead:'No team yet'}).expect(200);
+  // Independent is a team choice under an MC, never an MC.
+  await save(2,{mcName:'Independent',teamLead:'Independent'}).expect(400);
+  await save(2,{mcName:'Pick Other',teamLead:'Independent'}).expect(200);
   // Archived entries can't be picked, but someone who already has the answer isn't stopped.
   await save(3,{mcName:'Pick Freight',teamLead:'Red team'}).expect(200);
   await db.query(`UPDATE mcs SET "archivedAt"=now() WHERE id=$1`,[otherMc]);
-  await save(4,{mcName:'Pick Other',teamLead:'No team yet'}).expect(400);
+  await save(4,{mcName:'Pick Other',teamLead:'Independent'}).expect(400);
   await db.query(`UPDATE mcs SET "archivedAt"=now() WHERE id=$1`,[mcId]);
   await save(4,{firstName:'Fictional'}).expect(200);
   // An answer typed before the lists stays until it changes, on submission too, and the submission is left alone.
@@ -455,9 +465,9 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await applicant.post('/api/applicant/submit').set(headers).send({version:1,accurate:true}).expect(400);
   await applicant.patch('/api/applicant/draft').set(headers).send({version:1,email:'other@example.test'}).expect(400);
   await applicant.patch('/api/applicant/draft').set(headers).send({version:1,mcName:'x'.repeat(151)}).expect(400);
-  await applicant.patch('/api/applicant/draft').set(headers).send({version:1,mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}).expect(200);
+  await applicant.patch('/api/applicant/draft').set(headers).send({version:1,mcName:'Not listed',teamLead:'Not listed',jobTitle:'Dispatcher'}).expect(200);
   await applicant.post('/api/applicant/submit').set(headers).send({version:2,accurate:true}).expect(201);
-  expect((await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers)).body.application.fields.mcName).toBe('Independent');
+  expect((await manager.get(`/api/onboarding/applications/${verified.id}`).set(headers)).body.application.fields.mcName).toBe('Not listed');
  });
  it('explains the local fictional-email requirement before creating an unusable challenge',async()=>{
   const inv=await create();
@@ -578,7 +588,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(detail).toMatchObject({requiredFields:[],employmentOptions:null,supports:{supportsMemberId:lead.id}});
   expect(detail.supports.options.map((option:{name:string;status:string})=>[option.name,option.status])).toEqual([['Lead Dispatcher','ACTIVE'],['Other Dispatcher','ONBOARDING']]);
   // Supports are approved without employment, with the dispatcher confirmed or changed.
-  await decision(manager,verified.id,{version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}}).expect(400);
+  await decision(manager,verified.id,{version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'}}).expect(400);
   const approved=await manager.post(`/api/onboarding/applications/${verified.id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true,supportsMemberId:other.id}).expect(201);
   expect(approved.body.readyForIt).toBe(false);
   expect(await db.query(`SELECT d.position,d.status,d."firstName",l."dispatcherId" FROM dispatch_members d JOIN member_support_links l ON l."supportId"=d.id WHERE d."applicationId"=$1`,[verified.id]))

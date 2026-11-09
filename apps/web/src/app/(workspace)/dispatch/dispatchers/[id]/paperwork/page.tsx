@@ -44,7 +44,7 @@ export default async function PaperworkReviewPage({ params }: { params: Promise<
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <PageHeader title={name} badge={<span className="flex flex-wrap gap-2"><Badge label="Active" tone="success" />{data.canReview ? <Badge label="Paperwork to check" tone="info" /> : app.status === 'APPROVED' ? <Badge label="Paperwork finished" tone="success" /> : <Badge label="Changes asked" tone="warning" />}</span>}
-      meta={[[member.current?.mc ?? 'Independent', member.current?.team].filter(Boolean).join(' · '), <>Sent <LocalTime iso={app.submittedAt!} format="date" /></>]} />
+      meta={[member.current?.mc ? `${member.current.mc} · ${member.current.team ?? 'Independent'}` : 'No MC yet', <>Sent <LocalTime iso={app.submittedAt!} format="date" /></>]} />
     {data.requiredFields.length > 0 && app.status !== 'APPROVED' && <Alert tone="warning" title="Still needed"><p>{data.requiredFields.map(field => itemLabels[field]).join(', ')}</p></Alert>}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">

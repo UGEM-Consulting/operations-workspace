@@ -47,7 +47,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
  type Agent=ReturnType<typeof request.agent>;
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
- const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'};
+ const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',mcName:'Not listed',teamLead:'Not listed',jobTitle:'Dispatcher'};
  async function applicant(){
   const created=await manager.post('/api/onboarding/invitations').set(headers).send({email:'fictional.signer@example.test'}).expect(201);
   const agent=request.agent(app.getHttpServer());
@@ -171,7 +171,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   const archive=app.get(ApplicantSignedCopies).archive,signed=(name:string)=>existsSync(join(storage,'applicants',id,'signed',`${name}.pdf`));
   expect(await archive.run()).toBe(2);
   expect(['nda-v1','sop-v1','contact-list-v1'].map(signed)).toEqual([false,true,true]);
-  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}};
+  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'}};
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send(approve).expect(400);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...approve,decisionType:'REJECT',reason:'Fictional',countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(400);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set({...headers,'x-client-ip':'198.51.100.4'}).send({...approve,countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
@@ -219,7 +219,8 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   // Newer migrations go first, each after removing the records its rollback refuses to discard.
   const cleanup:Record<string,string>={DriverDocuments1792880000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,DriverApplications1792870000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,SafetyDrivers1792860000000:`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`,TeamLeads1792850000000:`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`,SupportMembers1792840000000:`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`,DispatcherContacts1792830000000:'TRUNCATE member_contacts',DispatchTeams1792820000000:'TRUNCATE dispatch_events',ManagedLists1792810000000:'TRUNCATE list_events',OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
-  expect(await latestMigration()).toBe('SafetyReminders1793110000000');
+  expect(await latestMigration()).toBe('NewAuthenticator1793120000000');
+  await db.undoLastMigration(); // NewAuthenticator, with none here
   await db.undoLastMigration(); // SafetyReminders, with none here
   await db.undoLastMigration(); // NoticeLetters, with none here
   await db.undoLastMigration(); // DocumentRenewals, with none here
@@ -287,7 +288,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   const sop=await admin.post('/api/documents').set(headers).send({kind:'SOP',title:'Fictional SOP',file:(await pdf(1)).toString('base64')}).expect(201);
   const detail=(await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body;
   expect(detail.requiredFields).toContain('documents');
-  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}};
+  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}};
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send(approve).expect(400);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'REQUEST_CHANGES',reason:'Please sign the new SOP.',requestedFields:['documents']}).expect(201);
   view=(await agent.get('/api/applicant/application').set(headers).expect(200)).body;
@@ -298,7 +299,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   const {agent,id}=await applicant();const view=await completeDocuments(agent);
   await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set({...headers,'x-client-ip':'198.51.100.4','x-client-user-agent':'Fictional Manager Browser'})
-   .send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
+   .send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
   const nda=view.documents.items[0].id;
   const own=pdfText((await agent.get(`/api/applicant/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
   const staff=pdfText((await manager.get(`/api/onboarding/applications/${id}/documents/${nda}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body);
@@ -313,7 +314,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'REQUEST_CHANGES',reason:'Please confirm your phone number.',requestedFields:['personalPhoneNumber']}).expect(201);
   await agent.post('/api/applicant/submit').set(headers).send({version:3,...answers,accurate:true}).expect(201);
-  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:4,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
+  await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:4,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true}}).expect(201);
   const [itRequest]=await db.query('SELECT id,"approvalId" FROM it_onboarding_requests WHERE "applicationId"=$1',[id]);
   await itAgent.get(`/api/it/onboarding/${itRequest.id}/photo`).set(headers).expect(200);
   // Linked to the change-request review instead of the approval: refused, like every other IT access.
@@ -345,7 +346,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   await publishAll();
   const {agent,id}=await applicant();const view=await completeDocuments(agent);
   await agent.post('/api/applicant/submit').set(headers).send({version:1,...answers,accurate:true}).expect(201);
-  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'}};
+  const approve={version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'}};
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...approve,countersignature:{useSavedSignature:true}}).expect(400);
   await manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({...approve,countersignature:{useSavedSignature:true,agreed:true}}).expect(201);
   const [row]=await db.query(`SELECT "typedName","signatureMethod","fromSavedSignature","signatureImage" FROM document_signatures WHERE "applicationId"=$1 AND "signerRole"='COMPANY'`,[id]);
@@ -425,7 +426,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   expect(pdfText(copy)).toContain('blank document before it was filled in');
   // The two pages stay two pages, followed by the certificate.
   expect((await PDFDocument.load(copy)).getPageCount()).toBeGreaterThanOrEqual(3);
-  const decide=(title?:string)=>manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true,...(title?{title}:{})}});
+  const decide=(title?:string)=>manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true,employmentConfirmed:true,employment:{mcName:'Northwind Freight',teamLead:'Independent',jobTitle:'Dispatcher'},countersignature:{typedName:'Fictional Manager',signature:signature(),agreed:true,...(title?{title}:{})}});
   expect((await decide().expect(400)).body.message).toContain('job title');
   const first=(await manager.get(`/api/onboarding/applications/${id}`).set(headers).expect(200)).body.documents.countersign;
   expect(first.lastTitle).toBeNull();expect(first.signerName).toMatch(/\S+ \S+/);expect(first.signerRole).toBe(Role.DISPATCHER_MANAGER);

@@ -3,10 +3,10 @@ import { EntityManager } from 'typeorm';
 import { listNameKey } from '../lists/lists.entity';
 import type { ApplicationFields } from './entities';
 
+/** A team choice, never an MC: they dispatch for the MC directly, with no team (section 31, approved 2026-11-09). */
 export const INDEPENDENT = 'Independent';
 /** Saved when the applicant's choice isn't on a list; the manager picks the real entry at approval. */
 export const NOT_LISTED = 'Not listed';
-export const NO_TEAM = 'No team yet';
 
 /** Applicants see MC names only, never MC or DOT numbers. A team's value is the text approval matches: its lead's name, or its own name while it has no lead. */
 export async function applicantEmploymentOptions(em: EntityManager) {
@@ -25,11 +25,10 @@ function choose(value: string, allowed: string[], name: string) {
  if (!match) throw new BadRequestException(`That ${name} isn't on the list. Choose it again.`);
  return match;
 }
-/** The teams an applicant may pick once they have chosen this MC. */
+/** The teams an applicant may pick once they have chosen this MC: Independent (no team), one of its teams, or not listed. */
 function teamChoices(options: Options, mc: string) {
- if (same(mc, INDEPENDENT)) return [INDEPENDENT];
  if (same(mc, NOT_LISTED)) return [NOT_LISTED];
- return [NO_TEAM, ...options.teams.filter(team => same(team.mc, mc)).map(team => team.value), NOT_LISTED];
+ return [INDEPENDENT, ...options.teams.filter(team => same(team.mc, mc)).map(team => team.value), NOT_LISTED];
 }
 /**
  * Applicants pick employment from the lists. An answer that didn't change stays as it is, so a manager's pre-filled
@@ -39,7 +38,7 @@ export async function settleApplicantEmployment(em: EntityManager, before: Appli
  const mcMoved = !same(before.mcName, after.mcName), teamMoved = mcMoved || !same(before.teamLead, after.teamLead), titleMoved = !same(before.jobTitle, after.jobTitle);
  if (!mcMoved && !teamMoved && !titleMoved) return;
  const options = await applicantEmploymentOptions(em);
- if (mcMoved && after.mcName?.trim()) after.mcName = choose(after.mcName, [INDEPENDENT, ...options.mcs, NOT_LISTED], 'MC');
+ if (mcMoved && after.mcName?.trim()) after.mcName = choose(after.mcName, [...options.mcs, NOT_LISTED], 'MC');
  if (teamMoved && after.teamLead?.trim()) after.teamLead = choose(after.teamLead, teamChoices(options, after.mcName ?? ''), 'team');
  if (titleMoved && after.jobTitle?.trim()) after.jobTitle = choose(after.jobTitle, [...options.jobTitles, NOT_LISTED], 'job title');
 }

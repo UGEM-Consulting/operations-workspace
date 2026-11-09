@@ -64,7 +64,8 @@ export const reviewDetailSchema = z.looseObject({
 });
 
 /** GET /onboarding/invitations */
-export const invitationListSchema = z.array(z.looseObject({ id: text, status: text, email: nullableText, expectedEmail: nullableText, expiresAt: text, createdAt: text, position: text.optional() }));
+export const invitationListSchema = z.array(z.looseObject({ id: text, status: text, email: nullableText, expectedEmail: nullableText, expiresAt: text, createdAt: text, position: text.optional(),
+  applicationReference: nullableText.optional().catch(undefined) }));
 
 /** GET /lists/mcs and /lists/job-titles (Admin › Lists, and choices in dispatch forms). */
 export const managedListSchema = z.looseObject({

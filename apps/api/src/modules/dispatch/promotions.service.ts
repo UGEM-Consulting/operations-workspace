@@ -115,9 +115,9 @@ export class PromotionsService {
    }
    if (!support || support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('This person is no longer an active support or updater.');
    if (!support.applicationId) throw new ConflictException('Promotion needs their approved application for their IT setup.');
-   // Where they will work: an active MC (or Independent, with no team), a team of that MC, and a job title.
-   const mc = dto.mcId ? await em.getRepository(Mc).findOneBy({ id: dto.mcId }) : null;
-   if (dto.mcId && (!mc || mc.archivedAt)) throw new BadRequestException('Choose an active MC.');
+   // Where they will work: an active MC, a team of that MC or none (Independent), and a job title.
+   const mc = await em.getRepository(Mc).findOneBy({ id: dto.mcId! });
+   if (!mc || mc.archivedAt) throw new BadRequestException('Choose an active MC.');
    const team = dto.teamId ? await lockTeam(em, dto.teamId) : null;
    if (dto.teamId && (!team || team.archivedAt || team.mcId !== dto.mcId)) throw new BadRequestException('Choose an active team of the selected MC.');
    const title = dto.jobTitleId ? await em.getRepository(JobTitle).findOneBy({ id: dto.jobTitleId }) : null;
@@ -135,9 +135,9 @@ export class PromotionsService {
    if (link) { link.endedAt = at; await em.save(link); }
    Object.assign(support, { position: 'DISPATCHER', supportType: 'SUPPORT', status: 'ONBOARDING', jobTitleId: title.id, version: support.version + 1 });
    await em.save(support);
-   await em.getRepository(MemberAssignment).save({ memberId: support.id, mcId: mc?.id ?? null, teamId: team?.id ?? null, startedAt: at, reason: 'Promoted from support to dispatcher.', actorId: user.id });
+   await em.getRepository(MemberAssignment).save({ memberId: support.id, mcId: mc.id, teamId: team?.id ?? null, startedAt: at, reason: 'Promoted from support to dispatcher.', actorId: user.id });
    const itRequest = await createItRequest(em, application, approval, submitted?.fields ?? {}, invitation, user.id,
-    { mcName: mc?.name ?? 'Independent', teamLead: team ? (lead ? `${lead.firstName} ${lead.lastName}`.trim() : team.name) : 'Independent', jobTitle: title.name });
+    { mcName: mc.name, teamLead: team ? (lead ? `${lead.firstName} ${lead.lastName}`.trim() : team.name) : 'Independent', jobTitle: title.name });
    alerts = await this.notifications.queueItSetupWaiting(em, itRequest);
    Object.assign(request, { status: 'APPROVED', note: dto.note?.trim() || null, decidedBy: user.id, decidedAt: now, itRequestId: itRequest.id, version: request.version + 1 });
    await em.save(request);

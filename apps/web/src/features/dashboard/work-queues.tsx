@@ -84,7 +84,7 @@ export async function LeavingSoon() {
   return <Card>
     <CardHeader title="Leaving soon" description="Departures in the next 14 days, and last days that have passed." actions={viewAll('/dispatch/dispatchers?status=LEAVING')} />
     <ul className="mt-3 divide-y divide-border border-t border-border">{rows.map(member => <li key={member.id}><Link href={`/dispatch/dispatchers/${member.id}`} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-accent focus-visible:bg-accent sm:px-5">
-      <Person name={fullName(member)} secondary={member.mc ?? 'Independent'} />
+      <Person name={fullName(member)} secondary={member.mc ?? 'No MC yet'} />
       <span className="flex flex-wrap items-center gap-3 text-[13px] text-muted-foreground"><span>Last day <LocalTime iso={middayIso(member.lastDay!)} format="date" /></span><span>To reassign: {toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0)}</span>
         <Badge label={member.lastDayPassed ? 'Last day passed' : 'Leaving'} tone={member.lastDayPassed ? 'danger' : 'warning'} /></span>
     </Link></li>)}</ul>

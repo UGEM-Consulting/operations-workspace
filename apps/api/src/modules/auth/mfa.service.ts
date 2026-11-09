@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException, HttpException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { toString as qrSvg } from 'qrcode';
@@ -19,6 +20,11 @@ const ISSUER = 'UGEM Workspace';
 // Wrong codes per user (across all sessions and API instances) within 15 minutes before a lockout.
 const MAX_CODE_ATTEMPTS = 5;
 const LOCKOUT_SECONDS = 900;
+// After a recovery-code sign-in, a new authenticator may be started without another code for this long; a started one
+// must be confirmed within REPLACEMENT_MS.
+const RECOVERED_GRACE_MS = 15 * 60_000, REPLACEMENT_MS = 15 * 60_000;
+/** Names one started setup (its sealed secret, random each time) so confirming can tell it was the one shown. */
+const replacementId = (sealed: string) => createHash('sha256').update(sealed).digest('hex').slice(0, 32);
 // A repeat lockout lasts an hour: code guessing slows to about 5 per hour, while someone who knows a password can hold
 // an account for at most an hour per burst (longer locks would make denying the last administrator cheap). Never
 // permanent. Escalation resets after a day without a lockout.
@@ -115,7 +121,66 @@ export class MfaService {
     const user = this.pendingUser(req, 'verify');
     const kind = await this.checkCode(user, code, true, 'login');
     const result = await this.establish(req, user, 'verified');
-    return kind === 'recovery' ? { ...result, recoveryCodesRemaining: await this.remainingRecoveryCodes(user.id) } : result;
+    if (kind !== 'recovery') return result;
+    // A recovery code usually means the authenticator is gone: for a short while this session may start a new one
+    // without spending another code (NewAuthenticatorAfterRecoveryScreen).
+    req.session.mfaRecoveredAt = Date.now();
+    await saveSession(req);
+    return { ...result, recoveryCodesRemaining: await this.remainingRecoveryCodes(user.id) };
+  }
+
+  /**
+   * Starts a new authenticator for someone who already uses one (Account security; administrators included). It needs a
+   * code from the current authenticator or a recovery code (used up), except just after signing in with a recovery code.
+   * The new secret waits beside the current one, which keeps working until the new one's first code is confirmed.
+   */
+  async beginReplacement(req: AuthRequest, code: string | undefined) {
+    const user = req.currentUser;
+    const { enrolled, method } = await this.state(user);
+    if (!enrolled) throw new BadRequestException('Two-step verification isn’t on for your account.');
+    if (method !== MfaMethod.TOTP) throw new BadRequestException('Only an authenticator app can be replaced. Your account uses email codes.');
+    const recovered = !!req.session.mfaRecoveredAt && Date.now() - req.session.mfaRecoveredAt < RECOVERED_GRACE_MS;
+    if (!recovered && !code) throw new BadRequestException('Enter a code from your authenticator or a recovery code.');
+    const box = this.requireBox();
+    // Refused before the code is checked, so a recovery code is never used up for nothing.
+    if (await countAttempt(this.db, attemptKey('mfa-enrol', user.id), LOCKOUT_SECONDS) > 10) throw new HttpException('Too many setup attempts. Try again later.', 429);
+    if (!recovered) await this.checkCode(user, code!, true, 'manage');
+    const secret = newTotpSecret(), sealed = box.seal(secret, user.id);
+    const rows: unknown[] = await this.db.query(`UPDATE staff_mfa SET "pendingSecretCiphertext" = $2, "pendingCreatedAt" = now()
+      WHERE "userId" = $1 AND method = 'TOTP' AND "confirmedAt" IS NOT NULL RETURNING "userId"`, [user.id, sealed]);
+    if (!(rows[0] as unknown[] | undefined)?.length) throw new ConflictException('Two-step verification changed. Reload the page.');
+    // The shortcut after a recovery code works once.
+    if (recovered) { delete req.session.mfaRecoveredAt; await saveSession(req); }
+    const uri = totpUri(secret, user.email, ISSUER);
+    const svg = await qrSvg(uri, { type: 'svg', errorCorrectionLevel: 'M', margin: 1 });
+    return { qrCode: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`, uri, manualKey: formatManualKey(secret), issuer: ISSUER, account: user.email,
+      replacementId: replacementId(sealed) };
+  }
+
+  /** The new authenticator's first code makes it the one in use. Other sessions end and this one continues. */
+  async confirmReplacement(req: AuthRequest, code: string, shown: string) {
+    const user = req.currentUser;
+    const row = await this.db.getRepository(StaffMfa).createQueryBuilder('mfa').addSelect(['mfa.pendingSecretCiphertext', 'mfa.pendingCreatedAt'])
+      .where('mfa.userId = :id AND mfa.method = :method AND mfa.confirmedAt IS NOT NULL', { id: user.id, method: MfaMethod.TOTP }).getOne();
+    if (!row?.pendingSecretCiphertext || !row.pendingCreatedAt || Date.now() - row.pendingCreatedAt.getTime() > REPLACEMENT_MS) throw new ConflictException('Start setting up the new authenticator again.');
+    // Only the secret that was shown: a setup started again elsewhere replaced it, and its codes would never match.
+    // Refused before counting, so codes from the QR code they scanned don't add up to a lockout.
+    if (replacementId(row.pendingSecretCiphertext) !== shown) throw new ConflictException('You started a new authenticator again somewhere else, so this QR code no longer works. Start again here.');
+    await this.countCodeAttempt(user);
+    const step = matchTotp(this.requireBox().open(row.pendingSecretCiphertext, user.id), code.trim());
+    if (step === null) throw new UnauthorizedException('Invalid verification code');
+    const updated = await this.db.transaction(async manager => {
+      const current = await this.lockUser(manager, user.id);
+      // Only the secret that was shown: a second setup started meanwhile makes this one stale.
+      const replaced = await manager.query(`UPDATE staff_mfa SET "secretCiphertext" = "pendingSecretCiphertext", "pendingSecretCiphertext" = NULL, "pendingCreatedAt" = NULL,
+        "lastUsedStep" = $3, "updatedAt" = now() WHERE "userId" = $1 AND "pendingSecretCiphertext" = $2 RETURNING "userId"`, [user.id, row.pendingSecretCiphertext, String(step)]) as [unknown[], number];
+      if (!replaced[0].length) throw new ConflictException('Start setting up the new authenticator again.');
+      await revokeUserSessions(manager, current);
+      await this.audit(manager, user.id, null, SecurityEventType.MFA_AUTHENTICATOR_REPLACED, {});
+      return current;
+    });
+    await clearAttempts(this.db, codeKeys(user.id).failures);
+    return this.establish(req, updated, 'verified');
   }
 
   async status(user: User) {

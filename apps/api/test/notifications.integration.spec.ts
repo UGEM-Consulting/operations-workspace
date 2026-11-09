@@ -35,7 +35,7 @@ integration('New-hire and staff notifications (disposable PostgreSQL)', () => {
   const users: Record<'manager' | 'it' | 'it2', User> = {} as never;
   const agents: Record<'manager' | 'it' | 'it2', Agent> = {} as never;
   const answers = { firstName: 'Fictional', lastName: 'Applicant', personalPhoneNumber: '+1 202 555 0123', preferredAmericanFirstName: 'Alex', preferredAmericanLastName: 'Demo',
-    telegram: 'fictional_demo', mcName: 'Independent', teamLead: 'Independent', jobTitle: 'Dispatcher' };
+    telegram: 'fictional_demo', mcName: 'Not listed', teamLead: 'Not listed', jobTitle: 'Dispatcher' };
   let nextUpdate = 500;
   const send = (text: string, chat: number) => updates.push({ update_id: nextUpdate++, message: { text, chat: { id: chat, type: 'private' }, from: { username: `fictional_${chat}` } } });
   async function connectStaff(key: 'manager' | 'it' | 'it2', chat: number) {
@@ -54,7 +54,7 @@ integration('New-hire and staff notifications (disposable PostgreSQL)', () => {
     return { applicant, id: verified.body.applicationId as string };
   }
   const approve = (id: string) => agents.manager.post(`/api/onboarding/applications/${id}/reviews`).set(headers)
-    .send({ version: 2, decisionType: 'APPROVE', confirmed: true, employmentConfirmed: true, employment: { mcName: 'Independent', teamLead: 'Independent', jobTitle: 'Dispatcher' } }).expect(201);
+    .send({ version: 2, decisionType: 'APPROVE', confirmed: true, employmentConfirmed: true, employment: { mcName: 'Northwind Freight', teamLead: 'Independent', jobTitle: 'Dispatcher' } }).expect(201);
   const deliveries = () => db.query(`SELECT kind, "recipientId", "applicationId", channel, status, "failureCode" FROM notification_deliveries ORDER BY "createdAt", kind, channel`);
 
   beforeAll(async () => {
