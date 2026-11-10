@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Send } from 'lucide-react';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { Card, CardHeader } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/feedback';
 import { LocalTime } from '@/components/ui/local-time';
 import { Table } from '@/components/ui/table';
@@ -23,7 +23,12 @@ export interface DueReview { driverId: string; firstName: string; lastName: stri
 export interface DueTest { driverId: string; firstName: string; lastName: string; kind: 'DRUG' | 'ALCOHOL'; result: string; testedOn: string; owner: string | null }
 export interface DueIncident { incidentId: string; driverId: string; firstName: string; lastName: string; kind: 'ACCIDENT' | 'VIOLATION' | 'INSPECTION'; occurredOn: string; owner: string | null }
 export interface DueList { today: string; warningDays: number; items: DueReview[]; tests?: DueTest[]; incidents?: DueIncident[] }
-export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[] }
+/** A renewal scan a driver sent that waits for a check (section 33), with the checked document it would replace. */
+export interface ScanToCheck { id: string; kind: RenewalKind; version: number; pageCount: number; createdAt: string; driverId: string; firstName: string; lastName: string; driverVersion: number; email: string | null;
+  owner: { id?: string; name: string } | null; replacesExpiresOn: string | null;
+  // The document's open renewal link, so Not readable warns that a new link stops it; absent from an older API.
+  link?: RenewalLink | null }
+export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[]; scans?: ScanToCheck[] }
 
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
 
@@ -35,7 +40,9 @@ export const EXPIRING_DEFAULTS: Record<string, string> = { view: 'all', search: 
  * Safety › Expiring documents (designed as ExpiringDocumentsScreen): verified scans that have expired or expire soon,
  * soonest first, with counts and a My drivers view for owners. An expired license or medical card puts the driver on hold.
  * Reminders go out by themselves (ReminderStaffScreen): `telegram` is the viewer's own connection, when they get Safety
- * reminders, so someone not connected is asked to connect (ReminderStaffNotConnectedScreen).
+ * reminders, so someone not connected is asked to connect (ReminderStaffNotConnectedScreen). Renewal scans drivers sent wait
+ * at the top until someone checks them (ScansToCheckScreen), and an empty My drivers says so about your drivers only
+ * (ExpiringMineEmptyScreen). An older API sends no scans.
  */
 export function ExpiringDocuments({ data, reviews, meId, screener, filters, telegram }: { data: ExpiringList; reviews: DueList; meId: string; screener: boolean; filters: Record<string, string>;
   telegram?: { available: boolean; connected: boolean; email: string } }) {
@@ -45,10 +52,24 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
   const href = (view: string) => queueHref('/safety/expiring', filters, { view });
   // Safety leads, the Safety manager, administrators and the driver's owner renew (the API decides).
   const renewable = (item: ExpiringItem) => !!item.renewal && item.version !== undefined && (screener || item.owner?.id === meId);
+  const scans = data.scans ?? [];
+  const checkable = (scan: ScanToCheck) => screener || scan.owner?.id === meId;
+  const name = (row: { firstName: string; lastName: string }) => `${row.firstName} ${row.lastName}`.trim();
+  const checkIt = (scan: ScanToCheck) => <ExpiringRenewal kind={scan.kind} scan={{ id: scan.id, version: scan.version, pageCount: scan.pageCount, createdAt: scan.createdAt, unreadable: false }} link={scan.link ?? null} expired={false}
+    name={name(scan)} driver={{ id: scan.driverId, firstName: scan.firstName, email: scan.email, version: scan.driverVersion }} />;
+  // My drivers with nothing of theirs: say so, and offer the rest, rather than "Nothing is expiring" while All has rows.
+  const others = data.items.length - mine.length;
+  const empty = filters.view === 'mine' && !query && others > 0
+    ? <EmptyState title="Nothing expiring for your drivers" description={`None of the drivers you’re the Safety contact for has a document that expired or expires within ${data.warningDays} days. ${others} other ${others === 1 ? 'driver has' : 'drivers have'} one.`}
+      action={<Button variant="outline" asChild><Link href={href('all')}>Show all {others}</Link></Button>} />
+    : <EmptyState title="Nothing is expiring" description="No verified document has expired or expires soon." />;
+  // A scan waiting for its check is checked from Renewal scans to check (an older API sends no scans, so then from its row),
+  // so one scan never has two Check it buttons.
+  const checkedAbove = (item: ExpiringItem) => data.scans !== undefined && !!item.renewal?.scan && !item.renewal.scan.unreadable;
   const renewalState = (item: ExpiringItem) => {
     // A scan to check first, then a link that is out (also after Not readable), then an unreadable scan.
     const scan = item.renewal?.scan, link = item.renewal?.link;
-    if (scan && !scan.unreadable) return <Badge label="Waiting for your check" tone="warning" />;
+    if (scan && !scan.unreadable) return <Badge label={checkedAbove(item) ? 'Scan to check above' : 'Waiting for your check'} tone="warning" />;
     if (link) return link.expired ? <Badge label="Link expired" tone="neutral" /> : <span className="inline-flex flex-wrap items-center gap-1.5"><Badge label="Link sent" tone="info" /><LocalTime iso={link.createdAt} format="date" className="text-[13px] text-muted-foreground" /></span>;
     if (scan) return <Badge label="Not readable" tone="danger" />;
     return '—';
@@ -58,16 +79,31 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
     {telegram?.available && !telegram.connected && <Alert tone="info" title="Get your reminders on Telegram"
       action={<Button size="sm" asChild><Link href="/account/security"><Send aria-hidden="true" className="size-4" />Connect my Telegram</Link></Button>}>
       <p>Until you connect, reminders about your drivers’ documents go to {telegram.email}.</p></Alert>}
+    {scans.length > 0 && <Alert tone="warning" title={`Renewal scans to check: ${scans.length}`} action={scans.length === 1 && checkable(scans[0]) ? checkIt(scans[0]) : undefined}>
+      <p>{scans.length === 1 ? `${name(scans[0])} sent a new ${documentLabels[scans[0].kind].toLowerCase()} through the renewal link. Type the date printed on it to make it count.`
+        : 'Drivers sent renewed documents through renewal links. Type the date printed on each one to make it count.'}</p></Alert>}
     <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       <StatCard label="Expired" value={data.items.filter(item => item.expired).length} detail="Renew or replace them now" href={href('all')} tone="danger" />
       <StatCard label="Within 30 days" value={data.items.filter(item => !item.expired && item.expiresOn <= soon).length} detail="Contact the driver now" href={href('all')} tone="warning" />
       <StatCard label={`Within ${data.warningDays} days`} value={data.items.filter(item => !item.expired && item.expiresOn > soon).length} detail="Coming up" href={href('all')} tone="neutral" />
       <StatCard label="Yours" value={mine.length} detail="Drivers you’re the Safety contact for" href={href('mine')} tone="info" />
     </div>
+    {scans.length > 0 && <Card>
+      <CardHeader title="Renewal scans to check" description="Sent by drivers through a renewal link. Until someone checks it, the earlier document still counts." />
+      <Table<ScanToCheck> caption="Renewal scans to check" className="border-t border-border" rows={scans} rowKey={scan => scan.id}
+        columns={[
+          { key: 'driver', label: 'Driver', primary: true, cell: scan => <Link className="font-medium underline" href={`/safety/drivers/${scan.driverId}`}>{name(scan)}</Link> },
+          { key: 'document', label: 'Document', cell: scan => `${documentLabels[scan.kind]} · ${scan.pageCount} ${scan.pageCount === 1 ? 'page' : 'pages'}` },
+          { key: 'sent', label: 'Sent', nowrap: true, cell: scan => <LocalTime iso={scan.createdAt} /> },
+          { key: 'replaces', label: 'Document it replaces', hideBelow: 'lg', cell: scan => scan.replacesExpiresOn ? <>Valid until {day(scan.replacesExpiresOn)}</> : '—' },
+          { key: 'owner', label: 'Safety contact', hideBelow: 'lg', cell: scan => scan.owner?.name ?? '—' },
+          { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: scan => checkable(scan) ? checkIt(scan) : null },
+        ]} />
+    </Card>}
     <Card>
       <FilterBar path="/safety/expiring" filters={filters} defaults={EXPIRING_DEFAULTS} statusKey="view" searchLabel="Search driver" statuses={[{ key: 'mine', label: 'My drivers', count: mine.length }, { key: 'all', label: 'All', count: data.items.length }]} />
       <Table<ExpiringItem> caption="Documents that have expired or expire soon" className="border-t border-border" rows={shown} rowKey={item => item.documentId}
-        empty={<EmptyState title="Nothing is expiring" description="No verified document has expired or expires soon." />}
+        empty={empty}
         columns={[
           { key: 'driver', label: 'Driver', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'document', label: 'Document', cell: item => (documentLabels[item.kind as DocumentKind] ?? ownerDocumentLabels[item.kind as keyof typeof ownerDocumentLabels] ?? 'Document') + (item.truck ? ` · unit ${item.truck}` : '') },
@@ -77,8 +113,8 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
           ...(data.items.some(item => item.reminded !== undefined) ? [{ key: 'reminded', label: 'Driver reminded', hideBelow: 'lg' as const, cell: (item: ExpiringItem) => item.reminded
             ? <>{reminderOutcome({ ...item.reminded, failureCode: item.reminded.failureCode ?? null })} · <LocalTime iso={item.reminded.at} format="date" /></>
             : item.truck || !['LICENSE', 'MEDICAL_CARD'].includes(item.kind) ? <span className="text-muted-foreground">Staff only</span> : '—' }] : []),
-          { key: 'owner', label: 'Safety contact', hideBelow: 'xl', cell: item => item.owner?.name ?? '—' },
-          { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => renewable(item) ? <ExpiringRenewal kind={item.kind as RenewalKind} scan={item.renewal?.scan ?? null} link={item.renewal?.link ?? null} expired={item.expired}
+          { key: 'owner', label: 'Safety contact', hideBelow: 'lg', cell: item => item.owner?.name ?? '—' },
+          { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => renewable(item) && !checkedAbove(item) ? <ExpiringRenewal kind={item.kind as RenewalKind} scan={item.renewal?.scan ?? null} link={item.renewal?.link ?? null} expired={item.expired}
             name={`${item.firstName} ${item.lastName}`.trim()} driver={{ id: item.driverId, firstName: item.firstName, email: item.email ?? null, version: item.version! }} /> : null },
         ]} />
     </Card>

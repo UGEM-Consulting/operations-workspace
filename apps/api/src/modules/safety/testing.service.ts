@@ -68,7 +68,7 @@ export class TestingService {
  async forProfile(user: User, id: string) {
   const seesResults = await this.canSee(user, id);
   const [testing, hold] = await Promise.all([seesResults ? this.forDriver(id) : { hidden: true as const }, this.hold(id, seesResults)]);
-  return { testing, hold };
+  return { testing, hold, seesResults };
  }
  /** A driver's entries, newest first (voided ones included and marked). */
  async forDriver(id: string) {
@@ -94,4 +94,19 @@ export class TestingService {
    LEFT JOIN driver_owners w ON w."driverId" = d.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
    WHERE d.status = 'CLEARED' ORDER BY l."testedOn"`) as { driverId: string }[];
  }
+}
+
+/**
+ * Clearance items that hold drug and alcohol results: the pre-employment drug test and the Clearinghouse query
+ * (49 CFR 40.321, 382.723). Someone who may not see results gets each as { key, hidden: true }, whether or not anything
+ * was recorded (so a change from Not started never shows a result arrived), not its gaps, and its history entries
+ * without the status, so neither the checklist nor the activity says how it came out.
+ */
+export const RESULT_ITEMS = ['DRUG_TEST', 'CLEARINGHOUSE'];
+export function withoutResults<T extends { clearance?: { items: { key: string }[]; missing: string[] } | null; activity: { event: string; metadata: Record<string, unknown> }[] }>(driver: T): T {
+ return { ...driver,
+  clearance: driver.clearance && { ...driver.clearance,
+   items: [...driver.clearance.items.filter(item => !RESULT_ITEMS.includes(item.key)), ...RESULT_ITEMS.map(key => ({ key, hidden: true }))],
+   missing: driver.clearance.missing.filter(code => !RESULT_ITEMS.some(key => code.endsWith(`:${key}`))) },
+  activity: driver.activity.map(row => row.event === 'CLEARANCE_RECORDED' && RESULT_ITEMS.includes(String(row.metadata.item)) ? { ...row, metadata: { item: row.metadata.item, hidden: true } } : row) };
 }

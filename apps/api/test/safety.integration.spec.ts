@@ -25,6 +25,7 @@ import { LEFTOVER_SCAN_AGE_MS, ScanSweeper } from '../src/modules/safety/scan-sw
 import { DriverSignedCopies } from '../src/modules/safety/signed-copies';
 import { RETRY_FIRST_MS } from '../src/modules/storage/signed-copies';
 import { earliestFinalRejection } from '../src/modules/safety/safety.entity';
+import { SafetyService } from '../src/modules/safety/safety.service';
 import { ScreeningService } from '../src/modules/safety/screening.service';
 import { addDays, usDay } from '../src/modules/safety/screening-rules';
 import { addMonths } from '../src/modules/safety/history-rules';
@@ -901,8 +902,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(returned.url).toMatch(/\/driver#[a-f0-9]{64}$/);
     expect(await driver(id)).toMatchObject({ status: 'APPLYING', link: { email: 'jordan.wheeler@example.test' },
       application: { status: 'DRAFT', submittedAt: null, correctionNote: 'Your ZIP code doesn’t match your city. Check it and send again.' } });
-    // The session that submitted can't read the application any more; the new link verifies afresh.
-    await agent.get('/api/driver/application').set(headers).expect(401);
+    // The session that submitted can't read the application any more, and is told Safety sent a newer link (section 33).
+    expect((await agent.get('/api/driver/application').set(headers).expect(401)).body).toMatchObject({ reason: 'NEWER_LINK', since: expect.any(String), message: expect.stringMatching(/newer link/) });
     const again = request.agent(app.getHttpServer());
     const { challengeId } = (await again.post('/api/driver/begin').set(headers).send({ token: returned.url.split('#').pop(), email: 'jordan.wheeler@example.test' }).expect(201)).body;
     await settle();
@@ -913,6 +914,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const back = await driver(id);
     expect(back).toMatchObject({ status: 'SCREENING', application: { status: 'SUBMITTED', correctionNote: null, correctionRequestedAt: null, fields: { zip: '78701' } } });
     expect((await again.get('/api/driver/application').set(headers).expect(200)).body.correction).toBeNull();
+    // Once the newer link is used up there's nothing newer to point to: the old session gets the usual message.
+    expect((await agent.get('/api/driver/application').set(headers).expect(401)).body).not.toHaveProperty('reason');
     expect((await events(id)).filter(row => row.event === 'CORRECTIONS_REQUESTED').map(row => row.metadata)).toEqual([{}]);
     // Only a driver in screening can be sent back.
     await agents.lead.post(`/api/safety/drivers/${id}/corrections`).set(headers).send({ version: back.version - 1, message: 'Again' }).expect(409);
@@ -1161,7 +1164,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await item(agents.staff, 'DRUG_TEST', { version, result: 'NEGATIVE', doneOn: addDays(today(), 3) }).expect(400);
     await item(agents.staff, 'DRUG_TEST', { version, result: 'NO_VIOLATIONS', doneOn: today() }).expect(400);
     ({ version } = (await item(agents.staff, 'DRUG_TEST', { version, result: 'NOT_NEGATIVE', doneOn: today() }).expect(201)).body);
-    expect((await driver(id)).clearance.items).toEqual([expect.objectContaining({ key: 'DRUG_TEST', status: 'BLOCKED', result: 'NOT_NEGATIVE', doneOn: today(), updatedBy: 'Fictional staff' })]);
+    expect((await driver(id, agents.staff)).clearance.items).toEqual([expect.objectContaining({ key: 'DRUG_TEST', status: 'BLOCKED', result: 'NOT_NEGATIVE', doneOn: today(), updatedBy: 'Fictional staff' })]);
     ({ version } = (await item(agents.staff, 'DRUG_TEST', { version, result: 'NEGATIVE', doneOn: today() }).expect(201)).body);
     // The others take a status: blocked needs a note, completed a date, and only some items can be not needed.
     await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: 'BLOCKED' }).expect(400);
@@ -1276,6 +1279,17 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     let { version } = (await agents.manager.post(`/api/safety/drivers/${id}/clearance/DRUG_TEST`).set(headers).send({ version: 1, result: 'NOT_NEGATIVE', doneOn: today() }).expect(201)).body;
     // It shows as waiting on the deciders, and withdrawing stays refused.
     expect(await app.get(ScreeningService).waitingCount(users.manager)).toBe(1);
+    // Only the Safety manager, administrators and the Safety contact see how it came out (49 CFR 40.321): the Safety lead and
+    // other staff get the item, its gap and its history entry without the result.
+    for (const agent of [agents.lead, agents.staff2]) {
+      const seen = await driver(id, agent);
+      // Both result items come hidden whether or not anything was recorded, so Not started never tells a result arrived.
+      expect(seen.clearance.items).toEqual([{ key: 'DRUG_TEST', hidden: true }, { key: 'CLEARINGHOUSE', hidden: true }]);
+      expect(seen.clearance.missing.filter((code: string) => code.endsWith('DRUG_TEST') || code.endsWith('CLEARINGHOUSE'))).toEqual([]);
+      expect(seen.activity.find((row: { event: string }) => row.event === 'CLEARANCE_RECORDED').metadata).toEqual({ item: 'DRUG_TEST', hidden: true });
+      expect(JSON.stringify(seen)).not.toMatch(/NOT_NEGATIVE|BLOCKED/);
+    }
+    expect((await driver(id, agents.manager)).clearance.items).toEqual([expect.objectContaining({ key: 'DRUG_TEST', status: 'BLOCKED', result: 'NOT_NEGATIVE' })]);
     await agents.manager.post(`/api/safety/drivers/${id}/withdraw`).set(headers).send({ version, reason: 'Failed test' }).expect(409);
     const notice = { decision: 'PRE_ADVERSE', note: 'Clearance result.', noticeSent: true };
     await decide(agents.lead, id, { version, ...notice, noticeSentOn: today() }).expect(403);
@@ -1399,6 +1413,34 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
         ['RENEWAL_OPENED', { kind: 'MEDICAL_CARD' }], ['DOCUMENT_UPLOADED', { kind: 'MEDICAL_CARD', pages: 1, renewal: true }]]);
   });
 
+  it('lists a renewal scan to check even when the document it replaces isn’t expiring, and counts each document once', async () => {
+    const { id, version, medical } = await clearedWithExpiredCard(), day = usDay('latest');
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [medical, addDays(day, 400)]);
+    // The sidebar's Expiring documents count, before due reviews, tests and incidents are added.
+    const count = () => app.get(SafetyService).expiringCount();
+    const list = async () => (await agents.staff2.get('/api/safety/expiring').set(headers).expect(200)).body;
+    const before = await count();
+    const sent = (await agents.staff.post(`/api/safety/drivers/${id}/renewals`).set(headers).send({ kind: 'MEDICAL_CARD', version }).expect(201)).body;
+    expect((await list()).scans).toEqual([]);
+    const renewal = await openRenewal(sent.url);
+    await renewal.agent.post('/api/driver/verify').set(headers).send({ challengeId: renewal.challengeId, code: renewal.code }).expect(201);
+    await renewal.agent.post('/api/driver/renewal').set(headers).send({ pages: [page(), page()] }).expect(201);
+    // Every Safety role sees it, with the checked card it would replace; the card isn't on the expiring list.
+    const listed = await list();
+    expect(listed.items.filter((row: { driverId: string }) => row.driverId === id)).toEqual([]);
+    expect(listed.scans).toEqual([expect.objectContaining({ driverId: id, kind: 'MEDICAL_CARD', pageCount: 2, version: 1, firstName: 'Jordan', email: 'jordan.wheeler@example.test',
+      replacesExpiresOn: addDays(day, 400), owner: expect.objectContaining({ id: users.staff.id }), driverVersion: expect.any(Number), link: null })]);
+    expect(await count()).toBe(before + 1);
+    // Once the card it replaces is on the list too, the document still counts once.
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [medical, addDays(day, -3)]);
+    expect(await count()).toBe(before + 1);
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [medical, addDays(day, 400)]);
+    // Checked or not readable, it leaves the list.
+    await agents.staff.post(`/api/safety/drivers/${id}/documents/${listed.scans[0].id}/verify`).set(headers).send({ version: 1, expiresOn: addDays(day, 700) }).expect(201);
+    expect((await list()).scans).toEqual([]);
+    expect(await count()).toBe(before);
+  });
+
   it('keeps a scan the driver sent with their application when a renewal replaces it, and never treats it as a renewal scan', async () => {
     const one = await submitted(), day = usDay('latest');
     // The medical card from the application is never checked (as for a DL driver, for whom it is optional).
@@ -1519,7 +1561,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await everify({ result: 'CASE_CLOSED', i9Complete: true }).expect(400)).body.message).toMatch(/closed/);
     // A tentative nonconfirmation stays in progress; a final one blocks clearance (and counts for the Safety manager).
     ({ version } = (await everify({ result: 'TENTATIVE_NONCONFIRMATION', i9Complete: true }).expect(201)).body);
-    expect((await driver(id)).clearance.items).toEqual([expect.objectContaining({ key: 'E_VERIFY', status: 'IN_PROGRESS', result: 'TENTATIVE_NONCONFIRMATION', doneOn: today() })]);
+    // The default reader may not see results, so the drug test and Clearinghouse items come hidden alongside it.
+    expect((await driver(id)).clearance.items).toEqual([expect.objectContaining({ key: 'E_VERIFY', status: 'IN_PROGRESS', result: 'TENTATIVE_NONCONFIRMATION', doneOn: today() }), { key: 'DRUG_TEST', hidden: true }, { key: 'CLEARINGHOUSE', hidden: true }]);
     ({ version } = (await everify({ result: 'FINAL_NONCONFIRMATION', i9Complete: true }).expect(201)).body);
     expect((await driver(id)).clearance.items[0]).toMatchObject({ status: 'BLOCKED' });
     ({ version } = (await everify({ result: 'EMPLOYMENT_AUTHORIZED', i9Complete: true }).expect(201)).body);

@@ -155,7 +155,8 @@ export const driverProfileSchema = driverRow.extend({
     .optional().catch(undefined),
   // From an API with clearance and dispatch assignments.
   clearedAt: nullableText.optional().catch(undefined), clearedBy: safetyPerson.optional().catch(undefined),
-  clearance: z.looseObject({ items: z.array(z.looseObject({ key: text, status: text, result: nullableText, doneOn: nullableText, note: nullableText })),
+  // A drug test or Clearinghouse item comes as { key, hidden } to someone who may not see results (section 33).
+  clearance: z.looseObject({ items: z.array(z.union([z.looseObject({ key: text, hidden: z.literal(true) }), z.looseObject({ key: text, status: text, result: nullableText, doneOn: nullableText, note: nullableText })])),
     employers: z.array(z.looseObject({ id: text, name: text, fromMonth: text, toMonth: text, requestedOn: nullableText, answeredOn: nullableText, goodFaithOn: nullableText.optional().catch(undefined), goodFaithNote: nullableText.optional().catch(undefined) })), missing: z.array(text) }).optional().catch(undefined),
   assignments: z.array(z.looseObject({ id: text, startedAt: text, endedAt: nullableText, truck: nullableText, mc: text, team: nullableText, dispatcher: text })).optional().catch(undefined),
   // From an API with yearly reviews, testing, incidents and trucks. A malformed value is dropped and its card isn't shown.
@@ -190,7 +191,11 @@ export const expiringSchema = z.looseObject({ today: text, warningDays: z.number
   version: z.number().optional().catch(undefined), email: nullableText.optional().catch(undefined),
   // From an API with expiration reminders: how the driver was last reminded about this document.
   reminded: z.looseObject({ channel: z.enum(['EMAIL', 'TELEGRAM']), status: text, failureCode: nullableText.optional().catch(undefined), at: text }).nullable().optional().catch(undefined),
-  renewal: z.looseObject({ link: renewalLink.nullable(), scan: renewalScan.nullable() }).nullable().optional().catch(undefined) })) });
+  renewal: z.looseObject({ link: renewalLink.nullable(), scan: renewalScan.nullable() }).nullable().optional().catch(undefined) })),
+  // From an API with section 33: renewal scans drivers sent that wait for a check.
+  scans: z.array(z.looseObject({ id: text, kind: z.enum(['LICENSE', 'MEDICAL_CARD']), version: z.number(), pageCount: z.number(), createdAt: text, driverId: text, firstName: text, lastName: text, driverVersion: z.number(),
+    email: nullableText, owner: z.looseObject({ name: text }).nullable().catch(null), replacesExpiresOn: nullableText,
+    link: renewalLink.nullable().optional().catch(undefined) })).optional().catch(undefined) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
 export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN']), id: text,

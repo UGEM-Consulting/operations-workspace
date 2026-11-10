@@ -54,6 +54,9 @@ export function DriverApplicationPage() {
   const [purpose, setPurpose] = useState<'APPLICATION' | 'RENEWAL' | null>(null);
   const [state, setState] = useState<'loading' | 'form' | 'renewal' | 'closed'>('loading');
   const [closedMessage, setClosedMessage] = useState('');
+  // Set when the link closed because Safety sent a newer one: when they sent it.
+  const [newerSince, setNewerSince] = useState<string | null>(null);
+  const ended = useCallback((end: string | ApiError) => { setClosedMessage(typeof end === 'string' ? end : end.message); setNewerSince(typeof end !== 'string' && end.reason?.code === 'NEWER_LINK' ? end.reason.since ?? '' : null); setState('closed'); }, []);
   // The link verified in this tab. Each new link (a fragment pasted into this tab, on a shared phone perhaps) needs its
   // own verification, so the previous driver's session never answers for it.
   const [verifiedToken, setVerifiedToken] = useState<string | null>(null);
@@ -69,24 +72,38 @@ export function DriverApplicationPage() {
     if (token === null || malformed || (linked && !verified)) return;
     let current = true;
     const showRenewal = () => readApi<DriverRenewalView>('driver/renewal').then(result => { if (current) { setRenewal(result); setState('renewal'); } });
-    // After a reload the session may be a renewal link's, which the application refuses: then open the renewal.
+    // After a reload the session may be a renewal link's, which the application refuses: then open the renewal. A link
+    // Safety replaced (NEWER_LINK) is an application link, so it keeps its reason instead.
     const open = purpose === 'RENEWAL' ? showRenewal()
       : readApi<DriverApplicationView>('driver/application').then(result => { if (current) { setView(result); setState('form'); } },
-        (error: unknown) => { if (purpose === null && error instanceof ApiError && error.status === 401) return showRenewal(); throw error; });
+        (error: unknown) => { if (purpose === null && error instanceof ApiError && error.status === 401 && error.reason?.code !== 'NEWER_LINK') return showRenewal(); throw error; });
     open.catch((error: unknown) => {
       if (!current) return;
-      setClosedMessage(error instanceof ApiError && error.status === 401 ? 'Open the link from Safety to continue. You’ll get a code by email.' : errorMessage(error, 'Unable to load your application.'));
-      setState('closed');
+      if (error instanceof ApiError && error.reason?.code === 'NEWER_LINK') { ended(error); return; }
+      ended(error instanceof ApiError && error.status === 401 ? 'Open the link from Safety to continue. You’ll get a code by email.' : errorMessage(error, 'Unable to load your application.'));
     });
     return () => { current = false; };
-  }, [token, malformed, linked, verified, purpose]);
+  }, [token, malformed, linked, verified, purpose, ended]);
   if (token === null) return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
   if (malformed) return <Closed message="This link looks incomplete. Open the full link from Safety’s message." />;
   if (linked && !verified) return <VerifyDriver key={token} token={token} onVerified={next => { setPurpose(next); setVerifiedToken(token); }} />;
   if (state === 'loading') return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
-  if (state === 'renewal' && renewal) return <DriverRenewal view={renewal} focusHeading={verified} onEnded={message => { setClosedMessage(message); setState('closed'); }} />;
+  if (state === 'renewal' && renewal) return <DriverRenewal view={renewal} focusHeading={verified} onEnded={ended} />;
+  if (state === 'closed' && newerSince !== null) return <NewerLink since={newerSince} />;
   if (state === 'closed' || !view) return <Closed message={closedMessage} />;
-  return <DriverForm view={view} focusHeading={verified} onSaved={setView} onEnded={message => { setClosedMessage(message); setState('closed'); }} />;
+  return <DriverForm view={view} focusHeading={verified} onSaved={setView} onEnded={ended} />;
+}
+
+/** Safety replaced this link (designed as DriverNewerLinkPhoneScreen): the newest message has the one to use. */
+function NewerLink({ since }: { since: string }) {
+  return <Card className="space-y-4 p-6 sm:p-8">
+    <h1 className="text-2xl font-normal">Safety sent you a newer link</h1>
+    <Alert tone="info" title={since ? <>This link was replaced on <LocalTime iso={since} format="date" /></> : 'This link was replaced'}>
+      <p>Open the newest message from UGEM Safety and use the link in it. Your answers, photos and signatures are saved.</p>
+    </Alert>
+    <p className="text-sm text-muted-foreground">You’ll confirm your email with a new code there, like before.</p>
+    <p className="text-[13px] text-muted-foreground">Can’t find it? Ask Safety to send it again.</p>
+  </Card>;
 }
 
 function Closed({ message }: { message: string }) {
@@ -133,7 +150,7 @@ function VerifyDriver({ token, onVerified }: { token: string; onVerified: (purpo
   </Card>;
 }
 
-function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverApplicationView; focusHeading: boolean; onSaved: (view: DriverApplicationView) => void; onEnded: (message: string) => void }) {
+function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverApplicationView; focusHeading: boolean; onSaved: (view: DriverApplicationView) => void; onEnded: (end: string | ApiError) => void }) {
   const form = useRef<HTMLFormElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   // Straight after verification, and on the confirmation after submitting, screen readers land on the heading rather than at the top of the page.
@@ -232,7 +249,7 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
         : 'Saved. You can come back to this link until you submit.');
       return true;
     } catch (error) {
-      if (error instanceof ApiError && error.kind === 'applicant-session') { onEnded(error.message); return false; }
+      if (error instanceof ApiError && error.kind === 'applicant-session') { onEnded(error); return false; }
       setFailed(true); setMessage(errorMessage(error, 'Unable to save. Your answers are still on this page.'));
       // A refused submission names the answers it needs (an age outside 18 to 100, an expired license, a missing answer):
       // mark them, with the API's explanation when it is about one answer, and move to the first.

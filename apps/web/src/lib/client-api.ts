@@ -11,7 +11,9 @@ export class ApiError extends Error {
   readonly status?: number;
   /** Fields or items a refused request named (the API's `missing` list), for highlighting them on the form. */
   readonly missing: string[];
-  constructor(message: string, kind: ApiErrorKind, status?: number, missing: string[] = []) { super(message); this.name = 'ApiError'; this.kind = kind; this.status = status; this.missing = missing; }
+  /** Why a driver's link closed, when the API says (NEWER_LINK, with since: when Safety sent the newer one). */
+  readonly reason?: { code: string; since?: string };
+  constructor(message: string, kind: ApiErrorKind, status?: number, missing: string[] = [], reason?: { code: string; since?: string }) { super(message); this.name = 'ApiError'; this.kind = kind; this.status = status; this.missing = missing; this.reason = reason; }
 }
 
 export const apiMessages = {
@@ -63,7 +65,7 @@ export function responseError(path: string, status: number, data: unknown, json:
   }
   if (status === 401 && path.startsWith('driver/')) {
     // A driver has no staff session to end: their link or session closed. A final message (link cancelled) is shown as is.
-    return new ApiError(message && message !== 'Unauthorized' ? message : apiMessages.driverSession, 'applicant-session', status);
+    return new ApiError(message && message !== 'Unauthorized' ? message : apiMessages.driverSession, 'applicant-session', status, [], json ? serverReason(data) : undefined);
   }
   if (status === 401) {
     if (path.startsWith('applicant/')) {
@@ -76,6 +78,12 @@ export function responseError(path: string, status: number, data: unknown, json:
   if (status === 409) return new ApiError(message ?? 'This record changed. Reload and try again.', 'conflict', status);
   if (status === 503) return new ApiError(message ?? apiMessages.unavailable, 'unavailable', status);
   return new ApiError(message ?? apiMessages.generic, 'request', status, json ? serverMissing(data) : []);
+}
+
+function serverReason(data: unknown): { code: string; since?: string } | undefined {
+  if (!data || typeof data !== 'object' || typeof (data as { reason?: unknown }).reason !== 'string') return undefined;
+  const { reason, since } = data as { reason: string; since?: unknown };
+  return { code: reason, ...(typeof since === 'string' ? { since } : {}) };
 }
 
 function serverMissing(data: unknown): string[] {

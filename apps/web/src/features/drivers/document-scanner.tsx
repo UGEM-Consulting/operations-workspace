@@ -30,7 +30,7 @@ export const scannerId = (kind: DocumentKind) => `scan-${segments[kind]}`;
  * With `send` (a renewal link), the pages go to Safety once through `send.upload` instead of into the application.
  */
 export function DocumentScanner({ kind, view, required, error, onSaved, onEnded, onDraft, send }: { kind: DocumentKind; view?: DriverApplicationView; required: boolean;
-  error?: string; onSaved?: (view: DriverApplicationView) => void; onEnded: (message: string) => void; onDraft: (kind: DocumentKind, draft: ScanDraft) => void;
+  error?: string; onSaved?: (view: DriverApplicationView) => void; onEnded: (end: string | ApiError) => void; onDraft: (kind: DocumentKind, draft: ScanDraft) => void;
   send?: { label: string; hint: string; upload: (pages: string[]) => Promise<void> } }) {
   const current = view?.documents?.find(document => document.kind === kind) ?? null;
   const [pages, setPages] = useState<Page[]>([]);
@@ -67,7 +67,7 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
       const saved = await mutate<DriverApplicationView>(`driver/documents/${segments[kind]}`, 'POST', { pages: images, ...(kind === 'WORK_AUTHORIZATION' ? { subtype } : {}) });
       stop(); onSaved?.(saved); setAnnouncement(`${documentLabels[kind]} saved.`);
     } catch (error) {
-      if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error.message);
+      if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error);
       setFailed(true); setMessage(error instanceof PhotoError ? error.message : errorMessage(error, 'The scan wasn’t saved. Try again.'));
     } finally { setBusy(false); }
   }

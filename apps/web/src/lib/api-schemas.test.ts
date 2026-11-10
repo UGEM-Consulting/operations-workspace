@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatchDriverOptionsSchema, teamViewSchema } from './api-schemas.ts';
+import { dispatchDriverOptionsSchema, driverProfileSchema, teamViewSchema } from './api-schemas.ts';
 
 describe('dispatch responses', () => {
   it('accepts an independent dispatcher (no team) among the people a driver can be assigned to', () => {
@@ -14,5 +14,13 @@ describe('dispatch responses', () => {
     const newer = { ...base, dispatchers: [{ ...older.dispatchers[0], lastDay: '2026-11-23' }], supports: [{ ...older.supports[0], lastDay: null, hasApplication: false }] };
     assert.equal(teamViewSchema.safeParse(older).success, true);
     assert.equal(teamViewSchema.safeParse(newer).success, true);
+  });
+});
+
+describe('Safety responses', () => {
+  it('keeps the clearance card when drug test and Clearinghouse results are hidden from this person', () => {
+    const clearance = { employers: [], missing: ['clearance:ROAD_TEST'], items: [{ key: 'DRUG_TEST', hidden: true }, { key: 'CLEARINGHOUSE', hidden: true },
+      { key: 'ROAD_TEST', status: 'IN_PROGRESS', result: null, doneOn: null, note: null }] };
+    assert.deepEqual(driverProfileSchema.shape.clearance.parse(clearance)?.items.map(item => item.key), ['DRUG_TEST', 'CLEARINGHOUSE', 'ROAD_TEST']);
   });
 });

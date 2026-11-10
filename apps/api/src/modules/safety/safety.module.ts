@@ -13,7 +13,7 @@ import { DECIDERS, SAFETY_ROLES } from './driver-records';
 import { SafetyService } from './safety.service';
 import { AnnualReviewService } from './annual-review.service';
 import { AnnualReviewDto } from './annual-review.dto';
-import { TestingService } from './testing.service';
+import { TestingService, withoutResults } from './testing.service';
 import { RecordTestDto, VoidTestDto } from './testing.dto';
 import { IncidentService } from './incident.service';
 import { TruckService } from './truck.service';
@@ -64,9 +64,10 @@ class SafetyController {
  // The record plus its yearly reviews, tests (only for those who may see results), incidents, trucks and any hold.
  @Get('drivers/:id') async driver(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) {
   const driver = await this.safety.driver(id);
-  const [annualReviews, { testing, hold }, incidents, trucks, noticeLetters, reminders] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id),
+  const [annualReviews, { testing, hold, seesResults }, incidents, trucks, noticeLetters, reminders] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id),
    this.incidents.forDriver(id), this.trucks.forDriver(id), DECIDERS.includes(req.currentUser.role) ? this.letters.current() : undefined, this.reminders.forDriver(id)]);
-  return { ...driver, annualReviews, testing, incidents, trucks, hold, noticeLetters, reminders };
+  // Drug test and Clearinghouse results in clearance follow the test results rule (withoutResults).
+  return { ...(seesResults ? driver : withoutResults(driver)), annualReviews, testing, incidents, trucks, hold, noticeLetters, reminders };
  }
  // Owner-operators' trucks and their lease, insurance and registration PDFs (no-store files; every open is recorded).
  @Get('trucks') truckList() { return this.trucks.list(); }
