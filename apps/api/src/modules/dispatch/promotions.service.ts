@@ -4,6 +4,7 @@ import type { User } from '../users/user.entity';
 import { JobTitle, Mc } from '../lists/lists.entity';
 import { ApplicationReview, ApplicationSubmission, DispatcherApplication, Invitation } from '../onboarding/entities';
 import { createItRequest } from '../it/create-request';
+import { carrySupportSetups, lockSetupRequests, sameSetups } from '../it/removal';
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
@@ -103,10 +104,12 @@ export class PromotionsService {
  async decide(user: User, id: string, dto: DecidePromotionDto) {
   let alerts: string[] = [];
   const result = await this.write(async em => {
-   // The support's record is locked before the request (member, then request, then team), the order leaving uses.
+   // Their IT setups, then their record, then the request, then the team: the order leaving uses, so the two never deadlock.
    const found = await em.getRepository(PromotionRequest).findOneBy({ id });
    if (!found) throw new NotFoundException('This request no longer exists.');
+   const setups = await lockSetupRequests(em, found.supportId);
    const support = await em.getRepository(DispatchMember).findOne({ where: { id: found.supportId }, lock: { mode: 'pessimistic_write' } });
+   await sameSetups(em, found.supportId, setups);
    const request = await em.getRepository(PromotionRequest).findOneOrFail({ where: { id }, lock: { mode: 'pessimistic_write' } });
    if (request.version !== dto.version) throw new ConflictException('Someone else changed this request. Reload and try again.');
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
@@ -144,6 +147,7 @@ export class PromotionsService {
    await em.getRepository(MemberAssignment).save({ memberId: support.id, mcId: mc.id, teamId: team?.id ?? null, startedAt: at, reason: 'Promoted from support to dispatcher.', actorId: user.id });
    const itRequest = await createItRequest(em, application, approval, submitted?.fields ?? {}, invitation, user.id,
     { mcName: mc.name, teamLead: team ? (lead ? `${lead.firstName} ${lead.lastName}`.trim() : team.name) : 'Independent', jobTitle: title.name });
+   await carrySupportSetups(em, itRequest, support.id, user.id);
    alerts = await this.notifications.queueItSetupWaiting(em, itRequest);
    Object.assign(request, { status: 'APPROVED', note: dto.note?.trim() || null, decidedBy: user.id, decidedAt: now, itRequestId: itRequest.id, version: request.version + 1 });
    await em.save(request);

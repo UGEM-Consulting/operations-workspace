@@ -1,5 +1,7 @@
 import { createItRequest } from '../it/create-request';
 import { createMemberForApproval, createSupportForApproval, supportedDispatcher, supportedTeam } from '../dispatch/create-member';
+import { createSupportItRequest } from '../it/support-setup';
+import { SUPPORT_IT_ITEM_KEYS } from '../it/it.entity';
 import { NO_MC } from '../dispatch/dispatch.entity';
 import { INDEPENDENT_NOT_MC, isIndependent } from '../lists/lists.entity';
 import { acceptPaperwork } from '../dispatch/existing.service';
@@ -102,7 +104,7 @@ export class ReviewService {
   const [member]:{position:string;supportType:string}[]=await this.db.query('SELECT position,"supportType" FROM dispatch_members WHERE "applicationId"=$1',[application.id]);
   const employmentOptions=canReview&&!support&&!catchUp?await this.employmentOptions():null;
   // Who a support assists, and the dispatchers and teams a manager may pick instead while deciding.
-  const supports=support?{supportsMemberId:invitation.supportsMemberId,supportsTeamId:invitation.supportsTeamId,supportType:invitation.supportType,options:await this.dispatcherOptions(invitation.supportsMemberId),teamOptions:await this.teamOptions(invitation.supportsTeamId)}:null;
+  const supports=support?{supportsMemberId:invitation.supportsMemberId,supportsTeamId:invitation.supportsTeamId,supportType:invitation.supportType,options:await this.dispatcherOptions(invitation.supportsMemberId),teamOptions:await this.teamOptions(invitation.supportsTeamId),itSetupItems:SUPPORT_IT_ITEM_KEYS}:null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, member:member??null, submissions, activity,
    reviews:reviews.entities.map((review,index)=>({...review,reviewer:{id:review.reviewerId,firstName:reviews.raw[index].reviewerFirstName as string,lastName:reviews.raw[index].reviewerLastName as string}})),
@@ -191,6 +193,8 @@ export class ReviewService {
    if (!support && (input.supportsMemberId || input.supportsTeamId)) throw new BadRequestException('Only a support is approved with a dispatcher or team.');
    if (input.supportsMemberId && input.supportsTeamId) throw new BadRequestException('Choose a dispatcher or a team, not both.');
    if (input.supportType && (!support || input.decisionType !== 'APPROVE')) throw new BadRequestException('Support or updater is confirmed when approving a support.');
+   if (catchUpMemberId && input.itSetup?.length) throw new BadRequestException('Accepting paperwork doesn’t ask IT for anything. Use Ask IT to set up on their page.');
+   if (input.itSetup?.length && (!support || input.decisionType !== 'APPROVE')) throw new BadRequestException('IT is asked to set things up when approving a support or updater; a new dispatcher always gets IT setup.');
    if ((input.supportsMemberId || input.supportsTeamId) && input.decisionType !== 'APPROVE') throw new BadRequestException('The dispatcher or team is confirmed during approval.');
    if (!support && !catchUpMemberId && input.decisionType === 'APPROVE' && (!input.employmentConfirmed || !input.employment)) throw new BadRequestException('Confirm MC, team lead and job title before approval.');
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
@@ -247,7 +251,9 @@ export class ReviewService {
     if(dispatcherId)await supportedDispatcher(em,dispatcherId);else await supportedTeam(em,teamId!);
     const supportType=input.supportType??invitation.supportType;
     if(dispatcherId!==invitation.supportsMemberId||teamId!==invitation.supportsTeamId||supportType!==invitation.supportType){invitation.supportsMemberId=dispatcherId;invitation.supportsTeamId=teamId;invitation.supportType=supportType;await em.save(invitation);}
-    await createSupportForApproval(em,application,submitted?.fields??{},{dispatcherId,teamId},review.createdAt,supportType);
+    const supportMember=await createSupportForApproval(em,application,submitted?.fields??{},{dispatcherId,teamId},review.createdAt,supportType);
+    // Only what the manager ticked; the responsible manager gets IT's notice when it's done.
+    if(input.itSetup?.length)alerts=await this.notifications.queueItSetupWaiting(em,await createSupportItRequest(em,{memberId:supportMember.id,items:input.itSetup,managerId:application.assignedManagerId,actorId:user.id}));
    }
    // Durable notification-ready events; no delivery claim or personal field snapshots in audit data.
    await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'APPLICATION_'+nextStatus});

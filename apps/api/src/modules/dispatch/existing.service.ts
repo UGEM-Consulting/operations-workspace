@@ -10,8 +10,8 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { digest } from '../onboarding/verification-code';
 import { usDay } from '../safety/screening-rules';
 import { Role, type User } from '../users/user.entity';
-import { ItOnboardingRequest, ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
-import { createRemoval } from '../it/removal';
+import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
+import { createRemoval, memberSetups, removalTaskKeys, setupAccounts } from '../it/removal';
 import { NotificationsService } from '../updates/notifications.service';
 import { EXTENSION, signInsInUse, telegramUsername } from './account-details';
 import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
@@ -96,6 +96,7 @@ export class ExistingDispatchersService {
    SELECT r."companyEmail" AS company, r."personalEmail" AS personal, r."personalPhone" AS phone FROM existing_member_records r JOIN dispatch_members d ON d.id = r."memberId" WHERE d.status <> 'LEFT'
    UNION ALL SELECT r."companyEmail", i.email, s.fields->>'personalPhoneNumber' FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" JOIN invitations i ON i.id = a."invitationId"
     LEFT JOIN it_onboarding_requests r ON r."applicationId" = a.id LEFT JOIN LATERAL (SELECT fields FROM application_submissions x WHERE x."applicationId" = a.id ORDER BY x.version DESC LIMIT 1) s ON true WHERE d.status <> 'LEFT'
+   UNION ALL SELECT r."companyEmail", NULL, NULL FROM it_onboarding_requests r JOIN dispatch_members d ON d.id = r."memberId" WHERE r."companyEmail" IS NOT NULL AND r."cancelledAt" IS NULL AND d.status <> 'LEFT'
    UNION ALL SELECT CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'PHONE' THEN c.value END FROM member_contacts c JOIN dispatch_members d ON d.id = c."memberId" WHERE c."removedAt" IS NULL AND d.status <> 'LEFT'`);
   const values = (pick: (row: typeof rows[number]) => string | null) => new Set(rows.map(pick).filter((value): value is string => !!value));
   return { mcs: new Map(mcs.map(item => [listNameKey(item.name), item])), teams, titles: new Map(titles.map(item => [listNameKey(item.name), item.id])), members,
@@ -466,11 +467,11 @@ export class ExistingDispatchersService {
   if (!removal) {
    const notice = await em.getRepository(MemberNotice).findOneBy({ memberId: member.id, cancelledAt: IsNull(), finishedAt: IsNull() });
    if (!notice || (!companyEmail && !ringCentralNumber && !datEmail && !truckstopEmail)) return [];
-   return createRemoval(em, this.alerts, { setup: null, accounts: { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail }, position: positionLabel(member), memberId: member.id, name: `${member.firstName} ${member.lastName}`, dueOn: notice.lastDay, scheduled: true, emailAfter: 'SUSPEND', actorId: user.id, ...await memberPlace(em, member.id) });
+   return createRemoval(em, this.alerts, { setup: null, taskKeys: await removalTaskKeys(em, member.position, [], { companyEmail, ringCentralNumber, datEmail, truckstopEmail }), accounts: { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail }, position: positionLabel(member), memberId: member.id, name: `${member.firstName} ${member.lastName}`, dueOn: notice.lastDay, scheduled: true, emailAfter: 'SUSPEND', actorId: user.id, ...await memberPlace(em, member.id) });
   }
-  // Someone with IT setup: what IT recorded comes first, so a correction only reaches IT where IT recorded nothing.
-  const setup = removal.setupRequestId ? await em.getRepository(ItOnboardingRequest).findOneBy({ id: removal.setupRequestId }) : null;
-  const next: Record<string, string | null> = { companyEmail: setup?.companyEmail ?? companyEmail, ringCentralNumber: setup?.assignedRingCentralPhoneNumber ?? ringCentralNumber, ringCentralExtension: setup?.ringCentralExtension ?? ringCentralExtension, datEmail: setup?.datEmail ?? datEmail, truckstopEmail: setup?.truckstopEmail ?? truckstopEmail };
+  // Someone with IT setup: what IT recorded on any of their setups comes first, so a correction only reaches IT where IT recorded nothing.
+  const setups = await memberSetups(em, member.id, removal.setupRequestId), fromIt = setupAccounts(setups);
+  const next: Record<string, string | null> = { companyEmail: fromIt.companyEmail ?? companyEmail, ringCentralNumber: fromIt.ringCentralNumber ?? ringCentralNumber, ringCentralExtension: fromIt.ringCentralExtension ?? ringCentralExtension, datEmail: fromIt.datEmail ?? datEmail, truckstopEmail: fromIt.truckstopEmail ?? truckstopEmail };
   const profile = removal.profile as unknown as Record<string, string | null | undefined>, changed = fields.filter(field => (profile[field] ?? null) !== next[field]);
   if (!changed.length) return [];
   if (removal.completedAt) throw new ConflictException('IT has already finished removing their access. Tell IT about this account directly.');
@@ -482,10 +483,14 @@ export class ExistingDispatchersService {
   const steps = [...(changed.includes('companyEmail') && next.companyEmail ? ['GOOGLE_WORKSPACE'] : []), ...(changed.includes('ringCentralNumber') && next.ringCentralNumber ? ['RINGCENTRAL'] : []),
    ...((changed.includes('datEmail') && next.datEmail) || (changed.includes('truckstopEmail') && next.truckstopEmail) ? ['BUSINESS_SOFTWARE'] : [])];
   let reopened = false;
+  // A support's removal lists only what they had: a new account adds its step.
+  const present = new Set((await em.getRepository(ItRemovalTask).findBy({ requestId: removal.id })).map(task => task.key));
+  const added = steps.filter(key => !present.has(key));
+  if (added.length) await em.getRepository(ItRemovalTask).save(added.map(key => ({ requestId: removal.id, key, status: 'PENDING' as const, notes: '' })));
   for (const task of steps.length ? await em.getRepository(ItRemovalTask).find({ where: { requestId: removal.id, key: In(steps), status: 'COMPLETED' } }) : []) {
    task.status = 'PENDING'; task.updatedBy = user.id; await em.save(task); reopened = true;
   }
-  await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId: user.id, event: 'ACCOUNTS_CORRECTED', metadata: { reopened } });
+  await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId: user.id, event: 'ACCOUNTS_CORRECTED', metadata: { reopened, added: added.length > 0 } });
   return [];
  }
 }

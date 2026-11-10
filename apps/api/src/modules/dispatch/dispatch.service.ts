@@ -12,7 +12,9 @@ import { addDays, usDay } from '../safety/screening-rules';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } from '../it/it.entity';
 import { DriverAssignment } from '../safety/safety.entity';
 import { NotificationsService } from '../updates/notifications.service';
-import { createRemoval, lockSetupRequest } from '../it/removal';
+import { createRemoval, lockSetupRequests, removalTaskKeys, sameSetups, setupAccounts } from '../it/removal';
+import { createSupportItRequest } from '../it/support-setup';
+import { SupportItItem } from '../it/it.entity';
 import { User as UserEntity, UserStatus } from '../users/user.entity';
 import { companyEmailSql, lockAccount, syncSignIns, turnOffAccount } from './lead-sign-in';
 
@@ -178,9 +180,9 @@ export class DispatchService {
    member.jobTitleId ? this.db.getRepository(JobTitle).findOneBy({ id: member.jobTitleId }) : null,
    this.db.getRepository(Team).findOneBy({ leadMemberId: id }),
    // The company accounts IT recorded and how far setup is; never IT notes or verification metadata.
-   application ? this.db.query(`SELECT r."companyEmail", r."assignedRingCentralPhoneNumber" AS "workPhone", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."cancelledAt",
+   member.position === 'SUPPORT' ? this.supportSetups(id) : application ? this.db.query(`SELECT r."companyEmail", r."assignedRingCentralPhoneNumber" AS "workPhone", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."cancelledAt",
      count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total
-    FROM it_onboarding_requests r LEFT JOIN it_onboarding_tasks t ON t."requestId" = r.id WHERE r."applicationId" = $1 GROUP BY r.id`, [application.id]) : [],
+    FROM it_onboarding_requests r LEFT JOIN it_onboarding_tasks t ON t."requestId" = r.id WHERE r."applicationId" = $1 AND r.purpose = 'DISPATCHER' GROUP BY r.id`, [application.id]) : [],
    application ? this.db.query(`SELECT DISTINCT ON (d.id) d.id, d.kind, d.title, d.version, s."signedAt" FROM document_signatures s JOIN company_documents d ON d.id = s."documentId"
     WHERE s."applicationId" = $1 AND s."signerRole" = 'APPLICANT' ORDER BY d.id, s."signedAt"`, [application.id]) : [],
    application ? this.db.query(`SELECT EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'SELFIE' AND p."createdAt" <= $2) AS present,
@@ -232,10 +234,19 @@ export class DispatchService {
   const supportTypeChanges = member.position === 'SUPPORT' ? await this.db.query(`SELECT e.id, e.metadata->>'to' AS "to", e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "changedBy"
    FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event = 'SUPPORT_TYPE_CHANGED' ORDER BY e."createdAt" DESC`, [id]) : [];
   // Anyone else using their load board sign-ins, so nobody closes the wrong account.
+  // A support's setups: the accounts IT recorded across them (as one row, like a new dispatcher's) and the request IT is working on.
+  const supportRows = member.position === 'SUPPORT' ? it as SupportSetupRow[] : [];
+  const supportOpen = supportRows.find(row => !row.completedAt) ?? null;
+  const supportAccounts = setupAccounts(supportRows);
+  if (supportRows.length) it.splice(0, it.length, { companyEmail: supportAccounts.companyEmail, workPhone: supportAccounts.ringCentralNumber, ringCentralExtension: supportAccounts.ringCentralExtension,
+   datEmail: supportAccounts.datEmail, truckstopEmail: supportAccounts.truckstopEmail, completedAt: supportRows.find(row => row.completedAt)?.completedAt ?? null, cancelledAt: null,
+   done: supportOpen?.done ?? supportRows[0].done, total: supportOpen?.total ?? supportRows[0].total });
+  const itSetup = member.position === 'SUPPORT' ? { open: supportOpen ? { id: supportOpen.id, items: supportOpen.items, done: supportOpen.done, total: supportOpen.total, createdAt: supportOpen.createdAt, requestedBy: supportOpen.requestedBy } : null,
+   finished: supportRows.filter(row => row.completedAt).length } : null;
   const signIns = { dat: it[0]?.datEmail ?? existing?.datEmail ?? null, truckstop: it[0]?.truckstopEmail ?? existing?.truckstopEmail ?? null };
   return { sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
-   current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null,
+   current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.
    canOpenApplication, activity, supportHistory, supportOf: supportHistory.find((row: { endedAt: Date | null }) => row.endedAt === null) ?? null, supports,
    details: application ? { legalFirstName: fields.firstName ?? null, legalLastName: fields.lastName ?? null, preferredAmericanFirstName: fields.preferredAmericanFirstName ?? null,
@@ -380,6 +391,30 @@ export class DispatchService {
   });
  }
 
+ /** A support's or updater's IT setups (none cancelled), newest first, with what was asked for and how far IT got; never IT notes. */
+ private supportSetups(memberId: string): Promise<SupportSetupRow[]> {
+  return this.db.query(`SELECT r.id, r."companyEmail", r."assignedRingCentralPhoneNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."createdAt",
+    CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "requestedBy", coalesce(array_agg(t.key ORDER BY t.key) FILTER (WHERE t.id IS NOT NULL), '{}') AS items,
+    count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total
+   FROM it_onboarding_requests r LEFT JOIN users u ON u.id = r."requestedBy" LEFT JOIN it_onboarding_tasks t ON t."requestId" = r.id
+   WHERE r."memberId" = $1 AND r.purpose = 'SUPPORT' AND r."cancelledAt" IS NULL GROUP BY r.id, u.id ORDER BY r."createdAt" DESC`, [memberId]);
+ }
+
+ /**
+  * A dispatch manager asks IT to set up a company email, a RingCentral number, business software or equipment for a support
+  * or updater (section 32), from their page. IT gets the setup alert after the request commits.
+  */
+ async askIt(user: User, id: string, dto: { items: SupportItItem[]; note?: string }) {
+  let alerts: string[] = [];
+  const result = await this.write(async em => {
+   const request = await createSupportItRequest(em, { memberId: id, items: dto.items, note: dto.note, managerId: user.id, actorId: user.id });
+   alerts = await this.alerts.queueItSetupWaiting(em, request);
+   return { id: request.id };
+  });
+  this.alerts.dispatch(alerts);
+  return result;
+ }
+
  /**
   * Records a dispatcher's last day. Today or earlier: they leave now (drivers and supports reassigned first). A future day
   * is a notice period: they stay as they are, may be reassigned meanwhile, and the last-day job marks them as left. Someone
@@ -389,29 +424,38 @@ export class DispatchService {
  async leave(user: User, id: string, dto: LeaveMemberDto) {
   let alerts: string[] = [];
   const result = await this.write(async em => {
-   const setup = await lockSetupRequest(em, id);
+   // The newest setup is the one an unfinished request is cancelled from; accounts come from all of them, then what a manager recorded.
+   const setups = await lockSetupRequests(em, id), setup = setups[0] ?? null;
    await lockCatchUpLinks(em, id);
    const member = await this.lockMember(em, id, dto.version);
+   await sameSetups(em, id, setups);
    if (await onNotice(em, id)) throw new ConflictException('This dispatcher is already leaving. Change their last day instead.');
    const today = usDay('latest'), lastDay = dto.leftAt.slice(0, 10), name = `${member.firstName} ${member.lastName}`;
    const place = await memberPlace(em, id);
    // A dispatcher added by hand always gets a removal; a support only when accounts were recorded for them. Someone added by hand
    // and promoted has IT setup too: what IT recorded comes first, and what a manager recorded before that still reaches IT.
    const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
-   const accounts = record && (setup || member.position === 'DISPATCHER' || record.companyEmail || record.ringCentralNumber || record.datEmail || record.truckstopEmail) ? { companyEmail: record.companyEmail, ringCentralNumber: record.ringCentralNumber, ringCentralExtension: record.ringCentralExtension, datEmail: record.datEmail, truckstopEmail: record.truckstopEmail } : undefined, removes = !!setup || !!accounts;
+   const recorded = record && (setup || member.position === 'DISPATCHER' || record.companyEmail || record.ringCentralNumber || record.datEmail || record.truckstopEmail) ? { companyEmail: record.companyEmail, ringCentralNumber: record.ringCentralNumber, ringCentralExtension: record.ringCentralExtension, datEmail: record.datEmail, truckstopEmail: record.truckstopEmail } : undefined;
+   const fromSetups = setups.length ? setupAccounts(setups) : undefined;
+   const accounts = fromSetups || recorded ? { companyEmail: fromSetups?.companyEmail ?? recorded?.companyEmail ?? null, ringCentralNumber: fromSetups?.ringCentralNumber ?? recorded?.ringCentralNumber ?? null,
+    ringCentralExtension: fromSetups?.ringCentralExtension ?? recorded?.ringCentralExtension ?? null, datEmail: fromSetups?.datEmail ?? recorded?.datEmail ?? null, truckstopEmail: fromSetups?.truckstopEmail ?? recorded?.truckstopEmail ?? null } : undefined, removes = !!setup || !!accounts;
+   // Read only once nothing below can refuse the request.
+   const taskKeys = async () => removes ? removalTaskKeys(em, member.position, setups, accounts) : [];
    if (lastDay > today) {
     if (lastDay > addDays(today, NOTICE_MAX_DAYS)) throw new BadRequestException(`The last day can be up to ${NOTICE_MAX_DAYS} days ahead.`);
-    if (setup && !setup.completedAt) throw new BadRequestException('This dispatcher is still in IT setup, so their last day can’t be in the future. Choose today to cancel the setup.');
+    if (setups.some(item => !item.completedAt)) throw new BadRequestException(`${member.position === 'SUPPORT' ? 'IT is still setting things up for them' : 'This dispatcher is still in IT setup'}, so their last day can’t be in the future. Choose today to cancel the setup.`);
     await em.getRepository(MemberNotice).save({ memberId: id, lastDay, reason: dto.reason, recordedBy: user.id, changes: [] });
     member.version += 1; await em.save(member);
-    if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
     await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
     await syncSignIns(em, [id], user.id);
     return { id, version: member.version };
    }
    await this.requireNobodyAssigned(em, member);
    const leftAt = day(dto.leftAt);
-   if (removes) alerts = await createRemoval(em, this.alerts, { setup, accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+   // The removal cancels the newest unfinished setup; any other unfinished one leaves the queue with it.
+   for (const other of setups.slice(1).filter(item => !item.completedAt)) { other.cancelledAt = new Date(); other.version += 1; await em.save(other); }
+   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
    await this.finishLeaving(em, user, member, leftAt, dto.reason, removes);
    return { id, version: member.version };
   });
@@ -568,7 +612,7 @@ export class DispatchService {
   return counts;
  }
  private async endNotice(em: EntityManager, memberId: string) {
-  await lockSetupRequest(em, memberId);
+  await lockSetupRequests(em, memberId);
   await lockCatchUpLinks(em, memberId);
   const member = await em.getRepository(DispatchMember).findOne({ where: { id: memberId }, lock: { mode: 'pessimistic_write' } });
   const notice = await em.getRepository(MemberNotice).findOne({ where: { memberId, cancelledAt: IsNull(), finishedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
@@ -686,3 +730,6 @@ export class DispatchService {
   return em.getRepository(DispatchEvent).save({ memberId: target.memberId ?? null, teamId: target.teamId ?? null, event, actorId: user.id, metadata });
  }
 }
+
+interface SupportSetupRow { id: string; companyEmail: string | null; assignedRingCentralPhoneNumber: string | null; ringCentralExtension: string | null; datEmail: string | null; truckstopEmail: string | null;
+ completedAt: Date | null; createdAt: Date; requestedBy: string | null; items: string[]; done: number; total: number }

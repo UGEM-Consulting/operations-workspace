@@ -209,6 +209,7 @@ export class DocumentsService {
   const request = await this.db.getRepository(ItOnboardingRequest).findOneBy({id:requestId}); if (!request) throw new NotFoundException();
   // The same approval relationship as every other IT access: the request's APPROVE review for this application.
   const application = await approvedApplication(this.db.manager,request);
+  if (!application) throw new NotFoundException();
   const photo = await photoFor(this.db.manager,application.id,'SELFIE',application.submittedAt);
   if (!photo) throw new NotFoundException();
   return { body: await this.storage.get(photoKey(photo)), type: 'image/jpeg', filename: 'profile-photo.jpg' };

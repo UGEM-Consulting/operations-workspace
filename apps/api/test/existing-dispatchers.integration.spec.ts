@@ -368,7 +368,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect(after.profile).toMatchObject({ companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', noSetupRecord: true });
     expect(after.version).toBe(before.version + 1);
     const activity = async () => db.query(`SELECT metadata FROM it_removal_activity WHERE "requestId" = $1 AND event = 'ACCOUNTS_CORRECTED' ORDER BY "createdAt"`, [after.id]);
-    expect(await activity()).toEqual([{ metadata: { reopened: false } }]);
+    expect(await activity()).toEqual([{ metadata: { added: false, reopened: false } }]);
     expect(JSON.stringify(await activity())).not.toContain('riley@example.test');
     // A manager asks for access to go now; IT finishes RingCentral, then a different number turns up.
     const current = await version(id);
@@ -378,7 +378,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     await correct(id, { ringCentralNumber: '+1 469 555 0199' }).then(res => expect(res.status).toBe(200));
     const [reopened] = await db.query(`SELECT r."numberOutcome", t.status FROM it_removal_requests r JOIN it_removal_tasks t ON t."requestId" = r.id AND t.key = 'RINGCENTRAL' WHERE r.id = $1`, [after.id]);
     expect(reopened).toEqual({ numberOutcome: null, status: 'PENDING' });
-    expect((await activity()).at(-1)).toEqual({ metadata: { reopened: true } });
+    expect((await activity()).at(-1)).toEqual({ metadata: { added: false, reopened: true } });
   });
   it('opens a removal for a support whose accounts are recorded during their notice', async () => {
     await addOne('Taylor');
@@ -1041,6 +1041,170 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const runner = db.createQueryRunner();
       const { WholeTeamSupports1793020000000: Migration } = await import('../src/database/migrations/1793020000000-WholeTeamSupports');
       await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard whole team supports');
+      await runner.release();
+    });
+  });
+  describe('IT setup for supports and updaters', () => {
+    const helper = (row: number, first: string, position = 'Updater') => ({ row, firstName: first, lastName: 'Fictional', position, supports: 'Lead Fictional', startedOn: '2024-03-04', personalEmail: `${first.toLowerCase()}.home@example.test` });
+    const page = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    const ask = (id: string, body: Record<string, unknown>, agent: Agent = agents.manager) => agent.post(`/api/dispatch/members/${id}/it-setup`).set(headers).send(body);
+    const setup = async (id: string) => (await agents.it.get(`/api/it/onboarding/${id}`).set(headers).expect(200)).body;
+    // The version is read before the request is made: a request made first would lose its test server to the read.
+    const task = async (id: string, key: string, status: string, code = 200) => { const { version } = (await setup(id)).request; return agents.it.patch(`/api/it/onboarding/${id}/tasks/${key}`).set(headers).send({ version, status }).expect(code); };
+
+    it('asks IT for only what was chosen, from their page, and shows IT’s accounts there once done', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky')])).body;
+      const [lead, sky] = added.members.map((row: { id: string }) => row.id);
+      expect((await page(sky)).itSetup).toEqual({ open: null, finished: 0 });
+      await ask(sky, { items: [] }).expect(400);
+      await ask(sky, { items: ['LAPTOP'] }).expect(400);
+      await ask(lead, { items: ['RINGCENTRAL'] }).expect(400);
+      await ask(sky, { items: ['RINGCENTRAL'] }, agents.it).expect(403);
+      const asked = (await ask(sky, { items: ['RINGCENTRAL', 'BUSINESS_SOFTWARE'], note: 'DAT only; she updates loads for Lead.' }).expect(201)).body;
+      expect((await ask(sky, { items: ['EQUIPMENT'] }).expect(409)).body.message).toMatch(/still working on the last request/);
+      // IT sees it with new dispatchers' setups, saying who they assist; the checklist has only what was asked for.
+      const tasks = (await agents.it.get('/api/it/tasks?view=setup').set(headers).expect(200)).body;
+      expect(tasks.items.find((row: Row) => row.id === asked.id)).toMatchObject({ kind: 'SETUP', name: 'Sky Fictional', mc: 'Northwind Freight', memberId: sky, assists: 'Updater for Lead Fictional', done: 0, total: 4 });
+      let detail = await setup(asked.id);
+      expect(detail.tasks.map((row: Row) => row.key)).toEqual(['RINGCENTRAL', 'SMS', 'CALL_RECORDING', 'BUSINESS_SOFTWARE']);
+      expect(detail.request).toMatchObject({ purpose: 'SUPPORT', memberId: sky, applicationId: null, note: 'DAT only; she updates loads for Lead.', requestedByName: 'Fictional manager', profilePhoto: false,
+        profile: { proposedDisplayName: 'Sky Fictional', personalEmail: 'sky.home@example.test', mcName: 'Northwind Freight', jobTitle: 'Updater', assists: 'Updater for Lead Fictional' } });
+      expect((await page(sky)).itSetup).toMatchObject({ open: { id: asked.id, items: ['BUSINESS_SOFTWARE', 'CALL_RECORDING', 'RINGCENTRAL', 'SMS'], done: 0, total: 4, requestedBy: 'Fictional manager' }, finished: 0 });
+      // A number was asked for, so it's needed to finish; a company email wasn't, so it isn't.
+      expect((await task(asked.id, 'RINGCENTRAL', 'COMPLETED', 400)).body.message).toMatch(/RingCentral phone number first/);
+      const { version } = (await setup(asked.id)).request;
+      await agents.it.patch(`/api/it/onboarding/${asked.id}/contact`).set(headers).send({ version, workPhoneVerified: false, assignedRingCentralPhoneNumber: '+1 202 555 0190', datEmail: 'sky.dat@example.test' }).expect(200);
+      for (const key of ['RINGCENTRAL', 'SMS', 'CALL_RECORDING', 'BUSINESS_SOFTWARE']) await task(asked.id, key, 'COMPLETED');
+      detail = await setup(asked.id);
+      expect(detail.request.status).toBe('COMPLETED');
+      // The manager who asked gets the notice, which opens the person's page; nobody else is messaged.
+      const notices = (await agents.manager.get('/api/notifications').set(headers).expect(200)).body.items;
+      expect(notices).toEqual([expect.objectContaining({ kind: 'IT_ONBOARDING_COMPLETED', requestId: asked.id, applicationId: null, memberId: sky, displayName: 'Sky Fictional' })]);
+      expect((await db.query(`SELECT count(*)::integer AS n FROM notification_deliveries WHERE kind = 'SETUP_COMPLETE'`))[0].n).toBe(0);
+      const done = await page(sky);
+      expect(done.accounts).toMatchObject({ workPhone: '+1 202 555 0190', datEmail: 'sky.dat@example.test', companyEmail: null });
+      expect(done.itSetup).toEqual({ open: null, finished: 1 });
+      // Asking again adds to it: a company email is needed to finish this one.
+      const second = (await ask(sky, { items: ['COMPANY_EMAIL'] }).expect(201)).body;
+      expect((await task(second.id, 'GOOGLE_WORKSPACE', 'COMPLETED', 400)).body.message).toMatch(/company email first/);
+    });
+
+    it('asks at approval only for a support or updater, and nothing by default', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id;
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({ position: 'SUPPORT', supportsMemberId: lead, supportType: 'UPDATER' }).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'asked.fictional@example.test');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      expect((await agents.manager.get(`/api/onboarding/applications/${applicationId}`).set(headers).expect(200)).body.supports.itSetupItems).toEqual(['COMPANY_EMAIL', 'RINGCENTRAL', 'BUSINESS_SOFTWARE', 'EQUIPMENT']);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'REQUEST_CHANGES', reason: 'Phone', requestedFields: ['personalPhoneNumber'], itSetup: ['COMPANY_EMAIL'] }).expect(400);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, supportsMemberId: lead, itSetup: ['COMPANY_EMAIL', 'EQUIPMENT'] }).expect(201);
+      const [request] = await db.query(`SELECT r.id, r.purpose, r."applicationId", r."managerId", m."applicationId" AS "memberApplication", array_agg(t.key ORDER BY t.key) AS keys FROM it_onboarding_requests r
+        JOIN dispatch_members m ON m.id = r."memberId" JOIN it_onboarding_tasks t ON t."requestId" = r.id GROUP BY r.id, m.id`);
+      expect(request).toMatchObject({ purpose: 'SUPPORT', applicationId: null, managerId: users.manager.id, memberApplication: applicationId, keys: ['EQUIPMENT', 'GOOGLE_WORKSPACE'] });
+      // IT sees the profile photo they sent with the application (none here) and the alert went out.
+      expect((await agents.it.get(`/api/it/onboarding/${request.id}`).set(headers).expect(200)).body.request).toMatchObject({ profilePhoto: false, profile: { legalFirstName: 'Legal', personalEmail: 'asked.fictional@example.test' } });
+      expect((await db.query(`SELECT count(*)::integer AS n FROM notification_deliveries WHERE kind = 'IT_SETUP_WAITING'`))[0].n).toBeGreaterThan(0);
+    });
+
+    it('removes what IT set up when they leave, cancels an unfinished setup, and moves an open one with a manager’s records', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky'), helper(4, 'Ann', 'Support')])).body;
+      const [, sky, ann] = added.members.map((row: { id: string }) => row.id);
+      const first = (await ask(sky, { items: ['RINGCENTRAL'] }).expect(201)).body;
+      await agents.it.patch(`/api/it/onboarding/${first.id}/contact`).set(headers).send({ version: 0, workPhoneVerified: false, assignedRingCentralPhoneNumber: '+1 202 555 0191' }).expect(200);
+      for (const key of ['RINGCENTRAL', 'SMS', 'CALL_RECORDING']) await task(first.id, key, 'COMPLETED');
+      const open = (await ask(sky, { items: ['EQUIPMENT'] }).expect(201)).body;
+      // A future last day waits for IT to finish; today cancels the open setup and opens a removal with the number.
+      const { version } = await page(sky);
+      await agents.manager.post(`/api/dispatch/members/${sky}/leave`).set(headers).send({ version, leftAt: `${addDays(usDay('latest'), 7)}T12:00:00.000Z`, reason: 'Moving.' }).expect(400);
+      await agents.manager.post(`/api/dispatch/members/${sky}/leave`).set(headers).send({ version, leftAt: `${usDay('latest')}T12:00:00.000Z`, reason: 'Moving.' }).expect(201);
+      const [removal] = await db.query(`SELECT profile, "setupRequestId" FROM it_removal_requests WHERE "memberId" = $1`, [sky]);
+      expect(removal).toMatchObject({ setupRequestId: open.id, profile: { ringCentralNumber: '+1 202 555 0191', noSetupRecord: false, position: 'Updater' } });
+      expect((await db.query(`SELECT "cancelledAt" IS NOT NULL AS cancelled FROM it_onboarding_requests WHERE id = $1`, [open.id]))[0].cancelled).toBe(true);
+      // Handing over a manager's records moves their open support setup, so IT's notice reaches someone.
+      const annSetup = (await ask(ann, { items: ['BUSINESS_SOFTWARE'] }).expect(201)).body;
+      expect((await openRecords(db.manager, users.manager.id)).counts).toMatchObject({ itSetup: 1 });
+      await db.transaction(async em => { const { handOver } = await import('../src/modules/onboarding/hand-over'); await handOver(em, users.manager.id, users.other.id, users.manager.id); });
+      expect((await db.query(`SELECT "managerId" FROM it_onboarding_requests WHERE id = $1`, [annSetup.id]))[0].managerId).toBe(users.other.id);
+    });
+
+    it('keeps every setup’s accounts in a removal, lists only what a support had, and counts their company email as someone already here', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky'), helper(4, 'Ann')])).body;
+      const [, sky, ann] = added.members.map((row: { id: string }) => row.id);
+      // Sky: a company email first, equipment later. Ann: equipment only.
+      const email = (await ask(sky, { items: ['COMPANY_EMAIL'] }).expect(201)).body;
+      const { version } = (await setup(email.id)).request;
+      await agents.it.patch(`/api/it/onboarding/${email.id}/contact`).set(headers).send({ version, workPhoneVerified: false, companyEmail: 'sky.work@example.test' }).expect(200);
+      await task(email.id, 'GOOGLE_WORKSPACE', 'COMPLETED');
+      const gear = (await ask(sky, { items: ['EQUIPMENT'] }).expect(201)).body;
+      await task(gear.id, 'EQUIPMENT', 'COMPLETED');
+      // A file row with Sky's company email is someone already here.
+      expect((await check([{ ...base(5, 'Copy'), companyEmail: 'sky.work@example.test' }])).body.rows[0].status).toBe('ALREADY');
+      // Notice for a future day: the removal keeps the older setup's mailbox, and a correction to the record doesn't replace it.
+      const notice = async (id: string) => { const { version } = await page(id); await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: `${addDays(usDay('latest'), 7)}T12:00:00.000Z`, reason: 'Moving.' }).expect(201); };
+      await notice(sky);
+      const removal = async (id: string) => (await db.query(`SELECT r.profile, array_agg(t.key ORDER BY t.key) AS keys FROM it_removal_requests r JOIN it_removal_tasks t ON t."requestId" = r.id WHERE r."memberId" = $1 GROUP BY r.id`, [id]))[0];
+      expect(await removal(sky)).toMatchObject({ profile: { companyEmail: 'sky.work@example.test' }, keys: ['DISPATCH_GROUP', 'EQUIPMENT', 'GOOGLE_WORKSPACE', 'SHARED_PASSWORDS'] });
+      const { version: skyVersion } = await page(sky);
+      await agents.manager.patch(`/api/dispatch/members/${sky}/existing`).set(headers).send({ version: skyVersion, ringCentralNumber: '+1 202 555 0192' }).expect(200);
+      expect(await removal(sky)).toMatchObject({ profile: { companyEmail: 'sky.work@example.test', ringCentralNumber: '+1 202 555 0192' }, keys: ['DISPATCH_GROUP', 'EQUIPMENT', 'GOOGLE_WORKSPACE', 'RINGCENTRAL', 'SHARED_PASSWORDS'] });
+      // Ann had only equipment: no mailbox or number to remove.
+      const annGear = (await ask(ann, { items: ['EQUIPMENT'] }).expect(201)).body;
+      await task(annGear.id, 'EQUIPMENT', 'COMPLETED');
+      await notice(ann);
+      expect((await removal(ann)).keys).toEqual(['DISPATCH_GROUP', 'EQUIPMENT', 'SHARED_PASSWORDS']);
+    });
+
+    it('carries a support’s setups into their dispatcher setup when promoted, and moves an open one with a manager change', async () => {
+      const lead = (await add([base(2, 'Lead')])).body.members[0].id;
+      const made = await agents.manager.post('/api/onboarding/invitations').set(headers).send({ position: 'SUPPORT', supportsMemberId: lead }).expect(201);
+      const { agent, applicationId } = await open(made.body.url, 'carried.fictional@example.test');
+      await agent.patch('/api/applicant/draft').set(headers).send({ version: 0, ...answers }).expect(200);
+      await agent.post('/api/applicant/submit').set(headers).send({ version: 1, ...answers, accurate: true }).expect(201);
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/reviews`).set(headers).send({ version: 2, decisionType: 'APPROVE', confirmed: true, supportsMemberId: lead, itSetup: ['RINGCENTRAL'] }).expect(201);
+      const [{ id: member }] = await db.query(`SELECT id FROM dispatch_members WHERE "applicationId" = $1`, [applicationId]);
+      const [{ id: first }] = await db.query(`SELECT id FROM it_onboarding_requests WHERE "memberId" = $1`, [member]);
+      // A manager change moves the open setup asked at approval, so its notice reaches the new manager.
+      await agents.manager.post(`/api/onboarding/applications/${applicationId}/manager`).set(headers).send({ managerId: users.other.id }).expect(201);
+      expect((await db.query(`SELECT "managerId" FROM it_onboarding_requests WHERE id = $1`, [first]))[0].managerId).toBe(users.other.id);
+      expect((await setup(first)).activity.map((row: Row) => row.event)).toContain('MANAGER_CHANGED');
+      const { version } = (await setup(first)).request;
+      await agents.it.patch(`/api/it/onboarding/${first}/contact`).set(headers).send({ version, workPhoneVerified: false, assignedRingCentralPhoneNumber: '+1 202 555 0193' }).expect(200);
+      for (const key of ['RINGCENTRAL', 'SMS', 'CALL_RECORDING']) await task(first, key, 'COMPLETED');
+      const open2 = (await ask(member, { items: ['EQUIPMENT'] }).expect(201)).body;
+      // Promotion: the number and the RingCentral steps carry over, and the open equipment setup is cancelled.
+      const [{ id: requestId }] = await db.query(`INSERT INTO promotion_requests ("supportId",reason) VALUES ($1,'Ready') RETURNING id`, [member]);
+      const [title] = await db.query(`SELECT id FROM job_titles LIMIT 1`), [northwind] = await db.query(`SELECT id FROM mcs LIMIT 1`);
+      const decided = (await agents.manager.post(`/api/dispatch/promotions/${requestId}/decide`).set(headers).send({ version: 1, decision: 'APPROVE', mcId: northwind.id, teamId: null, jobTitleId: title.id }).expect(201)).body;
+      const promoted = await setup(decided.itRequestId);
+      expect(promoted.request).toMatchObject({ purpose: 'DISPATCHER', assignedRingCentralPhoneNumber: '+1 202 555 0193' });
+      expect(promoted.tasks.filter((row: Row) => row.status === 'COMPLETED').map((row: Row) => row.key)).toEqual(['RINGCENTRAL', 'SMS', 'CALL_RECORDING']);
+      expect((await db.query(`SELECT "cancelledAt" IS NOT NULL AS cancelled FROM it_onboarding_requests WHERE id = $1`, [open2.id]))[0].cancelled).toBe(true);
+      expect((await page(member)).accounts).toMatchObject({ workPhone: '+1 202 555 0193' });
+    });
+
+    it('refuses to mark someone as left when IT was asked for something while it waited, so no setup stays open', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Rae')])).body;
+      const rae = added.members[1].id, { version } = await page(rae);
+      // Another transaction holds their record and adds a setup, as Ask IT does, while leaving waits for the record.
+      const runner = db.createQueryRunner();
+      await runner.startTransaction();
+      await runner.query(`SELECT id FROM dispatch_members WHERE id = $1 FOR UPDATE`, [rae]);
+      const leaving = agents.manager.post(`/api/dispatch/members/${rae}/leave`).set(headers).send({ version, leftAt: usDay('latest'), reason: 'Moving.' }).then(response => response);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await runner.query(`INSERT INTO it_onboarding_requests (purpose,"memberId","managerId","requestedBy",profile,version) VALUES ('SUPPORT',$1,$2,$2,'{}',0)`, [rae, users.manager.id]);
+      await runner.commitTransaction(); await runner.release();
+      const response = await leaving;
+      expect(response.status).toBe(409);
+      expect(response.body.message).toMatch(/Reload and try again/);
+      expect((await page(rae)).status).toBe('ACTIVE');
+    });
+
+    it('refuses a rollback while any support setup exists', async () => {
+      const added = (await add([base(2, 'Lead'), helper(3, 'Sky')])).body;
+      await ask(added.members[1].id, { items: ['EQUIPMENT'] }).expect(201);
+      const runner = db.createQueryRunner();
+      const { SupportItSetup1793130000000: Migration } = await import('../src/database/migrations/1793130000000-SupportItSetup');
+      await expect(new Migration().down(runner)).rejects.toThrow('Cannot discard IT setups for supports and updaters');
       await runner.release();
     });
   });

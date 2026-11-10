@@ -3,6 +3,7 @@ import { companyEmailSql } from '../dispatch/lead-sign-in';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { activateMember } from '../dispatch/create-member';
+import { DispatchMember } from '../dispatch/dispatch.entity';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { ApplicationActivity, ApplicationReview, DispatcherApplication } from '../onboarding/entities';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
@@ -19,17 +20,18 @@ const statusSql=itStatusSql('r');
 const SETUP_AND_REMOVAL_ROWS=`SELECT 'SETUP' AS kind, r.id, r.profile->>'proposedDisplayName' AS name, r.profile->>'personalEmail' AS email, r.profile->>'mcName' AS mc,
   ${itStatusSql('r')} AS status, (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done,
   (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id)::integer AS total, NULL::text AS "dueOn", NULL::timestamptz AS "removeNowAt", r."createdAt", r."updatedAt", r."completedAt",
-  NULL::text AS "signIn", NULL::uuid AS "memberId", NULL::text AS team
- FROM it_onboarding_requests r JOIN dispatcher_applications a ON a.id = r."applicationId" AND a.status = 'APPROVED'
- JOIN application_reviews v ON v.id = r."approvalId" AND v."applicationId" = r."applicationId" AND v."decisionType" = 'APPROVE' WHERE r."cancelledAt" IS NULL
+  NULL::text AS "signIn", r."memberId", NULL::text AS team, r.profile->>'assists' AS assists
+ FROM it_onboarding_requests r LEFT JOIN dispatcher_applications a ON a.id = r."applicationId" AND a.status = 'APPROVED'
+ LEFT JOIN application_reviews v ON v.id = r."approvalId" AND v."applicationId" = r."applicationId" AND v."decisionType" = 'APPROVE'
+ WHERE r."cancelledAt" IS NULL AND (r.purpose = 'SUPPORT' OR (a.id IS NOT NULL AND v.id IS NOT NULL))
  UNION ALL
  SELECT 'REMOVAL', m.id, m.profile->>'displayName', m.profile->>'companyEmail', m.profile->>'mcName', ${itStatusSql('m','it_removal_tasks')},
   (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer,
-  (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id)::integer, m."dueOn"::text, m."removeNowAt", m."createdAt", m."updatedAt", m."completedAt", NULL, NULL, NULL
+  (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id)::integer, m."dueOn"::text, m."removeNowAt", m."createdAt", m."updatedAt", m."completedAt", NULL, NULL, NULL, NULL
  FROM it_removal_requests m WHERE m."cancelledAt" IS NULL`;
 // A team lead's sign-in: one step, so done is 0 or 1 of 1. The email is the one they sign in with: their account's, else the company email on record.
 const SIGN_IN_ROWS=`SELECT 'SIGN_IN', s.id, d."firstName" || ' ' || d."lastName", coalesce(u.email, ${companyEmailSql()}),
-  mc.name, CASE WHEN s."doneAt" IS NULL THEN 'PENDING' ELSE 'COMPLETED' END, CASE WHEN s."doneAt" IS NULL THEN 0 ELSE 1 END, 1, NULL, NULL, s."createdAt", coalesce(s."doneAt", s."createdAt"), s."doneAt", s.kind, d.id, t.name
+  mc.name, CASE WHEN s."doneAt" IS NULL THEN 'PENDING' ELSE 'COMPLETED' END, CASE WHEN s."doneAt" IS NULL THEN 0 ELSE 1 END, 1, NULL, NULL, s."createdAt", coalesce(s."doneAt", s."createdAt"), s."doneAt", s.kind, d.id, t.name, NULL
  FROM team_lead_sign_ins s JOIN dispatch_members d ON d.id = s."memberId" LEFT JOIN users u ON u.id = d."accountUserId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
  LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN teams t ON t.id = a."teamId" LEFT JOIN mcs mc ON mc.id = a."mcId" WHERE s."cancelledAt" IS NULL`;
 const taskRows=(signIns:boolean)=>signIns?`${SETUP_AND_REMOVAL_ROWS} UNION ALL ${SIGN_IN_ROWS}`:SETUP_AND_REMOVAL_ROWS;
@@ -37,10 +39,18 @@ const taskRows=(signIns:boolean)=>signIns?`${SETUP_AND_REMOVAL_ROWS} UNION ALL $
 const scheduledSql=(today:string)=>`(kind = 'REMOVAL' AND "completedAt" IS NULL AND "removeNowAt" IS NULL AND "dueOn"::date > ${today}::date)`;
 const SCHEDULED=scheduledSql('$2');
 const VIEW_SQL:Record<ItTasksDto['view'],string>={open:`status <> 'COMPLETED'`,setup:`kind = 'SETUP' AND status <> 'COMPLETED'`,signin:`kind = 'SIGN_IN' AND status <> 'COMPLETED'`,removal:`kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${SCHEDULED}`,scheduled:SCHEDULED,finished:`status = 'COMPLETED'`,all:'true'};
-/** IT access requires the approved application and the APPROVE review the request was created from. */
-export async function approvedApplication(em:EntityManager,request:ItOnboardingRequest){
- const app=await em.getRepository(DispatcherApplication).findOneBy({id:request.applicationId,status:'APPROVED'});
- const approval=await em.getRepository(ApplicationReview).findOneBy({id:request.approvalId,applicationId:request.applicationId,decisionType:'APPROVE'});
+/**
+ * IT access requires the approved application and the APPROVE review a new dispatcher's request was created from. A
+ * support's setup needs their dispatcher record, and returns their approved application when they came through onboarding
+ * (for the profile photo), else null.
+ */
+export async function approvedApplication(em:EntityManager,request:ItOnboardingRequest):Promise<DispatcherApplication|null>{
+ if(request.purpose==='SUPPORT'){
+  const member=await em.getRepository(DispatchMember).findOneBy({id:request.memberId!});if(!member)throw new NotFoundException();
+  return member.applicationId?em.getRepository(DispatcherApplication).findOneBy({id:member.applicationId,status:'APPROVED'}):null;
+ }
+ const app=await em.getRepository(DispatcherApplication).findOneBy({id:request.applicationId!,status:'APPROVED'});
+ const approval=await em.getRepository(ApplicationReview).findOneBy({id:request.approvalId!,applicationId:request.applicationId!,decisionType:'APPROVE'});
  if(!app||!approval)throw new NotFoundException();return app;
 }
 @Injectable()
@@ -59,18 +69,22 @@ export class ItService {
   return {items:result.entities.map((row,index)=>({...row,status:result.raw[index].progress as string})),total,page:input.page,pageSize:input.pageSize,pageCount:Math.ceil(total/input.pageSize)};
  }
  private async detail(em:EntityManager,request:ItOnboardingRequest){
-  const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:request.id});
-  this.checklistComplete(tasks);
+  // A support's setup names who asked: joined to the tasks (every request has some), so a task save runs no extra query.
+  const loaded=await em.getRepository(ItOnboardingTask).createQueryBuilder('t').leftJoin(User,'u','u.id = :asker',{asker:request.requestedBy})
+   .addSelect(`u."firstName" || ' ' || u."lastName"`,'asker').where('t.requestId = :id',{id:request.id}).getRawAndEntities();
+  const tasks=loaded.entities;
+  this.checklistComplete(request,tasks);
   const activity=await em.getRepository(ItOnboardingActivity).find({where:{requestId:request.id},order:{createdAt:'ASC'}});
   // This projection deliberately excludes application revisions, applicant sessions and reviewer comments.
   // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
-  const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId});
-  const profilePhoto=!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
-  return {request:{...request,status:itStatus(request,tasks),profilePhoto},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
+  const application=await approvedApplication(em,request);
+  const profilePhoto=!!application&&!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
+  return {request:{...request,status:itStatus(request,tasks),profilePhoto,requestedByName:(loaded.raw[0]?.asker as string|null|undefined)??null},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
  }
- // Every required task must exist. An optional task added later is missing only on requests created before it existed.
- private checklistComplete(tasks:Pick<ItOnboardingTask,'key'>[]){
-  if(IT_CHECKLIST.some(template=>!template.optional&&!tasks.some(task=>task.key===template.key)))throw new ConflictException('The checklist is incomplete. Contact an administrator.');
+  // Every required task must exist on a new dispatcher's setup. An optional task added later is missing only on requests created
+ // before it existed. A support's setup has only the tasks a manager asked for.
+ private checklistComplete(request:Pick<ItOnboardingRequest,'purpose'>,tasks:Pick<ItOnboardingTask,'key'>[]){
+  if(request.purpose==='SUPPORT'?!tasks.length:IT_CHECKLIST.some(template=>!template.optional&&!tasks.some(task=>task.key===template.key)))throw new ConflictException('The checklist is incomplete. Contact an administrator.');
  }
  /**
   * IT tasks: setups and removals together. Removals that are due come first, the earliest first, then setups by most
@@ -101,7 +115,7 @@ export class ItService {
   const request=await em.getRepository(ItOnboardingRequest).findOne({where:{id},lock:{mode:'pessimistic_write'}});
   if(!request)throw new NotFoundException();await approvedApplication(em,request);
   if(request.completedAt)throw new ConflictException('This onboarding request is completed and cannot be changed.');
-  if(request.cancelledAt)throw new ConflictException('This setup was cancelled because the dispatcher left. Their accounts are on the removal checklist.');
+  if(request.cancelledAt)throw new ConflictException(`This setup was cancelled because the ${request.purpose==='SUPPORT'?'person':'dispatcher'} left. Their accounts are on the removal checklist.`);
   if(request.version!==version)throw new ConflictException('This request changed. Reload before saving.');return request;
  }
  async contact(user:User,id:string,input:ItContactDto){
@@ -113,10 +127,10 @@ export class ItService {
    if(input.workPhoneVerified&&(!request.profile.workPhoneNumber||!INTERNATIONAL_PHONE_PATTERN.test(request.profile.workPhoneNumber.trim())))throw new BadRequestException('The applicant work phone must be valid before IT can verify it.');
    const assigned=input.assignedRingCentralPhoneNumber===undefined?request.assignedRingCentralPhoneNumber:input.assignedRingCentralPhoneNumber||null;
    const companyEmail=input.companyEmail===undefined?request.companyEmail:input.companyEmail||null;
-   const ringCentral=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key:'RINGCENTRAL'});
-   if(ringCentral.status==='COMPLETED'&&!assigned)throw new BadRequestException('A completed RingCentral task requires an assigned number.');
-   const workspace=await em.getRepository(ItOnboardingTask).findOneByOrFail({requestId:id,key:'GOOGLE_WORKSPACE'});
-   if(workspace.status==='COMPLETED'&&!companyEmail)throw new BadRequestException('A completed Google Workspace task requires the company email.');
+   const ringCentral=await em.getRepository(ItOnboardingTask).findOneBy({requestId:id,key:'RINGCENTRAL'});
+   if(ringCentral?.status==='COMPLETED'&&!assigned)throw new BadRequestException('A completed RingCentral task requires an assigned number.');
+   const workspace=await em.getRepository(ItOnboardingTask).findOneBy({requestId:id,key:'GOOGLE_WORKSPACE'});
+   if(workspace?.status==='COMPLETED'&&!companyEmail)throw new BadRequestException('A completed Google Workspace task requires the company email.');
    const wasVerified=!!request.workPhoneVerifiedAt;
    if(input.workPhoneVerified&&!wasVerified){request.workPhoneVerifiedAt=new Date();request.workPhoneVerifiedBy=user.id;}
    if(!input.workPhoneVerified){request.workPhoneVerifiedAt=null;request.workPhoneVerifiedBy=null;}
@@ -147,17 +161,24 @@ export class ItService {
    const previous=task.status;task.status=input.status;task.notes=notes;task.updatedBy=user.id;await em.save(task);
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status}});
    const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:id});
-   this.checklistComplete(tasks);
-   if(tasks.every(taskDone)){
+   this.checklistComplete(request,tasks);
+   if(tasks.every(taskDone)&&request.purpose==='SUPPORT'){
+    // A support's setup needs a number or company email only when that was asked for. The manager who asked gets a notice; the person isn't messaged.
+    if(tasks.some(item=>item.key==='RINGCENTRAL')&&!request.assignedRingCentralPhoneNumber||tasks.some(item=>item.key==='GOOGLE_WORKSPACE')&&!request.companyEmail)
+     throw new BadRequestException('Record the company email and RingCentral number that were asked for before finishing setup.');
+    request.completedAt=new Date();
+    await em.getRepository(PortalNotification).save({recipientId:request.managerId,requestId:id,kind:'IT_ONBOARDING_COMPLETED'});
+    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'IT_ONBOARDING_COMPLETED',metadata:{}});
+   }else if(tasks.every(taskDone)){
     if((request.profile.workPhoneNumber?.trim()&&!request.workPhoneVerifiedAt)||!request.assignedRingCentralPhoneNumber||!request.companyEmail)throw new BadRequestException('Record the company email and assigned RingCentral number, and verify any existing applicant-provided work phone, before completing onboarding.');
     request.completedAt=new Date();
     await em.getRepository(PortalNotification).save({recipientId:request.managerId,requestId:id,kind:'IT_ONBOARDING_COMPLETED'});
     await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'IT_ONBOARDING_COMPLETED',metadata:{}});
-    const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId});
+    const application=await em.getRepository(DispatcherApplication).findOneByOrFail({id:request.applicationId!});
     await em.getRepository(ApplicationActivity).save({invitationId:application.invitationId,actorId:user.id,event:'IT_ONBOARDING_COMPLETED'});
-    notices=await this.alerts.queueSetupComplete(em,request);
+    notices=await this.alerts.queueSetupComplete(em,{id:request.id,applicationId:request.applicationId!});
     // The dispatcher record leaves Onboarding with the completed setup.
-    await activateMember(em,request.applicationId);
+    await activateMember(em,request.applicationId!);
    }
    request.version+=1;await em.save(request);return this.detail(em,request);
   });
@@ -168,9 +189,9 @@ export class ItService {
  async openCount(user:User){
   this.allowIt(user);
   const setups=await this.db.getRepository(ItOnboardingRequest).createQueryBuilder('r')
-   .innerJoin(DispatcherApplication,'a','a.id=r.applicationId AND a.status = :approved',{approved:'APPROVED'})
-   .innerJoin(ApplicationReview,'v',"v.id=r.approvalId AND v.applicationId=r.applicationId AND v.decisionType='APPROVE'")
-   .where('r.completedAt IS NULL AND r.cancelledAt IS NULL').getCount();
+   .leftJoin(DispatcherApplication,'a','a.id=r.applicationId AND a.status = :approved',{approved:'APPROVED'})
+   .leftJoin(ApplicationReview,'v',"v.id=r.approvalId AND v.applicationId=r.applicationId AND v.decisionType='APPROVE'")
+   .where("r.completedAt IS NULL AND r.cancelledAt IS NULL AND (r.purpose = 'SUPPORT' OR (a.id IS NOT NULL AND v.id IS NOT NULL))").getCount();
   const [{signIns}]=await this.db.query(`SELECT count(*)::integer AS "signIns" FROM team_lead_sign_ins WHERE "doneAt" IS NULL AND "cancelledAt" IS NULL`);
   return setups+signIns+await this.db.getRepository(ItRemovalRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
  }
@@ -210,7 +231,7 @@ export class ItService {
    const previous=task.status;task.status=input.status;task.notes=notes;task.updatedBy=user.id;await em.save(task);
    await em.getRepository(ItRemovalActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status,...(input.numberOutcome?{numberOutcome:input.numberOutcome}:{})}});
    const tasks=await em.getRepository(ItRemovalTask).findBy({requestId:id});
-   if(tasks.length===REMOVAL_CHECKLIST.length&&tasks.every(removalTaskDone)){
+   if(tasks.length>0&&tasks.every(removalTaskDone)){
     removal.completedAt=new Date();
     // The manager who marked them as left learns their access is gone.
     await em.getRepository(PortalNotification).save({recipientId:removal.managerId,requestId:null,removalId:id,kind:'IT_REMOVAL_COMPLETED'});
@@ -229,7 +250,7 @@ export class ItService {
   const result=await this.db.getRepository(PortalNotification).createQueryBuilder('n')
    .leftJoin(ItOnboardingRequest,'r','r.id=n.requestId').leftJoin(ItRemovalRequest,'m','m.id=n.removalId')
    .where('n.recipientId = :owner AND (r.managerId = :owner OR m.id IS NOT NULL)',{owner:user.id})
-   .addSelect('r.applicationId','applicationId').addSelect('m.memberId','memberId').addSelect("coalesce(r.profile->>'proposedDisplayName', m.profile->>'displayName')",'displayName')
+   .addSelect('r.applicationId','applicationId').addSelect('coalesce(m.memberId, r.memberId)','memberId').addSelect("coalesce(r.profile->>'proposedDisplayName', m.profile->>'displayName')",'displayName')
    .orderBy('n.createdAt','DESC').addOrderBy('n.id','ASC').limit(50).getRawAndEntities();
   const unread=await this.db.getRepository(PortalNotification).countBy({recipientId:user.id,readAt:IsNull()});
   return {items:result.entities.map((notification,index)=>({...notification,applicationId:result.raw[index].applicationId as string|null,memberId:result.raw[index].memberId as string|null,displayName:result.raw[index].displayName as string|null})),unread};

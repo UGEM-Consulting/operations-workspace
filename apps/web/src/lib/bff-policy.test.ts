@@ -139,6 +139,10 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('PATCH', `dispatch/members/${ID}/existing`), true);
     for (const action of ['place', 'start-date', 'support-type']) { assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action); assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/${action}`), false, action); }
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/more-time`), true);
+    // Asking IT to set things up for a support or updater (section 32).
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/it-setup`), true);
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/it-setup`), false);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/it-setup/cancel`), false);
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/more-time`), false);
     assert.equal(bodyLimit('dispatch/existing/add'), 1_000_000);
     assert.equal(bodyLimit('dispatch/paperwork/links'), 16384);

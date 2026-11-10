@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Bell, CircleCheck } from 'lucide-react';
 import { errorMessage, mutate, readApi } from '@/lib/client-api';
-import type { Notifications } from '@/features/it/types';
+import { notificationView, type Notifications } from '@/features/it/types';
 import { cn } from '@/lib/utils';
 import { Button } from './ui/button';
 import { EmptyState, Skeleton } from './ui/feedback';
@@ -33,7 +33,8 @@ export function NotificationBell({ unread: initialUnread }: { unread: number }) 
     try { setData(await readApi<Notifications>('notifications')); } catch (error) { setError(errorMessage(error, 'Notifications could not be loaded.')); }
   }
   async function openItem(item: Notifications['items'][number]) {
-    const href = item.kind === 'IT_REMOVAL_COMPLETED' ? `/dispatch/dispatchers/${item.memberId}` : `/onboarding/applications/${item.applicationId}`;
+    const href = notificationView(item).href;
+    if (!href) return;
     if (guard.current && !guard.current(href)) return;
     setOpen(false);
     // Reading is best effort: the application opens even if marking it read fails.
@@ -66,8 +67,8 @@ export function NotificationBell({ unread: initialUnread }: { unread: number }) 
               <button type="button" onClick={() => void openItem(item)} className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
                 <span className="grid size-8 shrink-0 place-items-center rounded-full bg-success-background text-success"><CircleCheck aria-hidden="true" className="size-4" /></span>
                 <span className="grid min-w-0 flex-1">
-                  <span className={cn('text-sm', !item.readAt && 'font-medium')}>{item.kind === 'IT_REMOVAL_COMPLETED' ? 'IT access removed' : 'IT setup completed'}</span>
-                  <span className="truncate text-[13px] leading-5 text-muted-foreground">{item.kind === 'IT_REMOVAL_COMPLETED' ? `IT removed ${item.displayName ?? 'the dispatcher'}’s accounts.` : `${item.displayName ?? 'Dispatcher'} is ready to work.`}</span>
+                  <span className={cn('text-sm', !item.readAt && 'font-medium')}>{notificationView(item).title}</span>
+                  <span className="truncate text-[13px] leading-5 text-muted-foreground">{notificationView(item).text}</span>
                   <LocalTime iso={item.createdAt} className="mt-0.5 text-xs text-muted-foreground" />
                 </span>
                 {!item.readAt && <span className="mt-1.5 size-2 shrink-0 rounded-full bg-primary"><span className="sr-only">Unread</span></span>}

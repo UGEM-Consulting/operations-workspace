@@ -12,7 +12,9 @@ const SIGN_IN_USERS = `(
    SELECT "memberId", "datEmail" AS email FROM existing_member_records WHERE "datEmail" IS NOT NULL
    UNION ALL SELECT "memberId", "truckstopEmail" FROM existing_member_records WHERE "truckstopEmail" IS NOT NULL
    UNION ALL SELECT m.id, r."datEmail" FROM it_onboarding_requests r JOIN dispatch_members m ON m."applicationId" = r."applicationId" WHERE r."datEmail" IS NOT NULL AND r."cancelledAt" IS NULL
+   UNION ALL SELECT r."memberId", r."datEmail" FROM it_onboarding_requests r WHERE r."memberId" IS NOT NULL AND r."datEmail" IS NOT NULL AND r."cancelledAt" IS NULL
    UNION ALL SELECT m.id, r."truckstopEmail" FROM it_onboarding_requests r JOIN dispatch_members m ON m."applicationId" = r."applicationId" WHERE r."truckstopEmail" IS NOT NULL AND r."cancelledAt" IS NULL
+   UNION ALL SELECT r."memberId", r."truckstopEmail" FROM it_onboarding_requests r WHERE r."memberId" IS NOT NULL AND r."truckstopEmail" IS NOT NULL AND r."cancelledAt" IS NULL
   ) v JOIN dispatch_members d ON d.id = v."memberId" WHERE d.status <> 'LEFT'`;
 /** Every load board sign-in someone here uses, for checking a file against. */
 export async function signInsInUse(em: Pick<EntityManager, 'query'>): Promise<Set<string>> {

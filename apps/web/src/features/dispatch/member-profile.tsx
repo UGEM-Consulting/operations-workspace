@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ban, Building2, Calendar, Ellipsis, FileText, Link2, Mail, Phone, Plus, RotateCcw, Route, Send, UserMinus, Users, type LucideIcon } from 'lucide-react';
+import { Ban, Building2, Calendar, Ellipsis, FileText, Link2, Mail, Monitor, Phone, Plus, RotateCcw, Route, Send, UserMinus, Users, type LucideIcon } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
@@ -26,6 +26,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { middayIso } from '@/lib/navigation';
 import { ExistingAccountsCard, ExistingPaperworkCard, useCatchUpLink } from './paperwork';
+import { askedFor, SupportItChoices, type SupportItItem } from './support-it';
 import { signInItems } from './sign-in-status';
 import { SignIn } from './sign-in';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
@@ -33,7 +34,7 @@ import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, suppor
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
 const memberPhotos = (id: string, selfie: boolean, idSelfie: boolean, name: string): ViewablePhoto[] => [...(selfie ? [{ src: selfieUrl(id), title: `Selfie · ${name}`, alt: `Selfie of ${name}` }] : []), ...(idSelfie ? [{ src: idSelfieUrl(id), title: `Selfie holding an ID · ${name}`, meta: 'Check that the face and name match the ID.', alt: `Selfie of ${name} holding an ID` }] : [])];
 
-type Action = 'place' | 'startDate' | 'supportType' | 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact';
+type Action = 'place' | 'startDate' | 'supportType' | 'move' | 'reassign' | 'leave' | 'lastDay' | 'cancel' | 'removeNow' | 'title' | 'contact' | 'askIt';
 // The Eastern date, as the API uses to tell a notice from leaving today; the browser's own date could promise the wrong one.
 const today = (at = Date.now()) => new Date(at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 // Independent is a team choice under an MC (no team), never an MC (section 31): the team select's value for no team.
@@ -59,6 +60,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const router = useRouter();
   const toast = useToast();
   const [action, setAction] = useState<Action | null>(null);
+  // What a manager asks IT to set up for a support or updater (SupportAskItScreen).
+  const [itItems, setItItems] = useState<SupportItItem[]>([]);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [mcId, setMcId] = useState(member.current?.mcId ?? '');
@@ -89,9 +92,13 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
       else if (action === 'cancel') await mutate(`dispatch/members/${member.id}/cancel-notice`, 'POST', { version: member.version, reason: form.reason });
       else if (action === 'removeNow') await mutate(`dispatch/members/${member.id}/remove-access`, 'POST', { version: member.version, reason: form.reason });
+      else if (action === 'askIt') {
+        if (!itItems.length) { setError('Choose what IT should set up.'); setPending(null); return; }
+        await mutate(`dispatch/members/${member.id}/it-setup`, 'POST', { items: itItems, ...(form.note?.trim() ? { note: form.note } : {}) });
+      }
       else if (action === 'title') await mutate(`dispatch/members/${member.id}`, 'PATCH', { version: member.version, jobTitleId: form.jobTitleId || null });
       else await mutate(`dispatch/members/${member.id}/contacts`, 'POST', { kind, value: form.value, ...(form.label?.trim() ? { label: form.label } : {}) });
-      toast({ title: action === 'supportType' ? `${name} is now ${aSupport({ supportType: otherType })}` : action === 'place' ? 'MC and team saved' : action === 'startDate' ? 'Start date saved' : action === 'reassign' ? 'Who they assist changed' : action === 'move' ? `${name} moved` : action === 'leave' ? (lastDay > today() ? `Notice recorded for ${name}` : `${name} marked as left`) : action === 'lastDay' ? 'Last day changed' : action === 'cancel' ? 'Notice cancelled' : action === 'removeNow' ? 'IT was asked to remove access now' : action === 'title' ? 'Job title updated' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
+      toast({ title: action === 'supportType' ? `${name} is now ${aSupport({ supportType: otherType })}` : action === 'place' ? 'MC and team saved' : action === 'startDate' ? 'Start date saved' : action === 'reassign' ? 'Who they assist changed' : action === 'move' ? `${name} moved` : action === 'leave' ? (lastDay > today() ? `Notice recorded for ${name}` : `${name} marked as left`) : action === 'lastDay' ? 'Last day changed' : action === 'cancel' ? 'Notice cancelled' : action === 'removeNow' ? 'IT was asked to remove access now' : action === 'title' ? 'Job title updated' : action === 'askIt' ? 'Sent to IT' : kind === 'EMAIL' ? 'Email added' : 'Phone number added' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(null); }
@@ -115,7 +122,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // Added by hand: a dispatcher always gets a checklist, a support only when accounts were recorded for them.
   const recordedAccounts = existing && (!support || existing.companyEmail || existing.ringCentralNumber || existing.datEmail || existing.truckstopEmail) ? { companyEmail: existing.companyEmail, ringCentralNumber: existing.ringCentralNumber } : null;
   const signIns = { dat: accounts?.datEmail ?? existing?.datEmail ?? null, truckstop: accounts?.truckstopEmail ?? existing?.truckstopEmail ?? null }, telegram = details?.telegram ? null : existing?.telegram ?? null;
-  const removesAccess = (!support && !!accounts) || !!recordedAccounts, removal = member.removal ?? null;
+  const removesAccess = !!accounts || !!recordedAccounts, removal = member.removal ?? null;
+  // A support's or updater's IT setup (section 32): offered once the API knows it (itSetup), never while one is open or they're leaving.
+  const itSetup = member.itSetup ?? null, itOpen = itSetup?.open ?? null;
   const removalOpen = !!removal && !removal.completedAt, notice = member.notice ?? null, onNotice = open && !!notice;
   const drivers = member.driversToReassign ?? [], supportsLeft = member.supports ?? [], reassign = toReassign(drivers.length, supportsLeft.length), anyoneLeft = drivers.length + supportsLeft.length > 0;
   const noticeDay = lastDay > today();
@@ -128,7 +137,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const others = [...(needsLink ? ['link' as const] : []), ...(support ? ['reassign' as const] : noMc ? ['place' as const] : !onNotice ? ['move' as const] : [])].filter(key => key !== mainKey);
   const ending = onNotice ? [{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') }, ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]
     : [{ label: 'Mark as leaving', icon: UserMinus, danger: true, onSelect: () => start('leave') }];
-  const more: MenuEntry[] = [...others.map(key => ({ label: actions[key].label, icon: actions[key].icon, onSelect: actions[key].onClick })), ...(support ? [{ label: `Change to ${otherName}`, icon: Users, onSelect: () => start('supportType') }] : []), ...(existing ? [startAction] : []), ...(others.length || existing || support ? [{ separator: true as const }] : []), ...ending];
+  const more: MenuEntry[] = [...others.map(key => ({ label: actions[key].label, icon: actions[key].icon, onSelect: actions[key].onClick })), ...(support && itSetup && open && !onNotice ? [{ label: itOpen ? 'Ask IT to set up (IT is still working on the last request)' : 'Ask IT to set up', icon: Monitor, disabled: !!itOpen, onSelect: () => { setItItems([]); start('askIt'); } }] : []),
+    ...(support ? [{ label: `Change to ${otherName}`, icon: Users, onSelect: () => start('supportType') }] : []), ...(existing ? [startAction] : []), ...(others.length || existing || support ? [{ separator: true as const }] : []), ...ending];
   const emailNow = removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
     ? (removal.emailAfter === 'FORWARD' ? `suspended and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : 'suspended') : null;
   return <div className="space-y-6">
@@ -250,6 +260,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           }} />
       </div>
       <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
+        {itOpen && <Alert tone="info" title={`IT setup: ${itOpen.done} of ${itOpen.total} done`}><p>{askedFor(itOpen.items)}, asked <LocalTime iso={itOpen.createdAt} format="date" />{itOpen.requestedBy ? ` by ${itOpen.requestedBy}` : ''}.</p></Alert>}
         {open && existing && (noMc || !startKnown) && <Card><CardHeader title="Still to fill in" />
           <CardBody className="space-y-3"><DescriptionList layout="rows" items={[...(noMc ? [{ label: 'MC and team', value: null, emptyLabel: 'No MC yet' }] : []), ...(!startKnown ? [{ label: 'Started', value: null, emptyLabel: 'Not recorded' }] : [])]} />
             <p className="text-[13px] leading-5 text-muted-foreground">Add {noMc && !startKnown ? 'these' : 'this'} when you know {noMc && !startKnown ? 'them' : 'it'}. Paperwork links, contact details and leaving don’t wait.</p>
@@ -296,11 +307,14 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           </CardBody>
         </Card>}
         {removalOpen && !removal?.scheduled && <Card><CardHeader title="When it’s done" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">You get a notification here when IT finishes. The workspace never messages the person who left.</p></CardBody></Card>}
-        {existing && !accounts && <ExistingAccountsCard member={member} open={open} />}
+        {/* A support added by hand keeps the accounts a manager recorded beside anything IT set up for them. */}
+        {existing && (!accounts || support) && <ExistingAccountsCard member={member} open={open} />}
         {(!existing || accounts) && <Card>
           <CardHeader title={support ? 'Onboarding' : 'IT setup'} />
           <CardBody className="space-y-3 text-sm">
-            {support ? <p className="text-muted-foreground">Updaters and supports need no IT setup or company accounts.</p>
+            {support ? (itOpen ? <><p>IT is setting up {askedFor(itOpen.items, true)}.</p>{progress}</>
+              : accounts ? <p>From IT setup{accounts.completedAt ? <>, finished <LocalTime iso={accounts.completedAt} format="date" /></> : ''}. IT removes these when {member.firstName} leaves.</p>
+              : <p className="text-muted-foreground">Most supports work with their dispatcher’s accounts.{itSetup && open ? ' If they need their own, use More actions › Ask IT to set up.' : ''}</p>)
               : !accounts ? <p className="text-muted-foreground">No IT setup request for this dispatcher.</p>
               : accounts.cancelledAt ? <p>Cancelled <LocalTime iso={accounts.cancelledAt} format="date" />: they left before setup finished.</p>
               : accounts.completedAt ? <p>Setup complete <LocalTime iso={accounts.completedAt} format="date" />.</p>
@@ -314,9 +328,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       </div>
     </div>
     {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' || action === 'removeNow' ? 'danger' : undefined} size={action === 'leave' && removesAccess ? 'lg' : undefined} closeLabel={action === 'cancel' ? 'Keep notice' : undefined}
-      title={action === 'supportType' ? `Change ${name} to ${otherName}?` : action === 'place' ? `Set ${name}’s MC and team` : action === 'startDate' ? `${startKnown ? 'Correct' : 'Add'} ${name}’s start date` : action === 'reassign' ? `Change who ${name} assists` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : 'Add email or phone'}
-      description={action === 'supportType' ? `Only what they’re called changes. They keep assisting ${supportOf ? assists(supportOf) : 'their dispatcher'}, with the same MC and team.` : action === 'place' ? 'Where they work now. Once they have an MC, in a team or independent, they can be given drivers.' : action === 'startDate' ? (startKnown ? `Now ${new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}. Their first period in the history changes with it; later moves stay as they are.` : 'Their start date here, from payroll or an offer letter.') : action === 'reassign' ? `${supportOf ? `Now ${assists(supportOf)}. ` : ''}Their MC and team follow whoever they assist, and the current one stays in the history.` : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : undefined}
-      actions={<Button type="submit" form="member-action" variant={action === 'leave' || action === 'removeNow' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'supportType' ? `Change to ${otherName}` : action === 'place' ? 'Save MC and team' : action === 'startDate' ? 'Save start date' : action === 'reassign' ? 'Save' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? (noticeDay ? 'Record notice' : 'Mark as left') : action === 'lastDay' ? 'Change last day' : action === 'cancel' ? 'Cancel notice' : action === 'removeNow' ? 'Remove access now' : action === 'title' ? 'Save job title' : 'Add contact'}</Button>}>
+      title={action === 'supportType' ? `Change ${name} to ${otherName}?` : action === 'place' ? `Set ${name}’s MC and team` : action === 'startDate' ? `${startKnown ? 'Correct' : 'Add'} ${name}’s start date` : action === 'reassign' ? `Change who ${name} assists` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : action === 'askIt' ? `Ask IT to set up for ${name}` : 'Add email or phone'}
+      description={action === 'supportType' ? `Only what they’re called changes. They keep assisting ${supportOf ? assists(supportOf) : 'their dispatcher'}, with the same MC and team.` : action === 'place' ? 'Where they work now. Once they have an MC, in a team or independent, they can be given drivers.' : action === 'startDate' ? (startKnown ? `Now ${new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}. Their first period in the history changes with it; later moves stay as they are.` : 'Their start date here, from payroll or an offer letter.') : action === 'reassign' ? `${supportOf ? `Now ${assists(supportOf)}. ` : ''}Their MC and team follow whoever they assist, and the current one stays in the history.` : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.' : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : action === 'askIt' ? 'IT gets an alert and a checklist with what you choose. When they finish, you get a notice and the accounts show here.' : undefined}
+      actions={<Button type="submit" form="member-action" variant={action === 'leave' || action === 'removeNow' ? 'destructive' : 'default'}>{pending === 'form' ? 'Saving…' : action === 'supportType' ? `Change to ${otherName}` : action === 'place' ? 'Save MC and team' : action === 'startDate' ? 'Save start date' : action === 'reassign' ? 'Save' : action === 'move' ? 'Move dispatcher' : action === 'leave' ? (noticeDay ? 'Record notice' : 'Mark as left') : action === 'lastDay' ? 'Change last day' : action === 'cancel' ? 'Cancel notice' : action === 'removeNow' ? 'Remove access now' : action === 'title' ? 'Save job title' : action === 'askIt' ? 'Send to IT' : 'Add contact'}</Button>}>
       <form id="member-action" onSubmit={submit} className="space-y-4">
         {action === 'place' && <>
           {/* Nothing chosen to begin with: the MC and the team (or Independent) are both picked. */}
@@ -382,6 +396,10 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           <Textarea label="Why now" name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
           <DescriptionList layout="rows" items={[{ label: 'IT', value: 'Removal due today; IT gets a Telegram alert now' }, { label: 'Team lead sign-in', value: 'Turned off now, if they have one' }, { label: 'Last day', value: <>Stays <LastDay day={notice?.lastDay ?? today()} /> until you change it</> }]} />
           {anyoneLeft && <Alert tone="warning" title={`Reassign their ${reassign}`}><p>{member.firstName} won’t be able to work with them without access. Removing access never waits for this.</p></Alert>}
+        </>}
+        {action === 'askIt' && <>
+          <SupportItChoices value={itItems} onChange={next => { setItItems(next); setError(''); }} />
+          <Textarea label="Note for IT" optional name="note" maxLength={1000} rows={3} hint="What they need it for. Never passwords." />
         </>}
         {action === 'title' && <Select label="Job title" name="jobTitleId" defaultValue={member.jobTitle?.id ?? ''} placeholder="Not set" width="full"
           options={jobTitles.filter(title => !title.archived || title.id === member.jobTitle?.id).map(title => ({ value: title.id, label: title.name }))} />}
