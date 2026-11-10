@@ -5,7 +5,8 @@ export interface Invitation { id: string; email: string | null; expectedEmail: s
 export interface DispatcherOption { id: string; name: string; status: string; mc: string | null; team: string | null; leaving?: boolean }
 export interface TeamOption { id: string; name: string; mc: string | null; archived?: boolean }
 // teamOptions comes from an API with whole team supports; without it, only a dispatcher can be chosen.
-export interface SupportChoice { supportsMemberId: string | null; supportsTeamId?: string | null; supportType?: 'SUPPORT' | 'UPDATER'; options: DispatcherOption[]; teamOptions?: TeamOption[] }
+// itSetupItems: what IT can be asked to set up at approval; an older API sends none and the choice isn't offered.
+export interface SupportChoice { supportsMemberId: string | null; supportsTeamId?: string | null; supportType?: 'SUPPORT' | 'UPDATER'; options: DispatcherOption[]; teamOptions?: TeamOption[]; itSetupItems?: string[] }
 export interface Fields { firstName?: string; lastName?: string; personalPhoneNumber?: string; workPhoneNumber?: string; preferredAmericanFirstName?: string; preferredAmericanLastName?: string; telegram?: string; mcName?: string; teamLead?: string; jobTitle?: string; }
 export interface Application { id: string; invitationId: string; status: ApplicationStatus; fields: Fields; version: number; updatedAt: string; submittedAt: string | null; }
 export const applicationStatuses = ['INVITED','DRAFT','SUBMITTED','CHANGES_REQUESTED','RESUBMITTED','APPROVED','REJECTED'] as const;

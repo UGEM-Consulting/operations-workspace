@@ -3,6 +3,7 @@ import { VERIFICATION_CODE_PATTERN } from './verification-code';
 import { APPLICATION_STATUSES, REQUESTABLE_ITEMS, ApplicationStatus, RequestableItem, DecisionType } from './entities';
 import { CountersignatureDto } from '../documents/documents.dto';
 import { SUPPORT_TYPES, type SupportType } from '../dispatch/dispatch.entity';
+import { SUPPORT_IT_ITEM_KEYS, type SupportItItem } from '../it/it.entity';
 import { Type, Transform } from 'class-transformer';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, Equals, IsBoolean, IsEmail, IsInt, IsObject, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 const optional = () => ValidateIf((_object: unknown, value: unknown) => value !== undefined);
@@ -68,6 +69,8 @@ export class ReviewDto {
  @optional() @IsUUID() supportsMemberId?: string;
  @optional() @IsUUID() supportsTeamId?: string;
  @optional() @IsIn(SUPPORT_TYPES) supportType?: SupportType;
+ // Approving a support or updater may also ask IT to set some of these up for them (section 32); nothing by default.
+ @optional() @IsArray() @ArrayMaxSize(SUPPORT_IT_ITEM_KEYS.length) @ArrayUnique() @IsIn(SUPPORT_IT_ITEM_KEYS, { each: true }) itSetup?: SupportItItem[];
  @IsInt() @Min(0) version!: number;
  @IsIn(['APPROVE','REQUEST_CHANGES','REJECT']) decisionType!: DecisionType;
  @optional() @trim() @IsString() @MaxLength(2000) reason?: string;

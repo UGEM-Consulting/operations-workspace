@@ -4,6 +4,7 @@ import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requireme
 import { listName } from '../lists/lists.entity';
 import { EXTENSION } from './account-details';
 import { SUPPORT_TYPES, type SupportType } from './dispatch.entity';
+import { SUPPORT_IT_ITEM_KEYS, type SupportItItem } from '../it/it.entity';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 const present = (_object: unknown, value: unknown) => value !== undefined;
@@ -93,6 +94,11 @@ export class StartDateDto {
  @IsInt() @Min(1) version!: number;
  @Matches(/^\d{4}-\d{2}-\d{2}$/) startedOn!: string;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
+/** What a dispatch manager asks IT to set up for a support or updater (section 32), and a note for IT (never passwords). */
+export class AskItDto {
+ @IsArray() @ArrayMinSize(1, { message: 'Choose what IT should set up.' }) @ArrayMaxSize(4) @IsIn(SUPPORT_IT_ITEM_KEYS, { each: true }) items!: SupportItItem[];
+ @text() @IsOptional() @IsString() @MaxLength(1000) note?: string;
 }
 /** What a support is called: only the name changes. */
 export class SupportTypeDto {

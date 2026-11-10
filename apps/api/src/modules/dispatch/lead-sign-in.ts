@@ -33,7 +33,8 @@ export class TeamLeadSignIn {
  * what IT recorded at setup first, else what a manager recorded. The one rule for IT tasks, the team page, the Dispatchers
  * list and the sign-in itself.
  */
-export const companyEmailSql = (d = 'd', e = 'e') => `coalesce((SELECT r."companyEmail" FROM it_onboarding_requests r WHERE r."applicationId" = ${d}."applicationId" AND r."cancelledAt" IS NULL ORDER BY r."createdAt" DESC LIMIT 1), ${e}."companyEmail")`;
+export const companyEmailSql = (d = 'd', e = 'e') => `coalesce((SELECT x."companyEmail" FROM (SELECT r."companyEmail", r."createdAt" FROM it_onboarding_requests r WHERE r."applicationId" = ${d}."applicationId" AND r."cancelledAt" IS NULL AND r."companyEmail" IS NOT NULL
+  UNION ALL SELECT r."companyEmail", r."createdAt" FROM it_onboarding_requests r WHERE r."memberId" = ${d}.id AND r."cancelledAt" IS NULL AND r."companyEmail" IS NOT NULL) x ORDER BY x."createdAt" DESC LIMIT 1), ${e}."companyEmail")`;
 
 /**
  * What a dispatcher's sign-in needs now, from the database. Someone leading a team (and not leaving) needs an active

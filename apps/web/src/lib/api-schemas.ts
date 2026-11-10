@@ -195,7 +195,7 @@ export const expiringSchema = z.looseObject({ today: text, warningDays: z.number
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
 export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN']), id: text,
   // A team lead's sign-in: what IT is asked to do, whose record and their team.
-  signIn: z.enum(['CREATE', 'TURN_ON', 'TURN_OFF']).nullable().optional(), memberId: nullableText.optional(), team: nullableText.optional(), name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
+  signIn: z.enum(['CREATE', 'TURN_ON', 'TURN_OFF']).nullable().optional(), memberId: nullableText.optional(), team: nullableText.optional(), assists: nullableText.optional().catch(undefined), name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
   dueOn: nullableText, scheduled: z.boolean(), updatedAt: text, completedAt: nullableText })), total: z.number(), page: z.number(), pageCount: z.number(), pageSize: z.number(),
   stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number(), signIns: z.number().optional() }) });
 /** GET /it/removals/:id */

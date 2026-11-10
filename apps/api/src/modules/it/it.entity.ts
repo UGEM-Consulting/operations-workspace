@@ -14,6 +14,14 @@ export const IT_CHECKLIST: readonly {key:string;label:string;description:string;
  {key:'EQUIPMENT',label:'Equipment',description:'Confirm the headset and laptop are ready, or mark Not needed when the dispatcher uses their own.',optional:true},
 ];
 export function isOptionalTask(key:string){return IT_CHECKLIST.some(task=>task.key===key&&task.optional);}
+/**
+ * What a dispatch manager can ask IT to set up for a support or updater (section 32), and the checklist tasks each one
+ * adds. A RingCentral number is the same three tasks as a new dispatcher's, so IT works it in the same RingCentral section.
+ */
+export const SUPPORT_IT_ITEMS={COMPANY_EMAIL:['GOOGLE_WORKSPACE'],RINGCENTRAL:['RINGCENTRAL','SMS','CALL_RECORDING'],BUSINESS_SOFTWARE:['BUSINESS_SOFTWARE'],EQUIPMENT:['EQUIPMENT']} as const;
+export type SupportItItem=keyof typeof SUPPORT_IT_ITEMS;
+export const SUPPORT_IT_ITEM_KEYS=Object.keys(SUPPORT_IT_ITEMS) as SupportItItem[];
+export type SetupPurpose='DISPATCHER'|'SUPPORT';
 /** Completed, or Not needed for an optional task. Setup completes when every task is done. */
 export function taskDone(task:Pick<ItOnboardingTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&isOptionalTask(task.key));}
 export interface ItProfile {
@@ -21,12 +29,20 @@ export interface ItProfile {
  preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;
  personalPhoneNumber:string|null;workPhoneNumber:string|null;personalEmail:string|null;
  mcName:string;teamLead:string;jobTitle:string;
+ // A support's or updater's setup: who they assist ("Updater for Riley Santos"), shown where a dispatcher's job title would be.
+ assists?:string|null;
 }
 @Entity('it_onboarding_requests')
 export class ItOnboardingRequest {
  @PrimaryGeneratedColumn('uuid') id!:string;
- @Column('uuid') applicationId!:string;
- @Column('uuid') approvalId!:string;
+ // A new dispatcher's setup (purpose DISPATCHER) comes from their approved application; a support's (SUPPORT) names their
+ // dispatcher record instead, with who asked and an optional note for IT.
+ @Column('varchar',{default:'DISPATCHER'}) purpose!:SetupPurpose;
+ @Column('uuid',{nullable:true}) applicationId!:string|null;
+ @Column('uuid',{nullable:true}) approvalId!:string|null;
+ @Column('uuid',{nullable:true}) memberId!:string|null;
+ @Column('uuid',{nullable:true}) requestedBy!:string|null;
+ @Column('varchar',{length:1000,nullable:true}) note!:string|null;
  @Column('uuid') managerId!:string;
  @Column('jsonb') profile!:ItProfile;
  @Column('integer',{default:0}) version!:number;

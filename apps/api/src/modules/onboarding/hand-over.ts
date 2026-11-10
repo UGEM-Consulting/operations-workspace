@@ -30,11 +30,14 @@ const OPEN_RECORDS = `SELECT a.id, a."invitationId", CASE
   OR (a.status = 'APPROVED' AND EXISTS (SELECT 1 FROM it_onboarding_requests r WHERE r."applicationId" = a.id AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL)))`;
 /** Unfinished IT removals that send them the completion notice or new mail from the mailbox of someone who left. */
 const OPEN_REMOVALS = `FROM it_removal_requests r WHERE (r."managerId" = $1 OR r."forwardTo" = $1) AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
+/** Unfinished setups they asked IT for a support or updater (section 32): the completion notice goes to them. */
+const OPEN_SUPPORT_SETUPS = `FROM it_onboarding_requests r WHERE r.purpose = 'SUPPORT' AND r."managerId" = $1 AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
 export async function openRecords(em: EntityManager, userId: string) {
  const rows: { id: string; invitationId: string; bucket: 'invitations' | 'applications' | 'changes' | 'itSetup' }[] = await em.query(OPEN_RECORDS, [userId]);
  const [{ removals }]: { removals: number }[] = await em.query(`SELECT count(*)::integer AS removals ${OPEN_REMOVALS}`, [userId]);
+ const [{ supportSetups }]: { supportSetups: number }[] = await em.query(`SELECT count(*)::integer AS "supportSetups" ${OPEN_SUPPORT_SETUPS}`, [userId]);
  const count = (bucket: string) => rows.filter(row => row.bucket === bucket).length;
- return { rows, counts: { invitations: count('invitations'), applications: count('applications'), changes: count('changes'), itSetup: count('itSetup'), removals, total: rows.length + removals } };
+ return { rows, counts: { invitations: count('invitations'), applications: count('applications'), changes: count('changes'), itSetup: count('itSetup') + supportSetups, removals, total: rows.length + removals + supportSetups } };
 }
 
 /**
@@ -45,6 +48,8 @@ export async function moveApplication(em: EntityManager, input: { applicationId:
  await em.update(Invitation, { id: input.invitationId }, { managerId: input.toId });
  await em.update(DispatcherApplication, { id: input.applicationId }, { assignedManagerId: input.toId });
  await em.query(`UPDATE it_onboarding_requests SET "managerId" = $2, "updatedAt" = now() WHERE "applicationId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL`, [input.applicationId, input.toId]);
+ // A support's setup asked at approval names no application: it follows the person's record, when it was this manager's.
+ await moveSupportSetups(em, input.fromId, input.toId, input.actorId, input.reason === 'CHANGED' ? 'MANAGER_CHANGED' : 'MANAGER_HANDED_OVER', input.applicationId);
  await em.getRepository(ApplicationManagerChange).save({ applicationId: input.applicationId, fromUserId: input.fromId, toUserId: input.toId, actorId: input.actorId, reason: input.reason, note: input.note });
  await em.getRepository(ApplicationActivity).save({ invitationId: input.invitationId, actorId: input.actorId, event: input.reason === 'CHANGED' ? 'MANAGER_CHANGED' : 'MANAGER_HANDED_OVER' });
 }
@@ -60,7 +65,22 @@ export async function handOver(em: EntityManager, fromId: string, toId: string, 
  // Re-read under the locks: only records still owned and open move.
  const open = (await openRecords(em, fromId)).rows;
  for (const row of open) await moveApplication(em, { applicationId: row.id, invitationId: row.invitationId, fromId, toId, actorId, reason: 'HANDED_OVER', note: null });
- return open.length + await moveRemovals(em, fromId, toId, actorId);
+ return open.length + await moveRemovals(em, fromId, toId, actorId) + await moveSupportSetups(em, fromId, toId, actorId, 'MANAGER_HANDED_OVER');
+}
+
+/**
+ * Open support setups whose completion notice goes to fromId (all of them, or one person's when their application's manager
+ * changes): each is locked, moves and says so in IT's history, so an IT page open meanwhile knows why it must reload.
+ */
+async function moveSupportSetups(em: EntityManager, fromId: string, toId: string, actorId: string, event: 'MANAGER_CHANGED' | 'MANAGER_HANDED_OVER', applicationId?: string) {
+ const setups: { id: string }[] = applicationId
+  ? await em.query(`SELECT r.id ${OPEN_SUPPORT_SETUPS} AND r."memberId" IN (SELECT id FROM dispatch_members WHERE "applicationId" = $2) ORDER BY r.id FOR UPDATE OF r`, [fromId, applicationId])
+  : await em.query(`SELECT r.id ${OPEN_SUPPORT_SETUPS} ORDER BY r.id FOR UPDATE OF r`, [fromId]);
+ for (const setup of setups) {
+  await em.query(`UPDATE it_onboarding_requests SET "managerId" = $2, version = version + 1, "updatedAt" = now() WHERE id = $1`, [setup.id, toId]);
+  await em.query(`INSERT INTO it_onboarding_activity ("requestId","actorId",event,metadata) VALUES ($1,$2,$3,'{}')`, [setup.id, actorId, event]);
+ }
+ return setups.length;
 }
 
 /**

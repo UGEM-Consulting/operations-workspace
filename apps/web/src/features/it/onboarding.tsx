@@ -89,15 +89,17 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  // RingCentral, SMS and call recording are one group, shown where the first of them falls in the checklist.
  const grouped=tasks.filter(task=>RINGCENTRAL.includes(task.key)),firstGrouped=tasks.findIndex(task=>RINGCENTRAL.includes(task.key));
  const sections=tasks.flatMap((task,index):{heading?:string;items:ItTask[]}[]=>index===firstGrouped?[{heading:'RingCentral',items:grouped}]:RINGCENTRAL.includes(task.key)?[]:[{heading:undefined,items:[task]}]);
+ const supportSetup=request.purpose==='SUPPORT',hasTask=(key:string)=>tasks.some(task=>task.key===key);
  const activityTone=(event:ItDetail['activity'][number])=>event.event==='IT_ONBOARDING_COMPLETED'||event.metadata.newStatus==='COMPLETED'?'success' as const:event.metadata.newStatus==='BLOCKED'?'warning' as const:'neutral' as const;
  return <div className="space-y-6">
  <PageCrumb label={name}/>
  <PageHeader title={name} badge={cancelled?<Badge label="Cancelled" tone="neutral"/>:<StatusBadge status={closed?'COMPLETED':request.status}/>}
-  meta={[created&&<>Request created <LocalTime iso={created} format="date"/></>,`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
+  meta={[created&&<>{supportSetup?'Asked':'Request created'} <LocalTime iso={created} format="date"/>{supportSetup&&request.requestedByName?` by ${request.requestedByName}`:''}</>,supportSetup?[profile.assists,profile.mcName||'No MC yet',profile.teamLead].filter(Boolean).join(' · '):`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
   action={!closed&&<Button variant="outline" disabled={busy} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
   <div className="min-w-0 space-y-6">
-   {cancelled?<Alert tone="info" title="Setup cancelled"><p>The dispatcher left on <LocalTime iso={request.cancelledAt} format="date"/> before setup finished. Remove anything already created on their removal checklist in <Link href="/it/tasks?view=removal" className="text-primary underline-offset-4 hover:underline">IT tasks</Link>.</p></Alert>
+   {supportSetup&&request.note&&<Alert tone="info" title={`Note from ${request.requestedByName??'the manager'}`}><p className="whitespace-pre-line">{request.note}</p></Alert>}
+   {cancelled?<Alert tone="info" title="Setup cancelled"><p>{supportSetup?'They':'The dispatcher'} left on <LocalTime iso={request.cancelledAt} format="date"/> before setup finished. Remove anything already created on their removal checklist in <Link href="/it/tasks?view=removal" className="text-primary underline-offset-4 hover:underline">IT tasks</Link>.</p></Alert>
     :closed?<Alert tone="success" title="Setup complete"><p>Finished <LocalTime iso={request.completedAt}/>. The manager was notified and this checklist is read-only.</p></Alert>
     :blocked.length>0&&<Alert tone="warning" title={blocked.length===1?'1 task is blocked':`${blocked.length} tasks are blocked`}><ul className="space-y-1">{blocked.map(task=><li key={task.key}><span className="font-medium">{task.label}:</span> {task.notes}</li>)}</ul></Alert>}
    <Card>
@@ -115,10 +117,12 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
      {label:'Legal name',value:[profile.legalFirstName,profile.legalLastName].filter(Boolean).join(' ')},
      {label:'Personal email',value:profile.personalEmail&&<><span className="block break-all">{profile.personalEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.personalEmail} label="Copy email" size="sm" variant="ghost"/></span></>},
      {label:'Personal phone',value:profile.personalPhoneNumber,mono:true},
-     {label:'MC',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle},
+     ...(supportSetup?[{label:'Position',value:profile.assists??profile.jobTitle},{label:'MC',value:profile.mcName||null,emptyLabel:'No MC yet'},{label:'Team',value:profile.teamLead||null,emptyLabel:'Independent or none'}]
+      :[{label:'MC',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle}]),
      // Recorded in the Google Workspace and RingCentral tasks; the manager sees these on the employee details.
-     {label:'Company email',value:request.companyEmail,emptyLabel:'Set in the Google Workspace task'},
-     {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber,mono:true,emptyLabel:'Set in the RingCentral task'},
+     // A support's setup asks only for some: the others say so.
+     {label:'Company email',value:request.companyEmail,emptyLabel:hasTask('GOOGLE_WORKSPACE')?'Set in the Google Workspace task':'Not asked for'},
+     {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber,mono:true,emptyLabel:hasTask('RINGCENTRAL')?'Set in the RingCentral task':'Not asked for'},
      ...(request.ringCentralExtension?[{label:'Extension',value:request.ringCentralExtension,mono:true}]:[]),
      ...(request.datEmail?[{label:'DAT sign-in',value:<span className="break-all">{request.datEmail}</span>}]:[]),...(request.truckstopEmail?[{label:'Truckstop sign-in',value:<span className="break-all">{request.truckstopEmail}</span>}]:[]),
      ...(legacyPhone?[{label:'Older application work phone',value:<span className="flex flex-wrap items-center gap-2"><span className="font-mono text-[13px]">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></span>}]:[])]}/>
