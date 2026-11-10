@@ -219,7 +219,13 @@ export class DriverAccessService {
   const application = await em.getRepository(DriverApplication).findOne({ where: { driverId: first.driverId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
   // A submitted application stays readable for the rest of the session while it is still the one sent (Safety reopening
   // it as a draft ends that access); anything else needs an open link.
-  if (!driver || !application || link.revokedAt || (link.completedAt ? application.status !== 'SUBMITTED' : !this.open(link) || driver.status !== 'APPLYING')) throw new UnauthorizedException('This application link is no longer available. Please contact Safety.');
+  if (!driver || !application || link.revokedAt || (link.completedAt ? application.status !== 'SUBMITTED' : !this.open(link) || driver.status !== 'APPLYING')) {
+   // Safety sent a newer link (a new link, or the application sent back for corrections): say so, with when (section 33).
+   const newer = driver?.status === 'APPLYING' ? await em.getRepository(DriverLink).createQueryBuilder('l').where('l.driverId = :driverId AND l.purpose = :purpose AND l.createdAt > :after AND l.revokedAt IS NULL AND l.completedAt IS NULL AND l.expiresAt > now()',
+    { driverId: first.driverId, purpose: 'APPLICATION', after: link.createdAt }).orderBy('l.createdAt', 'DESC').getOne() : null;
+   if (newer) throw new UnauthorizedException({ message: 'Safety sent you a newer link. Open the newest message from UGEM Safety and use the link in it.', reason: 'NEWER_LINK', since: newer.createdAt, error: 'Unauthorized', statusCode: 401 });
+   throw new UnauthorizedException('This application link is no longer available. Please contact Safety.');
+  }
   return { link, driver, application };
  }
  private open(link: DriverLink) { return !link.revokedAt && !link.completedAt && link.expiresAt.getTime() > Date.now(); }

@@ -1,17 +1,18 @@
 import type { ReactNode } from 'react';
-import { CircleCheck, CircleDashed, CircleMinus, Clock3, TriangleAlert } from 'lucide-react';
+import { CircleCheck, CircleDashed, CircleMinus, Clock3, Lock, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { StatusBadge } from './status-badge';
+import { Badge, StatusBadge } from './status-badge';
 
 export interface ChecklistItem { id: string; title: string; optional?: boolean; description?: string; status: string; note?: string; meta?: ReactNode; action?: ReactNode }
 const icons: Record<string, [typeof CircleCheck, string]> = {
   PENDING: [CircleDashed, 'text-subtle-foreground'], IN_PROGRESS: [Clock3, 'text-info'], BLOCKED: [TriangleAlert, 'text-warning'],
-  COMPLETED: [CircleCheck, 'text-success'], NOT_NEEDED: [CircleMinus, 'text-muted-foreground'],
+  COMPLETED: [CircleCheck, 'text-success'], NOT_NEEDED: [CircleMinus, 'text-muted-foreground'], RESTRICTED: [Lock, 'text-muted-foreground'],
 };
 
 /**
  * Tasks with their status, an optional note and one action, for a flush Card with a Progress in its header. Blocked
  * notes are highlighted and finished titles dim. `heading` labels a group of related tasks without nesting cards.
+ * RESTRICTED is a task whose status this person may not see (a drug test result for someone who isn't its Safety contact).
  */
 export function Checklist({ items, heading, titleAs: Title = 'h3', className }: { items: ChecklistItem[]; heading?: string; titleAs?: 'h3' | 'h4'; className?: string }) {
   const done = (status: string) => status === 'COMPLETED' || status === 'NOT_NEEDED';
@@ -25,7 +26,7 @@ export function Checklist({ items, heading, titleAs: Title = 'h3', className }: 
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <Title className={cn('text-sm font-medium leading-[22px]', done(item.status) && 'text-muted-foreground')}>{item.title}{item.optional && <span className="ml-2 text-xs font-normal text-muted-foreground">Optional</span>}</Title>
-              <StatusBadge status={item.status} />
+              {item.status === 'RESTRICTED' ? <Badge label="Restricted" tone="neutral" /> : <StatusBadge status={item.status} />}
             </div>
             {item.description && <p className="mt-0.5 text-[13px] leading-5 text-muted-foreground">{item.description}</p>}
             {item.note && <p className={cn('mt-2 whitespace-pre-wrap rounded-md px-3 py-2 text-[13px] leading-5 [overflow-wrap:anywhere]', item.status === 'BLOCKED' ? 'bg-warning-background' : 'bg-muted')}>{item.status === 'BLOCKED' && <strong className="text-warning">Blocked: </strong>}{item.note}</p>}

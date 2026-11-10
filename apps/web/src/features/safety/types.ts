@@ -9,7 +9,7 @@ export interface DriverRow { id: string; firstName: string; lastName: string; ph
   status: DriverStatus; version: number; createdAt: string; closedAt: string | null; safetyLead: SafetyPerson | null; owner: SafetyPerson | null }
 export interface DriverOwnerRow { id: string; startedAt: string; endedAt: string | null; reason: string | null; owner: SafetyPerson | null; assignedBy: string | null }
 export interface DriverEventRow { id: string; event: string; metadata: { fields?: string[]; from?: string; first?: boolean; resent?: boolean; emailChanged?: boolean; kind?: string; reopened?: boolean;
-  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string; item?: string; status?: string; action?: string; truck?: boolean;
+  check?: string; result?: string | null; replaced?: boolean; concerns?: number; conditional?: boolean; authorization?: string; item?: string; status?: string; hidden?: boolean; action?: string; truck?: boolean;
   reason?: string; outcome?: string; withMvr?: boolean; renewal?: boolean; reminder?: boolean; channel?: string }; createdAt: string; actor: string | null }
 export interface DriverProfile extends DriverRow { experienceYears: number | null; source: string | null; notes: string | null; statusReason: string | null; updatedAt: string;
   addedBy: SafetyPerson | null; owners: DriverOwnerRow[]; activity: DriverEventRow[];
@@ -52,7 +52,9 @@ export interface TestRow { id: string; kind: 'DRUG' | 'ALCOHOL'; reason: string;
 export interface AnnualReviewRow { id: string; reviewedOn: string; outcome: 'QUALIFIED' | 'NOT_QUALIFIED'; note: string | null; reviewer: string | null; mvr: { id: string; pulledOn: string; pageCount: number } | null }
 export interface AnnualReviews { items: AnnualReviewRow[]; dueOn: string | null; notQualified: boolean; storageEnabled?: boolean }
 export type ClearanceKey = 'DRUG_TEST' | 'CLEARINGHOUSE' | 'PREVIOUS_EMPLOYERS' | 'MEDICAL_REGISTRY' | 'ROAD_TEST' | 'E_VERIFY';
-export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null }
+export interface ClearanceItemRow { key: ClearanceKey; status: string; result: string | null; doneOn: string | null; note: string | null; updatedAt: string; updatedBy: string | null;
+  // The drug test and Clearinghouse query for someone who may not see results: only the key comes, with hidden (49 CFR 40.321).
+  hidden?: boolean }
 export interface EmployerRow { id: string; name: string; fromMonth: string; toMonth: string; requestedOn: string | null; answeredOn: string | null; goodFaithOn?: string | null; goodFaithNote?: string | null;
   // From an API with address and work history: where the employer came from, and how to reach them.
   source?: 'SAFETY' | 'APPLICATION'; location?: string | null; phone?: string | null }

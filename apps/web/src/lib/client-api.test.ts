@@ -89,6 +89,11 @@ describe('401 handling', () => {
     assert.equal(expired.message, apiMessages.driverSession);
     const closed = responseError('driver/application', 401, { message: 'This application link is no longer available. Please contact Safety.' }, true);
     assert.equal(closed.message, 'This application link is no longer available. Please contact Safety.');
+    assert.equal(closed.reason, undefined);
+    // A link Safety replaced says when, so the page can point to the newer one.
+    const replaced = responseError('driver/application', 401, { message: 'Safety sent you a newer link.', reason: 'NEWER_LINK', since: '2026-11-10T16:40:50.814Z' }, true);
+    assert.deepEqual(replaced.reason, { code: 'NEWER_LINK', since: '2026-11-10T16:40:50.814Z' });
+    assert.equal(replaced.kind, 'applicant-session');
     assert.equal(responseError('driver/verify', 401, { message: 'Verification is invalid or expired.' }, true).message, 'Verification is invalid or expired.');
     globalThis.removeEventListener?.('workspace:session-ended', listener);
     assert.equal(ended, false);

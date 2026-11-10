@@ -38,6 +38,13 @@ const EXPIRING = `FROM (
    ) e JOIN drivers x ON x.id = e."driverId"
    LEFT JOIN driver_owners w ON w."driverId" = x.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
    WHERE e."expiresOn" <= $1 AND x.status NOT IN ('REJECTED','WITHDRAWN','LEFT') AND (e.subtype IS NULL OR e.subtype NOT IN ('US_PASSPORT','GREEN_CARD'))`;
+/**
+ * Renewal scans waiting for a check (section 33, ScansToCheckScreen): what an approved or cleared driver sent through a
+ * renewal link, whatever the date of the document it replaces; d is the driver and n the scan. The FROM and WHERE parts
+ * are separate so a query can add joins between them.
+ */
+const SCANS_FROM = `FROM driver_documents n JOIN drivers d ON d.id = n."driverId"`;
+const SCANS_WHERE = `WHERE n.kind IN ('LICENSE','MEDICAL_CARD') AND d.status IN ('APPROVED','CLEARED') AND n."unreadableAt" IS NULL AND ${renewalScanWhere('n."driverId"', 'n.kind')}`;
 const blank = (value: string | null | undefined) => value === undefined ? undefined : value === null || value === '' ? null : value;
 
 /**
@@ -65,11 +72,18 @@ export class SafetyService {
   */
  async expiring() {
   const today = usDay('latest');
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT e."documentId", e."driverId", e.kind, e."expiresOn", e.truck, x."firstName", x."lastName", x.status, x.version,
-    x.email, ${person('o')} AS owner ${EXPIRING} ORDER BY e."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]);
+  const [items, scans]: Record<string, unknown>[][] = await Promise.all([
+   this.db.query(`SELECT e."documentId", e."driverId", e.kind, e."expiresOn", e.truck, x."firstName", x."lastName", x.status, x.version,
+    x.email, ${person('o')} AS owner ${EXPIRING} ORDER BY e."expiresOn", x."lastName"`, [addDays(today, EXPIRY_WARNING_DAYS)]),
+   // Renewal scans to check, oldest first, with the checked document each one would replace.
+   this.db.query(`SELECT n.id, n.kind, n.version, n."pageCount", n."createdAt", n."driverId", d."firstName", d."lastName", d.version AS "driverVersion", d.email,
+    ${person('o')} AS owner, (SELECT to_char(c."expiresOn", 'YYYY-MM-DD') FROM driver_documents c WHERE c."driverId" = n."driverId" AND c.kind = n.kind AND c."verifiedAt" IS NOT NULL ORDER BY c."createdAt" DESC LIMIT 1) AS "replacesExpiresOn"
+    ${SCANS_FROM} LEFT JOIN driver_owners x ON x."driverId" = d.id AND x."endedAt" IS NULL LEFT JOIN users o ON o.id = x."ownerId" ${SCANS_WHERE} ORDER BY n."createdAt"`),
+  ]);
   // Licenses and medical cards of approved and cleared drivers show where their renewal stands.
   const renewable = items.filter(item => LEAVABLE.includes(item.status as DriverStatus) && (RENEWAL_KINDS as readonly unknown[]).includes(item.kind) && item.truck === null);
-  const renewals = await this.renewals([...new Set(renewable.map(item => item.driverId as string))]);
+  // A scan's open link too, so marking it Not readable warns before a new link stops that one.
+  const renewals = await this.renewals([...new Set([...renewable, ...scans].map(item => item.driverId as string))]);
   const renewal = (item: Record<string, unknown>) => {
    if (!renewable.includes(item)) return null;
    const row = renewals.find(entry => entry.driverId === item.driverId && entry.kind === item.kind);
@@ -77,11 +91,17 @@ export class SafetyService {
   };
   // How each driver was last reminded about their own license or medical card (drivers get no others).
   const reminded = await driverReminded(this.db.manager, renewable.map(item => item.documentId as string));
-  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expiresOn: item.expiresOn as string, expired: (item.expiresOn as string) < today, renewal: renewal(item), reminded: reminded.get(item.documentId as string) ?? null })) };
+  const link = (scan: Record<string, unknown>) => renewals.find(entry => entry.driverId === scan.driverId && entry.kind === scan.kind)?.link ?? null;
+  return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expiresOn: item.expiresOn as string, expired: (item.expiresOn as string) < today, renewal: renewal(item), reminded: reminded.get(item.documentId as string) ?? null })),
+   scans: scans.map(scan => ({ ...scan, link: link(scan) })) };
  }
  /** For the sidebar: the same documents, counted, without the details the page shows. */
  async expiringCount(): Promise<number> {
-  const [row] = await this.db.query(`SELECT count(*)::int AS n ${EXPIRING}`, [addDays(usDay('latest'), EXPIRY_WARNING_DAYS)]) as { n: number }[];
+  // Plus renewal scans to check whose earlier document isn't on the list already, so one document counts once. The list is
+  // a CTE referenced twice, so PostgreSQL builds it once rather than per scan.
+  const [row] = await this.db.query(`WITH listed AS (SELECT e."driverId", e.kind ${EXPIRING})
+   SELECT (SELECT count(*) FROM listed)::int + (SELECT count(*) ${SCANS_FROM} ${SCANS_WHERE}
+    AND NOT EXISTS (SELECT 1 FROM listed l WHERE l."driverId" = n."driverId" AND l.kind = n.kind))::int AS n`, [addDays(usDay('latest'), EXPIRY_WARNING_DAYS)]) as { n: number }[];
   return row.n;
  }
 

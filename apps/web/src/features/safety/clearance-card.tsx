@@ -81,6 +81,7 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
       <Checklist className="mt-3 border-t border-border" items={CLEARANCE_ITEMS.map(item => {
         const row = items.get(item.key);
         if (!clearanceApplies(item, driver)) return { id: item.key, title: item.label, description: 'Only for company drivers, who are UGEM employees.', status: 'NOT_NEEDED', meta: 'Not needed: owner-operator (not an employee)' };
+        if (row?.hidden) return { id: item.key, title: item.label, description: item.hint, status: 'RESTRICTED', meta: 'The result is shown only to the Safety manager and the driver’s Safety contact.' };
         return { id: item.key, title: item.label, description: item.hint, status: row?.status ?? 'PENDING', note: row?.note ?? undefined, meta: itemMeta(row, item.key, clearance.employers),
           action: canWork ? <Button size="sm" variant="outline" onClick={() => open({ kind: 'item', key: item.key })}>{row ? 'Edit' : 'Record'}<span className="sr-only">: {item.label}</span></Button> : undefined };
       })} />
@@ -99,7 +100,7 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
         ...(canWork ? [{ key: 'actions', label: 'Actions', srOnly: true, align: 'right' as const, action: true, cell: (row: EmployerRow) => <div className="flex justify-end gap-2">
           {!row.requestedOn && <Button size="sm" variant="ghost" onClick={() => open({ kind: 'remove', employer: row })}>Remove<span className="sr-only">: {row.name}</span></Button>}
           <Button size="sm" variant="outline" onClick={() => open({ kind: 'employer', employer: row })}>{row.requestedOn ? 'Record answer' : 'Record request'}<span className="sr-only">: {row.name}</span></Button></div> }] : []),
-      ]} /> : <CardBody><EmptyState compact title="No employers yet" description={canWork ? 'Add each DOT-regulated employer the driver worked for in the last 3 years.' : 'The driver’s owner adds them.'} /></CardBody>}
+      ]} /> : <CardBody><EmptyState compact title="No employers yet" description={canWork ? 'Add each DOT-regulated employer the driver worked for in the last 3 years.' : 'The driver’s Safety contact adds them.'} /></CardBody>}
     </Card>
     {editing && <Dialog open onClose={() => setEditing(null)} busy={pending} tone={editing.kind === 'remove' ? 'danger' : undefined}
       title={editing.kind === 'item' ? rule!.label : editing.kind === 'add' ? 'Add a previous employer' : editing.kind === 'remove' ? `Remove ${editing.employer.name}?` : editing.employer.name}
@@ -147,8 +148,11 @@ export function ClearanceProgress({ driver, canWork }: { driver: DriverProfile; 
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const clearance = driver.clearance!, name = `${driver.firstName} ${driver.lastName}`.trim();
-  // An item that doesn't apply (E-Verify for an owner-operator) counts as done.
-  const finished = CLEARANCE_ITEMS.filter(item => !clearanceApplies(item, driver) || (done(clearance.items.find(row => row.key === item.key)?.status) && !clearance.missing.includes(`expired:${item.key}`))).length;
+  // An item that doesn't apply (E-Verify for an owner-operator) counts as done. Items whose result this person may not see
+  // (hidden) count as neither, so the bar and the text never guess how they came out.
+  const hidden = CLEARANCE_ITEMS.filter(item => clearance.items.find(row => row.key === item.key)?.hidden);
+  const shown = CLEARANCE_ITEMS.length - hidden.length;
+  const finished = CLEARANCE_ITEMS.filter(item => !hidden.includes(item) && (!clearanceApplies(item, driver) || (done(clearance.items.find(row => row.key === item.key)?.status) && !clearance.missing.includes(`expired:${item.key}`)))).length;
   async function clear() {
     if (pending) return;
     setPending(true); setError('');
@@ -169,8 +173,9 @@ export function ClearanceProgress({ driver, canWork }: { driver: DriverProfile; 
   return <Card>
     <CardHeader title="Clearance progress" />
     <CardBody className="space-y-3">
-      <Progress label="Items done" value={finished} max={CLEARANCE_ITEMS.length} valueLabel={`${finished} of ${CLEARANCE_ITEMS.length}`} />
+      <Progress label="Items done" value={finished} max={shown} valueLabel={`${finished} of ${shown}`} />
       {clearance.missing.length > 0 ? <ul className="list-disc space-y-1 pl-5 text-[13px] text-muted-foreground">{clearance.missing.map(code => <li key={code}>{clearanceGapLabel(code)}</li>)}</ul>
+        : hidden.length > 0 ? <p className="text-[13px] text-muted-foreground">Every item you can see is done. The drug test and Clearinghouse results are shown only to the Safety manager and the driver’s Safety contact.</p>
         : <p className="text-[13px] text-muted-foreground">Every item is done. Mark the driver as cleared so Dispatch can assign them.</p>}
       {canWork && <Button className="w-full" disabled={clearance.missing.length > 0} onClick={() => { setConfirming(true); setError(''); }}><ShieldCheck aria-hidden="true" className="size-4" />Mark as cleared</Button>}
     </CardBody>

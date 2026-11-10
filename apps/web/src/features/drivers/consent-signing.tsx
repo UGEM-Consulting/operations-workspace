@@ -16,7 +16,7 @@ export const consentSectionId = 'consent-forms';
  * The consent forms Safety published, each read and signed in a modal: the e-sign consent once, the statement, the legal name and, for
  * the authorization and Clearinghouse consent, a drawn or adopted signature. The legal text is the PDF's.
  */
-export function ConsentSigning({ view, onSaved, onEnded, editable }: { view: DriverApplicationView; onSaved: (view: DriverApplicationView) => void; onEnded: (message: string) => void; editable: boolean }) {
+export function ConsentSigning({ view, onSaved, onEnded, editable }: { view: DriverApplicationView; onSaved: (view: DriverApplicationView) => void; onEnded: (end: string | ApiError) => void; editable: boolean }) {
   const consents = view.consents!;
   const [memory, setMemory] = useState<SigningMemory>(emptyMemory), [openId, setOpenId] = useState(''), [viewingId, setViewingId] = useState('');
   const signable: SignableDocument[] = consents.items.map(item => ({ id: item.id, title: item.title, short: item.label, pageCount: item.pageCount, requiresSignature: item.requiresSignature, statement: item.statement, fields: item.fields ?? [],
@@ -33,7 +33,7 @@ export function ConsentSigning({ view, onSaved, onEnded, editable }: { view: Dri
     </article>)}
     {open && <SigningModal key={open.id} doc={open} documents={signable} consent={consents.consent} memory={memory} onMemory={setMemory} nameHint="as on your license"
       onSigned={result => onSaved(result as DriverApplicationView)} onNext={next => setOpenId(next.id)} onClose={() => setOpenId('')}
-      onFailure={failure => { if (failure instanceof ApiError && failure.kind === 'applicant-session') { onEnded(failure.message); return true; } return false; }} />}
+      onFailure={failure => { if (failure instanceof ApiError && failure.kind === 'applicant-session') { onEnded(failure); return true; } return false; }} />}
     {viewing?.signed && <DocumentViewer documents={[{ url: `/api/backend/driver/consents/${viewing.signed.documentId}/signed`, title: viewing.title, meta: <>Signed <LocalTime iso={viewing.signed.signedAt} format="date" /></> }]} onClose={() => setViewingId('')} />}
   </div>;
 }

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { LocalTime } from '@/components/ui/local-time';
-import { mutate } from '@/lib/client-api';
+import { type ApiError, mutate } from '@/lib/client-api';
 import { DocumentScanner } from './document-scanner';
 import { DriverTelegram } from './driver-telegram';
 
@@ -19,7 +19,7 @@ const noDraft = () => {};
  * The page a renewal link opens, after the emailed code (designed as RenewDriverPhoneScreen): only the document Safety
  * asked for, scanned with the camera like at application, sent once. Safety checks it before it counts.
  */
-export function DriverRenewal({ view: initial, focusHeading, onEnded }: { view: DriverRenewalView; focusHeading: boolean; onEnded: (message: string) => void }) {
+export function DriverRenewal({ view: initial, focusHeading, onEnded }: { view: DriverRenewalView; focusHeading: boolean; onEnded: (end: string | ApiError) => void }) {
   const [view, setView] = useState(initial);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (focusHeading || view.sentAt) heading.current?.focus(); }, [focusHeading, view.sentAt]);

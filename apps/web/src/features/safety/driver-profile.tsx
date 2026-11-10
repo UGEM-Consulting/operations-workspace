@@ -68,7 +68,7 @@ function eventMeta(row: DriverEventRow) {
   return <>{actor} · <LocalTime iso={row.createdAt} />{fields}{row.metadata.emailChanged ? ' · email changed' : ''}{row.metadata.reopened ? ' · application reopened' : ''}{row.metadata.kind ? ` · ${kindLabel(row.metadata.kind)}` : ''}{row.metadata.reason ? ` · ${testReasons[row.metadata.reason]?.toLowerCase() ?? 'other reason'}` : ''}
     {row.metadata.outcome ? ` · ${outcomes[row.metadata.outcome] ?? 'outcome recorded'}` : ''}{row.metadata.withMvr === false ? ' · no MVR attached' : ''}
     {check}{row.metadata.replaced ? ' · replaced the earlier one' : ''}{row.metadata.authorization === 'PAPER' ? ' · paper authorization on file' : ''}{row.metadata.conditional ? ' · with conditions' : ''}{row.metadata.concerns ? ` · ${row.metadata.concerns} ${row.metadata.concerns === 1 ? 'concern' : 'concerns'}` : ''}
-    {row.metadata.item ? ` · ${CLEARANCE_ITEMS.find(item => item.key === row.metadata.item)?.label ?? row.metadata.item}: ${row.metadata.status ? statusLabel(row.metadata.status).toLowerCase() : 'not started'}` : ''}
+    {row.metadata.item ? ` · ${CLEARANCE_ITEMS.find(item => item.key === row.metadata.item)?.label ?? row.metadata.item}${row.metadata.hidden ? '' : `: ${row.metadata.status ? statusLabel(row.metadata.status).toLowerCase() : 'not started'}`}` : ''}
     {row.metadata.action && row.event !== 'TRUCK_SAVED' ? ` · ${employerActions[row.metadata.action] ?? 'changed'}` : ''}{row.event === 'DISPATCH_ASSIGNED' && row.metadata.first === false ? ' · changed' : ''}</>;
 }
 
