@@ -87,7 +87,7 @@ export async function carrySupportSetups(em: EntityManager, request: ItOnboardin
  */
 export async function createRemoval(em: EntityManager, alerts: NotificationsService, input: {
  setup: ItOnboardingRequest | null; taskKeys?: string[]; accounts?: { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null }; position: string; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
- mcName: string | null; teamName: string | null;
+ mcName: string | null; teamName: string | null; suspendedOnLeave?: boolean;
 }) {
  const { setup } = input;
  // Someone recorded by hand has no setup request: IT works from the accounts their manager recorded.
@@ -99,7 +99,7 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
   memberId: input.memberId, setupRequestId: setup?.id ?? null, managerId: input.actorId, createdBy: input.actorId,
   profile: { displayName: setup?.profile.proposedDisplayName ?? input.name, position: input.position, companyEmail, ringCentralNumber, noSetupRecord: !setup,
    ringCentralExtension: setup?.ringCentralExtension ?? input.accounts?.ringCentralExtension ?? null, datEmail: setup?.datEmail ?? input.accounts?.datEmail ?? null, truckstopEmail: setup?.truckstopEmail ?? input.accounts?.truckstopEmail ?? null,
-   mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null },
+   mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null, ...(input.suspendedOnLeave ? { suspendedOnLeave: true } : {}) },
   emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? input.actorId : null,
   dueOn: input.dueOn, numberOutcome: null, version: 0, completedAt: null, dueAlertedAt: input.scheduled ? null : new Date() });
  await em.getRepository(ItRemovalTask).save(REMOVAL_CHECKLIST.filter(task => !input.taskKeys || input.taskKeys.includes(task.key)).map(task => ({ requestId: removal.id, key: task.key, status: 'PENDING' as const, notes: '' })));

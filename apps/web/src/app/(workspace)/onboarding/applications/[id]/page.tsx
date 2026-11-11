@@ -18,6 +18,7 @@ import { decisionTitle, decisionTone } from '@/features/onboarding/history';
 import { PrivateImage } from '@/components/ui/private-image';
 import { PhotoButton } from '@/features/documents/photo-modal';
 import { ReviewActions } from '@/features/onboarding/review-actions';
+import { AlreadyHereCard, approvalQuestion, hereSentence } from '@/features/onboarding/already-here';
 import { ChangeManager } from '@/features/onboarding/change-manager';
 import { TaskStatus } from '@/features/it/types';
 import { PageHeader } from '@/components/workspace-ui';
@@ -52,10 +53,14 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const photos=[{path:'selfie',label:'Selfie',caption:'Becomes the profile photo',present:data.documents.photos.selfie},{path:'id-selfie',label:'Selfie holding ID',caption:'Managers and admins only',present:data.documents.photos.idSelfie,meta:'Check that the face and name match the ID.'}].map(photo=>({...photo,src:`/api/backend/onboarding/applications/${id}/photos/${photo.path}`,title:photo.label,alt:photo.label}));
  const viewablePhotos=photos.filter(photo=>photo.present);
 
+ // Already here (section 37): from an API with the check, while nothing has been decided.
+ const here=data.alreadyHere??[],question=approvalQuestion(here);
  const overview=<div className="space-y-6">
   {app.status==='RESUBMITTED'&&<Alert tone="info" title="Resubmitted after your change request"><p>See <span className="font-medium">What changed</span> for the updated answers.</p></Alert>}
   {app.status==='CHANGES_REQUESTED'&&<Alert tone="info" title="Waiting for corrections"><p>These are the last submitted answers. The applicant’s saved correction drafts stay private until they resubmit.</p></Alert>}
   {data.requiredFields.length>0&&<Alert tone="warning" title={data.readyForIt?'Historical approval preserved':'Completion required before approval'}><p>{data.requiredFields.map(field=>itemLabels[field]).join(', ')}</p>{data.canReview&&<p className="text-muted-foreground">Request corrections so the applicant can complete these.</p>}</Alert>}
+  {here.length>0&&<Alert tone={question?.kind==='returning'?'info':'warning'} title={question?.kind==='returning'?`${question.name} worked here before`:`${name} may already be here`}><p>{question?.kind==='blocked'?`Their email belongs to ${question.name}, who works here now. Check before deciding.`:question?.kind==='returning'?`${hereSentence(here)} If you approve, ${question.name.split(' ')[0]} gets a new dispatcher record; each page links to the other.`:`${hereSentence(here)} Check before approving.`}</p></Alert>}
+  {here.length>0&&<AlreadyHereCard matches={here} applicant={name}/>}
   <Card><CardHeader title="Application details" description="As the applicant sent it."/><CardBody><DescriptionList items={fields.map(([label,value])=>({label:String(label),value}))}/></CardBody></Card>
   {it&&<Card><CardHeader title="Employee details" description={it.cancelledAt?'IT setup was cancelled because they left before it finished.':'The approved assignments and the accounts IT created.'}/><CardBody><DescriptionList items={([['Display name',data.itDetails.proposedDisplayName],['MC / Independent',data.invitation.mcName],['Team lead / Independent',data.invitation.teamLead],['Job title',data.invitation.jobTitle],['Company email',it.companyEmail],['Work phone (RingCentral)',it.workPhoneNumber]] as const).map(([label,value])=>({label,value,emptyLabel:it.cancelledAt?'Not set up':'Pending IT setup'}))}/></CardBody></Card>}
   {data.documents.required&&<Card><CardHeader title="Identity photos" description="Check that the face and name match the ID. Photos are checked by a person, not software."/><CardBody>
@@ -107,7 +112,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
     ...(changes>0?[{key:'changes',label:'What changed',count:changes}]:[]),{key:'history',label:'History'}]}
     panels={{overview,documents,changes:whatChanged,history}}/>
    <aside aria-label="Decision" className="space-y-4 xl:sticky xl:top-20 xl:-mx-1 xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1">
-    {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
+    {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} alreadyHere={data.alreadyHere??null} applicantName={name} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">
      <p>{data.invitation.position==='SUPPORT'?`Approving adds them as ${aSupport(data.invitation)} for the dispatcher or team you confirm. Supports and updaters need no IT setup.`:'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>

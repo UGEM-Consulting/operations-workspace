@@ -1,5 +1,5 @@
 import { createItRequest } from '../it/create-request';
-import { createMemberForApproval, createSupportForApproval, supportedDispatcher, supportedTeam } from '../dispatch/create-member';
+import { createMemberForApproval, createSupportForApproval, onLeaveSql, supportedDispatcher, supportedTeam } from '../dispatch/create-member';
 import { createSupportItRequest } from '../it/support-setup';
 import { SUPPORT_IT_ITEM_KEYS } from '../it/it.entity';
 import { NO_MC } from '../dispatch/dispatch.entity';
@@ -21,6 +21,18 @@ import { assertSignatureEmbeds, decodeSignature } from '../documents/images';
 import type { ClientContext } from '../documents/client-context';
 import { CompanyDocument, DocumentSignature, StaffSavedSignature } from '../documents/documents.entity';
 import { onboardingLimit } from './rate-limit';
+import { alreadyHere, approvalMatches } from './already-here';
+import { DispatchMember } from '../dispatch/dispatch.entity';
+import type { EntityManager } from 'typeorm';
+
+/** Someone coming back gets a new record linked to the one they left, which stays as history. */
+async function linkReturning(em: EntityManager, member: DispatchMember, previousMemberId: string | null) {
+ if (!previousMemberId) return;
+ const previous = await em.getRepository(DispatchMember).findOne({ where: { id: previousMemberId }, lock: { mode: 'pessimistic_write' } });
+ if (!previous || previous.status !== 'LEFT') throw new ConflictException('That record changed. Reload before approving.');
+ if (await em.getRepository(DispatchMember).existsBy({ previousMemberId })) throw new ConflictException('That record already links to a later one.');
+ member.previousMemberId = previousMemberId; await em.getRepository(DispatchMember).save(member);
+}
 import { requireTransition } from './transitions';
 import { UpdatesService } from '../updates/updates.service';
 import { NotificationsService } from '../updates/notifications.service';
@@ -104,6 +116,8 @@ export class ReviewService {
   const [member]:{position:string;supportType:string}[]=await this.db.query('SELECT position,"supportType" FROM dispatch_members WHERE "applicationId"=$1',[application.id]);
   const employmentOptions=canReview&&!support&&!catchUp?await this.employmentOptions():null;
   // Who a support assists, and the dispatchers and teams a manager may pick instead while deciding.
+  // Already here (section 37): read when the page opens, while nothing has been decided. Paperwork catch-up is the person it was made for.
+  const alreadyHereNow=!catchUp&&!['APPROVED','REJECTED'].includes(application.status)?(await this.matches(this.db,application.id,invitation.email,submissions.at(-1)?.fields??{})):null;
   const supports=support?{supportsMemberId:invitation.supportsMemberId,supportsTeamId:invitation.supportsTeamId,supportType:invitation.supportType,options:await this.dispatcherOptions(invitation.supportsMemberId),teamOptions:await this.teamOptions(invitation.supportsTeamId),itSetupItems:SUPPORT_IT_ITEM_KEYS}:null;
   // Never disclose in-progress correction drafts to staff; only submitted revisions.
   return { application:{...application,fields:submissions.at(-1)?.fields ?? {}}, invitation, member:member??null, submissions, activity,
@@ -119,7 +133,7 @@ export class ReviewService {
      signerName:`${user.firstName} ${user.lastName}`.trim(),signerRole:user.role,
      lastTitle:(await this.db.query(`SELECT "signerTitle" FROM document_signatures WHERE "signerUserId" = $1 AND "signerTitle" IS NOT NULL ORDER BY "signedAt" DESC LIMIT 1`,[user.id]))[0]?.signerTitle??null,
      statement:companyStatement({kind:'NDA',title:pendingCountersign.title,version:pendingCountersign.version},pendingCountersign.typedName)}:null},
-   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support&&!catchUp, employmentOptions, supports, catchUp,
+   canReview, canReject, readyForIt:application.status === 'APPROVED'&&!support&&!catchUp, employmentOptions, supports, catchUp, alreadyHere:alreadyHereNow,
    responsibleManager:responsible?{id:responsible.id,firstName:responsible.firstName,lastName:responsible.lastName}:null, managerChanges, managerOptions };
  }
  /**
@@ -142,13 +156,19 @@ export class ReviewService {
    return { responsibleManager: { id: manager.id, firstName: manager.firstName, lastName: manager.lastName }, canStillOpen: user.role === Role.SYSTEM_ADMIN };
   });
  }
+ /** People and other open applications sharing the applicant's verified email or submitted personal phone. */
+ private async matches(db: Pick<EntityManager, 'query'>, applicationId: string, email: string | null, source: object) {
+  const fields = source as Record<string, unknown>, phone = typeof fields.personalPhoneNumber === 'string' ? fields.personalPhoneNumber : null;
+  // Another application shows only its manager and where it stands, never which one it is.
+  return ((await alreadyHere(db, [{ key: applicationId, email, phone, applicationId, skipMemberId: null }])).get(applicationId) ?? []).map(match => match.kind === 'APPLICATION' ? { ...match, applicationId: null } : match);
+ }
  /** Current dispatchers (not left or leaving, including those in IT setup) with where they work now, plus the one already picked. */
  async dispatcherOptions(current: string | null) {
   return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.status, CASE WHEN a."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc, t.name AS team, n.id IS NOT NULL AS leaving
    FROM dispatch_members d LEFT JOIN LATERAL (SELECT * FROM member_assignments a WHERE a."memberId" = d.id AND a."endedAt" IS NULL LIMIT 1) a ON true
    LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
    LEFT JOIN member_notices n ON n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL
-   WHERE d.position = 'DISPATCHER' AND ((d.status <> 'LEFT' AND n.id IS NULL) OR d.id = $1) ORDER BY lower(d."firstName"), lower(d."lastName")`, [current]);
+   WHERE d.position = 'DISPATCHER' AND ((d.status <> 'LEFT' AND n.id IS NULL AND NOT ${onLeaveSql('d')}) OR d.id = $1) ORDER BY lower(d."firstName"), lower(d."lastName")`, [current]);
  }
  async teamOptions(current: string | null) {
   return this.db.query(`SELECT t.id, t.name, m.name AS mc, t."archivedAt" IS NOT NULL AS archived FROM teams t JOIN mcs m ON m.id = t."mcId" WHERE t."archivedAt" IS NULL OR t.id = $1 ORDER BY t."nameKey"`, [current]);
@@ -200,7 +220,10 @@ export class ReviewService {
    if (input.employment && input.decisionType !== 'APPROVE') throw new BadRequestException('Employment assignments may be finalized during approval; request applicant corrections otherwise.');
    // Independent is a team choice under an MC, never an MC (an older page may still offer it).
    if (input.employment && isIndependent(input.employment.mcName)) throw new BadRequestException(INDEPENDENT_NOT_MC.staff);
+   if ((input.differentPerson || input.returningMemberId) && (input.decisionType !== 'APPROVE' || catchUpMemberId)) throw new BadRequestException('Who they are is confirmed when approving.');
    const submitted = await em.getRepository(ApplicationSubmission).findOne({where:{applicationId:id},order:{version:'DESC'}});
+   // Checked again here, under the invitation lock: one person never gets two records (section 37).
+   const returningMemberId = input.decisionType === 'APPROVE' && !catchUpMemberId ? approvalMatches(await this.matches(em,id,invitation.email,submitted?.fields??{}),input) : null;
    // Under the invitation lock, so the applicant cannot upload or sign concurrently.
    const documents = await documentStatus(em,id,this.storage.enabled);
    const missing: RequestableItem[] = [...requiredApplicantFields(submitted?.fields ?? {},askedAs(invitation)),...documents.missing];
@@ -242,7 +265,7 @@ export class ReviewService {
    if(nextStatus==='APPROVED'&&catchUpMemberId)await acceptPaperwork(em,catchUpMemberId,application.id,submitted?.fields??{},user.id,review.createdAt);
    if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId)alerts=await this.notifications.queueItSetupWaiting(em,await createItRequest(em,application,review,submitted?.fields??{},invitation,user.id));
    // The approved dispatcher becomes a dispatch member record (no login), placed by the confirmed assignments.
-   if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId&&input.employment)await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt);
+   if(nextStatus==='APPROVED'&&!support&&!catchUpMemberId&&input.employment)await linkReturning(em,await createMemberForApproval(em,application,submitted?.fields??{},input.employment,review.createdAt),returningMemberId);
    // An approved support becomes an active support record linked to the dispatcher or team confirmed here (no IT setup).
    if(nextStatus==='APPROVED'&&support){
     // A choice made here replaces what the invitation said, either way round.
@@ -252,6 +275,7 @@ export class ReviewService {
     const supportType=input.supportType??invitation.supportType;
     if(dispatcherId!==invitation.supportsMemberId||teamId!==invitation.supportsTeamId||supportType!==invitation.supportType){invitation.supportsMemberId=dispatcherId;invitation.supportsTeamId=teamId;invitation.supportType=supportType;await em.save(invitation);}
     const supportMember=await createSupportForApproval(em,application,submitted?.fields??{},{dispatcherId,teamId},review.createdAt,supportType);
+    await linkReturning(em,supportMember,returningMemberId);
     // Only what the manager ticked; the responsible manager gets IT's notice when it's done.
     if(input.itSetup?.length)alerts=await this.notifications.queueItSetupWaiting(em,await createSupportItRequest(em,{memberId:supportMember.id,items:input.itSetup,managerId:application.assignedManagerId,actorId:user.id}));
    }

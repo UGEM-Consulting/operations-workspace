@@ -23,7 +23,7 @@ import { PasswordReadyDialog, type ReadyPassword } from './password-ready-dialog
 const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD', 'SAFETY_MANAGER', 'SAFETY_LEAD', 'SAFETY_STAFF'];
 // Roles that can be responsible for invitations and applications; losing them (or the account) hands those records over.
 const RESPONSIBLE = ['DISPATCHER_MANAGER', 'SYSTEM_ADMIN'];
-interface OpenRecords { invitations: number; applications: number; changes: number; itSetup: number; removals?: number; total: number }
+interface OpenRecords { invitations: number; applications: number; changes: number; itSetup: number; removals?: number; leave?: number; total: number }
 type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null };
 /** A dispatcher record a team lead account can link to; what the account sees follows the team it leads. */
 export interface LeadChoice { id: string; name: string; team: string | null; companyEmail?: string | null }
@@ -141,11 +141,11 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
         {losesAccess && records && typeof records === 'object' && records.total > 0 && <Card>
           <CardHeader title={`${editing?.firstName} has ${records.total} open record${records.total === 1 ? '' : 's'}`} />
           <div className="space-y-4 px-4 pb-4 pt-3 sm:px-5">
-            <ul className="space-y-2 text-sm">{([['Invitations not used yet', records.invitations], ['Applications in progress or awaiting review', records.applications], ['Waiting for the applicant’s changes', records.changes], ['Approved, IT setup not finished', records.itSetup], ...(records.removals ? [['Dispatchers leaving, IT removal not finished', records.removals]] as const : [])] as const)
+            <ul className="space-y-2 text-sm">{([['Invitations not used yet', records.invitations], ['Applications in progress or awaiting review', records.applications], ['Waiting for the applicant’s changes', records.changes], ['Approved, IT setup not finished', records.itSetup], ...(records.removals ? [['Dispatchers leaving, IT removal not finished', records.removals]] as const : []), ...(records.leave ? [['People on leave, with their mail and calls or IT’s notices going to them', records.leave]] as const : [])] as const)
               .map(([label, count]) => <li key={label} className="flex justify-between gap-3"><span>{label}</span><span className="font-semibold tabular-nums">{count}</span></li>)}</ul>
             <Select id="hand-over-to" label="Hand them over to" name="handOverTo" required placeholder="Choose a manager" width="full"
               options={takerOptions}
-              hint={`All ${records.total} move together. Finished applications stay with ${editing?.firstName} for the record. Applicants aren’t told; their links keep working.${records.removals ? ' New email from a leaving dispatcher goes to the new manager instead, and IT sees that on the checklist.' : ''}`} />
+              hint={`All ${records.total} move together. Finished applications stay with ${editing?.firstName} for the record. Applicants aren’t told; their links keep working.${records.removals ? ' New email from a leaving dispatcher goes to the new manager instead, and IT sees that on the checklist.' : ''}${records.leave ? ' Mail and calls from someone on leave go to the new manager instead, and IT sees that on their checklist.' : ''}`} />
           </div></Card>}
         {role === 'TEAM_LEAD' && <Select label="Team lead’s dispatcher record" name="memberId" value={leadId} onChange={event => setLeadId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
           options={leads.map(lead => ({ value: lead.id, label: lead.team ? `${lead.name} · leads ${lead.team}` : `${lead.name} · leads no team yet` }))}

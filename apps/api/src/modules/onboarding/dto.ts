@@ -80,6 +80,10 @@ export class ReviewDto {
  @optional() @IsObject() @ValidateNested() @Type(() => EmploymentAssignmentsDto) employment?: EmploymentAssignmentsDto;
  // The approving manager's NDA countersignature; required when the applicant signed an NDA.
  @optional() @IsObject() @ValidateNested() @Type(() => CountersignatureDto) countersignature?: CountersignatureDto;
+ // Already here (section 37): approving someone whose phone matches a person here now needs differentPerson; one who left
+ // and is coming back names that record, which the new one links to. The web sends these only when the detail listed matches.
+ @optional() @IsBoolean() differentPerson?: boolean;
+ @optional() @IsUUID() returningMemberId?: string;
 }
 export class ApplicationQueryDto {
  @Type(() => Number) @IsInt() @Min(1) @Max(100000) page = 1;

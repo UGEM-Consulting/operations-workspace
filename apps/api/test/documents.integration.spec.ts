@@ -47,11 +47,14 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
  const latestMigration=async()=>(await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name as string;
  type Agent=ReturnType<typeof request.agent>;
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
+ // Each applicant is a different person: the already-here check refuses an email of someone here and asks about a shared phone.
+ let applicants=0;
  const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',mcName:'Not listed',teamLead:'Not listed',jobTitle:'Dispatcher'};
  async function applicant(){
-  const created=await manager.post('/api/onboarding/invitations').set(headers).send({email:'fictional.signer@example.test'}).expect(201);
+  applicants+=1;const email=`fictional.signer${applicants}@example.test`;answers.personalPhoneNumber=`+1 202 555 01${String(applicants).padStart(2,'0')}`;
+  const created=await manager.post('/api/onboarding/invitations').set(headers).send({email}).expect(201);
   const agent=request.agent(app.getHttpServer());
-  const begin=await agent.post('/api/applicant/begin').set(headers).send({email:'fictional.signer@example.test',token:created.body.url.split('#').pop()}).expect(201);
+  const begin=await agent.post('/api/applicant/begin').set(headers).send({email,token:created.body.url.split('#').pop()}).expect(201);
   const verified=await agent.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code:await issueDemoCode(db,begin.body.challengeId,'test')}).expect(201);
   await agent.patch('/api/applicant/draft').set(headers).send({version:0,...answers}).expect(200);
   return {agent,id:verified.body.applicationId as string};
@@ -219,7 +222,10 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   // Newer migrations go first, each after removing the records its rollback refuses to discard.
   const cleanup:Record<string,string>={DriverDocuments1792880000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,DriverApplications1792870000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,SafetyDrivers1792860000000:`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`,TeamLeads1792850000000:`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`,SupportMembers1792840000000:`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`,DispatcherContacts1792830000000:'TRUNCATE member_contacts',DispatchTeams1792820000000:'TRUNCATE dispatch_events',ManagedLists1792810000000:'TRUNCATE list_events',OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
-  expect(await latestMigration()).toBe('SupportItSetup1793130000000');
+  expect(await latestMigration()).toBe('MemberLeave1793160000000');
+  await db.undoLastMigration(); // MemberLeave, with none here
+  await db.undoLastMigration(); // DetailCorrections, with none here
+  await db.undoLastMigration(); // AlreadyHere, with none here
   await db.undoLastMigration(); // SupportItSetup, with none here
   await db.undoLastMigration(); // NewAuthenticator, with none here
   await db.undoLastMigration(); // SafetyReminders, with none here

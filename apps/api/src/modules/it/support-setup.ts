@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { EntityManager, IsNull, QueryFailedError } from 'typeorm';
-import { memberPlace, onNotice } from '../dispatch/create-member';
+import { memberPlace, onLeave, onNotice } from '../dispatch/create-member';
 import { DispatchMember, positionLabel } from '../dispatch/dispatch.entity';
 import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItProfile, IT_CHECKLIST, SUPPORT_IT_ITEMS, SupportItItem } from './it.entity';
 
@@ -10,8 +10,8 @@ import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItProfile,
  */
 async function supportProfile(em: EntityManager, member: DispatchMember): Promise<ItProfile> {
  const [source]: { legalFirstName: string | null; legalLastName: string | null; personalPhone: string | null; personalEmail: string | null; assists: string | null }[] = await em.query(`SELECT
-   nullif(btrim(s.fields->>'firstName'), '') AS "legalFirstName", nullif(btrim(s.fields->>'lastName'), '') AS "legalLastName",
-   coalesce(nullif(btrim(s.fields->>'personalPhoneNumber'), ''), e."personalPhone") AS "personalPhone", coalesce(i.email, e."personalEmail") AS "personalEmail",
+   coalesce(d."correctedDetails"->>'legalFirstName', nullif(btrim(s.fields->>'firstName'), '')) AS "legalFirstName", coalesce(d."correctedDetails"->>'legalLastName', nullif(btrim(s.fields->>'lastName'), '')) AS "legalLastName",
+   coalesce(d."correctedDetails"->>'personalPhoneNumber', nullif(btrim(s.fields->>'personalPhoneNumber'), ''), e."personalPhone") AS "personalPhone", coalesce(d."correctedDetails"->>'personalEmail', i.email, e."personalEmail") AS "personalEmail",
    coalesce(st.name, CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END) AS assists
   FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id
   LEFT JOIN dispatcher_applications a ON a.id = d."applicationId" AND a.status = 'APPROVED' LEFT JOIN invitations i ON i.id = a."invitationId"
@@ -40,6 +40,10 @@ export async function createSupportItRequest(em: EntityManager, input: { memberI
  if (member.position !== 'SUPPORT') throw new BadRequestException('Only supports and updaters are set up this way; a new dispatcher’s setup starts at approval.');
  if (member.status === 'LEFT') throw new ConflictException('They have left.');
  if (await onNotice(em, member.id)) throw new ConflictException('They’re leaving, so IT won’t set up anything new for them.');
+ if (await onLeave(em, member.id)) throw new ConflictException('They’re on leave. Ask IT once they’re back.');
+ // A leave recorded for later lists what IT suspends from what they have today; a new account now would miss that list.
+ const [planned] = await em.query(`SELECT 1 FROM member_leaves WHERE "memberId" = $1 AND "endedAt" IS NULL`, [member.id]);
+ if (planned) throw new ConflictException('They have leave coming up. Ask IT once they’re back, or cancel the leave first.');
  const open = await em.getRepository(ItOnboardingRequest).findOneBy({ memberId: member.id, purpose: 'SUPPORT', completedAt: IsNull(), cancelledAt: IsNull() });
  const busy = 'IT is still working on the last request. Ask for more once it’s done.';
  if (open) throw new ConflictException(busy);

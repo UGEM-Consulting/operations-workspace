@@ -28,6 +28,14 @@ class ItRemovalController {
  @Get(':id') get(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.getRemoval(req.currentUser,id);}
  @Patch(':id/tasks/:key') task(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Param('key') key:string,@Body() input:RemovalTaskDto){return this.service.removalTask(req.currentUser,id,key,input);}
 }
+// Leave (section 35): suspending accounts while someone is away, and restoring them when they're back.
+@Controller('it/leave')
+@Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
+class ItLeaveController {
+ constructor(private readonly service:ItService){}
+ @Get(':id') get(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.getLeave(req.currentUser,id);}
+ @Patch(':id/tasks/:key') task(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string,@Param('key') key:string,@Body() input:TaskUpdateDto){return this.service.leaveTask(req.currentUser,id,key,input);}
+}
 // A team lead's sign-in: IT or an administrator creates it with the company email, turns it back on or turns it off.
 @Controller('it/sign-ins')
 @Roles(Role.SYSTEM_ADMIN,Role.IT_SPECIALIST)
@@ -42,5 +50,5 @@ class NotificationController {
  @Get() list(@Req() req:AuthRequest){return this.service.notifications(req.currentUser);}
  @Post(':id/read') read(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.readNotification(req.currentUser,id);}
 }
-@Module({imports:[UpdatesModule],controllers:[ItController,ItTasksController,ItRemovalController,ItSignInsController,NotificationController],providers:[ItService,SignInsService],exports:[ItService]})
+@Module({imports:[UpdatesModule],controllers:[ItController,ItTasksController,ItRemovalController,ItLeaveController,ItSignInsController,NotificationController],providers:[ItService,SignInsService],exports:[ItService]})
 export class ItModule {}

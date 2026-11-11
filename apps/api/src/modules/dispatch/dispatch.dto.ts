@@ -59,7 +59,7 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
 }
 export class StatusQueryDto {
- @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
+ @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
 }
 export class CreateTeamDto {
  @name() @IsString() @MinLength(1, { message: 'Enter a team name.' }) @MaxLength(100) name!: string;
@@ -172,4 +172,44 @@ export class AssignDriverDto {
  @IsDateString({ strict: true }) startsOn!: string;
  @text() @IsOptional() @IsString() @MaxLength(40) truck?: string;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
+/**
+ * An administrator's correction (section 36). Send only the fields that change. A dispatcher who came through onboarding
+ * takes the application's fields; someone added by hand has a name only (firstName, lastName). A blank Telegram clears it.
+ */
+// Each American name part alone, so one letter is allowed (LATIN_NAME in documents.dto.ts checks a full name, two or more).
+const LATIN = /^[A-Za-z][A-Za-z .,'-]*$/;
+export class CorrectDetailsDto {
+ @IsInt() @Min(1) version!: number;
+ @text() @IsString() @MinLength(1, { message: 'Say why the details changed.' }) @MaxLength(500) reason!: string;
+ @text() @ValidateIf(present) @IsString() @MinLength(1, { message: 'Enter their legal first name.' }) @MaxLength(100) legalFirstName?: string;
+ @text() @ValidateIf(present) @IsString() @MinLength(1, { message: 'Enter their legal last name.' }) @MaxLength(100) legalLastName?: string;
+ @text() @ValidateIf(present) @IsString() @MaxLength(100) @Matches(LATIN, { message: 'Use Latin letters for the American first name.' }) preferredAmericanFirstName?: string;
+ @text() @ValidateIf(present) @IsString() @MaxLength(100) @Matches(LATIN, { message: 'Use Latin letters for the American last name.' }) preferredAmericanLastName?: string;
+ @text() @ValidateIf(present) @IsEmail({}, { message: 'Enter a valid personal email.' }) @MaxLength(254) personalEmail?: string;
+ @text() @ValidateIf(present) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN, { message: 'Use 7–15 digits; international formatting is accepted.' }) @MaxLength(40) personalPhoneNumber?: string;
+ @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) telegram?: string;
+ @text() @ValidateIf(present) @IsString() @MinLength(1, { message: 'Enter their first name.' }) @MaxLength(100) firstName?: string;
+ @text() @ValidateIf(present) @IsString() @MinLength(1, { message: 'Enter their last name.' }) @MaxLength(100) lastName?: string;
+}
+/** Leave (section 35): the first day away, the day they work again and why; what happens to their email and calls when they have them. */
+export class LeaveDto {
+ @IsInt() @Min(1) version!: number;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) firstDay!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why they’re away.' }) @MaxLength(1000) reason!: string;
+ @IsOptional() @IsIn(['FORWARD', 'AUTO_REPLY']) emailWhileAway?: 'FORWARD' | 'AUTO_REPLY';
+ @IsOptional() @IsIn(['FORWARD', 'VOICEMAIL']) callsWhileAway?: 'FORWARD' | 'VOICEMAIL';
+}
+export class BackOnDto {
+ @IsInt() @Min(1) version!: number;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why the return date changed.' }) @MaxLength(1000) reason!: string;
+}
+export class LeaveReasonDto {
+ @IsInt() @Min(1) version!: number;
+ @text() @IsString() @MinLength(1, { message: 'Say why they’re away.' }) @MaxLength(1000) reason!: string;
+}
+export class LeaveVersionDto {
+ @IsInt() @Min(1) version!: number;
 }

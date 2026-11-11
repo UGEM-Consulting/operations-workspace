@@ -21,6 +21,9 @@ const STAFF_ALERTS = {
   IT_REMOVAL_SCHEDULED: 'A dispatcher is leaving. Their accounts are scheduled for removal in UGEM Workspace.',
   IT_REMOVAL_DUE: 'A dispatcher’s last day is today. Remove their accounts at the end of the day in UGEM Workspace.',
   IT_REMOVAL_NOW: 'A manager asked to remove a dispatcher’s accounts now in UGEM Workspace.',
+  // Leave (section 35, approved 2026-11-11): like the others, they name no one.
+  IT_LEAVE_SUSPEND: 'Someone is going on leave. Suspend their accounts from their first day away in UGEM Workspace.',
+  IT_LEAVE_RESTORE: 'Someone is back from leave. Restore their accounts in UGEM Workspace.',
 };
 export type StaffAlertKind = keyof typeof STAFF_ALERTS;
 export function staffAlertMessage(kind: StaffAlertKind, url: string) { return `${STAFF_ALERTS[kind]}\n\n${url}`; }

@@ -14,6 +14,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && /^notifications\/[0-9a-f-]{36}\/read$/.test(path)) ||
     // IT tasks (setups and removals together) and the removal checklist after a dispatcher left.
     (method === 'GET' && match(`it/removals/${ID}`, path)) || (method === 'PATCH' && match(`it/removals/${ID}/tasks/[A-Z_]+`, path)) ||
+    // Leave: suspending accounts while someone is away, and restoring them.
+    (method === 'GET' && match(`it/leave/${ID}`, path)) || (method === 'PATCH' && match(`it/leave/${ID}/tasks/[A-Z_]+`, path)) ||
     // A team lead's sign-in: create it, turn it back on or turn it off.
     (method === 'POST' && match(`it/sign-ins/${ID}`, path)) ||
     // Handing an application to another manager, and a manager's open records before their account changes.
@@ -44,7 +46,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Managed lists: add, edit, archive and restore MCs and job titles.
     (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
-    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup)`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|on-leave|on-leave/(return|cancel|back-on|reason))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     // People already working here: check and add them, their paperwork and catch-up links, what a manager recorded.
     (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||

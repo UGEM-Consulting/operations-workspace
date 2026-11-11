@@ -4,7 +4,7 @@ export interface TeamRow { id: string; name: string; version: number; archived: 
   // Everyone assisting its dispatchers or the whole team (from an API with team pages).
   helpers?: number }
 /** A person on a team's page: their card shows their photo, name and what they do. */
-export interface TeamPerson { id: string; firstName: string; lastName: string; status: MemberStatus; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; version: number; photo: boolean; lastDay: string | null }
+export interface TeamPerson { id: string; firstName: string; lastName: string; status: MemberStatus; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; version: number; photo: boolean; lastDay: string | null; onLeaveUntil?: string | null }
 /** GET dispatch/teams/:id: the team, its dispatchers and everyone assisting them or the whole team. */
 export interface TeamDetail { id: string; name: string; version: number; archived: boolean; leadId: string | null; mc: { id: string; name: string; archived: boolean };
   dispatchers: (TeamPerson & { jobTitle: string | null; drivers: number; companyEmail: string | null; accountStatus: 'ACTIVE' | 'INACTIVE' | null })[];
@@ -27,14 +27,16 @@ export interface MemberRow { addedByHand?: boolean; id: string; firstName: strin
   // Added by hand with details missing (from an API with missing details).
   placed?: boolean; startDateKnown?: boolean; sinceKnown?: boolean;
   // What a team lead signs in with, and whether they have a sign-in (from an API with team lead sign-ins).
-  companyEmail?: string | null; accountStatus?: 'ACTIVE' | 'INACTIVE' | null }
+  companyEmail?: string | null; accountStatus?: 'ACTIVE' | 'INACTIVE' | null;
+  // Leave (section 35): the open leave, upcoming or started, and how far IT's suspend is.
+  leave?: { firstDay: string; backOn: string; started: boolean; it: 'NONE' | 'IN_PROGRESS' | 'SUSPENDED' } | null }
 /** Someone here who still needs a start date or, for a dispatcher, an MC. */
 export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' && (member.startDateKnown === false || (member.position === 'DISPATCHER' && member.placed === false));
 /** Who a support or updater assists: "Riley Santos", or a team's name when it's everyone on it. */
 export const assists = (row: { dispatcher?: string | null; wholeTeam?: string | null }) => row.wholeTeam ?? row.dispatcher ?? 'a dispatcher';
 /** "3 drivers, 1 support", for someone on notice. */
 export const toReassign = (drivers: number, supports: number) => [drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', supports ? (supports === 1 ? '1 support or updater' : `${supports} supports or updaters`) : ''].filter(Boolean).join(drivers && supports ? ', ' : '') || 'Nobody';
-export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number } }
+export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number } }
 export interface Assignment { id: string; startedAt: string; endedAt: string | null; reason: string | null; mcId: string | null; mc: string | null; mcNumber: string | null; teamId: string | null; team: string | null; movedBy: string | null }
 export interface MemberDetails { legalFirstName: string | null; legalLastName: string | null; preferredAmericanFirstName: string | null; preferredAmericanLastName: string | null;
   personalEmail: string | null; personalPhoneNumber: string | null; telegram: string | null; mcName: string | null; teamLead: string | null; jobTitle: string | null; submittedAt: string | null }
@@ -66,7 +68,18 @@ export interface MemberProfile { itSetup?: SupportItSetup | null; sharedSignIns?
   // From an API with full dispatcher details; absent on an older one.
   canOpenApplication?: boolean; details?: MemberDetails | null; documents?: { id: string; kind: string; title: string; version: number; signedAt: string }[]; photo?: boolean; idPhoto?: boolean; contacts?: MemberContact[]; activity?: { id: string; event: string; createdAt: string }[];
   // A support's dispatcher now and before (with that dispatcher's MC and team); a dispatcher's supports now.
-  supportOf?: SupportLink | null; supportHistory?: SupportLink[]; supports?: { id: string; name: string; supportType?: SupportType; status: MemberStatus; since: string; sinceKnown?: boolean }[] }
+  supportOf?: SupportLink | null; supportHistory?: SupportLink[]; supports?: { id: string; name: string; supportType?: SupportType; status: MemberStatus; since: string; sinceKnown?: boolean; onLeaveUntil?: string | null }[];
+  // Leave (section 35): the open leave with IT's suspend checklist, the latest restore once back, and earlier leaves.
+  leave?: MemberLeave | null; restore?: LeaveIt | null; leaveHistory?: MemberLeave[];
+  // Corrections (section 36) and the record they left before coming back, or came back as (section 37).
+  corrections?: MemberCorrection[]; correctedFields?: Record<string, { by: string; at: string }>; previousRecord?: { id: string; name: string; leftAt: string | null } | null; laterRecord?: { id: string; name: string; joinedAt: string; status: MemberStatus } | null }
+/** Leave (section 35): IT's suspend or restore checklist, progress only (never IT notes). */
+export interface LeaveIt { id: string; kind: 'SUSPEND' | 'RESTORE'; dueOn: string; completedAt: string | null; cancelledAt: string | null; done: number; total: number; tasks: { key: string; status: string }[] }
+export interface MemberLeave { id: string; firstDay: string; backOn: string; reason: string; emailWhileAway: 'FORWARD' | 'AUTO_REPLY' | null; callsWhileAway: 'FORWARD' | 'VOICEMAIL' | null;
+  changes: { kind: 'BACK_ON' | 'REASON'; from: string | null; to: string | null; reason: string | null; byName: string; at: string }[]; startedAt: string | null; endedAt: string | null; endedHow: 'RETURNED' | 'CANCELLED' | 'LEAVING' | null;
+  createdAt: string; recordedBy: string; forwardTo: string | null; started?: boolean; suspend?: LeaveIt | null }
+/** An administrator's correction (section 36): each field's earlier and new value, why, who and when. */
+export interface MemberCorrection { id: string; changes: { field: string; from: string | null; to: string | null }[]; reason: string; createdAt: string; correctedBy: string }
 export interface SupportLink { id: string; startedAt: string; endedAt: string | null; reason: string | null; dispatcherId: string | null; dispatcher: string | null; dispatcherStatus: MemberStatus | null; wholeTeam?: string | null; mc: string | null; team: string | null; changedBy: string | null }
 export const statusBadge: Record<MemberStatus, { label: string; tone: 'info' | 'success' | 'neutral' }> = {
   ONBOARDING: { label: 'Onboarding', tone: 'info' }, ACTIVE: { label: 'Active', tone: 'success' }, LEFT: { label: 'Left', tone: 'neutral' } };

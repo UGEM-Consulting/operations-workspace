@@ -20,6 +20,7 @@ import { documentItemLabels, fieldLabels, FieldName, itemLabels, RequestableItem
 import { Select } from '@/components/ui/field';
 import { supportName, supportWord, underMc } from '@/features/dispatch/types';
 import { SUPPORT_IT_ITEMS, SupportItChoices, type SupportItItem } from '@/features/dispatch/support-it';
+import { approvalQuestion, type HereMatch } from './already-here';
 type Action='APPROVE'|'REQUEST_CHANGES'|'REJECT';
 type Employment={mcName:string;teamLead:string;jobTitle:string};
 const titles:Record<Action,string>={APPROVE:'Approve application',REQUEST_CHANGES:'Request corrections',REJECT:'Reject application'};
@@ -32,7 +33,7 @@ const employmentFields=['mcName','teamLead','jobTitle'] as const;
  * While corrections are outstanding (CHANGES_REQUESTED) the only decision left is rejection; approval waits for a resubmission.
  * A support (`supports`) has no employment and no IT setup: the rail confirms the dispatcher they will assist instead.
  */
-export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,documentItems=[],status,savedSignature=null,options=null,supports=null,catchUpName=null}:{catchUpName?:string|null;id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];documentItems?:StaffDocuments['items'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
+export function ReviewActions({id,version,employment:initial,requiredFields,documentsRequired,countersign,documentItems=[],status,savedSignature=null,options=null,supports=null,catchUpName=null,alreadyHere=null,applicantName=null}:{applicantName?:string|null;alreadyHere?:HereMatch[]|null;catchUpName?:string|null;id:string;version:number;status?:string;requiredFields:RequestableItem[];documentsRequired:boolean;countersign:StaffDocuments['countersign'];documentItems?:StaffDocuments['items'];employment:Employment;savedSignature?:SavedSignature|null;options?:EmploymentOptions|null;supports?:SupportChoice|null}) {
  const router=useRouter();
  const [action,setAction]=useState<Action|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[signature,setSignature]=useState<{image:string;method:SignatureMethod}|null>(null),[countersignName,setCountersignName]=useState(LATIN_NAME.test(countersign?.signerName??'')?countersign!.signerName!:''),[countersignTitle,setCountersignTitle]=useState(countersign?.lastTitle??(countersign?.signerRole?roleLabel(countersign.signerRole):'')),[countersigned,setCountersigned]=useState(false),[reading,setReading]=useState(false),[saveForLater,setSaveForLater]=useState(false);
  const toast=useToast();
@@ -51,8 +52,11 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
  // What IT is asked to set up for them (section 32): nothing unless ticked, and only when the API offers it.
  const [itSetup,setItSetup]=useState<SupportItItem[]>([]),itOffered=!!supports?.itSetupItems?.length;
  const wholeTeam=assisting==='TEAM',dispatcher=supports?.options.find(option=>option.id===supportsId),team=supports?.teamOptions?.find(option=>option.id===supportsTeamId);
+ // Already here (section 37): an email someone here uses stops approval; a shared phone asks whether it's a different person; someone who left may be coming back.
+ const question=catchUpName?null:approvalQuestion(alreadyHere),[differentPerson,setDifferentPerson]=useState(false),[returning,setReturning]=useState(true);
  function approve(){
   if(catchUpName){setRailError('');open('APPROVE');return;}
+  if(question?.kind==='different'&&!differentPerson){setRailError(`Confirm they’re a different person from ${question.name}.`);return;}
   if(supports){
    if(wholeTeam?!supportsTeamId:!supportsId){setRailError(`Choose the ${wholeTeam?'team':'dispatcher'} this ${supportWord({supportType})} will assist.`);return;}
    if(wholeTeam&&team?.archived){setRailError('This team was archived. Choose another team.');return;}
@@ -73,6 +77,7 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
   try{await mutate(`onboarding/applications/${id}/reviews`,'POST',{version,decisionType:action,reason:String(data.get('reason')??''),requestedFields:data.getAll('requestedFields'),confirmed:data.get('confirmed')==='on',...(supports||catchUpName?{}:{employmentConfirmed}),
    ...(action==='APPROVE'&&supports?{...(wholeTeam?{supportsTeamId}:{supportsMemberId:supportsId}),...(supportType!==(supports.supportType??'SUPPORT')?{supportType}:{}),...(itOffered&&itSetup.length?{itSetup}:{})}:{}),
    ...(action==='APPROVE'&&!supports&&!catchUpName?{employment:{mcName:employment.mcName.trim(),teamLead:employment.teamLead.trim(),jobTitle:employment.jobTitle.trim()}}:{}),
+   ...(action==='APPROVE'&&question?.kind==='different'?{differentPerson:true}:{}),...(action==='APPROVE'&&question?.kind==='returning'&&returning?{returningMemberId:question.memberId}:{}),
    ...(action==='APPROVE'&&countersign?{countersignature:{...(useSaved?{useSavedSignature:true}:{typedName:countersignName,signature:signature?.image,signatureMethod:signature?.method}),agreed:true,...(titleAsked&&countersignTitle.trim()?{title:countersignTitle.trim()}:{})}}:{})});
    // Only once the approval has gone through, and a failed save never affects it.
    if(action==='APPROVE'&&countersign&&saveForLater&&!useSaved&&!savedSignature&&signature){
@@ -117,9 +122,13 @@ export function ReviewActions({id,version,employment:initial,requiredFields,docu
        :employmentFields.map(field=><Input key={field} label={fieldLabels[field]} name={field} value={employment[field]} onChange={event=>{const value=event.target.value;setEmployment(current=>({...current,[field]:value}));setEmploymentConfirmed(false);}} required maxLength={field==='jobTitle'?100:150} width="full"/>)}
       {!supports&&<Checkbox name="employmentConfirmed" checked={employmentConfirmed} onChange={event=>setEmploymentConfirmed(event.target.checked)} label={options?'The MC, team and job title are correct.':'The MC, team lead and job title are correct.'}/>}
      </fieldset>
+     {question?.kind==='blocked'&&<p className="text-[13px] leading-5 text-warning">Their email belongs to {question.name}, who works here now. One person can’t have two records: reject this application, or ask an administrator to correct {question.name}’s email if it’s wrong.</p>}
+     {question?.kind==='different'&&<><p className="rounded-md bg-warning-background px-3 py-2 text-[13px] leading-5 text-warning">Approving creates a new dispatcher record. Tick below if {applicantName?.split(' ')[0]??'they'} {applicantName?'isn’t':'aren’t'} {question.name}.</p>
+      <Checkbox name="differentPerson" checked={differentPerson} onChange={event=>setDifferentPerson(event.target.checked)} label={`${applicantName??'They'} ${applicantName?'is':'are'} a different person from ${question.name}.`} description="For example, family members who share a phone."/></>}
+     {question?.kind==='returning'&&<Checkbox name="returning" checked={returning} onChange={event=>setReturning(event.target.checked)} label={`This is ${question.name} coming back.`} description="Their new record links to the one they left. Untick if they’re a different person."/>}
      {blocked&&<p className="text-[13px] leading-5 text-warning">Approval needs complete applicant information, photos and signatures. Request corrections for {requiredFields.map(field=>itemLabels[field]).join(', ')}.</p>}
      <Notice message={railError} error/>
-     <Button className="w-full" disabled={blocked} onClick={approve}><CircleCheck aria-hidden="true" className="size-4"/>{countersign?'Approve and countersign NDA':'Approve'}</Button>
+     <Button className="w-full" disabled={blocked||question?.kind==='blocked'} onClick={approve}><CircleCheck aria-hidden="true" className="size-4"/>{countersign?'Approve and countersign NDA':'Approve'}</Button>
      <div className="grid grid-cols-2 gap-2"><Button variant="outline" onClick={()=>open('REQUEST_CHANGES')}>Request changes</Button><Button variant="outline" className="text-danger" onClick={()=>open('REJECT')}>Reject</Button></div>
     </>}
    </CardBody>

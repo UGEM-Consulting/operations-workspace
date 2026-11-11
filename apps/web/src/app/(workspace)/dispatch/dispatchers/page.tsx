@@ -33,7 +33,11 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
   // Leaving: on notice, the soonest last day first. They also still count as Active (or Onboarding) until they've left.
   const leavingNow = filters.status === 'LEAVING', leaving = searched.filter(member => member.lastDay).sort((a, b) => a.lastDay!.localeCompare(b.lastDay!));
   const missingNow = filters.status === 'MISSING', missing = searched.filter(missingDetails);
-  const visible = leavingNow ? leaving : missingNow ? missing : searched.filter(member => filters.status === 'ALL' || member.status === filters.status);
+  // A picked day (stored at midday UTC) without its year, as DispatchersOnLeaveScreen shows leave dates.
+  const monthDay = (day: string) => new Date(middayIso(day)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  // On leave (section 35): away now or starting within 30 days, the soonest return first. An older API sends no leave, so no tab.
+  const leaveKnown = data.items.some(member => member.leave !== undefined), onLeaveNow = filters.status === 'ON_LEAVE' && leaveKnown, away = searched.filter(member => member.leave).sort((a, b) => a.leave!.backOn.localeCompare(b.leave!.backOn));
+  const visible = leavingNow ? leaving : onLeaveNow ? away : missingNow ? missing : searched.filter(member => filters.status === 'ALL' || member.status === filters.status);
   const passed = data.items.filter(member => member.lastDayPassed);
   const filtered = filters.search !== '' || filters.status !== MEMBER_DEFAULTS.status;
   return <div className="space-y-6">
@@ -44,6 +48,7 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
       <FilterBar path="/dispatch/dispatchers" filters={filters} defaults={MEMBER_DEFAULTS} searchLabel="Search name, MC, team or job title" statuses={[
         { key: 'ONBOARDING', label: 'Onboarding', count: searched.filter(member => member.status === 'ONBOARDING').length },
         { key: 'ACTIVE', label: 'Active', count: searched.filter(member => member.status === 'ACTIVE').length },
+        ...(leaveKnown ? [{ key: 'ON_LEAVE', label: 'On leave', count: away.length }] : []),
         { key: 'LEAVING', label: 'Leaving', count: leaving.length },
         { key: 'LEFT', label: 'Left', count: searched.filter(member => member.status === 'LEFT').length },
         ...(paperwork ? [{ key: 'PAPERWORK', label: 'Paperwork', count: paperwork.items.filter(row => row.state !== 'FINISHED').length }, { key: 'MISSING', label: 'Missing details', count: missing.length }] : []),
@@ -55,6 +60,9 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
           { key: 'lastDay', label: 'Last day', nowrap: true, cell: (member: MemberList['items'][number]) => <LocalTime iso={middayIso(member.lastDay!)} format="date" /> },
           { key: 'reassign', label: 'To reassign', cell: (member: MemberList['items'][number]) => toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0) },
           { key: 'it', label: 'IT removal', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.itRemoval ? <Badge label={member.itRemoval === 'SCHEDULED' ? 'Scheduled' : member.itRemoval === 'COMPLETED' ? 'Completed' : 'In progress'} tone={member.itRemoval === 'COMPLETED' ? 'success' : 'info'} /> : <span className="text-muted-foreground">No accounts</span> },
+        ] : onLeaveNow ? [
+          { key: 'away', label: 'Away', nowrap: true, cell: (member: MemberList['items'][number]) => `${monthDay(member.leave!.firstDay)} to ${monthDay(member.leave!.backOn)}` },
+          { key: 'it', label: 'IT access', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.leave!.it === 'NONE' ? <Badge label="Nothing to suspend" tone="neutral" /> : <Badge label={member.leave!.it === 'SUSPENDED' ? 'Suspended' : member.leave!.started ? 'Suspending' : 'Suspend scheduled'} tone="info" /> },
         ] : missingNow ? [
           { key: 'team', label: 'Team', hideBelow: 'lg' as const, cell: (member: MemberList['items'][number]) => member.team ?? <span className="text-muted-foreground">{underMc(member.mc) ? 'Independent' : '—'}</span> },
           { key: 'started', label: 'Started', nowrap: true, cell: (member: MemberList['items'][number]) => member.startDateKnown === false ? <span className="text-muted-foreground">Not recorded</span> : <LocalTime iso={member.joinedAt} format="date" /> },
@@ -63,7 +71,8 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
           { key: 'title', label: 'Job title', hideBelow: 'lg' as const, muted: true, cell: (member: MemberList['items'][number]) => member.position === 'SUPPORT' ? supportName(member) : member.jobTitle ?? 'Not set' },
           { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'xl' as const, cell: (member: MemberList['items'][number]) => member.sinceKnown === false ? 'Not recorded' : <LocalTime iso={member.since} format="date" /> },
         ]),
-        { key: 'status', label: 'Status', cell: member => member.lastDayPassed ? <Badge label="Last day passed" tone="danger" /> : member.lastDay ? <Badge label="Leaving" tone="warning" /> : <Badge {...memberBadge(member.status)} /> },
+        { key: 'status', label: 'Status', cell: member => member.lastDayPassed ? <Badge label="Last day passed" tone="danger" /> : member.lastDay ? <Badge label="Leaving" tone="warning" />
+          : member.leave ? <Badge label={member.leave.started ? 'On leave' : `Starts ${monthDay(member.leave.firstDay)}`} tone="info" /> : <Badge {...memberBadge(member.status)} /> },
       ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />
         : <EmptyState compact title="No dispatchers yet" description="Approving an application adds the dispatcher here. Add existing dispatchers for people already working here." />}
         footer={<p className="text-[13px] text-muted-foreground">{visible.length} of {data.items.length} people.</p>} />}

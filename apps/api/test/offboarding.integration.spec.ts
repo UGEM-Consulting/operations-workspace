@@ -214,10 +214,10 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     const setup = await dispatcher('Setup', { setupDone: false });
     const finished = await dispatcher('Finished');
     await dispatcher('Rejected', { status: 'REJECTED' });
-    expect((await agents.admin.get(`/api/users/${users.manager.id}/open-records`).set(headers).expect(200)).body).toEqual({ invitations: 1, applications: 1, changes: 1, itSetup: 1, removals: 0, total: 4 });
+    expect((await agents.admin.get(`/api/users/${users.manager.id}/open-records`).set(headers).expect(200)).body).toEqual({ invitations: 1, applications: 1, changes: 1, itSetup: 1, removals: 0, leave: 0, total: 4 });
     await agents.manager.get(`/api/users/${users.manager.id}/open-records`).set(headers).expect(403);
     const refused = await agents.admin.patch(`/api/users/${users.manager.id}`).set(headers).send({ status: 'INACTIVE' }).expect(409);
-    expect(refused.body.openRecords).toEqual({ invitations: 1, applications: 1, changes: 1, itSetup: 1, removals: 0, total: 4 });
+    expect(refused.body.openRecords).toEqual({ invitations: 1, applications: 1, changes: 1, itSetup: 1, removals: 0, leave: 0, total: 4 });
     expect((await db.getRepository(User).findOneByOrFail({ id: users.manager.id })).status).toBe(UserStatus.ACTIVE);
     await agents.admin.patch(`/api/users/${users.manager.id}`).set(headers).send({ status: 'INACTIVE', handOverTo: users.manager.id }).expect(400);
     await agents.admin.patch(`/api/users/${users.manager.id}`).set(headers).send({ status: 'INACTIVE', handOverTo: users.it.id }).expect(400);
@@ -238,7 +238,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     const [startedRemoval, untouchedRemoval, doneRemoval] = await Promise.all([started, untouched, done].map(person => removalOf(person.memberId)));
     await agents.it.patch(`/api/it/removals/${startedRemoval.id}/tasks/GOOGLE_WORKSPACE`).set(headers).send({ version: startedRemoval.version, status: 'COMPLETED' }).expect(200);
     await db.query(`UPDATE it_removal_requests SET "completedAt" = now(), "numberOutcome" = 'KEPT' WHERE id = $1`, [doneRemoval.id]);
-    expect((await agents.admin.get(`/api/users/${users.manager.id}/open-records`).set(headers).expect(200)).body).toEqual({ invitations: 0, applications: 0, changes: 0, itSetup: 0, removals: 2, total: 2 });
+    expect((await agents.admin.get(`/api/users/${users.manager.id}/open-records`).set(headers).expect(200)).body).toEqual({ invitations: 0, applications: 0, changes: 0, itSetup: 0, removals: 2, leave: 0, total: 2 });
     await agents.admin.patch(`/api/users/${users.manager.id}`).set(headers).send({ status: 'INACTIVE' }).expect(409);
     expect((await agents.admin.patch(`/api/users/${users.manager.id}`).set(headers).send({ status: 'INACTIVE', handOverTo: users.other.id }).expect(200)).body.handedOver).toBe(2);
     const detail = (await agents.it.get(`/api/it/removals/${startedRemoval.id}`).set(headers).expect(200)).body;
@@ -402,33 +402,36 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     await leave(taylor.memberId, { leftAt: ahead(12) });
     const sweeper = app.get(LeavingSweeper);
     // Not yet: nothing happens.
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
     // The day has begun in the US: IT is alerted once; they aren't gone until the day has ended everywhere.
     await db.query(`UPDATE member_notices SET "lastDay" = $1; UPDATE it_removal_requests SET "dueOn" = $1`.replace(/\$1/g, `'${usDay('latest')}'`));
-    expect(await sweeper.run()).toEqual({ alerted: 1, left: 0, failed: 0 });
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 1, left: 0, failed: 0, started: 0, returned: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
     expect(await alerts()).toEqual(['IT_REMOVAL_SCHEDULED', 'IT_REMOVAL_DUE']);
     expect((await db.getRepository(User).findOneByOrFail({ id: lead.id })).status).toBe(UserStatus.ACTIVE);
     // The day has passed with a support still assigned: the record waits, the sign-in doesn't.
     const past = addDays(usDay('earliest'), -2);
     await db.query(`UPDATE member_notices SET "lastDay" = '${past}'`);
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
     expect((await db.getRepository(User).findOneByOrFail({ id: lead.id })).status).toBe(UserStatus.INACTIVE);
     expect((await agents.manager.get(`/api/dispatch/members/${taylor.memberId}`).set(headers).expect(200)).body).toMatchObject({ status: 'ACTIVE', notice: { passed: true } });
     await act(taylor.memberId, 'cancel-notice', { reason: 'Too late.' }, 409);
     // Reassigned: the next run marks them as left, dated their last day, with the reason given.
     await db.query(`UPDATE member_support_links SET "endedAt" = now() WHERE "supportId" = $1`, [support]);
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 1, failed: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 1, failed: 0, started: 0, returned: 0 });
     const member = (await agents.manager.get(`/api/dispatch/members/${taylor.memberId}`).set(headers).expect(200)).body;
     expect(member).toMatchObject({ status: 'LEFT', leftReason: 'Resigned for a job outside logistics.', notice: null, leftBy: 'Fictional manager' });
     expect(member.leftAt.slice(0, 10)).toBe(past);
     expect((await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'MEMBER_LEFT'`))[0].metadata).toMatchObject({ itRemoval: true });
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
   });
 
   it('refuses to roll back while offboarding or hand-over history exists', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
+    await db.undoLastMigration(); // MemberLeave, with none here
+    await db.undoLastMigration(); // DetailCorrections, with none here
+    await db.undoLastMigration(); // AlreadyHere, with none here
     await db.undoLastMigration(); // SupportItSetup, with none here
     await db.undoLastMigration(); // NewAuthenticator, with none here
     await db.undoLastMigration(); // SafetyReminders, with none here

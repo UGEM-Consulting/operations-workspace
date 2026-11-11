@@ -86,6 +86,8 @@ export class PortalNotification {
  // A notice names a setup request (IT_ONBOARDING_COMPLETED) or a removal (IT_REMOVAL_COMPLETED), never both.
  @Column('uuid',{nullable:true}) requestId!:string|null;
  @Column('uuid',{nullable:true}) removalId!:string|null;
+ // A leave's suspend or restore checklist (IT_SUSPEND_COMPLETED, IT_RESTORE_COMPLETED).
+ @Column('uuid',{nullable:true}) leaveRequestId!:string|null;
  @Column('varchar') kind!:string;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) readAt!:Date|null;
@@ -103,7 +105,7 @@ export function itStatus(request: Pick<ItOnboardingRequest,'completedAt'>, tasks
  return PROGRESS_RULES.find(rule=>tasks.some(task=>rule.anyTask.includes(task.status)))?.status??'PENDING';
 }
 /** SQL for itStatus on the request alias (a removal's tasks with tasks='it_removal_tasks'). The statuses are the constants above, never input. */
-export function itStatusSql(alias:string,tasks:'it_onboarding_tasks'|'it_removal_tasks'='it_onboarding_tasks'){
+export function itStatusSql(alias:string,tasks:'it_onboarding_tasks'|'it_removal_tasks'|'it_leave_tasks'='it_onboarding_tasks'){
  return `CASE WHEN ${alias}."completedAt" IS NOT NULL THEN 'COMPLETED' ${PROGRESS_RULES.map(rule=>
   `WHEN EXISTS (SELECT 1 FROM ${tasks} t WHERE t."requestId"=${alias}.id AND t.status IN (${rule.anyTask.map(status=>`'${status}'`).join(',')})) THEN '${rule.status}'`).join(' ')} ELSE 'PENDING' END`;
 }
@@ -121,7 +123,7 @@ export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return 
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
 @Entity('it_removal_requests')
 export class ItRemovalRequest {
  @PrimaryGeneratedColumn('uuid') id!:string;
@@ -166,6 +168,53 @@ export class ItRemovalActivity {
  @PrimaryGeneratedColumn('uuid') id!:string;
  @Column('uuid') requestId!:string;
  @Column('uuid') actorId!:string;
+ @Column('varchar') event!:string;
+ @Column('jsonb',{default:{}}) metadata!:Record<string,string|boolean|null>;
+ @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
+}
+
+// Leave (section 35): IT suspends a person's accounts while they're away and restores them when they're back. Only the
+// accounts they have get a task; business software may be Not needed when they use shared sign-ins only.
+export const LEAVE_CHECKLIST: readonly {key:string;label:string;suspend:string;restore:string;optional?:boolean}[] = [
+ {key:'GOOGLE_WORKSPACE',label:'Google Workspace',suspend:'Suspend the account and sign it out everywhere, then forward new email or set the auto-reply as asked. Keep the mailbox.',restore:'Restore the account and remove the forwarding or auto-reply.'},
+ {key:'RINGCENTRAL',label:'RingCentral',suspend:'Forward calls and texts, or send them to voicemail, as asked. Keep the user and the number.',restore:'Stop forwarding calls and texts.'},
+ {key:'BUSINESS_SOFTWARE',label:'Business software',suspend:'Sign them out of business apps they use alone. Shared sign-ins stay as they are. Never store credentials in notes.',restore:'Give back the app access you signed out.',optional:true},
+];
+export type LeaveKind='SUSPEND'|'RESTORE';
+export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;}
+export function leaveTaskDone(task:Pick<ItLeaveTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&LEAVE_CHECKLIST.some(item=>item.key===task.key&&item.optional));}
+@Entity('it_leave_requests')
+export class ItLeaveRequest {
+ @PrimaryGeneratedColumn('uuid') id!:string;
+ @Column('uuid') leaveId!:string;
+ @Column('uuid') memberId!:string;
+ @Column('varchar') kind!:LeaveKind;
+ // Who recorded the leave: they get the portal notice when IT finishes.
+ @Column('uuid') managerId!:string;
+ @Column('jsonb') profile!:LeaveProfile;
+ // Suspending can be completed from the first day away; restoring is due on the return day.
+ @Column('date') dueOn!:string;
+ @Column('integer',{default:0}) version!:number;
+ @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
+ @UpdateDateColumn({type:'timestamptz'}) updatedAt!:Date;
+ @Column('timestamptz',{nullable:true}) completedAt!:Date|null;
+ @Column('timestamptz',{nullable:true}) cancelledAt!:Date|null;
+}
+@Entity('it_leave_tasks')
+export class ItLeaveTask {
+ @PrimaryGeneratedColumn('uuid') id!:string;
+ @Column('uuid') requestId!:string;
+ @Column('varchar') key!:string;
+ @Column('varchar') status!:TaskStatus;
+ @Column('text',{default:''}) notes!:string;
+ @Column('uuid',{nullable:true}) updatedBy!:string|null;
+ @UpdateDateColumn({type:'timestamptz'}) updatedAt!:Date;
+}
+@Entity('it_leave_activity')
+export class ItLeaveActivity {
+ @PrimaryGeneratedColumn('uuid') id!:string;
+ @Column('uuid') requestId!:string;
+ @Column('uuid',{nullable:true}) actorId!:string|null;
  @Column('varchar') event!:string;
  @Column('jsonb',{default:{}}) metadata!:Record<string,string|boolean|null>;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;

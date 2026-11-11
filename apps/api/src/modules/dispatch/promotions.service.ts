@@ -8,7 +8,7 @@ import { carrySupportSetups, lockSetupRequests, sameSetups } from '../it/removal
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
-import { lastDayPassedSql, lastDaySql, ledTeams, lockTeam, onNotice } from './create-member';
+import { lastDayPassedSql, lastDaySql, ledTeams, lockTeam, onLeave, onNotice } from './create-member';
 import { usDay } from '../safety/screening-rules';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
@@ -57,6 +57,7 @@ export class PromotionsService {
    const support = await this.supportInScope(em, user, dto.supportId);
    if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support or updater can be promoted.');
    if (await onNotice(em, dto.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted.');
+   if (await onLeave(em, dto.supportId)) throw new ConflictException('This person is on leave. Ask once they’re back.');
    // Refused here rather than at the decision, which needs the application for IT setup and could only decline.
    if (!support.applicationId) throw new ConflictException('Their paperwork isn’t accepted yet, so they can’t be promoted. Ask a dispatch manager to send their catch-up link.');
    const request = await em.getRepository(PromotionRequest).save({ supportId: dto.supportId, requestedBy: user.id, reason: dto.reason });
@@ -114,6 +115,7 @@ export class PromotionsService {
    if (request.version !== dto.version) throw new ConflictException('Someone else changed this request. Reload and try again.');
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
    if (dto.decision !== 'DECLINE' && await onNotice(em, request.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted. Cancel their notice first.');
+   if (dto.decision !== 'DECLINE' && await onLeave(em, request.supportId)) throw new ConflictException('This person is on leave. Decide once they’re back.');
    const now = new Date();
    if (dto.decision === 'DECLINE') {
     if (!dto.note?.trim()) throw new BadRequestException('Say why the request is declined.');
