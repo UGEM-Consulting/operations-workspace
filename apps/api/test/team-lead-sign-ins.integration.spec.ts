@@ -118,7 +118,8 @@ integration('Team lead sign-ins and team pages (disposable PostgreSQL)', () => {
     try {
       await change.query(`SELECT id FROM dispatch_members WHERE id = $1 FOR UPDATE`, [jordan]);
       const click = complete(request.id).then(response => response);
-      for (let tries = 0; !(await db.query(`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%dispatch_members%'`)).length; tries++) {
+      // PostgreSQL keeps the first 1024 characters of a query, which may end before an entity query names its table.
+      for (let tries = 0; !(await db.query(`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND (query LIKE '%dispatch_members%' OR query LIKE '%"DispatchMember"%')`)).length; tries++) {
         if (tries > 100) throw new Error('IT never waited for the dispatcher record');
         await new Promise(resolve => setTimeout(resolve, 20));
       }

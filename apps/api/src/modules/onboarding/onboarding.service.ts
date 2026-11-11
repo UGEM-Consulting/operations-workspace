@@ -9,6 +9,7 @@ import { askedAs, requiredApplicantFields } from './application-requirements';
 import { applicantEmploymentOptions, settleApplicantEmployment } from './applicant-employment';
 import { activeAttempts, clientBucket, countAttempt, onboardingLimit } from './rate-limit';
 import { requireTransition } from './transitions';
+import { alreadyHere, refuseSecondApplication } from './already-here';
 import { randomBytes } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -88,7 +89,7 @@ export class OnboardingService {
   // Once someone is a member, what they're called is on their record: a change or a promotion never reaches the invitation.
   // The same read gives the application reference, shown once the applicant verified their email, so the manager can send it
   // while they're still filling in the form (InvitationReferenceScreen). Only the reference: never their answers.
-  const applications: { invitationId: string; id: string; position: string | null; supportType: string | null }[] = rows.length ? await this.db.query(`SELECT a."invitationId", a.id, d.position, d."supportType"
+  const applications: { invitationId: string; id: string; status: string; position: string | null; supportType: string | null }[] = rows.length ? await this.db.query(`SELECT a."invitationId", a.id, a.status, d.position, d."supportType"
    FROM dispatcher_applications a LEFT JOIN dispatch_members d ON d."applicationId" = a.id WHERE a."invitationId" = ANY($1)`, [rows.map(row => row.id)]) : [];
   const memberOf = new Map(applications.filter(row => row.position).map(({ invitationId, position, supportType }) => [invitationId, { position: position!, supportType: supportType! }]));
   const claimed = new Set(rows.filter(row => row.consumedAt).map(row => row.id));
@@ -96,7 +97,11 @@ export class OnboardingService {
   const names: Record<string,string> = ids.length ? Object.fromEntries((await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name FROM dispatch_members WHERE id = ANY($1)`, [ids])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
   const teamIds = [...new Set(rows.map(row => row.supportsTeamId).filter((id): id is string => !!id))];
   const teamNames: Record<string,string> = teamIds.length ? Object.fromEntries((await this.db.query(`SELECT id, name FROM teams WHERE id = ANY($1)`, [teamIds])).map((row: {id:string;name:string}) => [row.id,row.name])) : {};
-  return rows.map(row => ({ ...row, status: invitationStatus(row), applicationReference: referenceOf.get(row.id) ?? null, member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
+  // Already here (section 37): once they verified, the first person whose email this is, while nobody has decided yet.
+  const undecided = applications.filter(row => claimed.has(row.invitationId) && !['APPROVED', 'REJECTED'].includes(row.status));
+  const matches = await alreadyHere(this.db, undecided.map(row => ({ key: row.invitationId, email: rows.find(invitation => invitation.id === row.invitationId)?.email ?? null, phone: null, applicationId: row.id, skipMemberId: null })));
+  const hereOf = (id: string) => { const match = matches.get(id)?.find(item => item.kind === 'MEMBER'); return match ? { name: match.name, status: match.status, leftAt: match.leftAt, position: match.position, supportType: match.supportType } : null; };
+  return rows.map(row => ({ ...row, status: invitationStatus(row), applicationReference: referenceOf.get(row.id) ?? null, alreadyHere: hereOf(row.id), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
  }
  async revoke(user: User, id: string) {
   await this.db.transaction(async em => {
@@ -174,6 +179,8 @@ export class OnboardingService {
    const inv = await em.getRepository(Invitation).findOne({ where: { id: challenge.invitationId }, lock: { mode: 'pessimistic_write' } });
    const accessApp = inv ? await em.getRepository(DispatcherApplication).findOneBy({invitationId:inv.id}) : null;
    if (!inv || !accessApp || inv.revokedAt || (inv.expectedEmail && inv.expectedEmail !== challenge.email) || (challenge.resume && inv.email !== challenge.email) || (challenge.resume ? (!inv.consumedAt || accessApp.applicantAccessUntil.getTime() <= Date.now()) : (inv.consumedAt || inv.expiresAt.getTime() <= Date.now()))) throw new UnauthorizedException('Verification is invalid or expired.');
+   // One open application per email (section 37): the person who proved they own it continues that one instead.
+   if (!challenge.resume) await refuseSecondApplication(em, challenge.email, inv.id);
    challenge.consumedAt = new Date(); challenge.codeHash = null; await em.save(challenge);
    if (!inv.consumedAt) { inv.email = challenge.email; inv.consumedAt = new Date(); await em.save(inv); await this.activity(em,inv.id,'INVITATION_CLAIMED'); }
    const app = await em.getRepository(DispatcherApplication).findOneByOrFail({ invitationId: inv.id });

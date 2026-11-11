@@ -1,5 +1,6 @@
 import { BeforeApplicationShutdown, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { DispatchService } from './dispatch.service';
+import { LeaveService } from './leave.service';
 
 const EVERY_MS = 10 * 60_000, FIRST_AFTER_MS = 60_000;
 
@@ -11,7 +12,7 @@ const EVERY_MS = 10 * 60_000, FIRST_AFTER_MS = 60_000;
 @Injectable()
 export class LeavingSweeper implements OnApplicationBootstrap, BeforeApplicationShutdown {
  private timers: NodeJS.Timeout[] = [];
- constructor(private readonly dispatch: DispatchService) {}
+ constructor(private readonly dispatch: DispatchService, private readonly leaves: LeaveService) {}
  onApplicationBootstrap() {
   const first = setTimeout(() => void this.run(), FIRST_AFTER_MS); first.unref();
   const every = setInterval(() => void this.run(), EVERY_MS); every.unref();
@@ -19,5 +20,10 @@ export class LeavingSweeper implements OnApplicationBootstrap, BeforeApplication
  }
  beforeApplicationShutdown() { for (const timer of this.timers) clearTimeout(timer); this.timers = []; }
  /** Never throws: the next run tries again. */
- run() { return this.dispatch.sweepLeaving().catch(() => ({ alerted: 0, left: 0, failed: 1 })); }
+ // Leave (section 35) starts and ends on the same timer, after the last-day job.
+ async run() {
+  const leaving = await this.dispatch.sweepLeaving().catch(() => ({ alerted: 0, left: 0, failed: 1 }));
+  const leave = await this.leaves.sweep().catch(() => ({ started: 0, returned: 0, failed: 1 }));
+  return { ...leaving, ...leave, failed: leaving.failed + leave.failed };
+ }
 }

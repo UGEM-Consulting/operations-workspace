@@ -3,6 +3,7 @@ import type { EntityManager } from 'typeorm';
 import { revokeUserSessions } from '../auth/revoke';
 import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { User, UserStatus } from '../users/user.entity';
+import { onLeaveSql } from './create-member';
 
 /**
  * A team lead's sign-in (designed in the Design System and approved by the user 2026-11-05). Choosing a lead never
@@ -43,10 +44,12 @@ export const companyEmailSql = (d = 'd', e = 'e') => `coalesce((SELECT x."compan
 export async function wantedSignIn(em: EntityManager, memberId: string): Promise<SignInKind | null> {
  const [row] = await em.query(`SELECT d.status, u.status AS account,
    EXISTS(SELECT 1 FROM teams t WHERE t."leadMemberId" = d.id AND t."archivedAt" IS NULL) AS leads,
-   EXISTS(SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AS leaving
+   EXISTS(SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AS leaving,
+   ${onLeaveSql('d')} AS away
   FROM dispatch_members d LEFT JOIN users u ON u.id = d."accountUserId" WHERE d.id = $1`, [memberId]);
  if (!row || row.status === 'LEFT') return null;
- if (row.leads) return row.leaving || row.account === 'ACTIVE' ? null : row.account ? 'TURN_ON' : 'CREATE';
+ // Someone on leave (section 35) keeps leading, with their sign-in off until they're back; their return asks IT to turn it on.
+ if (row.leads) return row.leaving || row.away || row.account === 'ACTIVE' ? null : row.account ? 'TURN_ON' : 'CREATE';
  return row.account === 'ACTIVE' ? 'TURN_OFF' : null;
 }
 

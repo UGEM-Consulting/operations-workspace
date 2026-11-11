@@ -32,12 +32,20 @@ const OPEN_RECORDS = `SELECT a.id, a."invitationId", CASE
 const OPEN_REMOVALS = `FROM it_removal_requests r WHERE (r."managerId" = $1 OR r."forwardTo" = $1) AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
 /** Unfinished setups they asked IT for a support or updater (section 32): the completion notice goes to them. */
 const OPEN_SUPPORT_SETUPS = `FROM it_onboarding_requests r WHERE r.purpose = 'SUPPORT' AND r."managerId" = $1 AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
+/**
+ * Leave (section 35): open suspend or restore checklists that send them the completion notice, and leaves not over yet whose
+ * mail and calls go to them while the person is away.
+ */
+const OPEN_LEAVE_REQUESTS = `FROM it_leave_requests r WHERE r."managerId" = $1 AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
+const OPEN_LEAVES = `FROM member_leaves l WHERE l."forwardTo" = $1 AND l."endedAt" IS NULL`;
 export async function openRecords(em: EntityManager, userId: string) {
  const rows: { id: string; invitationId: string; bucket: 'invitations' | 'applications' | 'changes' | 'itSetup' }[] = await em.query(OPEN_RECORDS, [userId]);
  const [{ removals }]: { removals: number }[] = await em.query(`SELECT count(*)::integer AS removals ${OPEN_REMOVALS}`, [userId]);
  const [{ supportSetups }]: { supportSetups: number }[] = await em.query(`SELECT count(*)::integer AS "supportSetups" ${OPEN_SUPPORT_SETUPS}`, [userId]);
+ // One person away counts once, whether it's their leave, its checklist or both.
+ const [{ leave }]: { leave: number }[] = await em.query(`SELECT count(DISTINCT x."leaveId")::integer AS leave FROM (SELECT r."leaveId" ${OPEN_LEAVE_REQUESTS} UNION ALL SELECT l.id ${OPEN_LEAVES}) x`, [userId]);
  const count = (bucket: string) => rows.filter(row => row.bucket === bucket).length;
- return { rows, counts: { invitations: count('invitations'), applications: count('applications'), changes: count('changes'), itSetup: count('itSetup') + supportSetups, removals, total: rows.length + removals + supportSetups } };
+ return { rows, counts: { invitations: count('invitations'), applications: count('applications'), changes: count('changes'), itSetup: count('itSetup') + supportSetups, removals, leave, total: rows.length + removals + supportSetups + leave } };
 }
 
 /**
@@ -65,7 +73,29 @@ export async function handOver(em: EntityManager, fromId: string, toId: string, 
  // Re-read under the locks: only records still owned and open move.
  const open = (await openRecords(em, fromId)).rows;
  for (const row of open) await moveApplication(em, { applicationId: row.id, invitationId: row.invitationId, fromId, toId, actorId, reason: 'HANDED_OVER', note: null });
- return open.length + await moveRemovals(em, fromId, toId, actorId) + await moveSupportSetups(em, fromId, toId, actorId, 'MANAGER_HANDED_OVER');
+ return open.length + await moveRemovals(em, fromId, toId, actorId) + await moveSupportSetups(em, fromId, toId, actorId, 'MANAGER_HANDED_OVER') + await moveLeaves(em, fromId, toId, actorId);
+}
+
+/**
+ * Leaves follow too (section 35): mail and calls forwarded to them while someone is away go to the new manager, and so do the
+ * suspend and restore notices. Leave rows are locked before their checklists, the order the leave writes use. The suspend
+ * checklist records whether IT had already set up the forwarding, so it asks IT to change it.
+ */
+async function moveLeaves(em: EntityManager, fromId: string, toId: string, actorId: string) {
+ const leaves: { id: string }[] = await em.query(`SELECT l.id ${OPEN_LEAVES} ORDER BY l.id FOR UPDATE OF l`, [fromId]);
+ const [to] = await em.query(`SELECT "firstName" || ' ' || "lastName" AS name FROM users WHERE id = $1`, [toId]);
+ for (const leave of leaves) await em.query(`UPDATE member_leaves SET "forwardTo" = $2, version = version + 1, "updatedAt" = now() WHERE id = $1`, [leave.id, toId]);
+ const requests: { id: string; leaveId: string; managerId: string; started: boolean }[] = await em.query(`SELECT r.id, r."leaveId", r."managerId",
+   EXISTS (SELECT 1 FROM it_leave_tasks t WHERE t."requestId" = r.id AND t.key IN ('GOOGLE_WORKSPACE','RINGCENTRAL') AND t.status <> 'PENDING') AS started
+  FROM it_leave_requests r WHERE r."completedAt" IS NULL AND r."cancelledAt" IS NULL AND (r."managerId" = $1 OR r."leaveId" = ANY($2::uuid[])) ORDER BY r.id FOR UPDATE OF r`, [fromId, leaves.map(leave => leave.id)]);
+ for (const request of requests) {
+  const forwardChanged = leaves.some(leave => leave.id === request.leaveId);
+  await em.query(`UPDATE it_leave_requests SET "managerId" = CASE WHEN "managerId" = $2 THEN $3::uuid ELSE "managerId" END,
+    profile = CASE WHEN $4 THEN jsonb_set(profile, '{forwardToName}', to_jsonb($5::text)) ELSE profile END, version = version + 1, "updatedAt" = now() WHERE id = $1`,
+   [request.id, fromId, toId, forwardChanged, to?.name ?? null]);
+  await em.query(`INSERT INTO it_leave_activity ("requestId","actorId",event,metadata) VALUES ($1,$2,'MANAGER_HANDED_OVER',$3)`, [request.id, actorId, { forwardChanged, forwardingStarted: forwardChanged && request.started }]);
+ }
+ return new Set([...leaves.map(leave => leave.id), ...requests.map(request => request.leaveId)]).size;
 }
 
 /**

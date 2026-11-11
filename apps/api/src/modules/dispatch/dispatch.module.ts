@@ -2,19 +2,21 @@ import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
+import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
 import { ExistingDispatchersService } from './existing.service';
 import { PromotionsService } from './promotions.service';
 import { UpdatesModule } from '../updates/updates.module';
 import { LeavingSweeper } from './leaving-sweeper';
+import { LeaveService } from './leave.service';
+import { MemberDetailsService } from './corrections';
 
 @Controller('dispatch')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class DispatchController {
  constructor(private readonly dispatch: DispatchService) {}
- @Get('teams') teams(@Query() query: StatusQueryDto) { return this.dispatch.teams(query.status === 'LEFT' || query.status === 'ONBOARDING' ? 'ALL' : query.status); }
+ @Get('teams') teams(@Query() query: StatusQueryDto) { return this.dispatch.teams(query.status === 'LEFT' || query.status === 'ONBOARDING' || query.status === 'ON_LEAVE' ? 'ALL' : query.status); }
  @Get('teams/:id') team(@Param('id', ParseUUIDPipe) id: string) { return this.dispatch.team(id); }
  @Post('teams') createTeam(@Req() req: AuthRequest, @Body() dto: CreateTeamDto) { return this.dispatch.createTeam(req.currentUser, dto); }
  @Patch('teams/:id') updateTeam(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateTeamDto) { return this.dispatch.updateTeam(req.currentUser, id, dto); }
@@ -33,6 +35,18 @@ class DispatchController {
  @Post('members/:id/last-day') changeLastDay(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ChangeLastDayDto) { return this.dispatch.changeLastDay(req.currentUser, id, dto); }
  @Post('members/:id/cancel-notice') cancelNotice(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NoticeActionDto) { return this.dispatch.cancelNotice(req.currentUser, id, dto); }
  @Post('members/:id/remove-access') removeAccess(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NoticeActionDto) { return this.dispatch.removeAccessNow(req.currentUser, id, dto); }
+}
+// Leave (section 35) and an administrator's corrections (section 36). Who may correct is checked in the service.
+@Controller('dispatch/members')
+@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
+class LeaveController {
+ constructor(private readonly leaves: LeaveService, private readonly details: MemberDetailsService) {}
+ @Post(':id/on-leave') put(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveDto) { return this.leaves.put(req.currentUser, id, dto); }
+ @Post(':id/on-leave/return') back(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveVersionDto) { return this.leaves.recordReturn(req.currentUser, id, dto); }
+ @Post(':id/on-leave/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveVersionDto) { return this.leaves.cancel(req.currentUser, id, dto); }
+ @Post(':id/on-leave/back-on') backOn(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: BackOnDto) { return this.leaves.changeBackOn(req.currentUser, id, dto); }
+ @Post(':id/on-leave/reason') reason(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveReasonDto) { return this.leaves.changeReason(req.currentUser, id, dto); }
+ @Post(':id/correct') correct(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CorrectDetailsDto) { return this.details.correct(req.currentUser, id, dto); }
 }
 // Cleared drivers: dispatch managers and administrators assign any of them to an MC and a dispatcher.
 @Controller('dispatch')
@@ -76,5 +90,5 @@ class TeamLeadController {
  @Post('promotions') async request(@Req() req: AuthRequest, @Body() dto: CreatePromotionDto) { await this.promotions.requireLead(req.currentUser); return this.promotions.request(req.currentUser, dto); }
  @Post('promotions/:id/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.promotions.cancel(req.currentUser, id); }
 }
-@Module({ imports: [UpdatesModule], controllers: [DispatchController, ExistingDispatchersController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, ExistingDispatchersService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
+@Module({ imports: [UpdatesModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, LeaveService, MemberDetailsService, ExistingDispatchersService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
 export class DispatchModule {}

@@ -89,6 +89,17 @@ export async function onNotice(em: EntityManager, memberId: string) {
  return !!row;
 }
 
+/** Someone on leave now (section 35: the first day has come): no new drivers, supports, team or promotion until they're back. */
+export async function onLeave(em: Pick<EntityManager, 'query'>, memberId: string) {
+ const [row] = await em.query(`SELECT 1 FROM member_leaves WHERE "memberId" = $1 AND "endedAt" IS NULL AND "startedAt" IS NOT NULL`, [memberId]);
+ return !!row;
+}
+/** SQL for "is on leave now" on a member alias, for lists and pickers. */
+const startedLeave = (alias: string) => `FROM member_leaves lv WHERE lv."memberId" = ${alias}.id AND lv."endedAt" IS NULL AND lv."startedAt" IS NOT NULL`;
+export const onLeaveSql = (alias: string) => `EXISTS(SELECT 1 ${startedLeave(alias)})`;
+/** SQL for the return day (text) of someone on leave now, null otherwise. */
+export const onLeaveUntilSql = (alias: string) => `(SELECT lv."backOn"::text ${startedLeave(alias)})`;
+
 /**
  * A dispatcher a support can assist: a dispatcher record that hasn't left (still in IT setup is fine). Read FOR SHARE so
  * the dispatcher can't leave (which refuses while supports are linked) until the new link commits.
@@ -97,6 +108,7 @@ export async function supportedDispatcher(em: EntityManager, id: string) {
  const dispatcher = await em.getRepository(DispatchMember).findOne({ where: { id }, lock: { mode: 'pessimistic_read' } });
  if (!dispatcher || dispatcher.position !== 'DISPATCHER' || dispatcher.status === 'LEFT') throw new BadRequestException('Choose a current dispatcher for this support.');
  if (await onNotice(em, id)) throw new ConflictException('This dispatcher is leaving. Choose another dispatcher for this support.');
+ if (await onLeave(em, id)) throw new ConflictException('This dispatcher is on leave. Choose another dispatcher, or wait until they’re back.');
  return dispatcher;
 }
 

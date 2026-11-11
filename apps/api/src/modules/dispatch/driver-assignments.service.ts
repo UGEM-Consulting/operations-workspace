@@ -7,7 +7,7 @@ import { Driver, DriverAssignment } from '../safety/safety.entity';
 import { AssignDriverDto } from './dispatch.dto';
 import { DispatchMember, MemberAssignment } from './dispatch.entity';
 import { day, notBefore } from './dispatch.service';
-import { ledTeams, lockTeam, onNotice } from './create-member';
+import { ledTeams, lockTeam, onLeave, onLeaveSql, onNotice } from './create-member';
 import { onHoldSql } from '../safety/holds';
 
 /** A team lead acts only inside the teams they lead; everyone else here is a dispatch manager or administrator. */
@@ -49,7 +49,7 @@ export class DriverAssignmentsService {
     x.id AS "memberId", ${name('x')} AS dispatcher, t.id AS "teamId", t.name AS team
    FROM member_assignments ma JOIN dispatch_members x ON x.id = ma."memberId" JOIN mcs m ON m.id = ma."mcId" LEFT JOIN teams t ON t.id = ma."teamId"
    WHERE ma."endedAt" IS NULL AND x.status = 'ACTIVE' AND x.position = 'DISPATCHER' AND (ma."teamId" IS NULL OR (t."archivedAt" IS NULL AND t."mcId" = m.id))
-    AND NOT EXISTS(SELECT 1 FROM member_notices n WHERE n."memberId" = x.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
+    AND NOT EXISTS(SELECT 1 FROM member_notices n WHERE n."memberId" = x.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL) AND NOT ${onLeaveSql('x')}
     AND (m."archivedAt" IS NULL OR EXISTS(SELECT 1 FROM driver_assignments a WHERE a."mcId" = m.id AND a."endedAt" IS NULL))
     AND ($1::uuid[] IS NULL OR t.id = ANY($1::uuid[]))
    ORDER BY m."nameKey", lower(x."firstName"), lower(x."lastName")`, [scope?.teamIds ?? null]);
@@ -94,6 +94,7 @@ export class DriverAssignmentsService {
     || (scope && (!team || !scope.teamIds.includes(team.id)))) throw new BadRequestException(scope ? 'Choose an active dispatcher in your team.' : 'Choose an active dispatcher under this MC.');
    // Someone leaving keeps the drivers they have, but takes on no new ones.
    if (current?.memberId !== member.id && await onNotice(em, member.id)) throw new ConflictException('This dispatcher is leaving. Choose another dispatcher.');
+   if (current?.memberId !== member.id && await onLeave(em, member.id)) throw new ConflictException('This dispatcher is on leave. Choose another dispatcher.');
    const truck = dto.truck || null;
    if (current && current.mcId === mc.id && current.memberId === member.id && current.truck === truck) throw new BadRequestException('The driver already works with this MC, dispatcher and truck.');
    if (current && !dto.reason) throw new BadRequestException('Say why the driver is changing MC, dispatcher or truck.');

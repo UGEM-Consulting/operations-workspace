@@ -130,6 +130,12 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('GET', `users/${ID}/open-records`), true);
     assert.equal(allowedEndpoint('POST', `users/${ID}/open-records`), false);
     for (const action of ['last-day', 'cancel-notice', 'remove-access']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
+    // Leave (section 35) and an administrator's corrections (section 36); IT's suspend and restore checklists.
+    for (const action of ['on-leave', 'on-leave/return', 'on-leave/cancel', 'on-leave/back-on', 'on-leave/reason', 'correct']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/delete`), false);
+    assert.equal(allowedEndpoint('GET', `it/leave/${ID}`), true);
+    assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/GOOGLE_WORKSPACE`), true);
+    assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/google`), false);
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/last-day`), false);
     assert.equal(allowedEndpoint('POST', `applicant/documents/${ID}/acknowledge`), true);
     assert.equal(allowedEndpoint('GET', `applicant/documents/${ID}/acknowledge`), false);

@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
+import { AlreadyHereTag } from './already-here';
 import { Copy, Plus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -89,7 +90,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
    <FilterBar path={PATH} filters={filters} defaults={INVITATION_DEFAULTS} searchLabel="Search email, MC or reference" statuses={[
     ...STATUSES.map(([key,label])=>({key,label,count:searched.filter(row=>row.status===key).length})),{key:'ALL',label:'All',count:searched.length}]}/>
    <Table caption="Invitations in your scope" className="border-t border-border" rows={visible} rowKey={row=>row.id} columns={[
-    {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<Person name={row.email} secondary="Verified email" avatar={false}/>
+    {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<div><Person name={row.email} secondary="Verified email" avatar={false}/>{row.alreadyHere&&<AlreadyHereTag match={row.alreadyHere}/>}</div>
      :<Person name={row.status==='PENDING'?'Not opened yet':'Not claimed yet'} secondary={row.expectedEmail?`For ${row.expectedEmail}`:'Anyone with the link'} avatar={false}/>},
     // Once they verify their email, the reference they return with, to copy and send them while they fill in the form (InvitationReferenceScreen).
     ...(rows.some(row=>row.applicationReference!==undefined)?[{key:'reference',label:'Application reference',cell:(row:Invitation)=>row.applicationReference

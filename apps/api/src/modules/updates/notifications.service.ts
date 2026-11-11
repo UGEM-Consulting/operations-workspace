@@ -66,6 +66,11 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
     const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
     return this.insert(em, await this.staffRows(em, kind, specialists.map(user => user.id), removal.id));
   }
+  /** With a leave's suspend or restore checklist (section 35): every active IT specialist. */
+  async queueItLeave(em: EntityManager, request: { id: string }, kind: 'IT_LEAVE_SUSPEND' | 'IT_LEAVE_RESTORE') {
+    const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
+    return this.insert(em, await this.staffRows(em, kind, specialists.map(user => user.id), request.id));
+  }
   /** After the causing transaction commits. Never throws into the request. */
   dispatch(ids: string[]) { if (ids.length) this.email.runInBackground(() => this.deliver(ids)); }
   sweep() {
@@ -151,7 +156,7 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
     if (!user || user.status !== UserStatus.ACTIVE) return 'INACTIVE';
     const link = await this.db.getRepository(StaffTelegramLink).findOneBy({ userId: user.id });
     if (!link) return 'NOT_CONNECTED';
-    const path = delivery.kind === 'REVIEW_WAITING' ? `/onboarding/applications/${delivery.referenceId}` : delivery.kind.startsWith('IT_REMOVAL') ? `/it/tasks/removals/${delivery.referenceId}` : `/it/tasks/${delivery.referenceId}`;
+    const path = delivery.kind === 'REVIEW_WAITING' ? `/onboarding/applications/${delivery.referenceId}` : delivery.kind.startsWith('IT_REMOVAL') ? `/it/tasks/removals/${delivery.referenceId}` : delivery.kind.startsWith('IT_LEAVE') ? `/it/tasks/leave/${delivery.referenceId}` : `/it/tasks/${delivery.referenceId}`;
     return telegram(link.chatId, staffAlertMessage(delivery.kind, `${this.origin()}${path}`));
   }
 }

@@ -31,8 +31,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  let manager:Agent,other:Agent,admin:Agent,itAgent:Agent;
  const payload={email:'fictional.applicant@example.test',mcName:'Independent',teamLead:'Independent',jobTitle:'Dispatcher',expirationDays:7,telegramRequired:true};
  const answers={firstName:'Fictional',lastName:'Applicant',personalPhoneNumber:'+1 202 555 0123',workPhoneNumber:'+44 (20) 7946 0958',preferredAmericanFirstName:'Alex',preferredAmericanLastName:'Demo',telegram:'fictional_demo',accurate:true};
- async function create(){const result=await manager.post('/api/onboarding/invitations').set(headers).send(payload).expect(201);return {id:result.body.id as string,token:result.body.url.split('#').pop() as string};}
- async function verify(agent:Agent,token:string){const begin=await agent.post('/api/applicant/begin').set(headers).send({email:payload.email,token}).expect(201);const code=await issueDemoCode(db,begin.body.challengeId,'test');const response=await agent.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);return {id:response.body.applicationId as string,challengeId:begin.body.challengeId as string,code};}
+ async function create(email=payload.email){const result=await manager.post('/api/onboarding/invitations').set(headers).send({...payload,email}).expect(201);return {id:result.body.id as string,token:result.body.url.split('#').pop() as string};}
+ async function verify(agent:Agent,token:string,email=payload.email){const begin=await agent.post('/api/applicant/begin').set(headers).send({email,token}).expect(201);const code=await issueDemoCode(db,begin.body.challengeId,'test');const response=await agent.post('/api/applicant/verify').set(headers).send({challengeId:begin.body.challengeId,code}).expect(201);return {id:response.body.applicationId as string,challengeId:begin.body.challengeId as string,code};}
  beforeAll(async()=>{
   if(!new URL(env.DATABASE_URL).pathname.endsWith('_test'))throw new Error('Dedicated _test database required');
   db=await new DataSource(databaseOptions(env)).initialize();await db.runMigrations();await db.query('TRUNCATE users,staff_sessions,applicant_sessions,login_attempts CASCADE');
@@ -123,8 +123,8 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await verify(agent,inv.token);await db.query(`UPDATE applicant_sessions SET sess=jsonb_set(sess::jsonb,'{expiresAt}','0')::json`);
   await agent.get('/api/applicant/application').set(headers).expect(401);
  });
- async function submittedApplication() {
-  const invitation=await create();const applicant=request.agent(app.getHttpServer());const verified=await verify(applicant,invitation.token);
+ async function submittedApplication(email=payload.email) {
+  const invitation=await create(email);const applicant=request.agent(app.getHttpServer());const verified=await verify(applicant,invitation.token,email);
   const fields={firstName:answers.firstName,lastName:answers.lastName,personalPhoneNumber:answers.personalPhoneNumber,workPhoneNumber:answers.workPhoneNumber,preferredAmericanFirstName:answers.preferredAmericanFirstName,preferredAmericanLastName:answers.preferredAmericanLastName,telegram:answers.telegram};
   await applicant.patch('/api/applicant/draft').set(headers).send({...fields,version:0}).expect(200);
   await applicant.post('/api/applicant/submit').set(headers).send({...answers,version:1}).expect(201);
@@ -203,7 +203,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await flow.applicant.patch('/api/applicant/draft').set(headers).send({version:3,mcName:'Forbidden'}).expect(400);
   await flow.applicant.patch('/api/applicant/draft').set(headers).send({version:3,applicationId:flow.id}).expect(400);
   const outsider=request.agent(app.getHttpServer());await outsider.get('/api/applicant/application').set(headers).expect(401);
-  const otherInvitation=await create();await verify(outsider,otherInvitation.token);
+  const otherInvitation=await create('fictional.outsider@example.test');await verify(outsider,otherInvitation.token,'fictional.outsider@example.test');
   await outsider.patch('/api/applicant/draft').set(headers).send({version:0,firstName:'Different fictional applicant'}).expect(200);
   expect((await flow.applicant.get('/api/applicant/application').set(headers)).body.application.fields.firstName).toBe(answers.firstName);
  });
@@ -297,7 +297,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  it('serialises a rejection of outstanding corrections against a concurrent resubmission',async()=>{
   for(let round=0;round<3;round++){
-   const flow=await submittedApplication();
+   const flow=await submittedApplication(`fictional.round${round}@example.test`);
    await decision(manager,flow.id,{version:2,decisionType:'REQUEST_CHANGES',reason:'Correct your Telegram',requestedFields:['telegram']}).expect(201);
    const [resubmit,reject]=await Promise.all([
     flow.applicant.post('/api/applicant/submit').set(headers).send({version:3,telegram:'raced_revision',accurate:true}),
@@ -845,7 +845,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(await db.getRepository(ApplicationActivity).countBy({invitationId:flow.invitation.id,event:'APPLICATION_APPROVED'})).toBe(0);
  });
  it('paginates and filters the approved IT queue without exposing unapproved records',async()=>{
-  await submittedApplication();const flow=await approvedItFlow();
+  await submittedApplication('fictional.earlier@example.test');const flow=await approvedItFlow();
   const result=await itAgent.get('/api/it/onboarding?pageSize=1&status=PENDING&search=Alex').set(headers).expect(200);
   expect(result.body.total).toBe(1);expect(result.body.items[0].id).toBe(flow.requestId);expect(result.body.items).toHaveLength(1);
   await itAgent.get('/api/it/onboarding?pageSize=1000').set(headers).expect(400);

@@ -11,7 +11,7 @@ import { CopyButton } from '@/components/ui/copy-button';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Dialog } from '@/components/ui/dialog';
 import { EmptyState } from '@/components/ui/feedback';
-import { Input } from '@/components/ui/field';
+import { Input, Textarea } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { Badge } from '@/components/ui/status-badge';
@@ -156,14 +156,24 @@ export function ExistingPaperworkCard({ member }: { member: MemberProfile }) {
 }
 
 /** Accounts recorded by a manager, shown in the rail, with the way to correct everything they recorded. Once their application has a Telegram answer, that's the one shown, so it isn't offered here. */
-export function ExistingAccountsCard({ member, open }: { member: MemberProfile; open: boolean }) {
+export function ExistingAccountsCard({ member, open, admin = false }: { member: MemberProfile; open: boolean; admin?: boolean }) {
   const router = useRouter(), toast = useToast(), existing = member.existing!;
   const [editing, setEditing] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  // An administrator may correct the name of someone with no application (CorrectNameByHandScreen); a reason is needed when it changes.
+  const nameEditable = admin && !member.details, [names, setNames] = useState({ firstName: member.firstName, lastName: member.lastName });
+  const renamed = nameEditable && (names.firstName.trim() !== member.firstName || names.lastName.trim() !== member.lastName);
+  // The record's version once the name is saved, so a retry after the other details failed doesn't send the name again.
+  const [renamedVersion, setRenamedVersion] = useState<number | null>(null);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const { firstName, lastName, nameReason, ...data } = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
     setBusy(true); setError('');
-    try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version: member.version, ...data }); setEditing(false); toast({ title: 'Details saved' }); router.refresh(); }
+    try {
+      let version = renamedVersion ?? member.version, nameSaved = renamedVersion !== null;
+      if (renamed && !nameSaved) { version = (await mutate<{ version: number }>(`dispatch/members/${member.id}/correct`, 'POST', { version, reason: nameReason, ...(firstName.trim() !== member.firstName ? { firstName } : {}), ...(lastName.trim() !== member.lastName ? { lastName } : {}) }))!.version; setRenamedVersion(version); nameSaved = true; }
+      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data }); }
+      catch (failure) { if (nameSaved) { setError(errorMessage(failure, 'Their name was saved, but the other details weren’t. Your entries have been kept: try again.')); router.refresh(); return; } throw failure; }
+      setRenamedVersion(null); setEditing(false); toast({ title: 'Details saved' }); router.refresh(); }
     catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
@@ -177,6 +187,13 @@ export function ExistingAccountsCard({ member, open }: { member: MemberProfile; 
     </CardBody>
     {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description="What you know now. Nobody is messaged." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
       <form id="edit-existing" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
+        {nameEditable && <Card><CardHeader title="Name" description={`Administrators only.${existing.sourceName ? ` Recorded from ${existing.sourceName}.` : ''}`} /><CardBody className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input name="firstName" label="First name" required maxLength={100} width="full" value={names.firstName} onChange={event => setNames(current => ({ ...current, firstName: event.target.value }))} />
+            <Input name="lastName" label="Last name" required maxLength={100} width="full" value={names.lastName} onChange={event => setNames(current => ({ ...current, lastName: event.target.value }))} hint={names.lastName.trim() !== member.lastName ? `Was: ${member.lastName}` : undefined} />
+          </div>
+          {renamed && <Textarea name="nameReason" label="Why the name changed" required maxLength={500} rows={2} hint="Kept in their history." />}
+        </CardBody></Card>}
         <Card><CardHeader title="Accounts" description="IT uses these when they leave, so add them if you can." /><CardBody className="grid gap-4 sm:grid-cols-2">
           <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" defaultValue={existing.companyEmail ?? ''} />
           <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" defaultValue={existing.ringCentralNumber ?? ''} />

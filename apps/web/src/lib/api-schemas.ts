@@ -63,11 +63,15 @@ export const reviewDetailSchema = z.looseObject({
   }).nullable().optional().catch(undefined),
   // A support application: the dispatcher they will assist (from an API with supports).
   supports: z.looseObject({ supportsMemberId: nullableText, options: z.array(z.looseObject({ id: text, name: text, status: text, mc: nullableText, team: nullableText })) }).nullable().optional(),
+  // Already here (section 37): from an API with the check; dropped when it doesn't read.
+  alreadyHere: z.array(z.looseObject({ on: z.enum(['EMAIL', 'PHONE']), kind: z.enum(['MEMBER', 'APPLICATION']), memberId: nullableText, name: nullableText, status: text, leftAt: nullableText, manager: nullableText })).nullable().optional().catch(undefined),
 });
 
 /** GET /onboarding/invitations */
 export const invitationListSchema = z.array(z.looseObject({ id: text, status: text, email: nullableText, expectedEmail: nullableText, expiresAt: text, createdAt: text, position: text.optional(),
-  applicationReference: nullableText.optional().catch(undefined) }));
+  applicationReference: nullableText.optional().catch(undefined),
+  // Already here (section 37): the first person whose email this is, from an API with the check.
+  alreadyHere: z.looseObject({ name: nullableText, status: text, leftAt: nullableText }).nullable().optional().catch(undefined) }));
 
 /** GET /lists/mcs and /lists/job-titles (Admin › Lists, and choices in dispatch forms). */
 export const managedListSchema = z.looseObject({
@@ -89,7 +93,9 @@ export const teamDetailSchema = z.looseObject({ id: text, name: text, version: z
   dispatchers: z.array(teamPerson.extend({ jobTitle: nullableText, drivers: z.number(), companyEmail: nullableText, accountStatus: nullableText })),
   helpers: z.array(teamPerson.extend({ dispatcherId: nullableText, teamId: nullableText })) });
 
-const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText });
+const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText,
+  // Leave (section 35): the open leave, upcoming or started.
+  leave: z.looseObject({ firstDay: text, backOn: text, started: z.boolean(), it: text }).nullable().optional().catch(undefined) });
 /** GET /dispatch/members */
 export const memberListSchema = z.looseObject({ items: z.array(memberRow) });
 const assignment = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, mcId: nullableText, mc: nullableText, teamId: nullableText, team: nullableText });
@@ -198,11 +204,18 @@ export const expiringSchema = z.looseObject({ today: text, warningDays: z.number
     link: renewalLink.nullable().optional().catch(undefined) })).optional().catch(undefined) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
-export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN']), id: text,
+export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN', 'SUSPEND', 'RESTORE']), id: text,
   // A team lead's sign-in: what IT is asked to do, whose record and their team.
   signIn: z.enum(['CREATE', 'TURN_ON', 'TURN_OFF']).nullable().optional(), memberId: nullableText.optional(), team: nullableText.optional(), assists: nullableText.optional().catch(undefined), name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
   dueOn: nullableText, scheduled: z.boolean(), updatedAt: text, completedAt: nullableText })), total: z.number(), page: z.number(), pageCount: z.number(), pageSize: z.number(),
-  stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number(), signIns: z.number().optional() }) });
+  stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number(), signIns: z.number().optional(), leave: z.number().optional() }) });
+/** GET /it/leave/:id (section 35) */
+export const itLeaveSchema = z.looseObject({
+  request: z.looseObject({ id: text, memberId: text, kind: z.enum(['SUSPEND', 'RESTORE']), version: z.number(), status: text, scheduled: z.boolean(), dueOn: text, completedAt: nullableText, cancelledAt: nullableText, managerName: nullableText,
+    profile: z.looseObject({ displayName: text, position: text, companyEmail: nullableText, ringCentralNumber: nullableText, firstDay: text, backOn: text }) }),
+  tasks: z.array(z.looseObject({ id: text, key: text, label: text, status: text, optional: z.boolean() })),
+  activity: z.array(z.looseObject({ id: text, event: text, createdAt: text, metadata: z.record(z.string(), z.unknown()) })),
+});
 /** GET /it/removals/:id */
 export const itRemovalSchema = z.looseObject({
   request: z.looseObject({ id: text, memberId: text, version: z.number(), status: text, scheduled: z.boolean(), dueOn: text, emailAfter: text, numberOutcome: nullableText, completedAt: nullableText, cancelledAt: nullableText, removeNowAt: nullableText,

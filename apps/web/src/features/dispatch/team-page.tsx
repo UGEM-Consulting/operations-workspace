@@ -41,7 +41,7 @@ export function TeamPage({ team, mcs }: { team: TeamDetail; mcs: Choice[] }) {
   const wholeTeam = team.helpers.filter(helper => helper.teamId === team.id);
   const occupied = team.dispatchers.length + wholeTeam.length > 0;
   // Only the team's own active dispatchers can lead it, and not someone who is leaving (unless they already do).
-  const candidates = team.dispatchers.filter(person => person.status === 'ACTIVE' && (!person.lastDay || person.id === team.leadId))
+  const candidates = team.dispatchers.filter(person => person.status === 'ACTIVE' && ((!person.lastDay && !person.onLeaveUntil) || person.id === team.leadId))
     .map(person => ({ id: person.id, name: name(person), companyEmail: person.companyEmail, accountStatus: person.accountStatus }));
   async function archive() {
     if (pending) return;
@@ -122,10 +122,11 @@ function Card({ person, kind }: { person: Dispatcher | Helper; kind?: 'lead' | '
     <span className="min-w-0 flex-1">
       <span className={cn('block truncate', kind === 'sm' ? 'text-sm font-medium' : 'text-[15px] font-semibold leading-[22px]')}>{full}</span>
       <span className="block text-[13px] leading-5 text-muted-foreground">{role}</span>
-      {(kind === 'lead' || person.status === 'ONBOARDING' || person.lastDay) && <span className="mt-1.5 flex flex-wrap gap-1.5">
+      {(kind === 'lead' || person.status === 'ONBOARDING' || person.lastDay || person.onLeaveUntil) && <span className="mt-1.5 flex flex-wrap gap-1.5">
         {kind === 'lead' && <Badge label="Team lead" tone="info" />}
         {person.status === 'ONBOARDING' && <Badge label="In IT setup" tone="neutral" />}
         {person.lastDay && <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-warning-background px-2.5 py-0.5 text-xs font-medium leading-5 text-warning"><span aria-hidden="true" className="size-1.5 rounded-full bg-current" />Leaving <LocalTime iso={middayIso(person.lastDay)} format="date" /></span>}
+        {person.onLeaveUntil && <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-info-background px-2.5 py-0.5 text-xs font-medium leading-5 text-info"><span aria-hidden="true" className="size-1.5 rounded-full bg-current" />On leave until <LocalTime iso={middayIso(person.onLeaveUntil)} format="date" /></span>}
       </span>}
     </span>
   </Link>;

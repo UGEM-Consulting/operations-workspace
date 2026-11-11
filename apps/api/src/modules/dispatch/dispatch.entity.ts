@@ -10,7 +10,7 @@ export type SupportType = typeof SUPPORT_TYPES[number];
 /** What someone is called, for what IT reads. */
 export const positionLabel = (member: { position: Position; supportType: SupportType }) => member.position === 'DISPATCHER' ? 'Dispatcher' : member.supportType === 'UPDATER' ? 'Updater' : 'Support';
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -33,9 +33,16 @@ export class DispatchMember {
  // Why they left, as given when they were marked as left (staff text; never health or other private details).
  @Column('text', { nullable: true }) leftReason!: string | null;
  @Column('integer', { default: 1 }) version!: number;
+ // Someone who left and came back (section 37): the record they left, kept as history. At most one later record each.
+ @Column('uuid', { nullable: true }) previousMemberId!: string | null;
+ // An administrator's corrections of what their application says (section 36). The application itself never changes.
+ @Column('jsonb', { default: {} }) correctedDetails!: CorrectedDetails;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }
+export const CORRECTABLE_DETAILS = ['legalFirstName', 'legalLastName', 'preferredAmericanFirstName', 'preferredAmericanLastName', 'personalEmail', 'personalPhoneNumber', 'telegram'] as const;
+export type CorrectableDetail = typeof CORRECTABLE_DETAILS[number];
+export type CorrectedDetails = Partial<Record<CorrectableDetail, string | null>>;
 
 /** Someone already working here when they were recorded: who added them and what a manager knows. acceptedAt is when their paperwork finished. */
 @Entity('existing_member_records')
@@ -185,4 +192,43 @@ export class MemberNotice {
  @Column('uuid', { nullable: true }) cancelledBy!: string | null;
  @Column('text', { nullable: true }) cancelReason!: string | null;
  @Column('timestamptz', { nullable: true }) finishedAt!: Date | null;
+}
+
+/**
+ * Time away with a return date (section 35): the person keeps their job and place, and their record stays ACTIVE. They're on
+ * leave from the first day away (startedAt marks when the workspace acted on it) until the leave ends. One open per member.
+ */
+export type LeaveEnd = 'RETURNED' | 'CANCELLED' | 'LEAVING';
+export interface LeaveChange { kind: 'BACK_ON' | 'REASON'; from: string | null; to: string | null; reason: string | null; by: string; byName: string; at: string }
+@Entity('member_leaves')
+export class MemberLeave {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('date') firstDay!: string;
+ @Column('date') backOn!: string;
+ // Staff text; never health, family or other private details.
+ @Column('text') reason!: string;
+ @Column('varchar', { nullable: true }) emailWhileAway!: 'FORWARD' | 'AUTO_REPLY' | null;
+ @Column('varchar', { nullable: true }) callsWhileAway!: 'FORWARD' | 'VOICEMAIL' | null;
+ @Column('uuid', { nullable: true }) forwardTo!: string | null;
+ @Column('uuid') recordedBy!: string;
+ @Column('jsonb', { default: [] }) changes!: LeaveChange[];
+ @Column('timestamptz', { nullable: true }) startedAt!: Date | null;
+ @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
+ @Column('varchar', { nullable: true }) endedHow!: LeaveEnd | null;
+ @Column('uuid', { nullable: true }) endedBy!: string | null;
+ @Column('integer', { default: 1 }) version!: number;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+/** An administrator's correction of a dispatcher's details (section 36): each field's earlier and new value, why, who and when. Staff only. */
+@Entity('member_detail_corrections')
+export class MemberDetailCorrection {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('jsonb') changes!: { field: string; from: string | null; to: string | null }[];
+ @Column('varchar', { length: 500 }) reason!: string;
+ @Column('uuid') actorId!: string;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }

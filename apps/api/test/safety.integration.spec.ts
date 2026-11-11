@@ -1727,6 +1727,9 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    await db.undoLastMigration(); // MemberLeave, with none here
+    await db.undoLastMigration(); // DetailCorrections, with none here
+    await db.undoLastMigration(); // AlreadyHere, with none here
     await db.undoLastMigration(); // SupportItSetup, with none here
     await db.undoLastMigration(); // NewAuthenticator, with none here
     // An E-Verify result (or a driver's Telegram connection, or a reminder) keeps SafetyReminders.
@@ -1816,6 +1819,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SupportItSetup1793130000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('MemberLeave1793160000000');
   });
 });

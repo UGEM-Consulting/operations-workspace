@@ -18,13 +18,20 @@ export interface Notifications {items:{id:string;kind?:string;requestId:string|n
  */
 export function notificationView(item:Notifications['items'][number]){
  const name=item.displayName;
+ // Leave (section 35): IT suspended or restored the accounts of someone on leave.
+ if(item.kind==='IT_SUSPEND_COMPLETED')return {title:'Access suspended',text:name?`IT suspended ${name}’s accounts while they’re away.`:'IT suspended their accounts while they’re away.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
+ if(item.kind==='IT_RESTORE_COMPLETED')return {title:'Access restored',text:name?`IT restored ${name}’s accounts.`:'IT restored their accounts.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  if(item.kind==='IT_REMOVAL_COMPLETED')return {title:'IT access removed',text:`IT removed ${name??'the dispatcher'}’s accounts.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View dispatcher'};
  if(!item.applicationId)return {title:'IT setup completed',text:`IT finished what you asked for ${name??'them'}.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  return {title:'IT setup completed',text:`${name??'Dispatcher'} is ready to work.`,href:`/onboarding/applications/${item.applicationId}`,link:'View application'};
 }
 export type ItTasks=import('zod').infer<typeof import('@/lib/api-schemas').itTasksSchema>;
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
 export type NumberOutcome='KEPT'|'FORWARDED'|'RELEASED';
 export interface RemovalRequest {id:string;memberId:string;version:number;status:TaskStatus;scheduled:boolean;removeNowAt:string|null;cancelledAt:string|null;dueOn:string;emailAfter:'FORWARD'|'SUSPEND';forwardToName:string|null;managerName:string|null;recordedByName?:string|null;leftAt:string|null;numberOutcome:NumberOutcome|null;profile:RemovalProfile;completedAt:string|null;}
+/** Leave (section 35): suspending accounts while someone is away (SUSPEND), and restoring them (RESTORE). */
+export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;}
+export interface LeaveRequest {id:string;memberId:string;kind:'SUSPEND'|'RESTORE';version:number;status:TaskStatus;scheduled:boolean;dueOn:string;completedAt:string|null;cancelledAt:string|null;managerName:string|null;profile:LeaveProfile;suspended?:{by:string|null;at:string}|null;signInWaiting?:boolean;leaveEnded?:'RETURNED'|'CANCELLED'|'LEAVING'|null;}
+export interface LeaveDetail {request:LeaveRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};}
 export interface RemovalDetail {request:RemovalRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};}
 
