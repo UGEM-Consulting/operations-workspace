@@ -4,6 +4,7 @@ import { TelegramAlerts, TelegramAlertsUnavailable, type StaffTelegram } from '@
 import { PageHeader } from '@/components/workspace-ui';
 import { AccountSecurity, PasswordSettings, type MfaStatus } from '@/features/auth/account-security';
 import { SavedSignatureSettings, type SavedSignature } from '@/features/auth/saved-signature';
+import { TrustedDevices } from '@/features/auth/trusted-devices';
 export const metadata = { title: 'Account security' };
 // Managers and administrators countersign NDAs during approval, so they can keep a saved signature.
 const APPROVERS = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER'];
@@ -18,5 +19,5 @@ export default async function AccountSecurityPage({ searchParams }: { searchPara
   const telegram = telegramResponse.ok ? await readResponse<StaffTelegram>(telegramResponse, 'Telegram alerts', staffTelegramSchema) : null;
   const telegramFailed = !telegramResponse.ok && telegramResponse.status !== 404;
   return <div className="space-y-6"><PageHeader eyebrow="Your account" title="Account security" description="How you sign in to the workspace, and your saved signature for approvals." />
-    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} newAuthenticator={(await searchParams)['new-authenticator'] === '1'} />{telegram && <TelegramAlerts initial={telegram} />}{telegramFailed && <TelegramAlertsUnavailable />}{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
+    <div className="grid max-w-3xl gap-6"><PasswordSettings account={identity.user.email} /><AccountSecurity status={status} newAuthenticator={(await searchParams)['new-authenticator'] === '1'} devices={<TrustedDevices />} />{telegram && <TelegramAlerts initial={telegram} />}{telegramFailed && <TelegramAlertsUnavailable />}{signature && <SavedSignatureSettings initial={signature.saved} />}</div></div>;
 }

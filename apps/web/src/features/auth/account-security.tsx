@@ -63,7 +63,7 @@ export function PasswordSettings({ account }: { account: string }) {
   </Card>;
 }
 
-export function AccountSecurity({ status, newAuthenticator = false }: { status: MfaStatus; newAuthenticator?: boolean }) {
+export function AccountSecurity({ status, newAuthenticator = false, devices }: { status: MfaStatus; newAuthenticator?: boolean; devices?: React.ReactNode }) {
   const router = useRouter();
   const [settingUp, setSettingUp] = useState(false);
   const [codes, setCodes] = useState<string[] | null>(null);
@@ -94,6 +94,7 @@ export function AccountSecurity({ status, newAuthenticator = false }: { status: 
       {status.enabled && !viaEmail && <CardFooter><p className="text-[13px] leading-5 text-muted-foreground">Changed phones or removed UGEM Workspace from your app? Set up a new one; the old one stops working.</p>
         <Button variant="outline" onClick={() => { setAfterRecovery(false); setDialog('new'); }}><Smartphone aria-hidden="true" className="size-4" />Set up a new authenticator</Button></CardFooter>}
     </Card>
+    {status.enabled && devices}
     {status.enabled && (codes ? <Card>
       <CardHeader title="New recovery codes" description="Your old codes no longer work." />
       <CardBody><RecoveryCodes codes={codes} doneLabel="Done" onDone={() => { setCodes(null); router.refresh(); }} /></CardBody>

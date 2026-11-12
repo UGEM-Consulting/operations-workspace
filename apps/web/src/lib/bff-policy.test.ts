@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { allowedEndpoint, bodyLimit, isFileEndpoint } from './bff-policy.ts';
+import { deviceCookieName, usesDeviceCookie } from './session-cookie.ts';
 
 const ID = '3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b';
 
@@ -152,5 +153,26 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/more-time`), false);
     assert.equal(bodyLimit('dispatch/existing/add'), 1_000_000);
     assert.equal(bodyLimit('dispatch/paperwork/links'), 16384);
+  });
+});
+
+describe('trusted devices and paper scans through the BFF (section 38)', () => {
+  it('allows listing and forgetting devices, and forwards the device cookie only on sign-in and those routes', () => {
+    assert.equal(allowedEndpoint('GET', 'auth/mfa/devices'), true);
+    assert.equal(allowedEndpoint('POST', 'auth/mfa/devices/forget-all'), true);
+    assert.equal(allowedEndpoint('POST', `auth/mfa/devices/${ID}/forget`), true);
+    assert.equal(allowedEndpoint('POST', 'auth/mfa/devices'), false);
+    assert.equal(allowedEndpoint('GET', `auth/mfa/devices/${ID}`), false);
+    for (const path of ['auth/login', 'auth/mfa/verify', 'auth/mfa/devices', `auth/mfa/devices/${ID}/forget`, 'auth/mfa/devices/forget-all']) assert.equal(usesDeviceCookie(path), true, path);
+    for (const path of ['auth/me', 'auth/mfa', 'auth/mfa/challenge', 'users', `dispatch/members/${ID}`]) assert.equal(usesDeviceCookie(path), false, path);
+    assert.equal(deviceCookieName('production'), '__Host-operations.device');
+    assert.equal(deviceCookieName('development'), 'operations.device');
+  });
+  it('allows adding a paper scan with room for a PDF, and opening one as a file', () => {
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/paper-scans`), true);
+    assert.equal(bodyLimit(`dispatch/members/${ID}/paper-scans`), 4_400_000);
+    assert.equal(isFileEndpoint(`dispatch/members/${ID}/paper-scans/${ID}/file`), true);
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/paper-scans/${ID}/file`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/paper-scans/${ID}/delete`), false);
   });
 });

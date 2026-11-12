@@ -180,7 +180,7 @@ integration('Staff two-step verification with email codes (isolated PostgreSQL d
     const it = agent();
     await login(it, users.it).expect(200);
     const before = sent.length;
-    expect((await it.post('/api/auth/mfa/challenge').set(headers).send({ resend: true }).expect(200)).body).toEqual({ method: 'TOTP' });
+    expect((await it.post('/api/auth/mfa/challenge').set(headers).send({ resend: true }).expect(200)).body).toEqual({ method: 'TOTP', trustDevice: true, trustDays: 30 });
     await it.post('/api/auth/mfa/email-code').set(headers).send({}).expect(401);
     expect(sent).toHaveLength(before);
     await it.post('/api/auth/mfa/verify').set(headers).send({ code: totpCode(secret) }).expect(200);

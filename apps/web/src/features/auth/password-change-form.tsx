@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/field';
 import { Notice } from '@/components/ui/alert';
 import { mutate } from '@/lib/client-api';
 import { BackToSignIn, signInExpired } from './mfa-verify-form';
+import { DEVICES_CHANGED_EVENT } from './devices-changed';
 type FieldName = 'currentPassword' | 'newPassword' | 'confirmPassword';
 const RULE = 'Use 12–128 characters. A passphrase of several unrelated words works well.';
 
@@ -35,7 +36,9 @@ export function PasswordChangeForm({ forced = false, account }: { forced?: boole
       // A full navigation picks up the regenerated session cookie for the next sign-in step.
       if (forced) { window.location.assign(result.landingPage); return; }
       form.current?.reset();
-      setNotice({ message: 'Password changed. Your other signed-in sessions have ended.', error: false });
+      setNotice({ message: 'Password changed. Your other signed-in sessions have ended, and devices that skipped the code will ask for one again.', error: false });
+      // The change forgot every trusted device: Account security's list loads again.
+      window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
     } catch (error) {
       const message = signInExpired(error instanceof Error ? error.message : 'Unable to change the password');
       fail(/current password/i.test(message) ? 'currentPassword' : /differs|characters/i.test(message) ? 'newPassword' : null, message);

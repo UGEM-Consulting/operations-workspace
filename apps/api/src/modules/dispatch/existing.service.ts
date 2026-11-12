@@ -18,7 +18,8 @@ import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedD
 import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberPaperDocument, MemberSupportLink, NO_MC, Position, positionLabel, SupportType, Team } from './dispatch.entity';
 import { ExistingRowDto, UpdateExistingDto } from './dispatch.dto';
 
-const IMPORT_LOCK = 42002037, LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
+export const IMPORT_LOCK = 42002037;
+const LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // The same phone written with or without the US country code.
 const digits = (value: string) => value.replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
@@ -432,7 +433,13 @@ export class ExistingDispatchersService {
    for (const [kind, value] of [['NDA', dto.ndaSignedOn], ['SOP', dto.sopSignedOn]] as const) {
     if (value === undefined) continue;
     const existing = await em.getRepository(MemberPaperDocument).findOneBy({ memberId: id, kind });
-    if (!value) { if (existing) { await em.remove(existing); changed.push(kind); } continue; }
+    if (!value) {
+     if (!existing) continue;
+     // A scan of the paper copy belongs to this record, so the record stays while one is on file.
+     const [scan] = await em.query(`SELECT 1 FROM member_paper_scans WHERE "memberId" = $1 AND kind = $2 LIMIT 1`, [id, kind]);
+     if (scan) throw new ConflictException(`A scan of the paper ${kind} is on file, so its date can’t be cleared.`);
+     await em.remove(existing); changed.push(kind); continue;
+    }
     if (value > usDay('latest')) throw new BadRequestException(`The ${kind} date can’t be in the future.`);
     if (signed.some(row => row.kind === kind)) throw new ConflictException(`They already signed the ${kind} in the workspace.`);
     if (existing?.signedOn === value) continue;

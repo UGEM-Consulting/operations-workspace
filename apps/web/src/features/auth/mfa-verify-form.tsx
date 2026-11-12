@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, KeyRound, Mail, Smartphone } from 'lucide-react';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/field';
+import { Checkbox, Input } from '@/components/ui/field';
 import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { ResendCode, type EmailCodeSent } from './email-code';
 import { SignInHeading } from './sign-in-frame';
@@ -15,7 +15,8 @@ export const signInExpired = (message: string) => EXPIRED.has(message) ? 'Your s
 export function BackToSignIn() {
   return <Button asChild variant="ghost" className="-ml-2"><Link href="/login"><ChevronLeft aria-hidden="true" className="size-4" />Back to sign in</Link></Button>;
 }
-type Challenge = { method: 'TOTP' } | ({ method: 'EMAIL' } & EmailCodeSent);
+// trustDevice: whether to offer skipping the code on this device (never for administrators; an older API sends none).
+type Challenge = ({ method: 'TOTP' } | ({ method: 'EMAIL' } & EmailCodeSent)) & { trustDevice?: boolean; trustDays?: number };
 
 /**
  * The second sign-in step. The API names the method: an authenticator code, or an emailed code it sends on the first
@@ -48,9 +49,12 @@ export function MfaVerifyForm() {
   useEffect(() => { if (failures) document.querySelector<HTMLInputElement>('#mfa-code, #mfa-recovery')?.select(); }, [failures]);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(''); setPending(true);
-    const code = String(new FormData(event.currentTarget).get('code') ?? '').trim();
+    const form = new FormData(event.currentTarget), code = String(form.get('code') ?? '').trim();
+    // Read from the box as shown when submitting, so what is sent is always what the person sees.
+    const trust = form.get('trustDevice') === 'on';
     try {
-      const data = await mutate('auth/mfa/verify', 'POST', { code });
+      // Sent only when ticked, and never with a recovery code (TrustDeviceRecoveryScreen).
+      const data = await mutate('auth/mfa/verify', 'POST', trust && !recovery && challenge?.trustDevice ? { code, trustDevice: true } : { code });
       // After a recovery code: an authenticator user is offered a new authenticator; email-code users see their remaining codes.
       if (data.recoveryCodesRemaining !== undefined && challenge?.method === 'TOTP') { setRecovered({ remaining: data.recoveryCodesRemaining, landingPage: data.landingPage }); return; }
       window.location.assign(data.recoveryCodesRemaining === undefined ? data.landingPage : '/account/security');
@@ -81,6 +85,12 @@ export function MfaVerifyForm() {
       ? <Input key="recovery" id="mfa-recovery" label="Recovery code" hint="Each recovery code works once." name="code" required autoFocus autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={20} placeholder="XXXXX-XXXXX" width="full" className="[&_input]:font-mono [&_input]:tracking-wider" error={error || undefined} />
       : challenge && <Input key={challenge.method} id="mfa-code" label={email ? 'Email code' : 'Authenticator code'} hint={email ? undefined : 'The code changes every 30 seconds.'} name="code" required autoFocus inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} placeholder="123456" width="full" className="[&_input]:font-mono [&_input]:text-lg [&_input]:tracking-[.3em]" error={error || undefined} />}
     {email && !recovery && <ResendCode sent={email} sentAt={sentAt} pending={resending} onResend={() => void load(true)} />}
+    {/* TrustDeviceSignInScreen: unticked by default. Administrators get a line instead (TrustDeviceAdminScreen). */}
+    {challenge && !recovery && challenge.trustDevice && <div className="rounded-md border border-border bg-muted px-4 py-3">
+      <Checkbox name="trustDevice" label={`Don’t ask for a code on this device for ${challenge.trustDays ?? 30} days`}
+        description="Only on your own computer or phone, never a shared one. You still enter your password." /></div>}
+    {challenge && !recovery && challenge.trustDevice === false && <p className="text-[13px] leading-5 text-muted-foreground">Administrators enter a code at every sign-in.</p>}
+    {recovery && challenge?.trustDevice && <p className="text-[13px] leading-5 text-muted-foreground">A device can’t be trusted from a recovery code. Next time, use your {email ? 'emailed code' : 'authenticator app'} and tick the box there.</p>}
     {ready && <Button type="submit" size="lg" disabled={pending} className="w-full">{pending ? 'Verifying…' : 'Verify and sign in'}</Button>}
     <Button type="button" variant="link" onClick={() => { setRecovery(!recovery); setError(''); }}>
       {recovery ? (email ? <Mail aria-hidden="true" className="size-4" /> : <Smartphone aria-hidden="true" className="size-4" />) : <KeyRound aria-hidden="true" className="size-4" />}

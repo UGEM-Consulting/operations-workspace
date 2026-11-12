@@ -19,6 +19,7 @@ import { User as UserEntity, UserStatus } from '../users/user.entity';
 import { companyEmailSql, lockAccount, syncSignIns, turnOffAccount } from './lead-sign-in';
 import { applicationDetails, currentDetails, MemberDetailsService } from './corrections';
 import { LeaveService } from './leave.service';
+import { PaperScansService } from './paper-scans';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 /** Who last corrected each field, and when, for "Corrected by … on …". */
@@ -52,7 +53,7 @@ export function day(value: string) {
 @Injectable()
 export class DispatchService {
  private readonly logger = new Logger('Dispatch');
- constructor(private readonly db: DataSource, private readonly alerts: NotificationsService, private readonly details: MemberDetailsService, private readonly leaves: LeaveService) {}
+ constructor(private readonly db: DataSource, private readonly alerts: NotificationsService, private readonly details: MemberDetailsService, private readonly leaves: LeaveService, private readonly scans: PaperScansService) {}
 
  async teams(status: 'ACTIVE' | 'ARCHIVED' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT t.id, t.name, t.version, t."archivedAt" IS NOT NULL AS archived,
@@ -717,7 +718,15 @@ export class DispatchService {
   const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r.telegram, r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", u."firstName" || ' ' || u."lastName" AS "addedBy"
    FROM existing_member_records r JOIN users u ON u.id = r."addedBy" WHERE r."memberId" = $1`, [id]);
   if (!record) return null;
-  const paper = await this.db.query(`SELECT p.kind, p."signedOn"::text AS "signedOn", p."createdAt", u."firstName" || ' ' || u."lastName" AS "recordedBy" FROM member_paper_documents p JOIN users u ON u.id = p."recordedBy" WHERE p."memberId" = $1 ORDER BY p.kind`, [id]);
+  // Each paper copy with its current scan and the earlier ones it replaced (section 38), reading its scans once.
+  const paper = await this.db.query(`SELECT p.kind, p."signedOn"::text AS "signedOn", p."createdAt", u."firstName" || ' ' || u."lastName" AS "recordedBy",
+    scans.current -> 0 AS scan, coalesce(scans.earlier, '[]') AS "earlierScans"
+   FROM member_paper_documents p JOIN users u ON u.id = p."recordedBy"
+   LEFT JOIN LATERAL (SELECT
+     json_agg(json_build_object('id', s.id, 'pageCount', s."pageCount", 'createdAt', s."createdAt", 'uploadedBy', su."firstName" || ' ' || su."lastName")) FILTER (WHERE s."replacedAt" IS NULL) AS current,
+     json_agg(json_build_object('id', s.id, 'pageCount', s."pageCount", 'createdAt', s."createdAt", 'replacedAt', s."replacedAt", 'uploadedBy', su."firstName" || ' ' || su."lastName") ORDER BY s."createdAt" DESC) FILTER (WHERE s."replacedAt" IS NOT NULL) AS earlier
+    FROM member_paper_scans s JOIN users su ON su.id = s."uploadedBy" WHERE s."memberId" = p."memberId" AND s.kind = p.kind) scans ON true
+   WHERE p."memberId" = $1 ORDER BY p.kind`, [id]);
   const [link] = await this.db.query(`SELECT i.id, i.email, i."expiresAt", i."openedAt", i."consumedAt", a.id AS "applicationId", a.status, a."assignedManagerId", a."applicantAccessUntil",
     coalesce((SELECT json_agg(json_build_object('kind', c.kind, 'signedAt', s."signedAt")) FROM document_signatures s JOIN company_documents c ON c.id = s."documentId" WHERE s."applicationId" = a.id AND s."signerRole" = 'APPLICANT'), '[]') AS signed
    FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id WHERE i."catchUpMemberId" = $1 AND i."revokedAt" IS NULL ORDER BY i."createdAt" DESC LIMIT 1`, [id]);
@@ -728,7 +737,7 @@ export class DispatchService {
     UNION ALL SELECT id, "startedAt", "createdAt" FROM member_assignments WHERE "memberId" = $1) p ORDER BY "startedAt", "createdAt" LIMIT 1`, [id]);
   const startDateChanges = await this.db.query(`SELECT c.id, c."startedOn"::text AS "startedOn", c."previousOn"::text AS "previousOn", c.reason, c."createdAt", u."firstName" || ' ' || u."lastName" AS "changedBy"
    FROM member_start_date_changes c JOIN users u ON u.id = c."actorId" WHERE c."memberId" = $1 ORDER BY c."createdAt" DESC`, [id]);
-  return { ...record, paper, startDateChanges, undatedPeriodId: undated[0]?.id ?? null, published: published.map(row => row.kind), catchUp: link ? { expiresAt: link.expiresAt, opened: !!link.openedAt, started, status: link.status, signed: link.signed,
+  return { ...record, paper, paperScans: this.scans.available, startDateChanges, undatedPeriodId: undated[0]?.id ?? null, published: published.map(row => row.kind), catchUp: link ? { expiresAt: link.expiresAt, opened: !!link.openedAt, started, status: link.status, signed: link.signed,
    // The reference lets someone return with a fresh code, and only their manager needs it.
    applicationId: started && mine ? link.applicationId : null, reference: started && mine ? link.applicationId : null, canReview: mine,
    timeEndedAt: paperworkTimeEnded(link) ? link.applicantAccessUntil : null, returnEmail: started && mine ? link.email : null } : null };

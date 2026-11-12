@@ -4,7 +4,7 @@ const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test
 // Private files served as-is (JPEG photos and PDFs) instead of JSON.
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
   `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
-  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `driver/documents/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
+  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
   `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
 const SCAN = '(license|medical-card|work-authorization)';
 export function allowedEndpoint(method: string, path: string): boolean {
@@ -34,8 +34,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && path === 'auth/password') ||
     (method === 'GET' && ['auth/me', 'users'].includes(path)) ||
     // Staff two-step verification: sign-in step, enrolment, own settings, administrator reset and policy.
-    (method === 'POST' && ['auth/mfa/verify', 'auth/mfa/challenge', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/email-code', 'auth/mfa/recovery-codes', 'auth/mfa/disable', 'auth/mfa/replacement', 'auth/mfa/replacement/confirm'].includes(path)) ||
-    (method === 'GET' && ['auth/mfa', 'auth/mfa/methods', 'settings/security'].includes(path)) || (method === 'PATCH' && path === 'settings/security') ||
+    (method === 'POST' && ['auth/mfa/verify', 'auth/mfa/challenge', 'auth/mfa/enrolment', 'auth/mfa/enrolment/confirm', 'auth/mfa/email-code', 'auth/mfa/recovery-codes', 'auth/mfa/disable', 'auth/mfa/replacement', 'auth/mfa/replacement/confirm', 'auth/mfa/devices/forget-all'].includes(path)) ||
+    // Devices that skip the sign-in code (section 38).
+    (method === 'POST' && match(`auth/mfa/devices/${ID}/forget`, path)) ||
+    (method === 'GET' && ['auth/mfa', 'auth/mfa/methods', 'auth/mfa/devices', 'settings/security'].includes(path)) || (method === 'PATCH' && path === 'settings/security') ||
     (method === 'POST' && match(`users/${ID}/mfa/reset`, path)) ||
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     // The approver's own saved countersigning signature.
@@ -50,6 +52,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     // People already working here: check and add them, their paperwork and catch-up links, what a manager recorded.
     (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||
+    // A scan of an NDA or SOP signed on paper (section 38).
+    (method === 'POST' && match(`dispatch/members/${ID}/paper-scans`, path)) ||
     // Cleared drivers: a dispatch manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
     (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||
     // Promotions: a team lead's request or cancellation, and a manager's decision.
@@ -81,7 +85,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/drivers/${ID}/(mvr|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/drivers/${ID}/(mvr|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
   // A list of existing dispatchers, up to 500 rows of text.
   if (path === 'dispatch/existing/check' || path === 'dispatch/existing/add') return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).

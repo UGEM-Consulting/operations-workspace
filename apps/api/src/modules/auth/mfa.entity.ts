@@ -36,6 +36,11 @@ export enum SecurityEventType {
   PASSWORD_CHANGED = 'PASSWORD_CHANGED',
   // Saved countersigning signature: saved or replaced, deleted by its owner, or cleared by an account change.
   STAFF_SIGNATURE_SAVED = 'STAFF_SIGNATURE_SAVED', STAFF_SIGNATURE_DELETED = 'STAFF_SIGNATURE_DELETED', STAFF_SIGNATURE_CLEARED = 'STAFF_SIGNATURE_CLEARED',
+  // Devices that skip the sign-in code for 30 days: one trusted, or one or all forgotten (count only; replacedOther when this
+  // browser's earlier cookie belonged to someone else).
+  TRUSTED_DEVICE_ADDED = 'TRUSTED_DEVICE_ADDED', TRUSTED_DEVICE_FORGOTTEN = 'TRUSTED_DEVICE_FORGOTTEN',
+  // A sign-in that skipped the code on a trusted device. Kept after the device is forgotten, for looking back after an incident.
+  TRUSTED_DEVICE_USED = 'TRUSTED_DEVICE_USED',
 }
 // Metadata only: never codes, secrets, session identifiers or addresses.
 @Entity('staff_security_events')

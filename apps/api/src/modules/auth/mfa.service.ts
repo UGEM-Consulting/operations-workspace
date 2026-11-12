@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { BadRequestException, ConflictException, HttpException, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { toString as qrSvg } from 'qrcode';
 import { DataSource, EntityManager } from 'typeorm';
@@ -15,6 +15,7 @@ import { hashPassword, verifyPassword } from './password';
 import { accessFor } from './policy';
 import { revokeUserSessions } from './revoke';
 import { AuthRequest, MfaStage, regenerateSession, saveSession } from './session';
+import { deviceToken, trustDevice, trustedDevices, TRUSTED_DAYS, trustFailureCode, useTrustedDevice } from './trusted-devices';
 
 const ISSUER = 'UGEM Workspace';
 // Wrong codes per user (across all sessions and API instances) within 15 minutes before a lockout.
@@ -88,6 +89,15 @@ export class MfaService {
       ({ enrolled, method, required } = await this.state(user));
     }
     if (!enrolled && !required) return this.establish(req, user, 'not-required');
+    // A device they trusted after a code in the last 30 days skips the code; never for administrators (TrustDeviceAdminScreen).
+    if (enrolled && emailCodesAllowed(user.role) && await this.trustedDevice(req, user)) {
+      const result = await this.establish(req, user, 'verified');
+      // The history keeps every sign-in that skipped the code, also after the device rows are gone; written once the session
+      // exists, so a sign-in that failed is never recorded as one.
+      await this.db.manager.insert(StaffSecurityEvent, { userId: user.id, actorId: user.id, type: SecurityEventType.TRUSTED_DEVICE_USED, metadata: {} })
+        .catch((error: unknown) => Logger.error(`Recording a trusted device sign-in failed: ${trustFailureCode(error)}`, 'Mfa'));
+      return result;
+    }
     const stage: MfaStage = enrolled ? 'verify' : 'enrol';
     await this.pend(req, user, stage);
     return { mfa: stage, landingPage: PENDING_PAGES[stage] };
@@ -117,10 +127,13 @@ export class MfaService {
     return { user: publicUser(user), ...accessFor(user) };
   }
 
-  async verifyLogin(req: AuthRequest, code: string) {
+  async verifyLogin(req: AuthRequest, code: string, trust = false) {
     const user = this.pendingUser(req, 'verify');
     const kind = await this.checkCode(user, code, true, 'login');
     const result = await this.establish(req, user, 'verified');
+    // Whoever holds a recovery code may not have the phone, so it never trusts a device (TrustDeviceRecoveryScreen).
+    // The code is used and the session saved by now, so a failure here never undoes the sign-in: they're asked again next time.
+    if (trust && kind !== 'recovery' && emailCodesAllowed(user.role)) await trustDevice(this.db, user, req).catch((error: unknown) => Logger.error(`Trusting a device failed: ${trustFailureCode(error)}`, 'Mfa'));
     if (kind !== 'recovery') return result;
     // A recovery code usually means the authenticator is gone: for a short while this session may start a new one
     // without spending another code (NewAuthenticatorAfterRecoveryScreen).
@@ -195,11 +208,20 @@ export class MfaService {
   async loginChallenge(req: AuthRequest, resend: boolean) {
     const user = this.pendingUser(req, 'verify');
     const { method } = await this.state(user);
-    if (method !== MfaMethod.EMAIL) return { method: MfaMethod.TOTP };
+    // trustDevice: whether the step offers to skip the code on this device (an older API sends none, and the box stays hidden).
+    const trust = { trustDevice: emailCodesAllowed(user.role), trustDays: TRUSTED_DAYS };
+    if (method !== MfaMethod.EMAIL) return { method: MfaMethod.TOTP, ...trust };
     // Signing in again replaces an administrator's email codes with an authenticator (see startSession).
     if (!emailCodesAllowed(user.role)) throw new UnauthorizedException('Administrators must use an authenticator app. Sign in again to set one up.');
     if (resend || !await hasEmailCode(this.db, user.id, 'login')) await this.sendEmailCode(user, 'login');
-    return { method, sentTo: maskEmail(user.email), resendAfter: await resendAfter(this.db, user.id, 'login') };
+    return { method, sentTo: maskEmail(user.email), resendAfter: await resendAfter(this.db, user.id, 'login'), ...trust };
+  }
+
+  /** Account security's trusted devices: available only to people with two-step verification on who aren't administrators. */
+  async devices(req: AuthRequest) {
+    const user = req.currentUser, { enrolled } = await this.state(user);
+    const available = enrolled && emailCodesAllowed(user.role);
+    return { available, administrator: !emailCodesAllowed(user.role), days: TRUSTED_DAYS, items: available ? await trustedDevices(this.db, user, req) : [] };
   }
 
   /** What this person may choose when setting up two-step verification. */
@@ -340,6 +362,16 @@ export class MfaService {
   /** Forced enrolment from a pending 'enrol' sign-in, or voluntary enrolment from a full session. */
   private enrolmentUser(req: AuthRequest): User {
     return req.session.mfaPending ? this.pendingUser(req, 'enrol') : this.fullSessionUser(req);
+  }
+
+  /**
+   * Whether this browser's trusted device skips the code. While wrong codes have locked the account it asks for a code, which
+   * the lock then refuses. The cookie is checked first, so most sign-ins skip the queries, and a failed query only asks for the code.
+   */
+  private async trustedDevice(req: AuthRequest, user: User) {
+    if (!deviceToken(req)) return false;
+    try { return !await readAttempts(this.db, codeKeys(user.id).lock) && await useTrustedDevice(this.db, user, req); }
+    catch (error) { Logger.error(`Checking a trusted device failed: ${trustFailureCode(error)}`, 'Mfa'); return false; }
   }
 
   private async pend(req: AuthRequest, user: User, stage: MfaStage) {

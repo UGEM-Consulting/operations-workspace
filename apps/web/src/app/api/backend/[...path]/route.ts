@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { backendConfig } from '@/lib/auth';
 import { allowedEndpoint, bodyLimit, isFileEndpoint, validMutation } from '@/lib/bff-policy';
 import { backendFailureCode } from '@/lib/backend-connection';
-import { sessionCookieName, sessionKindForPath } from '@/lib/session-cookie';
+import { deviceCookieName, sessionCookieName, sessionKindForPath, usesDeviceCookie } from '@/lib/session-cookie';
 export const runtime = 'nodejs';
 // Allow a sleeping Render Free API time to start; keep the request deadline
 // below Vercel's function budget. Requires Vercel Fluid Compute.
@@ -19,7 +19,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const body = mutating ? await req.text() : undefined;
     if (body && Buffer.byteLength(body) > bodyLimit(path)) return NextResponse.json({ message: 'Request too large' }, { status: 413 });
     const name = sessionCookieName(sessionKindForPath(path));
-    const cookie = req.cookies.get(name);
+    const cookie = req.cookies.get(name), device = usesDeviceCookie(path) ? req.cookies.get(deviceCookieName()) : undefined;
     const query = new URLSearchParams();
     if (path === 'onboarding/review-queue' || path === 'it/onboarding') {
       for (const name of ['page','pageSize','status','search','sort','direction']) {
@@ -30,7 +30,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const upstream = await fetch(`${base}/api/${path}${query.size ? `?${query}` : ''}`, { method: req.method, body,
       headers: { 'content-type': 'application/json', 'x-workspace-key': key, origin,
         'x-csrf-protection': '1', 'x-forwarded-proto': process.env.NODE_ENV === 'production' ? 'https' : 'http',
-        cookie: cookie ? `${name}=${cookie.value}` : '',
+        cookie: [cookie && `${name}=${cookie.value}`, device && `${deviceCookieName()}=${device.value}`].filter(Boolean).join('; '),
         // Signature evidence. Vercel sets x-forwarded-for to the real client address; the API trusts these only with the BFF secret.
         'x-client-ip': req.headers.get('x-forwarded-for')?.split(',')[0].trim() ?? '', 'x-client-user-agent': req.headers.get('user-agent')?.slice(0, 500) ?? '' },
       cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(90000) });

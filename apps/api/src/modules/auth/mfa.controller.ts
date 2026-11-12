@@ -1,15 +1,17 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Req } from '@nestjs/common';
 import { Role } from '../users/user.entity';
-import { MfaChallengeDto, MfaCodeDto, MfaEnrolmentDto, MfaPolicyDto, MfaReplacementConfirmDto, MfaReplacementDto } from './mfa.dto';
+import { MfaChallengeDto, MfaCodeDto, MfaVerifyDto, MfaEnrolmentDto, MfaPolicyDto, MfaReplacementConfirmDto, MfaReplacementDto } from './mfa.dto';
 import { MfaService } from './mfa.service';
 import { AllowPendingMfa, Roles, STAFF } from './policy';
+import { DataSource } from 'typeorm';
 import { AuthRequest } from './session';
+import { forgetDevices } from './trusted-devices';
 @Controller()
 export class MfaController {
-  constructor(private readonly mfa: MfaService) {}
+  constructor(private readonly mfa: MfaService, private readonly db: DataSource) {}
   // Second sign-in step: only a pending 'verify' session reaches it; the service re-reads that state.
   @Roles(...STAFF) @AllowPendingMfa('verify') @Post('auth/mfa/verify') @HttpCode(200)
-  verify(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.verifyLogin(req, input.code); }
+  verify(@Body() input: MfaVerifyDto, @Req() req: AuthRequest) { return this.mfa.verifyLogin(req, input.code, input.trustDevice === true); }
   // The sign-in step's method; for email codes it sends one (or a new one on resend, after a short wait).
   @Roles(...STAFF) @AllowPendingMfa('verify') @Post('auth/mfa/challenge') @HttpCode(200)
   challenge(@Body() input: MfaChallengeDto, @Req() req: AuthRequest) { return this.mfa.loginChallenge(req, !!input.resend); }
@@ -36,6 +38,13 @@ export class MfaController {
   confirmReplacement(@Body() input: MfaReplacementConfirmDto, @Req() req: AuthRequest) { return this.mfa.confirmReplacement(req, input.code, input.replacementId); }
   @Roles(...STAFF) @Post('auth/mfa/disable') @HttpCode(200)
   disable(@Body() input: MfaCodeDto, @Req() req: AuthRequest) { return this.mfa.disable(req.currentUser, input.code, req); }
+  // Devices that skip the sign-in code (Account security): listed, forgotten one at a time or all at once. Full sessions only.
+  @Roles(...STAFF) @Get('auth/mfa/devices')
+  devices(@Req() req: AuthRequest) { return this.mfa.devices(req); }
+  @Roles(...STAFF) @Post('auth/mfa/devices/forget-all') @HttpCode(200)
+  forgetAll(@Req() req: AuthRequest) { return forgetDevices(this.db, req.currentUser, req, null); }
+  @Roles(...STAFF) @Post('auth/mfa/devices/:id/forget') @HttpCode(200)
+  forget(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthRequest) { return forgetDevices(this.db, req.currentUser, req, id); }
   @Roles(Role.SYSTEM_ADMIN) @Post('users/:id/mfa/reset') @HttpCode(200)
   reset(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthRequest) { return this.mfa.adminReset(req.currentUser, id); }
   @Roles(Role.SYSTEM_ADMIN) @Get('settings/security')
