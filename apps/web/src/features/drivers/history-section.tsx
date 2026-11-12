@@ -6,15 +6,15 @@ import { Button } from '@/components/ui/button';
 import { Checkbox, Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { Badge } from '@/components/ui/status-badge';
 import { licenseTypes, US_STATES } from '@/features/safety/types';
-import { addMonths, addressesCovered, DRIVING_YEARS, HISTORY_YEARS, jobGaps, type DriverHistory, type HistoryAccident, type HistoryAddress, type HistoryJob, type HistoryLicense,
+import { addMonths, addressesCovered, DRIVING_YEARS, HISTORY_YEARS, jobGaps, type DriverHistory, type HistoryAccident, type HistoryAddress, type HistoryExperience, type HistoryJob, type HistoryLicense,
   type HistoryTicket, type YesNo } from './history-rules';
 
-export type HistoryKind = 'address' | 'job' | 'accident' | 'ticket' | 'license';
+export type HistoryKind = 'address' | 'job' | 'accident' | 'ticket' | 'license' | 'experience';
 export interface HistoryEditing { kind: HistoryKind; id: string | null }
 const states = US_STATES.map(state => ({ value: state, label: state }));
 const yesNo = [{ value: 'NO', label: 'No' }, { value: 'YES', label: 'Yes' }];
-const lists: Record<HistoryKind, 'addresses' | 'jobs' | 'accidentList' | 'ticketList' | 'licenseList'> = { address: 'addresses', job: 'jobs', accident: 'accidentList', ticket: 'ticketList', license: 'licenseList' };
-const titles: Record<HistoryKind, string> = { address: 'a previous address', job: 'a job', accident: 'an accident', ticket: 'a ticket', license: 'another license' };
+const lists: Record<HistoryKind, 'addresses' | 'jobs' | 'accidentList' | 'ticketList' | 'licenseList' | 'experience'> = { address: 'addresses', job: 'jobs', accident: 'accidentList', ticket: 'ticketList', license: 'licenseList', experience: 'experience' };
+const titles: Record<HistoryKind, string> = { address: 'a previous address', job: 'a job', accident: 'an accident', ticket: 'a ticket', license: 'another license', experience: 'driving experience' };
 /** "2024-03" as "Mar 2024". */
 export const monthLabel = (value: string) => new Date(`${value}-15T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 const span = (from: string, to: string | null) => from === to ? monthLabel(from) : `${monthLabel(from)} – ${to ? monthLabel(to) : 'now'}`;
@@ -92,6 +92,10 @@ export function HistorySections({ history, onChange, onEdit, now, currentAddress
       <Problem show={has('history:dates')}>Check the months: a job or address ends before it starts, or is in the future.</Problem>
       <Button type="button" variant="outline" className="w-full" onClick={() => onEdit({ kind: 'job', id: null })}><Plus aria-hidden="true" className="size-4" />Add a job</Button>
     </Section>
+    <Section title="Driving experience" hint="Every kind of vehicle you’ve driven for work, for example a pickup with a car-hauler trailer or a semi with a dry van.">
+      {(history.experience ?? []).map(item => <Entry key={item.id} title={item.vehicle} meta={`${span(item.fromMonth, item.toMonth)} · about ${item.miles.toLocaleString('en-US')} miles`} onEdit={() => onEdit({ kind: 'experience', id: item.id })} />)}
+      {(history.experience ?? []).length < 10 && <Button type="button" variant="outline" className="w-full" onClick={() => onEdit({ kind: 'experience', id: null })}><Plus aria-hidden="true" className="size-4" />Add experience</Button>}
+    </Section>
     <Section id={historySectionIds.record} title="Accidents, tickets and licenses" hint="For the last 3 years. Safety checks this against your driving record.">
       <RadioGroup name="history-accidents" label="Any accidents while driving a commercial vehicle?" value={history.accidents ?? ''} onChange={value => set({ accidents: value as YesNo })} options={yesNo} />
       {history.accidents === 'YES' && <>
@@ -127,7 +131,7 @@ export function HistoryEditor({ editing, history, now, busy, error, onSave, onCa
 }) {
   const list = lists[editing.kind];
   const current = editing.id ? (history[list] as { id: string }[] | undefined)?.find(item => item.id === editing.id) : undefined;
-  const [stillThere, setStillThere] = useState(editing.kind === 'job' && !!current && (current as HistoryJob).toMonth === null);
+  const [stillThere, setStillThere] = useState((editing.kind === 'job' || editing.kind === 'experience') && !!current && (current as HistoryJob | HistoryExperience).toMonth === null);
   const [problem, setProblem] = useState('');
   const value = (key: string) => (current as Record<string, string | null> | undefined)?.[key] ?? '';
   function save(event: React.FormEvent<HTMLFormElement>) {
@@ -135,10 +139,12 @@ export function HistoryEditor({ editing, history, now, busy, error, onSave, onCa
     const data = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     const id = editing.id ?? crypto.randomUUID(), trimmed = Object.fromEntries(Object.entries(data).map(([key, text]) => [key, text.trim()]));
     if ((editing.kind === 'job' && !(data.drove && data.fmcsr && data.dotTesting)) || (editing.kind === 'ticket' && !data.vehicle)) return setProblem('Answer every question.');
-    let item: HistoryAddress | HistoryJob | HistoryAccident | HistoryTicket | HistoryLicense;
+    let item: HistoryAddress | HistoryJob | HistoryAccident | HistoryTicket | HistoryLicense | HistoryExperience;
     if (editing.kind === 'address') item = { id, line1: trimmed.line1, city: trimmed.city, state: trimmed.state, zip: trimmed.zip, fromMonth: trimmed.fromMonth, toMonth: trimmed.toMonth };
     else if (editing.kind === 'job') item = { id, company: trimmed.company, city: trimmed.city, state: trimmed.state, phone: trimmed.phone, position: trimmed.position, fromMonth: trimmed.fromMonth,
-      toMonth: stillThere ? null : trimmed.toMonth, drove: trimmed.drove as YesNo, fmcsr: trimmed.fmcsr as HistoryJob['fmcsr'], dotTesting: trimmed.dotTesting as HistoryJob['dotTesting'], reasonLeft: trimmed.reasonLeft ?? '' };
+      toMonth: stillThere ? null : trimmed.toMonth, drove: trimmed.drove as YesNo, fmcsr: trimmed.fmcsr as HistoryJob['fmcsr'], dotTesting: trimmed.dotTesting as HistoryJob['dotTesting'], reasonLeft: trimmed.reasonLeft ?? '',
+      ...(trimmed.contactName ? { contactName: trimmed.contactName } : {}), ...(trimmed.contactEmail ? { contactEmail: trimmed.contactEmail } : {}), ...(stillThere && trimmed.mayContact ? { mayContact: trimmed.mayContact as YesNo } : {}) };
+    else if (editing.kind === 'experience') item = { id, vehicle: trimmed.vehicle, fromMonth: trimmed.fromMonth, toMonth: stillThere ? null : trimmed.toMonth, miles: Math.max(0, Math.round(Number(trimmed.miles) || 0)) };
     else if (editing.kind === 'accident') item = { id, month: trimmed.month, state: trimmed.state, description: trimmed.description };
     else if (editing.kind === 'ticket') item = { id, month: trimmed.month, state: trimmed.state, violation: trimmed.violation, vehicle: trimmed.vehicle as 'CMV' | 'OTHER' };
     else item = { id, state: trimmed.state, number: trimmed.number.toUpperCase(), licenseClass: trimmed.licenseClass };
@@ -173,6 +179,10 @@ export function HistoryEditor({ editing, history, now, busy, error, onSave, onCa
           <Select label="State" id="entry-state" name="state" required placeholder="–" options={states} defaultValue={value('state')} />
         </div>
         <Input label="Company phone" id="entry-phone" name="phone" type="tel" required maxLength={40} width="md" defaultValue={value('phone')} hint="Safety calls or writes to ask about your safety record." />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Input label="Contact person" id="entry-contactName" name="contactName" optional maxLength={100} defaultValue={value('contactName')} hint="For example, their dispatch or safety manager." />
+          <Input label="Contact email" id="entry-contactEmail" name="contactEmail" type="email" optional maxLength={254} defaultValue={value('contactEmail')} />
+        </div>
         <Input label="Your position" id="entry-position" name="position" required maxLength={100} defaultValue={value('position')} />
         <div className="flex flex-wrap gap-4"><Input label="From" id="entry-fromMonth" name="fromMonth" type="month" required width="sm" max={now} defaultValue={value('fromMonth')} />
           {!stillThere && <Input label="To" id="entry-toMonth" name="toMonth" type="month" required width="sm" max={now} defaultValue={value('toMonth')} />}</div>
@@ -183,6 +193,14 @@ export function HistoryEditor({ editing, history, now, busy, error, onSave, onCa
         <RadioGroup name="dotTesting" label="Were you in their DOT drug and alcohol testing program?" defaultValue={value('dotTesting')}
           options={[{ value: 'YES', label: 'Yes' }, { value: 'NO', label: 'No' }, { value: 'UNSURE', label: 'Not sure' }]} />
         {!stillThere && <Input label="Why you left" id="entry-reasonLeft" name="reasonLeft" required maxLength={200} defaultValue={value('reasonLeft')} />}
+        {stillThere && <RadioGroup name="mayContact" label="May Safety contact this employer now?" hint="If not, they’ll ask once you’re hired." defaultValue={value('mayContact')} options={yesNo.slice().reverse()} />}
+      </>}
+      {editing.kind === 'experience' && <>
+        <Input label="Vehicle" id="entry-vehicle" name="vehicle" required maxLength={100} defaultValue={value('vehicle')} hint="For example: pickup with a car-hauler trailer." />
+        <div className="flex flex-wrap gap-4"><Input label="From" id="entry-fromMonth" name="fromMonth" type="month" required width="sm" max={now} defaultValue={value('fromMonth')} />
+          {!stillThere && <Input label="To" id="entry-toMonth" name="toMonth" type="month" required width="sm" max={now} defaultValue={value('toMonth')} />}</div>
+        <Checkbox label="I still drive this" checked={stillThere} onChange={event => setStillThere(event.target.checked)} />
+        <Input label="About how many miles" id="entry-miles" name="miles" type="number" required min={0} max={5000000} width="sm" defaultValue={value('miles')} />
       </>}
       {(editing.kind === 'accident' || editing.kind === 'ticket') && <div className="flex flex-wrap gap-4">
         <Input label="Month" id="entry-month" name="month" type="month" required width="sm" max={now} min={now ? addMonths(now, -HISTORY_YEARS * 12 + 1) : undefined} defaultValue={value('month')} />
@@ -201,7 +219,7 @@ export function HistoryEditor({ editing, history, now, busy, error, onSave, onCa
     </fieldset>
     <Notice message={problem || error} error />
     <div className="flex flex-wrap gap-3 border-t pt-5">
-      <Button type="submit" disabled={busy}>{busy ? 'Saving…' : `Save ${editing.kind === 'license' ? 'license' : editing.kind}`}</Button>
+      <Button type="submit" disabled={busy}>{busy ? 'Saving…' : `Save ${editing.kind === 'license' ? 'license' : editing.kind === 'experience' ? 'experience' : editing.kind}`}</Button>
       {current && <Button type="button" variant="outline" className="text-danger" disabled={busy} onClick={remove}>Remove</Button>}
       <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
     </div>

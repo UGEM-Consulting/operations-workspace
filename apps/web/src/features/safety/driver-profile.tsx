@@ -1,7 +1,7 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ellipsis, FileUp, Pencil, RotateCcw, Send, UserCheck, UserMinus, type LucideIcon } from 'lucide-react';
+import { Ellipsis, FileUp, Pencil, RotateCcw, Send, Truck, UserCheck, UserMinus, type LucideIcon } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu } from '@/components/ui/dropdown-menu';
@@ -20,6 +20,7 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { ApplicationCard } from './application-card';
 import { ClearanceCard, ClearanceProgress } from './clearance-card';
+import { LicenseRulesCard } from './license-items';
 import { AnnualReviewCard } from './annual-review-card';
 import { TestingCard } from './testing-card';
 import { IncidentsCard } from './incidents-card';
@@ -33,22 +34,25 @@ import { DriverForm, driverBody } from './driver-form';
 import { ScreeningCard } from './screening-card';
 import { OneTimeLinkDialog } from './one-time-link-dialog';
 import { RemindersCard } from './reminders-card';
+import { CatchUpCard, CatchUpLinkDialog, PaperFileCard } from './paper-file';
+import { GroupChangeAlert, readyMain, RoadReadyCard } from './road-ready';
 import { CLEARANCE_ITEMS, CLOSED, consentLabels, DECIDING, documentLabels, driverBadge, driverTypes, fieldLabels, license, OWNABLE, screeningChecks, testReasons, WITHDRAWABLE, type DocumentKind, type DriverEventRow, type DriverProfile,
   type RenewalKind, type RenewalScan, type SafetyPeople, type SafetyPerson } from './types';
 
-type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left' | 'telegram';
+type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left' | 'telegram' | 'catchup' | 'ready';
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', LEFT: 'Marked as left', REOPENED: 'Reopened as a lead',
-  SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Safety contact assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
+  SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Safety Manager assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
   DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
-  SENT_FOR_DECISION: 'Sent to the Safety manager', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form',
+  SENT_FOR_DECISION: 'Sent to the Safety Director', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form',
   CLEARANCE_RECORDED: 'Clearance item recorded', EMPLOYER_RECORDED: 'Previous employer recorded', CLEARED: 'Cleared', DISPATCH_ASSIGNED: 'Assigned to a dispatcher',
   ANNUAL_REVIEW_RECORDED: 'Yearly review recorded', TEST_RECORDED: 'Test result recorded', TEST_VOIDED: 'Test result voided', INCIDENT_RECORDED: 'Incident recorded', INCIDENT_UPDATED: 'Incident settled',
   INCIDENT_VOIDED: 'Incident voided', OWNER_DOCUMENT_UPLOADED: 'Truck document uploaded', OWNER_DOCUMENT_VIEWED: 'Truck document opened',
   RENEWAL_LINK_SENT: 'Renewal link created', RENEWAL_LINK_CANCELLED: 'Renewal link cancelled', RENEWAL_OPENED: 'Driver opened a renewal link', DOCUMENT_RENEWED: 'Document renewed',
   DOCUMENT_UNREADABLE: 'Scan marked as not readable', TELEGRAM_LINK_CREATED: 'Telegram link for reminders created', TELEGRAM_CONNECTED: 'Driver connected Telegram for reminders',
-  TELEGRAM_STOPPED: 'Driver turned off Telegram reminders' };
+  TELEGRAM_STOPPED: 'Driver turned off Telegram reminders', EXISTING_ADDED: 'Added from a paper file', PAPER_ITEM_RECORDED: 'Paper file item confirmed',
+  CATCH_UP_LINK_SENT: 'Catch-up link created', CATCH_UP_LINK_CANCELLED: 'Catch-up link cancelled', CATCH_UP_OPENED: 'Driver opened the catch-up link', CATCH_UP_SENT: 'Driver sent their catch-up photos and forms' };
 const truckActions: Record<string, string> = { added: 'Truck added', updated: 'Truck updated', archived: 'Truck archived' };
 const eventTitle = (row: DriverEventRow) => row.event === 'TRUCK_SAVED' ? truckActions[row.metadata.action ?? ''] ?? 'Truck saved'
   : row.event === 'DOCUMENT_UPLOADED' && row.metadata.renewal ? 'Driver sent a renewed document' : row.event === 'RENEWAL_LINK_SENT' && row.metadata.reminder ? 'Renewal link sent with a reminder'
@@ -99,11 +103,15 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
   const canRenew = clearing && (screener || owns) && !!driver.renewals;
   const expiredRenewals = today ? (driver.renewals ?? []).filter(row => row.checked?.expiresOn && row.checked.expiresOn < today) : [];
   const waitingRenewals = (driver.renewals ?? []).filter(row => row.scan && !row.scan.unreadable);
-  const renewFirst = canRenew ? expiredRenewals[0] : undefined;
+  // A driver added from a paper file gets the catch-up link first (it asks for the newer card too), so Renew isn't the main button until that's out.
+  const catchUpFirst = !!driver.paperFile && !closed && (decider || owns) && !!driver.email && !driver.paperFile.catchUp.link && !driver.paperFile.catchUp.sentAt;
+  const renewFirst = canRenew && !catchUpFirst ? expiredRenewals[0] : undefined;
+  // The checked date may be a paper row a catch-up scan already replaced, so the renewal's own flag comes first.
+  const fromPaper = (id: string | undefined) => !!(driver.renewals?.find(row => row.checked?.id === id)?.checked?.fromPaper ?? driver.documents?.find(document => document.id === id)?.fromPaper);
   // Why the documents hold them: each expired one, unless the driver sent a new one that waits for its check (its own
   // alert). Before the browser knows today's date, or from an older API, one general line.
   const heldDocuments = !driver.hold?.documents ? [] : today && driver.renewals
-    ? expiredRenewals.filter(row => !waitingRenewals.includes(row)).map(row => ({ key: row.kind, text: <>Their {renewalWords[row.kind]} expired on <LocalTime iso={`${row.checked!.expiresOn}T12:00:00Z`} format="date" />. {canRenew ? 'Renew it to lift this.' : 'A newer checked one lifts this.'}</> }))
+    ? expiredRenewals.filter(row => !waitingRenewals.includes(row)).map(row => ({ key: row.kind, text: <>Their {renewalWords[row.kind]} expired on <LocalTime iso={`${row.checked!.expiresOn}T12:00:00Z`} format="date" />{fromPaper(row.checked!.id) ? ' (typed from the paper file)' : ''}. {canRenew && !fromPaper(row.checked!.id) ? 'Renew it to lift this.' : 'A newer one, once checked, lifts this.'}</> }))
     : [{ key: 'documents', text: <>Their license or medical card has expired. A newer checked one lifts this.</> }];
   async function cancelLink(kind: RenewalKind) {
     try { await cancelRenewalLink(renewalDriver, kind); toast({ title: 'Link cancelled', description: 'It no longer works.' }); router.refresh(); }
@@ -120,7 +128,7 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     catch (error) { toast({ tone: 'danger', title: 'The link wasn’t created', description: errorMessage(error, 'Reload and try again.') }); }
     finally { setLinking(false); }
   }
-  function start(next: Action) { if (next === 'telegram') { void createTelegramLink(); return; } setAction(next); setError(''); }
+  function start(next: Action) { if (next === 'telegram') { void createTelegramLink(); return; } if (next === 'ready') { setReadyOpen(readyNext?.target ?? null); return; } setAction(next); setError(''); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending || !action) return;
@@ -132,32 +140,44 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       else if (action === 'left') await mutate(`safety/drivers/${driver.id}/left`, 'POST', { version: driver.version, leftOn: form.get('leftOn'), reason: form.get('reason') });
       else if (action === 'reopen') await mutate(`safety/drivers/${driver.id}/reopen`, 'POST', { version: driver.version });
       else await mutate(`safety/drivers/${driver.id}/owner`, 'POST', { version: driver.version, ownerId: form.get('ownerId'), ...(String(form.get('reason') ?? '').trim() ? { reason: form.get('reason') } : {}) });
-      toast({ title: action === 'edit' ? 'Details saved' : action === 'withdraw' ? `${name} withdrawn` : action === 'left' ? `${name} marked as left` : action === 'reopen' ? `${name} reopened as a lead` : 'Safety contact assigned' });
+      toast({ title: action === 'edit' ? 'Details saved' : action === 'withdraw' ? `${name} withdrawn` : action === 'left' ? `${name} marked as left` : action === 'reopen' ? `${name} reopened as a lead` : 'Safety Manager assigned' });
       setAction(null); router.refresh();
     } catch (error) { setError(errorMessage(error, 'Unable to save. Your entries have been kept.')); }
     finally { setPending(false); }
   }
-  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change safety contact' : 'Assign safety contact', left: `Mark ${name} as left?`,
-    telegram: 'Telegram link for reminders' };
+  const titles: Record<Action, string> = { edit: `Edit ${name}`, withdraw: `Withdraw ${name}?`, reopen: `Reopen ${name} as a lead?`, owner: owner ? 'Change Safety Manager' : 'Assign Safety Manager', left: `Mark ${name} as left?`,
+    telegram: 'Telegram link for reminders', catchup: 'Catch-up link', ready: 'Ready for the road' };
+  // A driver added from a paper file (section 34): their record's next step is the catch-up link, until it is out or done.
+  const paperFile = driver.paperFile ?? null, canPaper = !!paperFile && !closed && (decider || owns);
+  const sendCatchUp = canPaper && !!driver.email && !paperFile!.catchUp.link && !paperFile!.catchUp.sentAt;
+  // Ready for the road (section 39): leads, the Safety Director, administrators and the Safety Manager work it; its next step is the main button.
+  const roadReady = driver.roadReady ?? null, canReady = !!roadReady && (screener || decider || owns), gettingReady = !!roadReady && driver.status === 'CLEARED' && !roadReady.ready;
+  const [readyOpen, setReadyOpen] = useState<string | null>(null);
+  const readyNext = canReady && (driver.status === 'CLEARED' || roadReady!.groupChanges.some(change => !change.doneAt)) ? readyMain(roadReady!, driver.contracts ?? []) : null;
   const staff = people.staff.filter(person => person.id !== owner?.owner?.id);
   // One main button (the next thing the record needs, else Edit) and the rest under More actions, with what ends the record last.
   const actions: { action: Action; label: string; icon: LucideIcon; danger?: boolean }[] = [
+    ...(readyNext ? [{ action: 'ready' as const, label: readyNext.label, icon: Truck }] : []),
+    ...(sendCatchUp ? [{ action: 'catchup' as const, label: 'Send catch-up link', icon: Send }] : []),
     ...(screener && driver.status === 'WITHDRAWN' ? [{ action: 'reopen' as const, label: 'Reopen as lead', icon: RotateCcw }] : []),
     ...(canEdit ? [{ action: 'edit' as const, label: 'Edit details', icon: Pencil }] : []),
     ...(screener && WITHDRAWABLE.includes(driver.status) ? [{ action: 'withdraw' as const, label: 'Withdraw', icon: UserMinus, danger: true }] : []),
-    ...(screener && OWNABLE.includes(driver.status) && staff.length > 0 ? [{ action: 'owner' as const, label: owner ? 'Change safety contact' : 'Assign safety contact', icon: UserCheck }] : []),
+    ...(screener && OWNABLE.includes(driver.status) && staff.length > 0 ? [{ action: 'owner' as const, label: owner ? 'Change Safety Manager' : 'Assign Safety Manager', icon: UserCheck }] : []),
     ...(canLinkTelegram ? [{ action: 'telegram' as const, label: 'Telegram link for reminders', icon: Send }] : []),
     ...(clearing && (decider || owns) ? [{ action: 'left' as const, label: 'Mark as left', icon: UserMinus, danger: true }] : [])];
   // An expired license or medical card makes Renew the main button (RenewDriverPageScreen).
   const main = renewFirst || actions[0]?.danger ? null : actions[0] ?? null, more = actions.filter(item => item !== main);
   return <div className="space-y-6">
     <PageCrumb label={name} />
-    <PageHeader title={name} badge={<Badge label={badge.label} tone={badge.tone} />}
-      meta={[driverTypes[driver.driverType], license(driver) || driver.phone, owner?.owner ? `Safety contact ${owner.owner.name}` : driver.safetyLead ? `Safety lead ${driver.safetyLead.name}` : <>Added <LocalTime iso={driver.createdAt} format="date" /></>]}
+    <PageHeader title={name} badge={gettingReady ? <Badge label="Getting ready" tone="info" /> : <Badge label={badge.label} tone={badge.tone} />}
+      meta={[driverTypes[driver.driverType], license(driver) || driver.phone, owner?.owner ? `Safety Manager ${owner.owner.name}` : driver.safetyLead ? `Safety lead ${driver.safetyLead.name}` : <>Added <LocalTime iso={driver.createdAt} format="date" /></>,
+        ...(paperFile ? ['From a paper file'] : [])]}
       action={<div className="flex flex-wrap gap-2">
         {renewFirst && <Button onClick={() => setRenewing({ kind: renewFirst.kind })}><FileUp aria-hidden="true" className="size-4" />Renew {renewalWords[renewFirst.kind]}</Button>}
         {main && <Button onClick={() => start(main.action)}><main.icon aria-hidden="true" className="size-4" />{main.label}</Button>}
         {more.length > 0 && <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={more.map(item => ({ label: item.label, icon: item.icon, danger: item.danger, onSelect: () => start(item.action) }))} />}</div>} />
+    {roadReady && <GroupChangeAlert driver={driver} ready={roadReady} onDone={canReady ? setReadyOpen : undefined} />}
+    {gettingReady && driver.clearedAt && <Alert tone="info" title={<>Cleared <LocalTime iso={driver.clearedAt} format="date" /></>}><p>Dispatch can already assign {driver.firstName || name}, and sees Getting ready until these steps are done.</p></Alert>}
     {driver.status === 'WITHDRAWN' && <Alert tone="info" title="This driver was withdrawn">
       <p className="whitespace-pre-wrap">{driver.closedAt && <><LocalTime iso={driver.closedAt} format="date" />: </>}{driver.statusReason}</p>{screener && <p className="mt-1">Reopen them as a lead if they get back in touch.</p>}</Alert>}
     {driver.status === 'LEFT' && <Alert tone="info" title="This driver left">
@@ -167,9 +187,9 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     {driver.status === 'APPLYING' && driver.application?.correctionNote && <Alert tone="warning" title="Back with the driver for corrections">
       <p className="whitespace-pre-wrap">{driver.application.correctionNote}</p>
       <p className="mt-1">They return to screening when they send the application again.</p></Alert>}
-    {screener && driver.status === 'APPROVED' && !owner && people.staff.length > 0 && <Alert tone="info" title="Assign a Safety contact"
-      action={<Button size="sm" variant="outline" onClick={() => start('owner')}>Assign safety contact</Button>}>
-      <p>Their Safety contact looks after this driver from now on, starting with the clearance checklist.</p></Alert>}
+    {screener && driver.status === 'APPROVED' && !owner && people.staff.length > 0 && <Alert tone="info" title="Assign a Safety Manager"
+      action={<Button size="sm" variant="outline" onClick={() => start('owner')}>Assign Safety Manager</Button>}>
+      <p>Their Safety Manager looks after this driver from now on, starting with the clearance checklist.</p></Alert>}
     {driver.status === 'CLEARED' && driver.hold?.onHold && (heldDocuments.length > 0 || driver.hold.review || driver.hold.test) && <Alert tone="danger" title="On hold: Dispatch can’t assign this driver">
       <ul className="list-disc space-y-1 pl-5">
         {heldDocuments.map(item => <li key={item.key}>{item.text}</li>)}
@@ -187,7 +207,10 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">
         {/* While the driver is being cleared (and after), clearance is the work in hand, so it comes first. */}
-        {driver.clearance && (clearing || driver.clearance.items.length > 0 || driver.clearance.employers.length > 0) && <ClearanceCard driver={driver} canWork={canClear} />}
+        {roadReady && (driver.status === 'CLEARED' || roadReady.groupChanges.length > 0) && <RoadReadyCard driver={driver} ready={roadReady} contracts={driver.contracts ?? []} canWork={canReady && driver.status === 'CLEARED'} opened={readyOpen} onOpen={setReadyOpen} />}
+        {/* A driver added from a paper file was cleared on paper: their paper file takes clearance's place. */}
+        {paperFile ? <PaperFileCard driver={driver} file={paperFile} canWork={canPaper} />
+          : driver.clearance && (clearing || driver.clearance.items.length > 0 || driver.clearance.employers.length > 0) && <ClearanceCard driver={driver} canWork={canClear} />}
         {driver.annualReviews && (driver.status === 'CLEARED' || driver.annualReviews.items.length > 0) && <AnnualReviewCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} />}
         {driver.testing && (driver.status === 'CLEARED' || !!driver.testing.items?.length) && <TestingCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider && !closed} />}
         {driver.incidents && (driver.status === 'CLEARED' || driver.incidents.items.length > 0) && <IncidentsCard driver={driver} canRecord={driver.status === 'CLEARED' && (decider || owns)} canVoid={decider && !closed} />}
@@ -218,22 +241,25 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
         </Card>
       </div>
       <div className="space-y-6 xl:sticky xl:top-20">
-      {driver.clearance && clearing && <ClearanceProgress driver={driver} canWork={canClear} />}
+      {driver.clearance && clearing && !paperFile && <ClearanceProgress driver={driver} canWork={canClear} />}
+      {(clearing || driver.status === 'SCREENING' || driver.status === 'AWAITING_DECISION') && <LicenseRulesCard driver={driver} />}
       {driver.status === 'CLEARED' && driver.assignments && <Card>
         <CardHeader title="Dispatch" />
         <CardBody>{assignment ? <DescriptionList layout="rows" items={[{ label: 'MC', value: assignment.mc }, { label: 'Dispatcher', value: `${assignment.dispatcher}${assignment.team ? ` · ${assignment.team}` : ''}` },
           { label: 'Truck', value: assignment.truck, emptyLabel: 'No truck yet' }, { label: 'Since', value: <LocalTime iso={assignment.startedAt} format="date" /> }]} />
           : <p className="text-sm text-muted-foreground">Waiting for Dispatch to assign an MC and a dispatcher.</p>}</CardBody>
       </Card>}
+      {gettingReady && <Card><CardHeader title="Telegram group" description="One per truck. The workspace can’t create or change groups; it reminds whoever looks after the driver when someone joins or leaves." /></Card>}
+      {paperFile && !closed && <CatchUpCard driver={driver} file={paperFile} canWork={canPaper} onSend={() => start('catchup')} />}
       {driver.reminders && clearing && <RemindersCard driver={driver} onLink={canLinkTelegram ? () => void createTelegramLink() : undefined} pending={linking} />}
       <Card>
         <CardHeader title="Safety people" />
         <CardBody className="space-y-5">
           <DescriptionList layout="rows" items={[{ label: 'Safety lead', value: who(driver.safetyLead), emptyLabel: 'Not set' },
-            { label: 'Safety contact', value: owner ? <>{who(owner.owner) ?? 'A former account'}<span className="block text-[13px] font-normal text-muted-foreground">Since <LocalTime iso={owner.startedAt} format="date" /></span></> : null,
+            { label: 'Safety Manager', value: owner ? <>{who(owner.owner) ?? 'A former account'}<span className="block text-[13px] font-normal text-muted-foreground">Since <LocalTime iso={owner.startedAt} format="date" /></span></> : null,
               emptyLabel: OWNABLE.includes(driver.status) ? 'None yet' : 'Assigned after approval' }]} />
           {screener && OWNABLE.includes(driver.status) && <Button variant="outline" className="w-full" disabled={!staff.length} onClick={() => start('owner')}>
-            <UserCheck aria-hidden="true" className="size-4" />{owner ? 'Change safety contact' : 'Assign safety contact'}</Button>}
+            <UserCheck aria-hidden="true" className="size-4" />{owner ? 'Change Safety Manager' : 'Assign Safety Manager'}</Button>}
           {driver.owners.length > 1 && <div>
             <p className="text-[13px] font-medium text-muted-foreground">Earlier owners</p>
             <ul className="mt-2 space-y-2 text-sm">{driver.owners.filter(row => row.endedAt !== null).map(row => <li key={row.id}>
@@ -252,7 +278,8 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
       openLink={driver.renewals?.find(row => row.kind === renewing.kind)?.link ?? null} initialHow={renewing.how} onClose={() => setRenewing(null)} />}
     {checking && <CheckRenewalDialog driver={renewalDriver} kind={checking.kind} scan={checking.scan} onClose={() => setChecking(null)}
       onUnreadable={() => { setChecking(null); setRenewing({ kind: checking.kind, how: 'link' }); }} />}
-    {action && <Dialog open onClose={() => setAction(null)} busy={pending} title={titles[action]} tone={action === 'withdraw' || action === 'left' ? 'danger' : undefined}
+    {action === 'catchup' && <CatchUpLinkDialog driver={driver} onClose={() => setAction(null)} />}
+    {action && action !== 'catchup' && <Dialog open onClose={() => setAction(null)} busy={pending} title={titles[action]} tone={action === 'withdraw' || action === 'left' ? 'danger' : undefined}
       description={action === 'withdraw' ? 'The record is closed and kept. You can reopen it later.' : action === 'left' ? 'The record is closed and kept. Their owner and dispatch assignment end on the last day, and the dispatcher stops counting them.' : action === 'reopen' ? 'They start again as a lead.' : action === 'owner' ? 'The safety staff member who looks after this driver from now on.' : undefined}
       actions={<Button type="submit" form="driver-action" variant={action === 'withdraw' || action === 'left' ? 'destructive' : 'default'}>{pending ? 'Saving…' : action === 'withdraw' ? 'Withdraw' : action === 'left' ? 'Mark as left' : action === 'reopen' ? 'Reopen' : action === 'owner' ? 'Assign' : 'Save changes'}</Button>}>
       {action === 'edit' ? <DriverForm id="driver-action" driver={driver} leads={screener ? people.leads : undefined} onSubmit={submit} error={error} />
@@ -263,8 +290,8 @@ export function DriverProfileView({ driver, people, screener, decider, owns }: {
             <Textarea label="Why" name="reason" required maxLength={500} rows={3} hint="For example: resigned, contract ended. No health or other private details." />
           </>}
           {action === 'owner' && <>
-            <Select label="Safety staff" name="ownerId" required placeholder="Choose a person" width="full" options={staff.map(person => ({ value: person.id, label: person.name }))} />
-            {owner && <Textarea label="Why the Safety contact is changing" name="reason" required maxLength={500} rows={3} />}
+            <Select label="Safety Manager" name="ownerId" required placeholder="Choose a person" width="full" options={staff.map(person => ({ value: person.id, label: person.name }))} />
+            {owner && <Textarea label="Why the Safety Manager is changing" name="reason" required maxLength={500} rows={3} />}
           </>}
           <Notice message={error} error />
         </form>}

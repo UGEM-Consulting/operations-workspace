@@ -2,18 +2,29 @@ import { Column, CreateDateColumn, Entity, PrimaryColumn, PrimaryGeneratedColumn
 import type { StorageLayout } from '../storage/storage.service';
 import type { SignatureMethod } from '../documents/documents.entity';
 import type { DocumentField } from '../documents/fields';
+import type { LicenseRules } from './license-rules';
 
 /**
- * The driver consent forms Safety publishes. The disclosure is acknowledged as read; the authorization and the
- * Clearinghouse consent are signed. A kind is required from drivers once a version of it is published. The legal text
- * is the PDF's; the workspace stores only its own short statements.
+ * The driver consent forms Safety publishes. The disclosure is acknowledged as read; the others are signed. A kind is
+ * required from the drivers it applies to (their license, license-rules.ts) once a version of it is published: the
+ * Clearinghouse consent and the DOT testing authorization from CDL drivers, the PSP form (FMCSA's exact wording, on its
+ * own) from CDL drivers and anyone who once held a CDL, and the application certification from every driver, signed last.
+ * The legal text is the PDF's; the workspace stores only its own short statements. New kinds go at the end: the publishing
+ * advisory lock uses each kind's position.
  */
-export const CONSENT_KINDS = ['BACKGROUND_DISCLOSURE', 'BACKGROUND_AUTHORIZATION', 'CLEARINGHOUSE_CONSENT'] as const;
+export const CONSENT_KINDS = ['BACKGROUND_DISCLOSURE', 'BACKGROUND_AUTHORIZATION', 'CLEARINGHOUSE_CONSENT', 'PSP_AUTHORIZATION', 'DOT_TESTING_AUTHORIZATION', 'APPLICATION_CERTIFICATION', 'CONTRACTOR_ACKNOWLEDGEMENT'] as const;
 export type ConsentKind = typeof CONSENT_KINDS[number];
-export const CONSENT_RULES: Record<ConsentKind, { label: string; signature: boolean }> = {
- BACKGROUND_DISCLOSURE: { label: 'Background check disclosure', signature: false },
- BACKGROUND_AUTHORIZATION: { label: 'Background check authorization', signature: true },
- CLEARINGHOUSE_CONSENT: { label: 'Clearinghouse consent', signature: true },
+const everyone = () => true;
+// contract: signed per truck by the driver and then the truck owner (section 39, contracts.ts), never in an application or catch-up.
+// application: certifies the application itself, so a driver added from a paper file (no application) is never asked for it.
+export const CONSENT_RULES: Record<ConsentKind, { label: string; signature: boolean; appliesTo: (rules: LicenseRules) => boolean; contract?: true; application?: true }> = {
+ BACKGROUND_DISCLOSURE: { label: 'Background check disclosure', signature: false, appliesTo: everyone },
+ BACKGROUND_AUTHORIZATION: { label: 'Background check authorization', signature: true, appliesTo: everyone },
+ CLEARINGHOUSE_CONSENT: { label: 'Clearinghouse consent', signature: true, appliesTo: rules => rules.clearinghouse },
+ PSP_AUTHORIZATION: { label: 'PSP disclosure and authorization', signature: true, appliesTo: rules => rules.psp },
+ DOT_TESTING_AUTHORIZATION: { label: 'DOT drug and alcohol testing authorization', signature: true, appliesTo: rules => rules.dotTesting },
+ APPLICATION_CERTIFICATION: { label: 'Application certification', signature: true, appliesTo: everyone, application: true },
+ CONTRACTOR_ACKNOWLEDGEMENT: { label: 'Driver and Contractor Acknowledgement', signature: true, appliesTo: () => false, contract: true },
 };
 
 /** A published consent form version. Immutable (a database trigger refuses changes); a new upload is a new version. */

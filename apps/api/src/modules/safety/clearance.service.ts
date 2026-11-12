@@ -1,10 +1,12 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { Role, User } from '../users/user.entity';
 import { AddEmployerDto, ClearanceItemDto, UpdateEmployerDto } from './clearance.dto';
 import { DriverVersionDto } from './driver-application.dto';
+import { startRoadReady } from './road-ready';
 import { driverEvent, lockOpenDriver, ownsDriver, writeDriver } from './driver-records';
-import { CLEARANCE_ITEMS, CLEARANCE_OPTIONAL, CLEARANCE_RESULTS, type ClearanceKey, type ClearanceStatus, Driver, DriverClearanceItem, DriverPreviousEmployer, everifyNeeded } from './safety.entity';
+import { driverLicenseRules, type LicenseRules } from './license-rules';
+import { CLEARANCE_ITEMS, CLEARANCE_OPTIONAL, CLEARANCE_RESULTS, type ClearanceKey, type ClearanceStatus, Driver, DriverClearanceItem, DriverPreviousEmployer, DriverReport, everifyNeeded } from './safety.entity';
 import { addDays, usDay } from './screening-rules';
 
 /** Who may run clearance besides the driver's current owner. */
@@ -26,19 +28,28 @@ function employersProblem(status: string, employers: EmployerAnswers[]): string 
  * What still stands between an approved driver and Cleared, as codes the web turns into words: `owner` (no active safety
  * staff owner), `clearance:<KEY>` (an item not completed or not needed), `expired:<KEY>` (done, but more than a year ago)
  * and `employers` (the item is done but an employer added or changed since doesn't allow it). Empty means ready. E-Verify
- * counts only for a company driver (everifyNeeded), and a case doesn't go out of date.
+ * counts only for a company driver (everifyNeeded), and a case doesn't go out of date. The license decides the rest
+ * (license-rules.ts): the Clearinghouse query only for CDL drivers, the road test only for a DL (a CDL is accepted in its
+ * place, with nothing to record), and `clearance:PSP` while a driver who needs a PSP report has none on file (`expired:PSP`
+ * once the one on file was pulled more than a year ago, like the other dated items).
  */
-export function clearanceGaps(items: { key: string; status: string; doneOn: string | null }[], hasOwner: boolean, employers: EmployerAnswers[], driver: { driverType: Driver['driverType'] }): string[] {
+export function clearanceGaps(items: { key: string; status: string; doneOn: string | null }[], hasOwner: boolean, employers: EmployerAnswers[], driver: { driverType: Driver['driverType'] },
+ rules: LicenseRules, psp: { pulledOn: string } | null): string[] {
  const gaps = hasOwner ? [] : ['owner'], oldest = oldestDate();
  for (const key of CLEARANCE_ITEMS) {
   if (key === 'E_VERIFY' && !everifyNeeded(driver)) continue;
+  if ((key === 'CLEARINGHOUSE' && !rules.clearinghouse) || (key === 'ROAD_TEST' && rules.roadTestAccepted)) continue;
   const item = items.find(row => row.key === key);
   if (item?.status !== 'COMPLETED' && item?.status !== 'NOT_NEEDED') gaps.push(`clearance:${key}`);
   else if (key !== 'E_VERIFY' && item.doneOn && item.doneOn < oldest) gaps.push(`expired:${key}`);
   else if (key === 'PREVIOUS_EMPLOYERS' && employersProblem(item.status, employers)) gaps.push('employers');
  }
+ if (rules.psp && !psp) gaps.push('clearance:PSP');
+ else if (rules.psp && psp!.pulledOn < oldest) gaps.push('expired:PSP');
  return gaps;
 }
+/** The current PSP report on file for the driver, if any. */
+export const currentPsp = (em: EntityManager, driverId: string) => em.getRepository(DriverReport).findOneBy({ driverId, kind: 'PSP', replacedAt: IsNull() });
 
 /** Whether the driver's current owner can still look after them: an active account that is still safety staff. */
 export async function hasActiveOwner(em: EntityManager, driverId: string): Promise<boolean> {
@@ -62,6 +73,11 @@ export class ClearanceService {
   const item = key as ClearanceKey, results = CLEARANCE_RESULTS[item];
   return this.write(user, id, dto.version, async (em, driver) => {
    if (item === 'E_VERIFY' && !everifyNeeded(driver)) throw new BadRequestException('Owner-operators aren’t UGEM employees, so E-Verify isn’t needed for them.');
+   const rules = await driverLicenseRules(em, id);
+   if (item === 'CLEARINGHOUSE' && !rules.clearinghouse) throw new BadRequestException('Only CDL drivers need a Clearinghouse query.');
+   if (item === 'ROAD_TEST' && rules.roadTestAccepted) throw new BadRequestException('A CDL is accepted in place of a road test.');
+   // A DL driver's road test is recorded with its signed certificate (LicenseItemsService.recordRoadTest).
+   if (item === 'ROAD_TEST' && (dto.status === 'COMPLETED' || dto.status === 'NOT_NEEDED')) throw new BadRequestException('Record the road test with its signed certificate. A regular license can’t stand in for it.');
    const items = em.getRepository(DriverClearanceItem), note = dto.note || null;
    let status: ClearanceStatus | null, result: string | null = null;
    if (results) {
@@ -144,11 +160,14 @@ export class ClearanceService {
  async clear(user: User, id: string, dto: DriverVersionDto) {
   return this.write(user, id, dto.version, async (em, driver) => {
    const items = await em.getRepository(DriverClearanceItem).findBy({ driverId: id });
-   const missing = clearanceGaps(items, await hasActiveOwner(em, id), await em.getRepository(DriverPreviousEmployer).findBy({ driverId: id }), driver);
-   if (missing.length) throw new BadRequestException({ message: missing.includes('owner') ? 'Assign an active safety staff owner first.' : 'Finish every clearance item first.', missing });
+   const missing = clearanceGaps(items, await hasActiveOwner(em, id), await em.getRepository(DriverPreviousEmployer).findBy({ driverId: id }), driver,
+    await driverLicenseRules(em, id), await currentPsp(em, id));
+   if (missing.length) throw new BadRequestException({ message: missing.includes('owner') ? 'Assign an active Safety Manager first.' : 'Finish every clearance item first.', missing });
    const now = new Date();
    await em.getRepository(Driver).update(id, { status: 'CLEARED', clearedAt: now, clearedBy: user.id, version: driver.version + 1 });
    await driverEvent(em, user.id, id, 'CLEARED', {});
+   // Ready for the road starts here (section 39); it never holds the driver for Dispatch.
+   await startRoadReady(em, id);
    return { id, version: driver.version + 1 };
   });
  }
@@ -157,9 +176,9 @@ export class ClearanceService {
  private write<T>(user: User, id: string, version: number, work: (em: EntityManager, driver: Driver) => Promise<T>) {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, version);
-   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety contact and the Safety manager can work on clearance.');
+   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety Manager and the Safety Director can work on clearance.');
    if (driver.status === 'CLEARED') throw new ConflictException('This driver is already cleared.');
-   if (driver.status !== 'APPROVED') throw new ConflictException('Clearance starts once the Safety manager approves the driver.');
+   if (driver.status !== 'APPROVED') throw new ConflictException('Clearance starts once the Safety Director approves the driver.');
    return work(em, driver);
   });
  }

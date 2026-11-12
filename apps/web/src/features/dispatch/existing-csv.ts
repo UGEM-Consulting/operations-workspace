@@ -16,7 +16,7 @@ export function parseCsv(text: string): string[][] {
   return parseRows(text).map(row => row.cells);
 }
 /** The rows with something in them, each with its spreadsheet row number: blank rows count, and a line break inside quotes stays in its row. */
-function parseRows(text: string): { number: number; cells: string[] }[] {
+export function parseRows(text: string): { number: number; cells: string[] }[] {
   const rows: { number: number; cells: string[] }[] = [];
   let row: string[] = [], field = '', quoted = false, number = 0;
   const finish = () => { row.push(field); field = ''; number += 1; if (row.some(cell => cell.trim())) rows.push({ number, cells: row }); row = []; };

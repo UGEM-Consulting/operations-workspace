@@ -23,7 +23,9 @@ export const DRIVER_EVENTS = ['CREATED', 'UPDATED', 'WITHDRAWN', 'REOPENED', 'SA
  'SCREENING_CHECKED', 'MVR_UPLOADED', 'MVR_VIEWED', 'CORRECTIONS_REQUESTED', 'SENT_FOR_DECISION', 'APPROVED', 'MORE_INFO_REQUESTED', 'PRE_ADVERSE_RECORDED', 'REJECTED', 'CONSENT_SIGNED',
  'CLEARANCE_RECORDED', 'EMPLOYER_RECORDED', 'CLEARED', 'DISPATCH_ASSIGNED', 'LEFT', 'ANNUAL_REVIEW_RECORDED', 'TEST_RECORDED', 'TEST_VOIDED', 'INCIDENT_RECORDED', 'INCIDENT_UPDATED', 'INCIDENT_VOIDED', 'TRUCK_SAVED', 'OWNER_DOCUMENT_UPLOADED', 'OWNER_DOCUMENT_VIEWED',
  'RENEWAL_LINK_SENT', 'RENEWAL_LINK_CANCELLED', 'RENEWAL_OPENED', 'DOCUMENT_RENEWED', 'DOCUMENT_UNREADABLE', 'NOTICE_LETTER_DOWNLOADED',
- 'TELEGRAM_LINK_CREATED', 'TELEGRAM_CONNECTED', 'TELEGRAM_STOPPED'] as const;
+ 'TELEGRAM_LINK_CREATED', 'TELEGRAM_CONNECTED', 'TELEGRAM_STOPPED', 'PSP_UPLOADED', 'PSP_VIEWED', 'ROAD_TEST_RECORDED',
+ 'EXISTING_ADDED', 'PAPER_ITEM_RECORDED', 'CATCH_UP_LINK_SENT', 'CATCH_UP_LINK_CANCELLED', 'CATCH_UP_OPENED', 'CATCH_UP_SENT',
+ 'CONTRACT_LINK_SENT', 'CONTRACT_OPENED', 'CONTRACT_SIGNED', 'OWNER_LINK_SENT', 'OWNER_SIGNED', 'CONTRACT_CANCELLED', 'ROAD_READY_RECORDED', 'GROUP_UPDATED'] as const;
 export type DriverEventType = typeof DRIVER_EVENTS[number];
 export const US_STATES = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS',
  'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'] as const;
@@ -91,7 +93,12 @@ export interface DriverApplicationFields {
  addressLine1?: string; addressLine2?: string; city?: string; state?: string; zip?: string;
  emergencyName?: string; emergencyRelationship?: string; emergencyPhone?: string;
  licenseNumber?: string; licenseState?: string; licenseClass?: LicenseType; licenseExpiresOn?: string;
+ // Section 39, from Safety's paper packet: other names used, whether they ever held a CDL (decides the PSP report), English
+ // for the job (391.11(b)(2)), the medical examiner and their National Registry number, and for CDL drivers the DOT
+ // pre-employment questions (a positive or refused test in the last 2 years; a current return-to-duty or follow-up plan).
+ otherNames?: string; everHeldCdl?: YesNo; englishOk?: YesNo; examinerName?: string; examinerRegistry?: string; dotPositive?: YesNo; dotFollowUp?: YesNo;
 }
+export type YesNo = 'YES' | 'NO';
 export const REQUIRED_DRIVER_FIELDS = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip',
  'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'] as const;
 
@@ -109,8 +116,10 @@ export class DriverLink {
  @Column('timestamptz', { nullable: true }) completedAt!: Date | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  // An application link, or a link to scan one renewed document (completedAt is when the driver sent it).
- @Column('varchar', { default: 'APPLICATION' }) purpose!: 'APPLICATION' | 'RENEWAL';
+ @Column('varchar', { default: 'APPLICATION' }) purpose!: 'APPLICATION' | 'RENEWAL' | 'CATCH_UP' | 'CONTRACT' | 'CONTRACT_OWNER';
  @Column('varchar', { nullable: true }) documentKind!: RenewalKind | null;
+ // The acknowledgement a CONTRACT or CONTRACT_OWNER link signs (section 39).
+ @Column('uuid', { nullable: true }) contractId!: string | null;
 }
 
 /** One emailed code request. Unmatched requests are stored too (no link, no code) so every request writes the same. */
@@ -144,7 +153,11 @@ export class DriverApplication {
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }
 
-export const DRIVER_DOCUMENT_KINDS = ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'] as const;
+// RETURN_TO_DUTY: a CDL driver's return-to-duty or follow-up papers after a Yes to a DOT question. Like test results, only
+// the Safety manager, administrators and the driver's Safety contact see them (TestingService.canSee).
+export const DRIVER_DOCUMENT_KINDS = ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION', 'RETURN_TO_DUTY'] as const;
+/** Documents Safety checks (number, expiry) before a decision; never the return-to-duty papers, which the decider reads. */
+export const CHECKED_DOCUMENT_KINDS: readonly DriverDocumentKind[] = ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'];
 export type DriverDocumentKind = typeof DRIVER_DOCUMENT_KINDS[number];
 /** The driver chooses which work-authorization document to provide; Safety never demands a specific one. */
 export const WORK_AUTHORIZATION_TYPES = ['US_PASSPORT', 'GREEN_CARD', 'WORK_PERMIT', 'OTHER'] as const;
@@ -155,10 +168,22 @@ export const NOT_RECHECKED: readonly WorkAuthorizationType[] = ['US_PASSPORT', '
 /** Documents renewed once the driver is approved or cleared (an expired one puts a cleared driver on hold). */
 export const RENEWAL_KINDS = ['LICENSE', 'MEDICAL_CARD'] as const;
 export type RenewalKind = typeof RENEWAL_KINDS[number];
-export const DOCUMENT_SEGMENTS: Record<string, DriverDocumentKind> = { license: 'LICENSE', 'medical-card': 'MEDICAL_CARD', 'work-authorization': 'WORK_AUTHORIZATION' };
-/** Documents needed before submitting: the license and work authorization, and a medical card for CDL drivers. */
+export const DOCUMENT_SEGMENTS: Record<string, DriverDocumentKind> = { license: 'LICENSE', 'medical-card': 'MEDICAL_CARD', 'work-authorization': 'WORK_AUTHORIZATION', 'return-to-duty': 'RETURN_TO_DUTY' };
+/**
+ * Documents needed before submitting: the license, the medical card (every driver drives a commercial vehicle, a 26,000 lb
+ * pickup and trailer included) and work authorization, and the return-to-duty papers after a Yes to a DOT question.
+ */
 export function requiredDriverDocuments(fields: DriverApplicationFields): DriverDocumentKind[] {
- return ['LICENSE', ...(fields.licenseClass && fields.licenseClass !== 'DL' ? ['MEDICAL_CARD' as const] : []), 'WORK_AUTHORIZATION'];
+ return ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION', ...(dotPapersNeeded(fields) ? ['RETURN_TO_DUTY' as const] : [])];
+}
+const cdlClass = (fields: DriverApplicationFields) => !!fields.licenseClass && fields.licenseClass !== 'DL';
+export const dotPapersNeeded = (fields: DriverApplicationFields) => cdlClass(fields) && (fields.dotPositive === 'YES' || fields.dotFollowUp === 'YES');
+/** The section 39 answers a submission needs: the DOT questions from CDL drivers, and whether a DL driver ever held a CDL. */
+export function packetAnswersMissing(fields: DriverApplicationFields): string[] {
+ const missing: string[] = (['englishOk', 'examinerName', 'examinerRegistry'] as const).filter(key => !fields[key]);
+ if (fields.licenseClass === 'DL' && !fields.everHeldCdl) missing.push('everHeldCdl');
+ if (cdlClass(fields)) missing.push(...(['dotPositive', 'dotFollowUp'] as const).filter(key => !fields[key]));
+ return missing;
 }
 
 /** A scanned document: the driver's photographed pages as one PDF in private storage. */
@@ -168,9 +193,11 @@ export class DriverDocument {
  @Column('uuid') driverId!: string;
  @Column('varchar') kind!: DriverDocumentKind;
  @Column('varchar', { nullable: true }) subtype!: WorkAuthorizationType | null;
+ // A date typed from a paper file (existing drivers) has no file: no fingerprint, size or pages, and is checked already.
+ @Column('varchar', { length: 64, nullable: true }) sha256!: string | null;
+ @Column('integer', { nullable: true }) byteSize!: number | null;
+ @Column('boolean', { default: false }) fromPaper!: boolean;
  @Column('smallint') pageCount!: number;
- @Column('varchar', { length: 64 }) sha256!: string;
- @Column('integer') byteSize!: number;
  @Column('timestamptz') createdAt!: Date;
  @Column('timestamptz', { nullable: true }) replacedAt!: Date | null;
  @Column('smallint', { default: 1 }) storageLayout!: StorageLayout;
@@ -209,7 +236,8 @@ export class DriverScreeningCheck {
 export class DriverReport {
  @PrimaryColumn('uuid') id!: string;
  @Column('uuid') driverId!: string;
- @Column('varchar') kind!: 'MVR' | 'ANNUAL_MVR';
+ // PSP: FMCSA's crash and inspection report (section 39); ROAD_TEST: a DL driver's signed road test certificate.
+ @Column('varchar') kind!: 'MVR' | 'ANNUAL_MVR' | 'PSP' | 'ROAD_TEST';
  @Column('date') pulledOn!: string;
  @Column('smallint') pageCount!: number;
  @Column('varchar', { length: 64 }) sha256!: string;
@@ -315,6 +343,9 @@ export class DriverAssignment {
  @Column('uuid') mcId!: string;
  @Column('uuid') memberId!: string;
  @Column('varchar', { length: 40, nullable: true }) truck!: string | null;
+ // The truck and trailer from Units (section 34); truck keeps the number as text for older readers.
+ @Column('uuid', { nullable: true }) unitId!: string | null;
+ @Column('uuid', { nullable: true }) trailerId!: string | null;
  @Column('timestamptz') startedAt!: Date;
  @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
  @Column('varchar', { length: 500, nullable: true }) reason!: string | null;

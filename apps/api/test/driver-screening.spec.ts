@@ -1,5 +1,6 @@
+import { paperKeys } from '../src/modules/safety/existing-drivers';
 import { ADVERSE_WAIT_BUSINESS_DAYS, earliestFinalRejection } from '../src/modules/safety/safety.entity';
-import { addDays, usDay } from '../src/modules/safety/screening-rules';
+import { addDays, missingForDecision, usDay } from '../src/modules/safety/screening-rules';
 
 describe('the waiting period after a pre-adverse notice', () => {
   it('counts business days, skipping weekends', () => {
@@ -21,5 +22,22 @@ describe('dates as the mainland US sees them', () => {
     expect([usDay('latest', overnight), usDay('earliest', overnight)]).toEqual(['2026-11-09', '2026-11-08']);
     expect(addDays('2026-11-01', -30)).toBe('2026-10-02');
     expect(addDays('2026-12-31', 1)).toBe('2027-01-01');
+  });
+});
+
+describe('scans a decision waits for', () => {
+  const screened = (licenseClass: 'CDL_A' | 'DL', scannedKinds: string[], verifiedKinds: string[]) => missingForDecision({ application: { status: 'SUBMITTED', fields: { licenseClass } },
+    checkKeys: ['IDENTITY', 'PHONE_SCREEN', 'EXPERIENCE', 'HISTORY', 'MVR'], hasMvr: true, verifiedKinds, scannedKinds }, true);
+  it('holds a DL driver who sent no medical card before every license needed one only once a card is scanned', () => {
+    expect(screened('DL', ['LICENSE', 'WORK_AUTHORIZATION'], ['LICENSE', 'WORK_AUTHORIZATION'])).toEqual([]);
+    expect(screened('DL', ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'], ['LICENSE', 'WORK_AUTHORIZATION'])).toEqual(['document:MEDICAL_CARD']);
+    expect(screened('CDL_A', ['LICENSE', 'WORK_AUTHORIZATION'], ['LICENSE', 'WORK_AUTHORIZATION'])).toEqual(['document:MEDICAL_CARD']);
+  });
+});
+
+describe('the paper file a driver added from paper is checked against', () => {
+  it('asks every driver for the pre-employment drug test, as clearance does, and the Clearinghouse only with a CDL', () => {
+    expect(paperKeys({ driverType: 'COMPANY', licenseType: 'DL' })).toEqual(['APPLICATION', 'MVR_AT_HIRE', 'ROAD_TEST', 'PREVIOUS_EMPLOYERS', 'DRUG_TEST', 'MEDICAL_REGISTRY', 'E_VERIFY']);
+    expect(paperKeys({ driverType: 'OWNER_OPERATOR', licenseType: 'CDL_A' })).toEqual(['APPLICATION', 'MVR_AT_HIRE', 'ROAD_TEST', 'PREVIOUS_EMPLOYERS', 'DRUG_TEST', 'CLEARINGHOUSE', 'MEDICAL_REGISTRY']);
   });
 });

@@ -24,6 +24,9 @@ const LETTERS = `SELECT id FROM driver_notice_letters WHERE id = ANY($1::uuid[])
 // A paper NDA or SOP scan (every scan is kept, replaced ones included); only a file no row names is a leftover: an upload
 // refused after storing its file whose own removal failed.
 const PAPER_SCANS = `SELECT id FROM member_paper_scans WHERE id = ANY($1::uuid[])`;
+// A copy of a unit's paper (every copy is kept, replaced ones included); only a file no row names is a leftover.
+const UNIT_FILES = `SELECT id FROM unit_files WHERE id = ANY($1::uuid[])`;
+const OWNER_CONTRACTS = `SELECT id FROM owner_contract_files WHERE id = ANY($1::uuid[])`;
 /**
  * Each listed prefix, and which file patterns under it are swept against which rows (both storage layouts). The captured
  * group is the record ID. A file matching no pattern, such as a saved signed copy under drivers/<driver>/signed/, is never touched.
@@ -39,6 +42,8 @@ const SWEPT = [
  { prefix: 'company-documents/driver-consents/', rules: [{ pattern: new RegExp(`^company-documents/driver-consents/${S}/(${U})\\.pdf$`), kept: CONSENTS }] },
  { prefix: 'company-documents/notice-letters/', rules: [{ pattern: new RegExp(`^company-documents/notice-letters/${S}/(${U})\\.pdf$`), kept: LETTERS }] },
  { prefix: 'members/', rules: [{ pattern: new RegExp(`^members/${U}/paper/${S}/(${U})\\.pdf$`), kept: PAPER_SCANS }] },
+ { prefix: 'units/', rules: [{ pattern: new RegExp(`^units/${U}/${S}/(${U})\\.pdf$`), kept: UNIT_FILES }] },
+ { prefix: 'truck-owners/', rules: [{ pattern: new RegExp(`^truck-owners/${U}/contracts/${S}/(${U})\\.pdf$`), kept: OWNER_CONTRACTS }] },
 ] as const;
 
 /**

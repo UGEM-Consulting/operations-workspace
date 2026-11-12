@@ -68,7 +68,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     return (await scan(agent, 'work-authorization', { pages: [page()], subtype: 'GREEN_CARD' }).expect(201)).body;
   }
   const complete = { legalFirstName: 'Jordan', legalLastName: 'Wheeler', dateOfBirth: '1988-04-12', phone: '555 010 2000', addressLine1: '100 Fictional Way', city: 'Austin', state: 'tx',
-    zip: '73301', emergencyName: 'Casey Wheeler', emergencyRelationship: 'Sibling', emergencyPhone: '555 010 3000', licenseNumber: 'd1234567', licenseState: 'TX', licenseClass: 'CDL_A', licenseExpiresOn: '2030-01-31' };
+    zip: '73301', emergencyName: 'Casey Wheeler', emergencyRelationship: 'Sibling', emergencyPhone: '555 010 3000', licenseNumber: 'd1234567', licenseState: 'TX', licenseClass: 'CDL_A', licenseExpiresOn: '2030-01-31',
+    englishOk: 'YES', examinerName: 'Dr. Ana Fields', examinerRegistry: '1234567890', dotPositive: 'NO', dotFollowUp: 'NO' };
   // A complete address and work history, in months relative to now: addresses and jobs reach back far enough, no gaps.
   const now = () => usDay('latest').slice(0, 7);
   const history = () => ({ currentSince: addMonths(now(), -20), addresses: [{ id: randomUUID(), line1: '12 Example Rd', city: 'Tulsa', state: 'OK', zip: '74103', fromMonth: addMonths(now(), -60), toMonth: addMonths(now(), -21) }],
@@ -131,7 +132,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       const me = (await agents[key].get('/api/auth/me').set(headers).expect(200)).body;
       expect(me.landingPage).toBe('/safety/drivers');
       // Every Safety role reads the consent forms; only the Safety manager publishes them.
-      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'trucks', 'expiring', 'consents', 'security']);
+      expect(me.navigation.map((item: { key: string }) => item.key)).toEqual(['drivers', 'units', 'expiring', 'consents', 'security']);
     }
     expect((await agents.admin.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toContain('drivers');
     await agents.dispatch.get('/api/safety/drivers').set(headers).expect(403);
@@ -194,13 +195,13 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
 
   it('assigns a safety staff owner only after approval, keeping each owner as history and requiring a reason to change', async () => {
     const { id } = (await add(agents.lead).expect(201)).body;
-    expect((await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(409)).body.message).toMatch(/once the Safety manager approves/);
+    expect((await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(409)).body.message).toMatch(/once the Safety Director approves/);
     await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
     await agents.staff.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(403);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.lead.id }).expect(400);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201);
     await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff.id, reason: 'Again' }).expect(400);
-    expect((await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id }).expect(400)).body.message).toBe('Say why the driver’s Safety contact is changing.');
+    expect((await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id }).expect(400)).body.message).toBe('Say why the driver’s Safety Manager is changing.');
     await agents.manager.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 2, ownerId: users.staff2.id, reason: 'Balancing workloads' }).expect(201);
     const record = await driver(id);
     expect(record.owner).toMatchObject({ id: users.staff2.id });
@@ -290,7 +291,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   it('submits a complete application once: the link closes and the driver moves to Screening', async () => {
     const { id, token, agent } = await applying();
     const missing = (await agent.post('/api/driver/application/submit').set(headers).send({ version: 1, fields: {} }).expect(400)).body;
-    expect(missing.missing).toEqual(['dateOfBirth', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseExpiresOn', 'ssn',
+    expect(missing.missing).toEqual(['dateOfBirth', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone', 'licenseNumber', 'licenseExpiresOn', 'englishOk', 'examinerName', 'examinerRegistry', 'dotPositive', 'dotFollowUp', 'ssn',
       'LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION', 'history:currentSince', `history:gap:${addMonths(now(), -35)}_${now()}`, 'history:driving', 'history:accidents', 'history:tickets',
       'history:licenses', 'history:licenseTrouble']);
     await scanAll(agent);
@@ -389,8 +390,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await agent.get(`/api/driver/documents/${original}/file`).set(headers).expect(404);
     expect((await db.query(`SELECT count(*)::integer AS n FROM driver_documents WHERE "driverId" = $1`, [id]))[0].n).toBe(2);
     expect((await events(id)).filter(row => row.event === 'DOCUMENT_UPLOADED').map(row => row.metadata)).toEqual([{ kind: 'LICENSE', pages: 2 }, { kind: 'LICENSE', pages: 1 }]);
-    // A regular license needs no medical card.
-    expect((await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { licenseClass: 'DL' } }).expect(200)).body.requiredDocuments).toEqual(['LICENSE', 'WORK_AUTHORIZATION']);
+    // A pickup with its trailer is a commercial vehicle too, so a regular license still needs a medical card (section 39).
+    expect((await agent.patch('/api/driver/application').set(headers).send({ version: 1, fields: { licenseClass: 'DL' } }).expect(200)).body.requiredDocuments).toEqual(['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION']);
   });
 
   it('shows scans to Safety and lets screeners or the owner record what a submitted document shows', async () => {
@@ -656,13 +657,15 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await addTruck(agents.lead, 2, { unit: ' ' }).expect(400);
     await addTruck(agents.lead, 1).expect(409);
     expect((await addTruck(agents.staff, 2).expect(201)).body.version).toBe(3);
+    // A truck added here is a unit, so its number follows the Units rule: one current unit per number.
+    expect((await addTruck(agents.lead, 3, { vin: '2FUJGLLB5CLDF5678' }).expect(409)).body.message).toMatch(/Unit T-101 is already on the list/);
     const trucks = async () => (await driver(id)).trucks.items as { id: string; vin: string; plate: string; plateState: string; documents: { id: string; kind: string; expiresOn: string | null }[]; archivedAt: string | null }[];
     expect((await trucks())[0]).toMatchObject({ vin: '1FUJGLLB5CLDF1234', plate: 'ABC1234', plateState: 'TX', documents: [] });
     const truckId = (await trucks())[0].id;
     // The same VIN can't be listed twice while the first is current.
     const other = (await add(agents.lead, { ...lead, phone: '+1 (555) 010-2999', email: 'other.driver@example.test' }).expect(201)).body.id;
     await db.query(`UPDATE drivers SET status = 'APPROVED', version = 2 WHERE id = $1`, [other]);
-    expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck }).expect(409)).body.message).toMatch(/already has this VIN/);
+    expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck, unit: 'T-102' }).expect(409)).body.message).toMatch(/already has this VIN/);
     // Only owner-operators keep trucks.
     await db.query(`UPDATE drivers SET "driverType" = 'COMPANY' WHERE id = $1`, [other]);
     expect((await agents.lead.post(`/api/safety/drivers/${other}/trucks`).set(headers).send({ version: 2, ...truck, vin: '2FUJGLLB5CLDF1234' }).expect(409)).body.message).toMatch(/owner-operators/);
@@ -679,6 +682,13 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect((await upload(agents.staff, 3).expect(201)).body.version).toBe(4);
     await upload(agents.lead, 4, { kind: 'LEASE', expiresOn: undefined }).expect(201);
     await upload(agents.lead, 5, { kind: 'REGISTRATION', expiresOn: addDays(day, 300) }).expect(201);
+    // Units shows the registration on file, as Expiring documents does, over a date the Units migration copied; it's
+    // changed by uploading a newer one. Each write moved the unit's version on, so a page open on Units can't overwrite it.
+    await db.query(`UPDATE driver_trucks SET "registrationExpiresOn" = $2 WHERE id = $1`, [truckId, addDays(day, 10)]);
+    const onUnits = (await agents.lead.get(`/api/safety/units/${truckId}`).set(headers).expect(200)).body;
+    expect(onUnits).toMatchObject({ registrationExpiresOn: addDays(day, 300), version: 4 });
+    expect((await agents.lead.post(`/api/safety/units/${truckId}/dates`).set(headers).send({ version: 4, registrationExpiresOn: addDays(day, 400) }).expect(409)).body.message).toMatch(/Upload the new registration/);
+    await db.query(`UPDATE driver_trucks SET "registrationExpiresOn" = NULL WHERE id = $1`, [truckId]);
     const docs = (await trucks())[0].documents;
     expect(docs.map(row => row.kind).sort()).toEqual(['INSURANCE', 'LEASE', 'REGISTRATION']);
     const insurance = docs.find(row => row.kind === 'INSURANCE')!.id;
@@ -701,6 +711,26 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     // Events name the action or kind only.
     expect((await events(id)).filter(row => /^(TRUCK|OWNER_DOCUMENT)/.test(row.event)).map(row => [row.event, row.metadata]).slice(0, 2)).toEqual([['TRUCK_SAVED', { action: 'added' }], ['OWNER_DOCUMENT_UPLOADED', { kind: 'INSURANCE' }]]);
     expect(JSON.stringify(await events(id))).not.toMatch(/1FUJGL|ABC1234|Freightliner/);
+    // Units follows the same rule for an owner-operator's truck: their Safety Manager (not another) adds it, and the
+    // driver record's version and history move with it.
+    const unitBody = { number: '640', kind: 'SEMI', driverId: id, vin: '3FUJGLLB5CLDF1234', year: 2020, make: 'Volvo' };
+    await agents.staff2.post('/api/safety/units').set(headers).send(unitBody).expect(403);
+    const added = (await agents.staff.post('/api/safety/units').set(headers).send(unitBody).expect(201)).body;
+    const record = await driver(id);
+    expect(record.version).toBe(9);
+    await agents.staff.post(`/api/safety/drivers/${id}/trucks/${added.id}/documents`).set(headers).send({ version: 9, kind: 'REGISTRATION', file, expiresOn: addDays(day, 20) }).expect(201);
+    // Moving it to a truck owner leaves the owner-operator's papers behind, so the unit's own registration shows again.
+    const leasing = (await agents.lead.post('/api/safety/owners').set(headers).send({ name: 'Prairie Leasing LLC' }).expect(201)).body;
+    await db.query(`UPDATE driver_trucks SET "registrationExpiresOn" = $2 WHERE id = $1`, [added.id, addDays(day, 200)]);
+    await agents.lead.patch(`/api/safety/units/${added.id}`).set(headers).send({ ...unitBody, version: 2, driverId: undefined, ownerId: leasing.id }).expect(200);
+    expect((await agents.staff.get(`/api/safety/units/${added.id}`).set(headers).expect(200)).body).toMatchObject({ registrationExpiresOn: addDays(day, 200), ownerDocuments: [] });
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.filter((row: { truck: string | null }) => row.truck === '640')).toEqual([]);
+    expect((await events(id)).filter(row => row.event === 'TRUCK_SAVED').map(row => row.metadata).slice(-2)).toEqual([{ action: 'added' }, { action: 'moved' }]);
+    // A file naming the owner-operator follows the same rule, with the same record on the driver.
+    const fileRows = [{ row: 2, number: '641', type: 'Semi truck', year: '2021', make: 'Volvo', vin: '3FUJGLLB5CLDF5641', owner: 'Jordan Wheeler' }];
+    await agents.staff2.post('/api/safety/units/add').set(headers).send({ rows: fileRows }).expect(403);
+    expect((await agents.staff.post('/api/safety/units/add').set(headers).send({ rows: fileRows }).expect(201)).body).toMatchObject({ added: 1 });
+    expect((await events(id)).filter(row => row.event === 'TRUCK_SAVED').map(row => row.metadata).slice(-1)).toEqual([{ action: 'added' }]);
   });
 
   it('reopens a submitted application when a withdrawn driver gets a new link, keeping verified scans', async () => {
@@ -1014,7 +1044,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const list = (await agents.lead.get('/api/safety/consents').set(headers).expect(200)).body;
     expect(list).toMatchObject({ storageEnabled: true, canPublish: false });
     expect(list.kinds.map((kind: { kind: string; signature: boolean; versions: unknown[] }) => [kind.kind, kind.signature, kind.versions.length]))
-      .toEqual([['BACKGROUND_DISCLOSURE', false, 0], ['BACKGROUND_AUTHORIZATION', true, 2], ['CLEARINGHOUSE_CONSENT', true, 0]]);
+      .toEqual([['BACKGROUND_DISCLOSURE', false, 0], ['BACKGROUND_AUTHORIZATION', true, 2], ['CLEARINGHOUSE_CONSENT', true, 0], ['PSP_AUTHORIZATION', true, 0],
+        ['DOT_TESTING_AUTHORIZATION', true, 0], ['APPLICATION_CERTIFICATION', true, 0], ['CONTRACTOR_ACKNOWLEDGEMENT', true, 0]]);
     expect((await agents.manager.get('/api/safety/consents').set(headers).expect(200)).body.canPublish).toBe(true);
     await agents.staff.get(`/api/safety/consents/${first.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
     await expect(db.query(`UPDATE driver_consent_documents SET title = 'Changed' WHERE id = $1`, [first.id])).rejects.toThrow(/append-only/);
@@ -1098,6 +1129,14 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     // With the authorization signed here, the MVR needs no paper confirmation.
     await agents.lead.post(`/api/safety/drivers/${id}/mvr`).set(headers).send({ version: record.version, file: await mvrPdf(), pulledOn: today() }).expect(201);
     expect((await driver(id)).screening.mvr).toMatchObject({ authorization: 'SIGNED' });
+    // A driver's link opens only the forms their license calls for, never the truck owner's acknowledgement.
+    const acknowledgement = await publish(agents.manager, 'CONTRACTOR_ACKNOWLEDGEMENT', 201, 'Fictional acknowledgement');
+    await agent.get(`/api/driver/consents/${acknowledgement.id}/file`).set(headers).expect(404);
+    const clearinghouse = await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201, 'Fictional Clearinghouse consent');
+    await agent.get(`/api/driver/consents/${clearinghouse.id}/file`).set(headers).expect(200);
+    await db.query(`UPDATE driver_applications SET fields = fields || '{"licenseClass":"DL"}' WHERE "driverId" = $1`, [id]);
+    await agent.get(`/api/driver/consents/${clearinghouse.id}/file`).set(headers).expect(404);
+    await db.query(`UPDATE driver_applications SET fields = fields || '{"licenseClass":"CDL_A"}' WHERE "driverId" = $1`, [id]);
   });
 
   it('uploads an MVR only with the driver’s signed authorization or a confirmed paper one', async () => {
@@ -1150,7 +1189,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id } = (await add(agents.lead).expect(201)).body;
     const item = (agent: Agent, key: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/clearance/${key}`).set(headers).send(body);
     const employer = (agent: Agent, path: string, body: Record<string, unknown>) => agent.post(`/api/safety/drivers/${id}/employers${path}`).set(headers).send(body);
-    expect((await item(agents.manager, 'DRUG_TEST', { version: 1, result: 'NEGATIVE', doneOn: today() }).expect(409)).body.message).toMatch(/once the Safety manager approves/);
+    expect((await item(agents.manager, 'DRUG_TEST', { version: 1, result: 'NEGATIVE', doneOn: today() }).expect(409)).body.message).toMatch(/once the Safety Director approves/);
     await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
     // Before an owner is assigned only the Safety manager and administrators work on it; never the Safety lead.
     await item(agents.staff, 'DRUG_TEST', { version: 1, result: 'NEGATIVE', doneOn: today() }).expect(403);
@@ -1174,7 +1213,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     ({ version } = (await item(agents.staff, 'MEDICAL_REGISTRY', { version, status: 'COMPLETED', doneOn: today() }).expect(201)).body);
     ({ version } = (await item(agents.manager, 'CLEARINGHOUSE', { version, result: 'NO_VIOLATIONS', doneOn: daysAgo(1) }).expect(201)).body);
     // Cleared only once every item is done.
-    expect((await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(400)).body.missing).toEqual(['clearance:PREVIOUS_EMPLOYERS', 'clearance:ROAD_TEST']);
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(400)).body.missing).toEqual(['clearance:PREVIOUS_EMPLOYERS', 'clearance:PSP']);
     // Previous employers: removable until asked; an answer comes after the request.
     await employer(agents.staff, '', { version, name: 'Prairie Haulers', fromMonth: '2024-01', toMonth: '2023-12' }).expect(400);
     await employer(agents.staff, '', { version, name: 'Prairie Haulers', fromMonth: '2024-01', toMonth: '2999-01' }).expect(400);
@@ -1190,13 +1229,16 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     [prairie] = (await driver(id)).clearance.employers;
     expect(prairie).toMatchObject({ requestedOn: daysAgo(2), answeredOn: today() });
     ({ version } = (await item(agents.staff, 'PREVIOUS_EMPLOYERS', { version, status: 'COMPLETED', doneOn: today() }).expect(201)).body);
-    await item(agents.staff, 'ROAD_TEST', { version, status: 'NOT_NEEDED' }).expect(400);
-    ({ version } = (await item(agents.staff, 'ROAD_TEST', { version, status: 'NOT_NEEDED', note: 'CDL accepted in place of the road test.' }).expect(201)).body);
+    expect((await item(agents.staff, 'ROAD_TEST', { version, status: 'NOT_NEEDED', note: 'CDL accepted in place of the road test.' }).expect(400)).body.message).toBe('A CDL is accepted in place of a road test.');
+    expect((await driver(id)).clearance.missing).toEqual(['clearance:PSP']);
+    ({ version } = (await agents.staff.post(`/api/safety/drivers/${id}/psp`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201)).body);
     expect((await driver(id)).clearance.missing).toEqual([]);
     // The Safety lead can't clear; the owner can.
     await agents.lead.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(403);
     await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version: version - 1 }).expect(409);
     ({ version } = (await agents.staff.post(`/api/safety/drivers/${id}/clear`).set(headers).send({ version }).expect(201)).body);
+    // Clearing starts Ready for the road (section 39), which never holds the driver for Dispatch.
+    expect((await driver(id)).roadReady).toMatchObject({ done: 0, total: 8, ready: false, unit: null });
     const done = await driver(id);
     expect(done).toMatchObject({ status: 'CLEARED', clearedBy: { id: users.staff.id }, version });
     expect(done.clearedAt).toBeTruthy();
@@ -1208,8 +1250,239 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       ['CLEARANCE_RECORDED', { item: 'MEDICAL_REGISTRY', status: 'COMPLETED' }], ['CLEARANCE_RECORDED', { item: 'CLEARINGHOUSE', status: 'COMPLETED' }],
       ['EMPLOYER_RECORDED', { action: 'added', requested: true }], ['EMPLOYER_RECORDED', { action: 'added', requested: false }], ['EMPLOYER_RECORDED', { action: 'removed' }],
       ['EMPLOYER_RECORDED', { action: 'answered' }], ['CLEARANCE_RECORDED', { item: 'PREVIOUS_EMPLOYERS', status: 'COMPLETED' }],
-      ['CLEARANCE_RECORDED', { item: 'ROAD_TEST', status: 'NOT_NEEDED' }], ['CLEARED', {}]]);
+      ['CLEARED', {}]]);
     expect(JSON.stringify(recorded)).not.toMatch(/Prairie|CDL accepted|NEGATIVE/);
+  });
+
+  it('follows the license: a DL driver needs no Clearinghouse query or PSP report, but a road test with its certificate', async () => {
+    const { id } = (await add(agents.lead, { ...lead, phone: '555 010 7712', email: 'casey.lin@example.test', driverType: 'COMPANY', licenseType: 'DL' }).expect(201)).body;
+    await db.query(`UPDATE drivers SET status = 'APPROVED' WHERE id = $1`, [id]);
+    let { version } = (await agents.lead.post(`/api/safety/drivers/${id}/owner`).set(headers).send({ version: 1, ownerId: users.staff.id }).expect(201)).body;
+    const item = (key: string, body: Record<string, unknown>) => agents.staff.post(`/api/safety/drivers/${id}/clearance/${key}`).set(headers).send({ version, ...body });
+    const record = await driver(id, agents.staff);
+    expect(record.license).toEqual({ cdl: false, clearinghouse: false, psp: false, dotTesting: false, roadTestAccepted: false });
+    expect(record.clearance.missing).toEqual(['clearance:DRUG_TEST', 'clearance:PREVIOUS_EMPLOYERS', 'clearance:MEDICAL_REGISTRY', 'clearance:ROAD_TEST', 'clearance:E_VERIFY']);
+    expect((await item('CLEARINGHOUSE', { result: 'NO_VIOLATIONS', doneOn: today() }).expect(400)).body.message).toBe('Only CDL drivers need a Clearinghouse query.');
+    // No PSP report without a CDL now or before.
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/psp`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(400)).body.message).toMatch(/only for CDL drivers/);
+    // The road test is recorded with its signed certificate, not typed as done or not needed.
+    expect((await item('ROAD_TEST', { status: 'COMPLETED', doneOn: today() }).expect(400)).body.message).toMatch(/signed certificate/);
+    await item('ROAD_TEST', { status: 'NOT_NEEDED', note: 'x' }).expect(400);
+    const roadTest = (body: Record<string, unknown>) => agents.staff.post(`/api/safety/drivers/${id}/road-test`).set(headers).send({ version, givenOn: today(), givenBy: 'Owen Staff', vehicle: 'Pickup P-12 with a trailer', passed: true, ...body });
+    expect((await roadTest({}).expect(400)).body.message).toMatch(/certificate/);
+    await agents.lead.post(`/api/safety/drivers/${id}/road-test`).set(headers).send({ version, givenOn: today(), givenBy: 'Owen Staff', vehicle: 'Pickup', passed: true, file: await mvrPdf() }).expect(403);
+    ({ version } = (await roadTest({ passed: false, file: await mvrPdf() }).expect(201)).body);
+    expect((await driver(id, agents.staff)).clearance.items).toEqual([expect.objectContaining({ key: 'ROAD_TEST', status: 'IN_PROGRESS', doneOn: null, note: 'Given by Owen Staff in Pickup P-12 with a trailer. Not passed.' })]);
+    ({ version } = (await roadTest({ file: await mvrPdf() }).expect(201)).body);
+    const after = await driver(id, agents.staff);
+    expect(after.clearance.items).toEqual([expect.objectContaining({ key: 'ROAD_TEST', status: 'COMPLETED', doneOn: today() })]);
+    expect(after.clearance.roadTest).toMatchObject({ pulledOn: today(), pageCount: 1 });
+    await agents.staff.get(`/api/safety/drivers/${id}/reports/${after.clearance.roadTest.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    expect((await events(id)).filter(row => row.event === 'ROAD_TEST_RECORDED').map(row => row.metadata)).toEqual([{ certificate: true }, { certificate: true }]);
+    expect(JSON.stringify(await events(id))).not.toMatch(/Owen Staff in|Pickup/);
+    // A DL driver who once held a CDL needs the PSP report, and only with their consent or a confirmed paper one.
+    await db.query(`INSERT INTO driver_applications ("driverId", fields) VALUES ($1, '{"licenseClass":"DL","everHeldCdl":"YES"}')`, [id]);
+    expect((await driver(id, agents.staff)).clearance.missing).toContain('clearance:PSP');
+    expect((await agents.staff.post(`/api/safety/drivers/${id}/psp`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today() }).expect(400)).body.missing).toEqual(['psp-authorization']);
+    ({ version } = (await agents.staff.post(`/api/safety/drivers/${id}/psp`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201)).body);
+    expect((await driver(id, agents.staff)).clearance.missing).not.toContain('clearance:PSP');
+    await db.query(`UPDATE driver_reports SET "pulledOn" = $2 WHERE "driverId" = $1 AND kind = 'PSP'`, [id, daysAgo(400)]);
+    expect((await driver(id, agents.staff)).clearance.missing).toContain('expired:PSP');
+    expect((await events(id)).filter(row => row.event === 'PSP_UPLOADED').map(row => row.metadata)).toEqual([{ replaced: false, authorization: 'PAPER' }]);
+  });
+
+  it('keeps units: trucks and trailers with their owner, the next free number, dates, permits and history without values', async () => {
+    const vin = (n: number) => `1FUJHHDR3PLNE${String(4400 + n).padStart(4, '0')}`;
+    const post = (agent: Agent, path: string, body: Record<string, unknown>) => agent.post(`/api/safety/${path}`).set(headers).send(body);
+    await agents.dispatch.get('/api/safety/units').set(headers).expect(403);
+    const owner = (await post(agents.lead, 'owners', { name: '  Yemba   Invest LLC ', signerName: 'Dmitri Volkov', email: 'Dmitri@Yemba.example.test', phone: '+1 312 555 0164' }).expect(201)).body;
+    await post(agents.staff, 'owners', { name: 'yemba invest llc' }).expect(409);
+    const list = async () => (await agents.staff.get('/api/safety/units').set(headers).expect(200)).body;
+    expect((await list()).next).toEqual({ truck: '1', trailer: 'T-1' });
+    // A truck belongs to a truck owner or an owner-operator; only trailers can be the company's.
+    const truck = { number: '233', kind: 'SEMI', ownerId: owner.id, vin: vin(1), year: 2021, make: 'Freightliner Cascadia', plate: 'txr 7731', plateState: 'tx', responsibleId: users.staff.id, inspectedOn: daysAgo(340) };
+    expect((await post(agents.staff, 'units', { ...truck, ownerId: undefined, company: true }).expect(400)).body.message).toMatch(/trailers only/);
+    await post(agents.staff, 'units', { ...truck, company: true }).expect(400);
+    await post(agents.staff, 'units', { ...truck, responsibleId: users.lead.id }).expect(400);
+    const unit = (await post(agents.staff, 'units', truck).expect(201)).body;
+    expect((await post(agents.staff, 'units', { ...truck, vin: vin(2) }).expect(409)).body.message).toBe('Unit 233 is already on the list. The next free number is 234.');
+    await post(agents.staff, 'units', { ...truck, number: '240' }).expect(409);
+    const trailer = (await post(agents.lead, 'units', { number: 'T-108', kind: 'TRAILER', company: true, vin: vin(3), year: 2022, make: 'Great Dane', trailerType: '53 ft dry van' }).expect(201)).body;
+    expect((await list()).next).toEqual({ truck: '234', trailer: 'T-109' });
+    // Changes are for the responsible Safety Manager (and leads, the Safety Director and administrators), against the version.
+    await post(agents.staff2, `units/${unit.id}/dates`, { version: 1, registrationExpiresOn: addDays(today(), 400) }).expect(403);
+    await post(agents.staff, `units/${unit.id}/dates`, { version: 1, inspectedOn: addDays(today(), 2) }).expect(400);
+    await post(agents.staff, `units/${unit.id}/dates`, { version: 1, permits: [{ kind: 'NM', expiresOn: '2030-01-01' }], registrationExpiresOn: addDays(today(), 20) }).expect(201);
+    await post(agents.staff, `units/${unit.id}/dates`, { version: 1, registrationExpiresOn: addDays(today(), 30) }).expect(409);
+    await post(agents.staff, `units/${trailer.id}/dates`, { version: 1, permits: [{ kind: 'NM', expiresOn: '2030-01-01' }] }).expect(403);
+    await post(agents.lead, `units/${trailer.id}/dates`, { version: 1, permits: [{ kind: 'NM', expiresOn: '2030-01-01' }] }).expect(400);
+    const page = (await agents.staff.get(`/api/safety/units/${unit.id}`).set(headers).expect(200)).body;
+    expect(page).toMatchObject({ number: '233', kind: 'SEMI', ownerKind: 'OWNER', owner: 'Yemba Invest LLC', plate: 'TXR7731', plateState: 'TX', responsible: 'Fictional staff', version: 2,
+      registrationExpiresOn: addDays(today(), 20), permits: [{ kind: 'NM', expiresOn: '2030-01-01' }], permitsNeeded: ['NY_HUT', 'KYU', 'NM', 'OR', 'IFTA'] });
+    expect(page.events.map((row: { event: string; metadata: unknown }) => [row.event, row.metadata])).toEqual([['DATES_RECORDED', { fields: ['registration', 'permits'], permits: 1 }], ['ADDED', { kind: 'SEMI', owner: 'owner' }]]);
+    expect(JSON.stringify(page.events)).not.toMatch(/2030|TXR/);
+    // Expiring documents lists the registration and the inspection due within 60 days; year-end permits are counted apart.
+    const expiring = (await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.units;
+    expect(expiring.items.map((row: { number: string; document: string }) => [row.number, row.document])).toEqual([['233', 'REGISTRATION'], ['233', 'INSPECTION']]);
+    expect(expiring.yearEnd).toMatchObject({ on: `${today().slice(0, 4)}-12-31`, due: 4, units: 1 });
+    // Year-end renewal marks every permit a semi carries.
+    await post(agents.staff, 'units/permits/renew', { unitIds: [unit.id], expiresOn: today() }).expect(400);
+    expect((await post(agents.staff, 'units/permits/renew', { unitIds: [unit.id], expiresOn: `${Number(today().slice(0, 4)) + 1}-12-31` }).expect(201)).body).toEqual({ renewed: 5 });
+    expect(((await agents.staff.get('/api/safety/units/permits').set(headers).expect(200)).body.items[0].permits as unknown[]).length).toBe(5);
+    // An optional copy of a paper: stored, opened (recorded) and listed.
+    await post(agents.staff, `units/${unit.id}/files`, { version: 3, kind: 'INSPECTION', file: await mvrPdf() }).expect(201);
+    const file = (await agents.staff.get(`/api/safety/units/${unit.id}`).set(headers).expect(200)).body.files[0];
+    await agents.lead.get(`/api/safety/units/${unit.id}/files/${file.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    // A number the Units migration kept twice stays editable while it isn't changed.
+    const [twin] = await db.query(`INSERT INTO driver_trucks (unit, kind, "ownerId", vin, year, make) VALUES ('233', 'SEMI', $1, $2, 2020, 'Volvo') RETURNING id`, [owner.id, vin(9)]) as { id: string }[];
+    const twinUnit = { number: '233', kind: 'SEMI', ownerId: owner.id, vin: vin(9), year: 2020, make: 'Volvo VNL' };
+    await agents.lead.patch(`/api/safety/units/${twin.id}`).set(headers).send({ version: 1, ...twinUnit }).expect(200);
+    // A new type keeps only the permits it carries, so the others stop showing on Expiring documents.
+    await post(agents.lead, `units/${twin.id}/dates`, { version: 2, permits: [{ kind: 'OR', expiresOn: addDays(today(), 10) }, { kind: 'NM', expiresOn: addDays(today(), 10) }] }).expect(201);
+    await agents.lead.patch(`/api/safety/units/${twin.id}`).set(headers).send({ version: 3, ...twinUnit, kind: 'PICKUP' }).expect(200);
+    expect((await agents.lead.get(`/api/safety/units/${twin.id}`).set(headers).expect(200)).body.permits).toEqual([{ kind: 'NM', expiresOn: addDays(today(), 10) }]);
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.units.items.filter((row: { unitId: string }) => row.unitId === twin.id).map((row: { document: string }) => row.document)).toEqual(['PERMIT:NM']);
+    // An archived unit doesn't change.
+    await post(agents.lead, `units/${twin.id}/status`, { version: 4, status: 'ARCHIVED' }).expect(201);
+    await agents.lead.patch(`/api/safety/units/${twin.id}`).set(headers).send({ version: 5, ...twinUnit, kind: 'PICKUP', make: 'Ford' }).expect(409);
+    await post(agents.lead, `units/${twin.id}/dates`, { version: 5, inspectedOn: today() }).expect(409);
+    await post(agents.lead, `units/${twin.id}/responsible`, { version: 5, responsibleId: users.staff.id }).expect(409);
+    // Out of service, back in service, archived; an owner with trucks can't be archived.
+    await post(agents.staff, `units/${unit.id}/status`, { version: 4, status: 'OUT_OF_SERVICE' }).expect(201);
+    await post(agents.staff, `units/${unit.id}/status`, { version: 5, status: 'IN_SERVICE' }).expect(201);
+    expect((await post(agents.lead, `owners/${owner.id}/archive`, { version: 1 }).expect(409)).body.message).toMatch(/trucks first/);
+    await post(agents.staff, `units/${unit.id}/status`, { version: 6, status: 'ARCHIVED' }).expect(201);
+    await post(agents.staff, `owners/${owner.id}/archive`, { version: 1 }).expect(403);
+    await post(agents.lead, `owners/${owner.id}/archive`, { version: 1 }).expect(201);
+    // The archived unit's number is free again.
+    expect((await list()).items.find((row: { id: string }) => row.id === unit.id)).toMatchObject({ archivedAt: expect.any(String) });
+    expect((await agents.staff.get('/api/safety/owners').set(headers).expect(200)).body.items[0]).toMatchObject({ name: 'Yemba Invest LLC', trucks: 0, archivedAt: expect.any(String) });
+  });
+
+  it('adds units from a file: problems and choices on their rows, a VIN already here left out, new owners only when chosen', async () => {
+    const post = (agent: Agent, path: string, body: Record<string, unknown>) => agent.post(`/api/safety/${path}`).set(headers).send(body);
+    await post(agents.lead, 'owners', { name: 'Yemba Invest LLC' }).expect(201);
+    await post(agents.lead, 'units', { number: '214', kind: 'SEMI', ownerId: (await agents.lead.get('/api/safety/owners').set(headers).expect(200)).body.items[0].id, vin: '1FUJHHDR3PLNE4214', year: 2020, make: 'Volvo' }).expect(201);
+    const rows = [
+      { row: 2, number: '233', type: 'Semi truck', year: '2021', make: 'Freightliner', vin: '1fujhhdr3plne4233', plate: 'p 123', plateState: 'il', owner: 'yemba  invest llc', responsible: 'Fictional staff', inspectedOn: '4/12/2026' },
+      { row: 3, number: '233', type: 'Semi truck', year: '2021', make: 'Freightliner', vin: '1FUJHHDR3PLNE4234', owner: 'Yemba Invest LLC' },
+      { row: 4, number: '402', type: 'Tractor', year: '2023', make: 'Kenworth', vin: '1FUJHHDR3PLNE44O1', owner: 'Yemba Invest LLC' },
+      { row: 5, number: '87', type: 'Semi truck', year: '2019', make: 'Peterbilt', vin: '1FUJHHDR3PLNE4087', owner: 'Drew Patell', responsible: 'Fictional' },
+      { row: 6, number: '9', type: 'Semi truck', year: '2019', make: 'Peterbilt', vin: '1FUJHHDR3PLNE4214', owner: 'Yemba Invest LLC' },
+      { row: 7, number: 'T-5', type: 'Trailer', trailerType: 'Reefer', year: '2020', make: 'Utility', vin: '1UYVS2539KU123456', owner: 'Company' }];
+    await post(agents.dispatch, 'units/check', { rows }).expect(403);
+    const checked = (await post(agents.staff, 'units/check', { rows }).expect(201)).body;
+    expect(checked.counts).toEqual({ ready: 2, choice: 1, problem: 2, already: 1 });
+    expect(checked.rows.map((row: { row: number; status: string }) => [row.row, row.status])).toEqual([[2, 'READY'], [3, 'PROBLEM'], [4, 'PROBLEM'], [5, 'CHOICE'], [6, 'ALREADY'], [7, 'READY']]);
+    expect(checked.rows[1].problems).toEqual(['Unit 233 is also on row 2.']);
+    expect(checked.rows[2].problems).toEqual(['VIN “1FUJHHDR3PLNE44O1” has an O, which a VIN never has.']);
+    // The type and a name that matches two Safety Managers are choices, like an owner the lists don't know.
+    expect(checked.choices.map((choice: { field: string; text: string; rows: number[] }) => [choice.field, choice.text, choice.rows])).toEqual([['type', 'Tractor', [4]], ['owner', 'Drew Patell', [5]], ['responsible', 'Fictional', [5]]]);
+    const fixed = rows.map(row => row.row === 5 ? { ...row, owner: checked.choices[1].options[0].value, responsible: `@${users.staff2.id}` } : row);
+    expect(checked.choices[1].options[0]).toEqual({ value: '@new:Drew Patell', label: 'Add “Drew Patell” as a new truck owner' });
+    const added = (await post(agents.staff, 'units/add', { rows: fixed }).expect(201)).body;
+    expect(added).toMatchObject({ added: 3, owners: 1 });
+    const units = (await agents.staff.get('/api/safety/units').set(headers).expect(200)).body.items;
+    expect(units.find((row: { number: string }) => row.number === '233')).toMatchObject({ vin: '1FUJHHDR3PLNE4233', plate: 'P123', plateState: 'IL', owner: 'Yemba Invest LLC', responsibleId: users.staff.id, inspectedOn: '2026-04-12' });
+    expect(units.find((row: { number: string }) => row.number === '87')).toMatchObject({ owner: 'Drew Patell', ownerKind: 'OWNER', responsibleId: users.staff2.id });
+    expect(units.find((row: { number: string }) => row.number === 'T-5')).toMatchObject({ ownerKind: 'COMPANY', trailerType: 'Reefer' });
+    // Checked again, everything added is Already here.
+    expect((await post(agents.staff, 'units/check', { rows: fixed }).expect(201)).body.counts).toMatchObject({ ready: 0, already: 4 });
+  });
+
+  it('adds existing drivers from their paper file as Cleared, with checked dates, the paper file and a catch-up link', async () => {
+    const post = (agent: Agent, path: string, body: Record<string, unknown>) => agent.post(`/api/safety/${path}`).set(headers).send(body);
+    const day = usDay('latest');
+    const row = { row: 2, firstName: 'Dana', lastName: 'Okafor', phone: '+1 469 555 0177', email: 'Dana.Okafor@example.test', driverType: 'Company driver', licenseClass: 'CDL Class A', licenseState: 'tx',
+      hiredOn: '2023-05-15', safetyManager: 'Fictional staff', licenseExpiresOn: addDays(day, 700), medicalExpiresOn: addDays(day, -2), workAuthorization: 'Green card' };
+    const rows = [row, { ...row, row: 3, firstName: 'Jamie', lastName: 'Cole', phone: '+1 312 555 0190', email: 'jamie.cole@example.test', licenseClass: 'DL', medicalExpiresOn: addDays(day, 300),
+      workAuthorization: 'Work permit', lastReviewOn: addDays(day, -100), mc: 'Nowhere Freight' }, { ...row, row: 4, phone: '469-555-0177', email: '' }, { ...row, row: 5, firstName: 'Sky', phone: '+1 202 555 0111', email: 'sky@example.test', hiredOn: 'Marhc 2024' }];
+    // Adding someone as Cleared stands in for the decision: the Safety Director and administrators only.
+    await post(agents.lead, 'drivers/existing/check', { rows }).expect(403);
+    const checked = (await post(agents.manager, 'drivers/existing/check', { rows }).expect(201)).body;
+    expect(checked.rows.map((item: { row: number; status: string; onHold: boolean }) => [item.row, item.status, item.onHold])).toEqual([[2, 'READY', true], [3, 'PROBLEM', false], [4, 'PROBLEM', false], [5, 'PROBLEM', false]]);
+    expect(checked.counts).toMatchObject({ ready: 1, problem: 3, onHold: 1 });
+    expect(checked.rows[1].problems).toEqual(['No work permit expiration date.']);
+    expect(checked.rows[2].problems).toEqual(['This phone is also on row 2.']);
+    expect(checked.rows[3].problems).toEqual(['Hired on “Marhc 2024” isn’t a date.']);
+    expect(checked.choices.map((choice: { field: string; text: string }) => [choice.field, choice.text])).toEqual([['mc', 'Nowhere Freight']]);
+    const added = (await post(agents.manager, 'drivers/existing/add', { rows: [rows[0]], sourceName: 'drivers-november.csv' }).expect(201)).body;
+    expect(added).toMatchObject({ added: 1, left: [] });
+    const id = added.drivers[0].id;
+    expect((await post(agents.manager, 'drivers/existing/check', { rows: [rows[0]] }).expect(201)).body.rows[0]).toMatchObject({ status: 'ALREADY', problems: [expect.stringMatching(/Already in the workspace with this phone/)] });
+    // Cleared at once with the Safety Manager chosen; the dates typed count as checked, so the expired card holds them.
+    let record = await driver(id, agents.manager);
+    expect(record).toMatchObject({ status: 'CLEARED', email: 'dana.okafor@example.test', licenseState: 'TX', owner: { id: users.staff.id }, hold: { onHold: true, documents: true },
+      paperFile: { hiredOn: '2023-05-15', sourceName: 'drivers-november.csv', keys: ['APPLICATION', 'MVR_AT_HIRE', 'ROAD_TEST', 'PREVIOUS_EMPLOYERS', 'DRUG_TEST', 'CLEARINGHOUSE', 'MEDICAL_REGISTRY', 'E_VERIFY'], paper: [], catchUp: { link: null, sentAt: null } } });
+    expect(record.documents.map((row: { kind: string; fromPaper: boolean; expiresOn: string | null; subtype: string | null }) => [row.kind, row.fromPaper, row.expiresOn, row.subtype]))
+      .toEqual([['LICENSE', true, addDays(day, 700), null], ['MEDICAL_CARD', true, addDays(day, -2), null], ['WORK_AUTHORIZATION', true, null, 'GREEN_CARD']]);
+    await agents.manager.get(`/api/safety/drivers/${id}/documents/${record.documents[0].id}/file`).set(headers).expect(404);
+    // No last review on file: the yearly review is due from the day they were added.
+    expect(record.annualReviews.dueOn).toBe(day);
+    const listed = (await agents.staff.get('/api/safety/drivers').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id);
+    expect(listed.existing).toMatchObject({ paperDone: 0, paperTotal: 8, paperOnly: 3, toCheck: 0, reviewed: false, linkSentAt: null });
+    // The paper file, item by item; the drug test is seen only by those who see results.
+    await post(agents.staff2, `drivers/${id}/paper/DRUG_TEST`, { version: record.version, status: 'ON_FILE' }).expect(403);
+    await post(agents.staff, `drivers/${id}/paper/PREVIOUS_EMPLOYERS`, { version: record.version, status: 'NOT_ON_FILE' }).expect(400);
+    await post(agents.staff, `drivers/${id}/paper/APPLICATION`, { version: record.version, status: 'NOT_NEEDED', note: 'x' }).expect(400);
+    let version = (await post(agents.staff, `drivers/${id}/paper/PREVIOUS_EMPLOYERS`, { version: record.version, status: 'NOT_ON_FILE', note: 'One answer is missing.' }).expect(201)).body.version;
+    version = (await post(agents.staff, `drivers/${id}/paper/DRUG_TEST`, { version, status: 'ON_FILE', doneOn: '2023-05-10' }).expect(201)).body.version;
+    // The drivers list counts the restricted items only for those who see results, so a count can't reveal them.
+    const counts = async (agent: Agent) => (await agent.get('/api/safety/drivers').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id).existing;
+    expect(await counts(agents.lead)).toMatchObject({ paperDone: 0, paperOpen: 1, paperTotal: 6 });
+    expect(await counts(agents.staff)).toMatchObject({ paperDone: 1, paperOpen: 1, paperTotal: 8 });
+    expect((await driver(id, agents.lead)).paperFile.paper).toEqual(expect.arrayContaining([{ key: 'DRUG_TEST', hidden: true }, { key: 'CLEARINGHOUSE', hidden: true }, expect.objectContaining({ key: 'PREVIOUS_EMPLOYERS', status: 'NOT_ON_FILE' })]));
+    expect((await driver(id, agents.staff)).paperFile.paper).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'DRUG_TEST', status: 'ON_FILE', doneOn: '2023-05-10' })]));
+    // The catch-up link: bound to their email, opening only their photos and forms.
+    await publish(agents.manager, 'APPLICATION_CERTIFICATION', 201, 'Fictional certification');
+    const link = (await post(agents.staff, `drivers/${id}/catch-up`, { version }).expect(201)).body;
+    const opened = await openRenewal(link.url, 'dana.okafor@example.test');
+    expect((await opened.agent.post('/api/driver/verify').set(headers).send({ challengeId: opened.challengeId, code: opened.code }).expect(201)).body).toEqual({ verified: true, purpose: 'CATCH_UP' });
+    await opened.agent.get('/api/driver/application').set(headers).expect(401);
+    await opened.agent.get('/api/driver/renewal').set(headers).expect(401);
+    expect((await opened.agent.get('/api/driver/catch-up').set(headers).expect(200)).body).toMatchObject({ purpose: 'CATCH_UP', firstName: 'Dana', sentAt: null, missing: ['LICENSE', 'MEDICAL_CARD', 'WORK_AUTHORIZATION'] });
+    await opened.agent.post('/api/driver/catch-up/send').set(headers).send({}).expect(400);
+    await opened.agent.post('/api/driver/catch-up/documents/return-to-duty').set(headers).send({ pages: [page()] }).expect(404);
+    await opened.agent.post('/api/driver/catch-up/documents/license').set(headers).send({ pages: [page(), page()] }).expect(201);
+    await opened.agent.post('/api/driver/catch-up/documents/medical-card').set(headers).send({ pages: [page()] }).expect(201);
+    const view = (await opened.agent.post('/api/driver/catch-up/documents/work-authorization').set(headers).send({ pages: [page()], subtype: 'GREEN_CARD' }).expect(201)).body;
+    expect(view.missing).toEqual([]);
+    // Not sent yet: nothing for Safety to check, and the paper dates still count.
+    expect(await counts(agents.staff)).toMatchObject({ toCheck: 0 });
+    expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.scans.filter((row: { driverId: string }) => row.driverId === id)).toEqual([]);
+    expect((await opened.agent.post('/api/driver/catch-up/send').set(headers).send({}).expect(201)).body.sentAt).toEqual(expect.any(String));
+    // The scans wait for a check; the paper dates keep counting (still on hold) until the new card is checked.
+    record = await driver(id, agents.manager);
+    expect(record.hold).toMatchObject({ onHold: true });
+    const medical = record.documents.find((row: { kind: string }) => row.kind === 'MEDICAL_CARD');
+    expect(medical).toMatchObject({ fromPaper: false, verifiedAt: null, pageCount: 1, paperDate: { expiresOn: addDays(day, -2) } });
+    expect((await agents.staff.get('/api/safety/drivers').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id).existing).toMatchObject({ paperOnly: 3, toCheck: 3 });
+    await post(agents.staff, `drivers/${id}/documents/${medical.id}/verify`, { version: 1, expiresOn: addDays(day, 500) }).expect(201);
+    expect((await driver(id, agents.manager)).hold).toMatchObject({ onHold: false });
+    // Return-to-duty papers show a positive or refused test: only result viewers check them, never with a date, so they
+    // never reach Expiring documents, which every Safety role reads.
+    const [papers] = await db.query(`INSERT INTO driver_documents (id, "driverId", kind, "pageCount", sha256, "byteSize", "createdAt") VALUES (gen_random_uuid(), $1, 'RETURN_TO_DUTY', 1, repeat('a', 64), 100, now()) RETURNING id, version`, [id]);
+    await post(agents.lead, `drivers/${id}/documents/${papers.id}/verify`, { version: papers.version }).expect(404);
+    expect((await post(agents.manager, `drivers/${id}/documents/${papers.id}/verify`, { version: papers.version, expiresOn: addDays(day, 20) }).expect(400)).body.message).toMatch(/without a date/);
+    await post(agents.manager, `drivers/${id}/documents/${papers.id}/verify`, { version: papers.version }).expect(201);
+    await db.query(`UPDATE driver_documents SET "expiresOn" = $2 WHERE id = $1`, [papers.id, addDays(day, 20)]);
+    expect(JSON.stringify((await agents.staff2.get('/api/safety/expiring').set(headers).expect(200)).body)).not.toContain('RETURN_TO_DUTY');
+    // Their uploads, opens and checks leave the History timeline too for anyone who doesn't see results.
+    expect(JSON.stringify((await driver(id, agents.lead)).activity)).not.toContain('RETURN_TO_DUTY');
+    expect(JSON.stringify((await driver(id, agents.manager)).activity)).toContain('RETURN_TO_DUTY');
+    // A unit in a row is kept with the dispatch assignment, so without one it is left out and the row says so; an
+    // owner-operator's own truck comes after them, so no unit on the list can be theirs.
+    const truckOwner = (await post(agents.lead, 'owners', { name: 'Prairie Leasing LLC' }).expect(201)).body;
+    await post(agents.lead, 'units', { number: '501', kind: 'SEMI', ownerId: truckOwner.id, vin: '1FUJHHDR3PLNE4501', year: 2022, make: 'Volvo' }).expect(201);
+    const fresh = { ...row, row: 2, firstName: 'Riley', lastName: 'Shaw', phone: '+1 214 555 0133', email: 'riley.shaw@example.test', medicalExpiresOn: addDays(day, 300), unit: '501' };
+    const units = (await post(agents.manager, 'drivers/existing/check', { rows: [fresh, { ...fresh, row: 3, phone: '+1 214 555 0134', email: 'riley.two@example.test', driverType: 'Owner-operator' }] }).expect(201)).body.rows;
+    expect(units[0]).toMatchObject({ status: 'READY', notes: expect.arrayContaining([expect.stringMatching(/Unit 501 isn’t kept without an MC and dispatcher/)]) });
+    expect(units[1]).toMatchObject({ status: 'PROBLEM', problems: [expect.stringMatching(/An owner-operator drives their own truck/)] });
+    const noMc = (await post(agents.manager, 'drivers/existing/check', { rows: [{ ...fresh, unit: '', mc: '@none', dispatcher: 'Taylor Brooks' }] }).expect(201)).body.rows[0];
+    expect(noMc).toMatchObject({ status: 'READY', notes: expect.arrayContaining([expect.stringMatching(/Dispatcher “Taylor Brooks” isn’t kept: the MC is set to Not assigned yet/)]) });
+    expect((await events(id)).map(row => [row.event, row.metadata]).filter(([event]) => ['EXISTING_ADDED', 'PAPER_ITEM_RECORDED', 'CATCH_UP_LINK_SENT', 'CATCH_UP_OPENED', 'CATCH_UP_SENT'].includes(event as string)))
+      .toEqual([['EXISTING_ADDED', { onHold: true, assigned: false, unit: false, lastReview: false, fromFile: true }], ['PAPER_ITEM_RECORDED', { key: 'PREVIOUS_EMPLOYERS', status: 'NOT_ON_FILE' }],
+        ['PAPER_ITEM_RECORDED', { key: 'DRUG_TEST', status: 'ON_FILE' }], ['CATCH_UP_LINK_SENT', { resent: false }], ['CATCH_UP_OPENED', {}], ['CATCH_UP_SENT', {}]]);
   });
 
   it('holds Cleared to current results, every employer followed up and an active owner', async () => {
@@ -1243,8 +1516,9 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(JSON.stringify(await events(id))).not.toMatch(/Two calls/);
 
     // An employer added after the item was completed holds Cleared back until it is settled.
-    for (const [key, body] of [['DRUG_TEST', { result: 'NEGATIVE', doneOn: today() }], ['CLEARINGHOUSE', { result: 'NO_VIOLATIONS', doneOn: today() }], ['MEDICAL_REGISTRY', { status: 'COMPLETED', doneOn: today() }], ['ROAD_TEST', { status: 'COMPLETED', doneOn: today() }]] as const)
+    for (const [key, body] of [['DRUG_TEST', { result: 'NEGATIVE', doneOn: today() }], ['CLEARINGHOUSE', { result: 'NO_VIOLATIONS', doneOn: today() }], ['MEDICAL_REGISTRY', { status: 'COMPLETED', doneOn: today() }]] as const)
       ({ version } = (await item(agents.staff, key, { version, ...body }).expect(201)).body);
+    ({ version } = (await agents.staff.post(`/api/safety/drivers/${id}/psp`).set(headers).send({ version, file: await mvrPdf(), pulledOn: today(), paperAuthorization: true }).expect(201)).body);
     expect(await missing()).toEqual([]);
     ({ version } = (await employer('', { version, name: 'Lone Star Freight', fromMonth: '2022-03', toMonth: '2023-12' }).expect(201)).body);
     expect(await missing()).toEqual(['employers']);
@@ -1356,6 +1630,182 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     expect(JSON.stringify(await events(id))).not.toContain(addDays(day, 700));
     // The expiring list now counts the renewed card, which is far away.
     expect((await agents.staff.get('/api/safety/expiring').set(headers).expect(200)).body.items.filter((row: { driverId: string }) => row.driverId === id)).toEqual([]);
+  });
+
+  it('gets a driver ready for the road: the unit, the acknowledgement signed by the driver and then the truck owner, the steps and group updates', async () => {
+    const { id } = await clearedWithExpiredCard();
+    await db.query(`UPDATE drivers SET "driverType" = 'COMPANY', version = version + 1 WHERE id = $1`, [id]);
+    await db.query(`INSERT INTO driver_road_ready ("driverId") VALUES ($1)`, [id]);
+    const post = (agent: Agent, path: string, body: Record<string, unknown>) => agent.post(`/api/safety/${path}`).set(headers).send(body);
+    const version = async () => (await driver(id)).version as number;
+    const owner = (await post(agents.lead, 'owners', { name: 'Yemba Invest LLC', signerName: 'Dmitri Volkov', signerTitle: 'Owner', email: 'dmitri.yemba@example.test' }).expect(201)).body;
+    const unit = (await post(agents.lead, 'units', { number: '233', kind: 'SEMI', ownerId: owner.id, vin: '1FUJHHDR3PLNE4233', year: 2021, make: 'Freightliner' }).expect(201)).body;
+    // A driver who applied has no paper file to confirm.
+    await post(agents.staff, `drivers/${id}/paper/APPLICATION`, { version: await version(), status: 'ON_FILE' }).expect(404);
+    // No unit yet, nothing to sign; no published acknowledgement, no link.
+    expect((await post(agents.staff, `drivers/${id}/contracts`, { version: await version() }).expect(409)).body.message).toMatch(/Choose their unit first/);
+    await post(agents.staff2, `drivers/${id}/road-ready/unit`, { version: await version(), unitId: unit.id }).expect(403);
+    await post(agents.staff, `drivers/${id}/road-ready/unit`, { version: await version(), unitId: unit.id }).expect(201);
+    expect((await post(agents.staff, `drivers/${id}/contracts`, { version: await version() }).expect(409)).body.message).toMatch(/hasn’t published/);
+    const fields = [{ page: 1, x: 0.1, y: 0.1, width: 0.3, height: 0.04, kind: 'NAME', signer: 'SIGNER' }, { page: 1, x: 0.1, y: 0.2, width: 0.5, height: 0.04, kind: 'ADDRESS', signer: 'SIGNER' },
+      { page: 1, x: 0.1, y: 0.3, width: 0.3, height: 0.06, kind: 'SIGNATURE', signer: 'SIGNER' }, { page: 1, x: 0.5, y: 0.3, width: 0.3, height: 0.06, kind: 'SIGNATURE', signer: 'COMPANY' },
+      { page: 1, x: 0.5, y: 0.4, width: 0.3, height: 0.04, kind: 'TITLE', signer: 'COMPANY' }];
+    await agents.manager.post('/api/safety/consents').set(headers).send({ kind: 'CONTRACTOR_ACKNOWLEDGEMENT', title: 'Driver and Contractor Acknowledgement', file: await mvrPdf(), fields }).expect(201);
+    // The acknowledgement is never part of an application's or catch-up's forms.
+    expect((await agents.staff.get('/api/safety/consents').set(headers).expect(200)).body.kinds.map((kind: { kind: string }) => kind.kind)).toContain('CONTRACTOR_ACKNOWLEDGEMENT');
+    const first = (await post(agents.staff, `drivers/${id}/contracts`, { version: await version() }).expect(201)).body;
+    const driverSide = await openRenewal(first.url);
+    expect((await driverSide.agent.post('/api/driver/verify').set(headers).send({ challengeId: driverSide.challengeId, code: driverSide.code }).expect(201)).body).toEqual({ verified: true, purpose: 'CONTRACT' });
+    await driverSide.agent.get('/api/driver/application').set(headers).expect(401);
+    expect((await driverSide.agent.get('/api/driver/contract').set(headers).expect(200)).body).toMatchObject({ role: 'DRIVER', unit: '233', company: 'Yemba Invest LLC', signedAt: null, viewed: false });
+    const sign = { typedName: 'Jordan Wheeler', signature: signature(), signatureMethod: 'DRAWN', agreed: true, consent: true };
+    expect((await driverSide.agent.post('/api/driver/contract/sign').set(headers).send(sign).expect(400)).body.message).toMatch(/Open and read/);
+    await driverSide.agent.post('/api/driver/contract/view').set(headers).send({}).expect(201);
+    await driverSide.agent.get('/api/driver/contract/file').set(headers).expect(200).expect('content-type', 'application/pdf');
+    expect((await driverSide.agent.post('/api/driver/contract/sign').set(headers).set('x-client-ip', '203.0.113.9').send({ ...sign, address: '12 Fictional Road, Dallas, TX 75001' }).expect(201)).body).toMatchObject({ signedAt: expect.any(String), bothSigned: false });
+    await driverSide.agent.get('/api/driver/contract/signed').set(headers).expect(409);
+    let record = await driver(id);
+    expect(record.roadReady.steps.find((step: { key: string }) => step.key === 'ACKNOWLEDGEMENT')).toMatchObject({ status: 'IN_PROGRESS', detail: { driverSignedAt: expect.any(String), ownerSignedAt: null } });
+    // Not while the driver is on another truck: the acknowledgement is for unit 233.
+    const spare = (await post(agents.lead, 'units', { number: '234', kind: 'SEMI', ownerId: owner.id, vin: '1FUJHHDR3PLNE4234', year: 2021, make: 'Freightliner' }).expect(201)).body;
+    await post(agents.staff, `drivers/${id}/road-ready/unit`, { version: record.version, unitId: spare.id }).expect(201);
+    expect((await post(agents.lead, `units/${spare.id}/status`, { version: 1, status: 'ARCHIVED' }).expect(409)).body.message).toMatch(/A driver still has this unit/);
+    expect((await post(agents.staff, `drivers/${id}/contracts/${first.contractId}/owner-link`, { version: record.version + 1 }).expect(409)).body.message).toMatch(/no longer drives this truck/);
+    await post(agents.staff, `drivers/${id}/road-ready/unit`, { version: record.version + 1, unitId: unit.id }).expect(201);
+    record = await driver(id);
+    // An owner link goes to the owner's email: correcting it stops a link sent to the old address.
+    const stale = (await post(agents.staff, `drivers/${id}/contracts/${first.contractId}/owner-link`, { version: record.version }).expect(201)).body;
+    let ownerVersion = (await agents.staff.get(`/api/safety/owners/${owner.id}`).set(headers).expect(200)).body.version as number;
+    const saveOwner = async (body: Record<string, unknown>) => (ownerVersion = (await agents.lead.patch(`/api/safety/owners/${owner.id}`).set(headers)
+      .send({ version: ownerVersion, name: 'Yemba Invest LLC', signerName: 'Dmitri Volkov', signerTitle: 'Owner', email: 'dmitri.yemba@example.test', ...body }).expect(200)).body.version);
+    // Saving what is already there changes nothing; a new phone records only that field and leaves the link working.
+    const unchanged = ownerVersion;
+    expect(await saveOwner({})).toBe(unchanged);
+    await saveOwner({ phone: '+1 312 555 0199' });
+    expect((await db.query(`SELECT metadata FROM unit_events WHERE "ownerId" = $1 AND event = 'OWNER_UPDATED'`, [owner.id])).map((row: { metadata: unknown }) => row.metadata)).toEqual([{ fields: ['phone'] }]);
+    expect((await openRenewal(stale.url, 'dmitri.yemba@example.test')).code).not.toBeNull();
+    await saveOwner({ email: 'office.yemba@example.test', phone: '+1 312 555 0199' });
+    expect((await openRenewal(stale.url, 'dmitri.yemba@example.test')).code).toBeNull();
+    await saveOwner({ phone: '+1 312 555 0199' });
+    record = await driver(id);
+    // The truck owner's signer, through their own link bound to the owner's email.
+    const ownerResponse = await post(agents.staff, `drivers/${id}/contracts/${first.contractId}/owner-link`, { version: record.version });
+    expect(ownerResponse.body).toMatchObject({ email: expect.any(String) });
+    const ownerLink = ownerResponse.body;
+    expect(ownerLink).toMatchObject({ email: 'dmitri.yemba@example.test', signerName: 'Dmitri Volkov' });
+    expect((await openRenewal(ownerLink.url)).code).toBeNull();
+    const ownerSide = await openRenewal(ownerLink.url, 'dmitri.yemba@example.test');
+    expect((await ownerSide.agent.post('/api/driver/verify').set(headers).send({ challengeId: ownerSide.challengeId, code: ownerSide.code }).expect(201)).body).toEqual({ verified: true, purpose: 'CONTRACT_OWNER' });
+    // The owner's session opens the contract only: never the driver's Telegram reminders, which carry renewal links.
+    await ownerSide.agent.get('/api/driver/telegram').set(headers).expect(403);
+    await ownerSide.agent.post('/api/driver/telegram/connect').set(headers).send({}).expect(403);
+    expect((await ownerSide.agent.get('/api/driver/contract').set(headers).expect(200)).body).toMatchObject({ role: 'OWNER', driver: 'Jordan Wheeler', signerName: 'Dmitri Volkov', signerTitle: 'Owner', address: null });
+    await ownerSide.agent.post('/api/driver/contract/view').set(headers).send({}).expect(201);
+    await ownerSide.agent.post('/api/driver/contract/sign').set(headers).send({ ...sign, typedName: 'Dmitri Volkov' }).expect(400);
+    await ownerSide.agent.post('/api/driver/contract/sign').set(headers).send({ ...sign, typedName: 'Dmitri Volkov', title: 'Owner' }).expect(201);
+    const binary = (res: request.Response, done: (error: Error | null, body: Buffer) => void) => { const chunks: Buffer[] = []; res.on('data', (chunk: Buffer) => chunks.push(chunk)); res.on('end', () => done(null, Buffer.concat(chunks))); };
+    const ownerCopy = pdfText((await ownerSide.agent.get('/api/driver/contract/signed').set(headers).buffer(true).parse(binary).expect(200).expect('content-type', 'application/pdf')).body as Buffer);
+    expect(ownerCopy).toContain('Recorded by UGEM');
+    expect(ownerCopy).not.toContain('203.0.113.9');
+    expect(pdfText((await agents.staff.get(`/api/safety/drivers/${id}/contracts/${first.contractId}/signed`).set(headers).buffer(true).parse(binary).expect(200)).body as Buffer)).toContain('203.0.113.9');
+    record = await driver(id);
+    await agents.staff.get(`/api/safety/drivers/${id}/contracts/${first.contractId}/signed`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    expect(record.contracts[0]).toMatchObject({ unit: '233', owner: 'Yemba Invest LLC', ownerName: 'Dmitri Volkov', ownerSignedAt: expect.any(String), link: null });
+    // Signed evidence can't change, and a signed one can't be cancelled.
+    await expect(db.query(`UPDATE driver_contracts SET "driverName" = 'Someone Else' WHERE id = $1`, [first.contractId])).rejects.toThrow(/append-only/);
+    await post(agents.staff, `drivers/${id}/contracts/${first.contractId}/cancel`, { version: record.version }).expect(409);
+    const owners = (await agents.staff.get(`/api/safety/owners/${owner.id}`).set(headers).expect(200)).body;
+    expect(owners.trucks[0]).toMatchObject({ number: '233', acknowledgement: 'SIGNED' });
+    // Only Safety leads, the Director, administrators and the Safety Manager of one of the owner's trucks or its driver
+    // change the owner (their email decides where the signing link goes) or replace their signed contracts.
+    await agents.staff2.patch(`/api/safety/owners/${owner.id}`).set(headers).send({ version: owners.version, name: 'Yemba Invest LLC', email: 'someone.else@example.test' }).expect(403);
+    await post(agents.staff2, `owners/${owner.id}/contracts`, { version: owners.version, kind: 'IC_AGREEMENT', signedOn: '2026-09-25', file: await mvrPdf() }).expect(403);
+    // Contracts signed on paper are uploaded on the owner's page; every open is recorded.
+    await post(agents.staff, `owners/${owner.id}/contracts`, { version: owners.version, kind: 'OTHER', signedOn: '2026-09-25', file: await mvrPdf() }).expect(400);
+    await post(agents.staff, `owners/${owner.id}/contracts`, { version: owners.version, kind: 'IC_AGREEMENT', signedOn: addDays(usDay('latest'), 2), file: await mvrPdf() }).expect(400);
+    await post(agents.staff, `owners/${owner.id}/contracts`, { version: owners.version, kind: 'IC_AGREEMENT', signedOn: '2026-09-25', file: await mvrPdf() }).expect(201);
+    const contract = (await agents.staff.get(`/api/safety/owners/${owner.id}`).set(headers).expect(200)).body.contracts[0];
+    expect(contract).toMatchObject({ kind: 'IC_AGREEMENT', signedOn: '2026-09-25', uploadedBy: 'Fictional staff' });
+    await agents.lead.get(`/api/safety/owners/${owner.id}/contracts/${contract.id}/file`).set(headers).expect(200).expect('content-type', 'application/pdf');
+    // Steps by hand: only the Samsara camera needs a note while in progress; the group made means later changes ask for an update.
+    await post(agents.staff, `drivers/${id}/road-ready/SAMSARA`, { version: record.version, status: 'IN_PROGRESS' }).expect(400);
+    let next = (await post(agents.staff, `drivers/${id}/road-ready/SAMSARA`, { version: record.version, status: 'IN_PROGRESS', note: 'Box photo posted.' }).expect(201)).body.version;
+    next = (await post(agents.staff, `drivers/${id}/road-ready/BINDER`, { version: next, status: 'IN_PROGRESS' }).expect(201)).body.version;
+    await post(agents.staff, `drivers/${id}/road-ready/PERMITS`, { version: next, status: 'COMPLETED' }).expect(404);
+    for (const key of ['BINDER', 'DECALS', 'ORIENTATION', 'TELEGRAM_GROUP', 'SAMSARA']) next = (await post(agents.staff, `drivers/${id}/road-ready/${key}`, { version: next, status: 'COMPLETED' }).expect(201)).body.version;
+    record = await driver(id);
+    // Permits come from the unit: none recorded yet.
+    expect(record.roadReady).toMatchObject({ done: 7, total: 8, ready: false });
+    expect(record.roadReady.steps.find((step: { key: string }) => step.key === 'PERMITS')).toMatchObject({ status: 'PENDING', detail: { missing: ['NY_HUT', 'KYU', 'NM', 'OR', 'IFTA'] } });
+    const listed = (await agents.staff.get('/api/safety/drivers').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id);
+    expect(listed.readySummary).toEqual({ done: 7, total: 8, next: 'PERMITS', unit: '233' });
+    // Leaving with a dispatcher asks their Safety Manager to update the truck's group.
+    const mc = (await db.query(`INSERT INTO mcs (name, "nameKey") VALUES ('Northwind Freight', 'northwind freight') RETURNING id`))[0].id;
+    const member = (await db.query(`INSERT INTO dispatch_members ("firstName", "lastName", position, status, "joinedAt") VALUES ('Taylor', 'Brooks', 'DISPATCHER', 'ACTIVE', now()) RETURNING id`))[0].id;
+    await db.query(`INSERT INTO driver_assignments ("driverId", "mcId", "memberId", "unitId", truck, "startedAt") VALUES ($1, $2, $3, $4, '233', now() - interval '1 day')`, [id, mc, member, unit.id]);
+    // A unit a driver has keeps its type and owner, and can't be archived; other details still change.
+    const unitNow = (await agents.lead.get(`/api/safety/units/${unit.id}`).set(headers).expect(200)).body;
+    const details = { version: unitNow.version, number: '233', kind: 'SEMI', ownerId: owner.id, vin: '1FUJHHDR3PLNE4233', year: 2021, make: 'Freightliner' };
+    expect((await agents.lead.patch(`/api/safety/units/${unit.id}`).set(headers).send({ ...details, kind: 'TRAILER', trailerType: 'Dry van' }).expect(409)).body.message).toMatch(/type and owner stay/);
+    await agents.lead.patch(`/api/safety/units/${unit.id}`).set(headers).send({ ...details, company: true, ownerId: undefined, kind: 'TRAILER' }).expect(409);
+    await post(agents.lead, `units/${unit.id}/status`, { version: unitNow.version, status: 'ARCHIVED' }).expect(409);
+    // Saving with nothing new keeps the version and records nothing; a real change records only that field.
+    expect((await agents.lead.patch(`/api/safety/units/${unit.id}`).set(headers).send(details).expect(200)).body.version).toBe(unitNow.version);
+    expect((await agents.lead.patch(`/api/safety/units/${unit.id}`).set(headers).send({ ...details, make: 'Freightliner Cascadia' }).expect(200)).body.version).toBe(unitNow.version + 1);
+    expect((await db.query(`SELECT metadata FROM unit_events WHERE "unitId" = $1 AND event = 'UPDATED'`, [unit.id])).map((row: { metadata: unknown }) => row.metadata)).toEqual([{ fields: ['make'] }]);
+    await post(agents.staff, `drivers/${id}/left`, { version: record.version, leftOn: usDay('latest'), reason: 'Resigned.' }).expect(201);
+    record = await driver(id);
+    expect(record.roadReady.groupChanges).toEqual([expect.objectContaining({ reason: 'DRIVER_LEFT', unit: '233', remove: 'Taylor Brooks', doneAt: null })]);
+    await post(agents.staff, `drivers/${id}/group-changes/${record.roadReady.groupChanges[0].id}/done`, { version: record.version }).expect(201);
+    expect((await driver(id)).roadReady.groupChanges[0]).toMatchObject({ doneAt: expect.any(String), doneBy: 'Fictional staff' });
+    expect((await events(id)).map(row => row.event).filter(event => ['CONTRACT_LINK_SENT', 'CONTRACT_OPENED', 'CONTRACT_SIGNED', 'OWNER_LINK_SENT', 'OWNER_SIGNED', 'GROUP_UPDATED'].includes(event)))
+      .toEqual(['CONTRACT_LINK_SENT', 'CONTRACT_OPENED', 'CONTRACT_SIGNED', 'OWNER_LINK_SENT', 'OWNER_LINK_SENT', 'CONTRACT_OPENED', 'OWNER_SIGNED', 'GROUP_UPDATED']);
+    expect((await events(id)).filter(row => ['CONTRACT_LINK_SENT', 'OWNER_LINK_SENT'].includes(row.event)).map(row => [row.event, row.metadata]))
+      .toEqual([['CONTRACT_LINK_SENT', { resent: false }], ['OWNER_LINK_SENT', { resent: false }], ['OWNER_LINK_SENT', { resent: false }]]);
+    expect((await db.query(`SELECT metadata FROM unit_events WHERE "ownerId" = $1 AND event = 'OWNER_UPDATED' ORDER BY "createdAt"`, [owner.id])).map((row: { metadata: unknown }) => row.metadata))
+      .toEqual([{ fields: ['phone'] }, { fields: ['email'], linksStopped: 1 }, { fields: ['email'] }]);
+    expect(JSON.stringify(await events(id))).not.toMatch(/Dmitri|Fictional Road|Box photo/);
+  });
+
+  it('asks to take a driver who leaves before Dispatch assigns them out of the group made for Safety’s pick', async () => {
+    const { id, version } = await clearedWithExpiredCard();
+    const [owner] = await db.query(`INSERT INTO truck_owners (name, "nameKey") VALUES ('Prairie Leasing LLC', 'prairie leasing llc') RETURNING id`) as { id: string }[];
+    const [unit] = await db.query(`INSERT INTO driver_trucks (unit, kind, vin, year, make, "ownerId") VALUES ('233', 'SEMI', '1FUJHHDR3PLNE0233', 2022, 'Fictional', $1) RETURNING id`, [owner.id]) as { id: string }[];
+    await db.query(`INSERT INTO driver_road_ready ("driverId", "unitId") VALUES ($1, $2)`, [id, unit.id]);
+    await db.query(`INSERT INTO driver_road_ready_steps ("driverId", key, status, "updatedAt") VALUES ($1, 'TELEGRAM_GROUP', 'COMPLETED', now())`, [id]);
+    await agents.staff.post(`/api/safety/drivers/${id}/left`).set(headers).send({ version, leftOn: usDay('latest'), reason: 'Resigned.' }).expect(201);
+    expect((await driver(id)).roadReady.groupChanges).toEqual([expect.objectContaining({ reason: 'DRIVER_LEFT', unit: '233', remove: null, doneAt: null })]);
+  });
+
+  it('leaves out of every read what would tell someone other than the Director or the driver’s Safety Manager how a test came out', async () => {
+    const { id } = await clearedWithExpiredCard();
+    // A positive DOT test answered on the application, its return-to-duty papers, a failed pre-employment test and a
+    // standing non-negative random test, each with its history.
+    await db.query(`UPDATE driver_applications SET fields = fields || '{"dotPositive":"YES","dotFollowUp":"YES"}' WHERE "driverId" = $1`, [id]);
+    await db.query(`INSERT INTO driver_documents (id, "driverId", kind, "pageCount", sha256, "byteSize", "createdAt") VALUES (gen_random_uuid(), $1, 'RETURN_TO_DUTY', 1, repeat('a', 64), 100, now())`, [id]);
+    await db.query(`INSERT INTO driver_clearance_items ("driverId", key, status, result, note, "updatedAt") VALUES ($1, 'DRUG_TEST', 'BLOCKED', 'NOT_NEGATIVE', 'Result only.', now())`, [id]);
+    await db.query(`INSERT INTO driver_tests ("driverId", kind, reason, "testedOn", result) VALUES ($1, 'DRUG', 'RANDOM', $2, 'NOT_NEGATIVE')`, [id, daysAgo(2)]);
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'DOCUMENT_UPLOADED', '{"kind":"RETURN_TO_DUTY","pages":1}'), ($1, 'CLEARANCE_RECORDED', '{"item":"DRUG_TEST","status":"BLOCKED"}')`, [id]);
+    const read = async (agent: Agent) => ({ profile: await driver(id, agent), due: (await agent.get('/api/safety/due').set(headers).expect(200)).body,
+      listed: (await agent.get('/api/safety/drivers').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id) });
+    // The driver's Safety Manager sees all of it.
+    const owner = await read(agents.staff);
+    expect(owner.profile.application.fields).toMatchObject({ dotPositive: 'YES', dotFollowUp: 'YES' });
+    expect(owner.profile.documents.map((row: { kind: string }) => row.kind)).toContain('RETURN_TO_DUTY');
+    expect(owner.profile.clearance.items).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'DRUG_TEST', status: 'BLOCKED', result: 'NOT_NEGATIVE' })]));
+    expect(owner.profile.activity).toEqual(expect.arrayContaining([expect.objectContaining({ event: 'CLEARANCE_RECORDED', metadata: { item: 'DRUG_TEST', status: 'BLOCKED' } })]));
+    expect(owner.due.tests.map((row: { driverId: string }) => row.driverId)).toContain(id);
+    // A Safety lead and another Safety Manager get nothing that says how it came out, anywhere.
+    for (const agent of [agents.lead, agents.staff2]) {
+      const seen = await read(agent), text = JSON.stringify(seen);
+      expect(text).not.toMatch(/RETURN_TO_DUTY|dotPositive|dotFollowUp|NOT_NEGATIVE|Result only/);
+      expect(seen.profile.clearance.items).toEqual(expect.arrayContaining([{ key: 'DRUG_TEST', hidden: true }, { key: 'CLEARINGHOUSE', hidden: true }]));
+      expect(seen.profile.clearance.missing.filter((code: string) => /DRUG_TEST|CLEARINGHOUSE/.test(code))).toEqual([]);
+      expect(seen.profile.activity).toEqual(expect.arrayContaining([expect.objectContaining({ event: 'CLEARANCE_RECORDED', metadata: { item: 'DRUG_TEST', hidden: true } })]));
+      expect(seen.profile.testing).toEqual({ hidden: true });
+      expect(seen.profile.hold.test).toBeNull();
+      expect(seen.due.tests).toEqual([]);
+    }
   });
 
   it('sends a renewal link: the driver scans only that document, which lifts nothing until a person checks it', async () => {
@@ -1590,6 +2040,28 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
   const deliveries = () => db.query(`SELECT d.channel, d.status, d."failureCode", r.audience, r.kind, r.step FROM safety_reminder_deliveries d
     LEFT JOIN safety_reminders r ON r.id = d."reminderId" ORDER BY d."createdAt", r.audience`) as Promise<{ channel: string; status: string; failureCode: string | null; audience: string | null; kind: string | null; step: number | null }[]>;
 
+  it('reminds a unit’s responsible Safety Manager about its dates, naming the unit, and drops a date corrected since', async () => {
+    const reminders = app.get(ReminderService), day = addDays(usDay('latest'), 40);
+    await quietManager();
+    // A company trailer whose yearly inspection falls due in 7 days (it was done a year before that).
+    const [unit] = await db.query(`INSERT INTO driver_trucks (unit, kind, company, vin, year, make, "inspectedOn", "responsibleId") VALUES ('T-900', 'TRAILER', true, '1JJV532D8NL900001', 2022, 'Great Dane',
+      ($1::date - interval '1 year')::date, $2) RETURNING id`, [addDays(day, 7), users.staff.id]) as { id: string }[];
+    mails.length = 0;
+    const ids = await reminders.run(at(day, 17));
+    await reminders.deliver(ids);
+    const staffMail = mails.find(mail => mail.to === users.staff.email)!;
+    // The run is simulated 40 days ahead; the message counts from the real today.
+    expect(staffMail.text).toContain('Unit T-900: yearly inspection due in 47 days.');
+    expect((await db.query(`SELECT subject, kind, step, "driverId" FROM safety_reminders WHERE "subjectId" = $1`, [unit.id]))).toEqual([{ subject: 'UNIT_INSPECTION', kind: 'INSPECTION', step: 7, driverId: null }]);
+    // Recorded again since the next reminder was queued: its message leaves the unit out.
+    const later = await reminders.run(at(addDays(day, 7), 17));
+    mails.length = 0;
+    await db.query(`UPDATE driver_trucks SET "inspectedOn" = $1 WHERE id = $2`, [addDays(day, 7), unit.id]);
+    await reminders.deliver(later);
+    expect(mails.some(mail => mail.text.includes('T-900'))).toBe(false);
+    await db.query(`UPDATE driver_trucks SET "archivedAt" = now() WHERE id = $1`, [unit.id]);
+  });
+
   it('reminds the Safety contact and the driver once a step, from 8 AM Eastern, by email with a fresh renewal link', async () => {
     const { id, medical } = await clearedExpiringIn(20), reminders = app.get(ReminderService), day = usDay('latest');
     await quietManager();
@@ -1727,6 +2199,26 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     const { id, agent } = await applying();
     await scan(agent, 'license').expect(201);
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
+    // Ready for the road (or an acknowledgement, an owner's contract, a group change or their events) keeps RoadReady.
+    await db.query(`INSERT INTO driver_road_ready ("driverId") VALUES ($1)`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Refusing to roll back contracts and Ready for the road');
+    await db.query(`DELETE FROM driver_road_ready WHERE "driverId" = $1`, [id]);
+    await db.undoLastMigration(); // RoadReady
+    // A paper file item (or a driver added from paper, a paper date or review, a catch-up link or their events) keeps ExistingDrivers.
+    await db.query(`INSERT INTO driver_paper_items ("driverId", key, status) VALUES ($1, 'APPLICATION', 'ON_FILE')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Refusing to roll back existing drivers');
+    await db.query(`DELETE FROM driver_paper_items WHERE "driverId" = $1`, [id]);
+    await db.undoLastMigration(); // ExistingDrivers
+    // A truck owner (or a trailer, a pickup, a permit, a unit file or history, or a unit on an assignment) keeps Units.
+    const [keptOwner] = await db.query(`INSERT INTO truck_owners (name, "nameKey") VALUES ('Fictional Haul', 'fictional haul') RETURNING id`) as { id: string }[];
+    await expect(db.undoLastMigration()).rejects.toThrow('Refusing to roll back units');
+    await db.query(`DELETE FROM truck_owners WHERE id = $1`, [keptOwner.id]);
+    await db.undoLastMigration(); // Units
+    // A PSP report (or a road test certificate, return-to-duty papers, one of the new forms or their events) keeps LicenseRules.
+    await db.query(`INSERT INTO driver_events ("driverId", event, metadata) VALUES ($1, 'PSP_VIEWED', '{}')`, [id]);
+    await expect(db.undoLastMigration()).rejects.toThrow('Refusing to roll back license rules');
+    await db.query(`DELETE FROM driver_events WHERE event = 'PSP_VIEWED'`);
+    await db.undoLastMigration(); // LicenseRules
     await db.undoLastMigration(); // TrustedDevicesPaperScans, with none here
     await db.undoLastMigration(); // MemberLeave, with none here
     await db.undoLastMigration(); // DetailCorrections, with none here
@@ -1820,6 +2312,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('TrustedDevicesPaperScans1793170000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('RoadReady1793210000000');
   });
 });

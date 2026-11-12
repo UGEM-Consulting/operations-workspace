@@ -13,7 +13,7 @@ import { DECIDERS, SAFETY_ROLES } from './driver-records';
 import { SafetyService } from './safety.service';
 import { AnnualReviewService } from './annual-review.service';
 import { AnnualReviewDto } from './annual-review.dto';
-import { TestingService, withoutResults } from './testing.service';
+import { TestingService } from './testing.service';
 import { RecordTestDto, VoidTestDto } from './testing.dto';
 import { IncidentService } from './incident.service';
 import { TruckService } from './truck.service';
@@ -24,6 +24,13 @@ import { ScreeningService } from './screening.service';
 import { ScanSweeper } from './scan-sweeper';
 import { AddEmployerDto, ClearanceItemDto, UpdateEmployerDto } from './clearance.dto';
 import { ClearanceService } from './clearance.service';
+import { LicenseItemsService, RoadTestDto, UploadPspDto } from './license-items';
+import { UnitsService } from './units.service';
+import { UnitImportDto, UnitsImportService } from './units-import';
+import { CatchUpLinkDto, CatchUpService, ExistingDriversDto, ExistingDriversService, PaperItemDto } from './existing-drivers';
+import { ContractSignatureDto, ContractsService, ContractVersionDto } from './contracts';
+import { GroupDoneDto, ReadyStepDto, ReadyUnitDto, RoadReadyService } from './road-ready';
+import { OwnerContractDto, OwnerVersionDto, RenewPermitsDto, TruckOwnerDto, UnitDatesDto, UnitDto, UnitFileDto, UnitResponsibleDto, UnitStatusDto } from './units.dto';
 import { DriverSignedCopies } from './signed-copies';
 import { ApplicantSignatureDto } from '../documents/documents.dto';
 import { clientContext } from '../documents/client-context';
@@ -42,7 +49,23 @@ const send = (file: FileResult) => new StreamableFile(file.body, { type: file.ty
 @Controller('safety')
 @Roles(...SAFETY_ROLES)
 class SafetyController {
- constructor(private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService, private readonly renewals: RenewalService, private readonly letters: NoticeLetterService, private readonly reminders: ReminderService) {}
+ constructor(private readonly license: LicenseItemsService, private readonly safety: SafetyService, private readonly screening: ScreeningService, private readonly consents: ConsentService, private readonly clearance: ClearanceService, private readonly annual: AnnualReviewService, private readonly testing: TestingService, private readonly incidents: IncidentService, private readonly trucks: TruckService, private readonly renewals: RenewalService, private readonly letters: NoticeLetterService, private readonly reminders: ReminderService, private readonly existing: ExistingDriversService, private readonly contracts: ContractsService, private readonly roadReady: RoadReadyService) {}
+ // The Driver and Contractor Acknowledgement (section 39): the driver's link, then the truck owner's; cancel; the signed copy.
+ @Post('drivers/:id/contracts') contractLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ContractVersionDto) { return this.contracts.sendDriverLink(req.currentUser, id, dto); }
+ @Post('drivers/:id/contracts/:contractId/owner-link') ownerLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('contractId', ParseUUIDPipe) contractId: string, @Body() dto: ContractVersionDto) { return this.contracts.sendOwnerLink(req.currentUser, id, contractId, dto); }
+ @Post('drivers/:id/contracts/:contractId/cancel') cancelContract(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('contractId', ParseUUIDPipe) contractId: string, @Body() dto: ContractVersionDto) { return this.contracts.cancel(req.currentUser, id, contractId, dto); }
+ @Get('drivers/:id/contracts/:contractId/signed') @FileResponse() async contractCopy(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('contractId', ParseUUIDPipe) contractId: string) { return send(await this.contracts.staffSignedCopy(req.currentUser, id, contractId)); }
+ // Ready for the road: Safety's pick of the truck, the steps marked by hand, and Telegram group updates done.
+ @Post('drivers/:id/road-ready/unit') readyUnit(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ReadyUnitDto) { return this.roadReady.setUnit(req.currentUser, id, dto); }
+ @Post('drivers/:id/road-ready/:key') readyStep(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: ReadyStepDto) { return this.roadReady.record(req.currentUser, id, key, dto); }
+ @Post('drivers/:id/group-changes/:changeId/done') groupDone(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('changeId', ParseUUIDPipe) changeId: string, @Body() dto: GroupDoneDto) { return this.roadReady.groupDone(req.currentUser, id, changeId, dto); }
+ // Existing drivers from their paper file (section 34): check writes nothing; add checks again and adds the ready rows as Cleared.
+ @Get('drivers/existing/options') existingOptions(@Req() req: AuthRequest) { return this.existing.options(req.currentUser); }
+ @Post('drivers/existing/check') checkExisting(@Req() req: AuthRequest, @Body() dto: ExistingDriversDto) { return this.existing.check(req.currentUser, dto); }
+ @Post('drivers/existing/add') addExisting(@Req() req: AuthRequest, @Body() dto: ExistingDriversDto) { return this.existing.add(req.currentUser, dto); }
+ @Post('drivers/:id/paper/:key') paperItem(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: PaperItemDto) { return this.existing.paperItem(req.currentUser, id, key, dto); }
+ @Post('drivers/:id/catch-up') catchUp(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CatchUpLinkDto) { return this.existing.sendCatchUp(req.currentUser, id, dto); }
+ @Post('drivers/:id/catch-up/cancel') cancelCatchUp(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CatchUpLinkDto) { return this.existing.cancelCatchUp(req.currentUser, id, dto); }
  // Consent forms: every Safety role reads them; the service lets only the Safety manager and administrators publish.
  // Consent forms and the notice letters, on one page (Forms and letters).
  @Get('consents') async consentList(@Req() req: AuthRequest) {
@@ -59,15 +82,16 @@ class SafetyController {
  // Verified scans that have expired or expire soon (dates only).
  @Get('expiring') expiring() { return this.safety.expiring(); }
  @Get('people') people() { return this.safety.people(); }
- @Get('drivers') drivers(@Query() query: DriverQueryDto) { return this.safety.drivers(query.status); }
+ @Get('drivers') drivers(@Req() req: AuthRequest, @Query() query: DriverQueryDto) { return this.safety.drivers(req.currentUser, query.status); }
  @Post('drivers') create(@Req() req: AuthRequest, @Body() dto: CreateDriverDto) { return this.safety.create(req.currentUser, dto); }
  // The record plus its yearly reviews, tests (only for those who may see results), incidents, trucks and any hold.
  @Get('drivers/:id') async driver(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) {
-  const driver = await this.safety.driver(id);
-  const [annualReviews, { testing, hold, seesResults }, incidents, trucks, noticeLetters, reminders] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id),
-   this.incidents.forDriver(id), this.trucks.forDriver(id), DECIDERS.includes(req.currentUser.role) ? this.letters.current() : undefined, this.reminders.forDriver(id)]);
-  // Drug test and Clearinghouse results in clearance follow the test results rule (withoutResults).
-  return { ...(seesResults ? driver : withoutResults(driver)), annualReviews, testing, incidents, trucks, hold, noticeLetters, reminders };
+  // Whether this person sees test results is decided once, and every read below leaves out what they may not see (results.ts).
+  const sees = await this.testing.canSee(req.currentUser, id);
+  const driver = await this.safety.driver(id, sees);
+  const [annualReviews, { testing, hold }, incidents, trucks, noticeLetters, reminders, paperFile, roadReady, contracts] = await Promise.all([this.annual.forDriver(id, driver.clearedAt), this.testing.forProfile(req.currentUser, id, sees),
+   this.incidents.forDriver(id), this.trucks.forDriver(id), DECIDERS.includes(req.currentUser.role) ? this.letters.current() : undefined, this.reminders.forDriver(id), this.existing.forDriver(id, sees), this.roadReady.forDriver(id), this.contracts.forDriver(id)]);
+  return { ...driver, paperFile, annualReviews, testing, incidents, trucks, hold, noticeLetters, reminders, roadReady, contracts };
  }
  // Owner-operators' trucks and their lease, insurance and registration PDFs (no-store files; every open is recorded).
  @Get('trucks') truckList() { return this.trucks.list(); }
@@ -106,6 +130,9 @@ class SafetyController {
  @Post('drivers/:id/ssn') ssn(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.safety.revealSsn(req.currentUser, id); }
  // Screening and the Safety manager's decision. The MVR is a no-store file; every view is recorded.
  @Post('drivers/:id/checks/:key') check(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: ScreeningCheckDto) { return this.screening.setCheck(req.currentUser, id, key, dto); }
+ // What the license adds (section 39): the PSP report for CDL drivers and anyone who once held a CDL, a DL driver's road test.
+ @Post('drivers/:id/psp') psp(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UploadPspDto) { return this.license.uploadPsp(req.currentUser, id, dto); }
+ @Post('drivers/:id/road-test') roadTest(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RoadTestDto) { return this.license.recordRoadTest(req.currentUser, id, dto); }
  @Post('drivers/:id/mvr') mvr(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UploadMvrDto) { return this.screening.uploadMvr(req.currentUser, id, dto); }
  @Get('drivers/:id/reports/:reportId/file') @FileResponse() async report(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('reportId', ParseUUIDPipe) reportId: string) { return send(await this.screening.reportFile(req.currentUser, id, reportId)); }
  @Post('drivers/:id/corrections') corrections(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RequestCorrectionsDto) { return this.screening.requestCorrections(req.currentUser, id, dto); }
@@ -120,12 +147,52 @@ class SafetyController {
  @Post('drivers/:id/telegram-link') telegramLink(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DriverVersionDto) { return this.reminders.staffConnectLink(req.currentUser, id, dto.version); }
  @Post('drivers/:id/clear') clear(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DriverVersionDto) { return this.clearance.clear(req.currentUser, id, dto); }
 }
+// Units, trailers and truck owners (section 34): every Safety role reads them; UnitsService decides who may change what.
+@Controller('safety')
+@Roles(...SAFETY_ROLES)
+class UnitsController {
+ constructor(private readonly units: UnitsService, private readonly unitsImport: UnitsImportService) {}
+ @Get('units') list() { return this.units.list(); }
+ @Get('units/permits') permits() { return this.units.permits(); }
+ // Units from a file: check writes nothing; add checks again under the unit-number lock and adds the rows that are ready.
+ @Post('units/check') checkImport(@Body() dto: UnitImportDto) { return this.unitsImport.check(dto); }
+ @Post('units/add') addImport(@Req() req: AuthRequest, @Body() dto: UnitImportDto) { return this.unitsImport.add(req.currentUser, dto); }
+ @Post('units/permits/renew') renewPermits(@Req() req: AuthRequest, @Body() dto: RenewPermitsDto) { return this.units.renewPermits(req.currentUser, dto); }
+ @Post('units') create(@Req() req: AuthRequest, @Body() dto: UnitDto) { return this.units.create(req.currentUser, dto); }
+ // A truck owner's contracts signed on paper (section 39): any Safety role uploads; every open is recorded.
+ @Post('owners/:id/contracts') uploadContract(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: OwnerContractDto) { return this.units.uploadContract(req.currentUser, id, dto); }
+ @Get('owners/:id/contracts/:fileId/file') @FileResponse() async contractFile(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('fileId', ParseUUIDPipe) fileId: string) { return send(await this.units.contractFile(req.currentUser, id, fileId)); }
+ @Get('units/:id') unit(@Param('id', ParseUUIDPipe) id: string) { return this.units.unit(id); }
+ @Patch('units/:id') update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UnitDto) { return this.units.update(req.currentUser, id, dto); }
+ @Post('units/:id/dates') dates(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UnitDatesDto) { return this.units.dates(req.currentUser, id, dto); }
+ @Post('units/:id/status') status(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UnitStatusDto) { return this.units.status(req.currentUser, id, dto); }
+ @Post('units/:id/responsible') responsible(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UnitResponsibleDto) { return this.units.responsible(req.currentUser, id, dto); }
+ // An optional copy of a paper (no-store file; every open is recorded).
+ @Post('units/:id/files') upload(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UnitFileDto) { return this.units.upload(req.currentUser, id, dto); }
+ @Get('units/:id/files/:fileId/file') @FileResponse() async file(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('fileId', ParseUUIDPipe) fileId: string) { return send(await this.units.file(req.currentUser, id, fileId)); }
+ @Get('owners') owners() { return this.units.owners(); }
+ @Post('owners') createOwner(@Req() req: AuthRequest, @Body() dto: TruckOwnerDto) { return this.units.createOwner(req.currentUser, dto); }
+ @Get('owners/:id') owner(@Param('id', ParseUUIDPipe) id: string) { return this.units.owner(id); }
+ @Patch('owners/:id') updateOwner(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: TruckOwnerDto) { return this.units.updateOwner(req.currentUser, id, dto); }
+ @Post('owners/:id/archive') archiveOwner(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: OwnerVersionDto) { return this.units.archiveOwner(req.currentUser, id, dto); }
+}
 // Public to the STAFF guard only: the driver has no account. Each record operation checks the driver session (bound to an
 // open link) in the service, and the shared BFF and CSRF boundary applies to every route, including verification.
 @Controller('driver')
 @Public()
 class DriverController {
- constructor(private readonly access: DriverAccessService, private readonly consents: ConsentService, private readonly renewals: RenewalService, private readonly reminders: ReminderService) {}
+ constructor(private readonly access: DriverAccessService, private readonly consents: ConsentService, private readonly renewals: RenewalService, private readonly reminders: ReminderService, private readonly catchUp: CatchUpService, private readonly contracts: ContractsService) {}
+ // A contract link opens only its one acknowledgement, for the driver or the truck owner's signer (section 39).
+ @Get('contract') contract(@Req() req: Request) { return this.contracts.view(req); }
+ @Get('contract/file') @FileResponse() async contractFile(@Req() req: Request) { return send(await this.contracts.file(req)); }
+ @Post('contract/view') contractView(@Req() req: Request) { return this.contracts.recordView(req); }
+ @Post('contract/sign') contractSign(@Body() dto: ContractSignatureDto, @Req() req: Request) { return this.contracts.sign(req, dto, clientContext(req)); }
+ @Get('contract/signed') @FileResponse() async contractSigned(@Req() req: Request) { return send(await this.contracts.signedCopyFor(req)); }
+ // A catch-up link (existing drivers) opens only this: photos of their current documents and the current consent forms.
+ @Get('catch-up') catchUpView(@Req() req: Request) { return this.catchUp.view(req); }
+ @Post('catch-up/documents/:kind') catchUpUpload(@Body() dto: DriverDocumentDto, @Param('kind') kind: string, @Req() req: Request) { return this.catchUp.upload(req, kind, dto); }
+ @Get('catch-up/documents/:id/file') @FileResponse() async catchUpFile(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) { return send(await this.catchUp.file(req, id)); }
+ @Post('catch-up/send') catchUpSend(@Req() req: Request) { return this.catchUp.send(req); }
  // A renewal link opens only this: which document Safety asked for, and sending its scan.
  @Get('renewal') renewal(@Req() req: Request) { return this.renewals.view(req); }
  @Post('renewal') sendRenewal(@Body() dto: DriverDocumentDto, @Req() req: Request) { return this.renewals.send(req, dto); }
@@ -150,5 +217,5 @@ class DriverController {
   return { message: 'Signed out' };
  }
 }
-@Module({ imports: [EmailModule, StorageModule, UpdatesModule], controllers: [SafetyController, DriverController], providers: [SafetyService, RenewalService, ReminderService, NoticeLetterService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
+@Module({ imports: [EmailModule, StorageModule, UpdatesModule], controllers: [SafetyController, UnitsController, DriverController], providers: [UnitsService, UnitsImportService, ExistingDriversService, CatchUpService, ContractsService, RoadReadyService, LicenseItemsService, SafetyService, RenewalService, ReminderService, NoticeLetterService, AnnualReviewService, TestingService, IncidentService, TruckService, ScreeningService, ConsentService, ClearanceService, DriverAccessService, PiiService, ScanSweeper, DriverSignedCopies], exports: [UnitsService, ScreeningService, SafetyService, AnnualReviewService, TestingService, IncidentService, TruckService] })
 export class SafetyModule {}

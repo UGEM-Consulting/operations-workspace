@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { changedRows } from '../../common/changed-rows';
 import { DataSource, EntityManager, In, IsNull, Not } from 'typeorm';
 import { webOrigins } from '../../config/environment';
 import { onboardingLimit } from '../onboarding/rate-limit';
@@ -9,14 +10,20 @@ import type { FileResult } from '../documents/documents.service';
 import { driverDocumentKey, StorageService } from '../storage/storage.service';
 import { DriverVersionDto, VerifyDocumentDto } from './driver-application.dto';
 import { PiiService } from './pii';
+import { documentSql, eventMetadataSql, eventSql, fieldsSql, hiddenItems, RESULT_ITEMS, resultKeySql, resultViewer, withoutResultGaps } from './results';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { AssignOwnerDto, CreateDriverDto, MarkLeftDto, ReopenDriverDto, UpdateDriverDto, WithdrawDriverDto } from './safety.dto';
-import { driverEvent, isProduction, lockOpenDriver, ownsDriver, requireScreener, revokeOpenLinks, SCREENERS, sentWithApplication, STALE, writeDriver } from './driver-records';
+import { paperKeys } from './existing-drivers';
+import { askGroupChange, pickedUnitId, readySummaries } from './road-ready';
+import { driverEvent, lockOpenDriver, ownsDriver, requireMayEmail, requireScreener, revokeOpenLinks, SCREENERS, sentWithApplication, STALE, writeDriver } from './driver-records';
 import { CLOSED_STATUSES, Driver, DriverAssignment, DriverApplication, DriverDocument, DriverLink, DriverOwner, type DriverStatus, earliestFinalRejection, LEAVABLE, NOT_RECHECKED, OWNABLE, phoneKey, RENEWAL_KINDS, type RenewalKind, WITHDRAWABLE } from './safety.entity';
 import { currentConsents, missingConsents } from './consent-rules';
+import { rulesFor } from './license-rules';
+import { expiringUnits, expiringUnitsCount } from './units.service';
 import { addDays, missingForDecision, usDay } from './screening-rules';
 import { CLEARERS, clearanceGaps, hasActiveOwner } from './clearance.service';
-import { driverReminded, renewalScanWhere } from './reminded';
+import { driverReminded, renewalScanWhere, sentScan } from './reminded';
+import { personName } from './sql';
 /** How long an application link works: until the driver submits, Safety cancels it, or this many days pass. */
 export const DRIVER_LINK_DAYS = 14;
 /** Scans are listed as expiring this many days before their expiration date. */
@@ -31,7 +38,7 @@ const person = (alias: string) => `CASE WHEN ${alias}.id IS NULL THEN NULL ELSE 
  */
 const EXPIRING = `FROM (
     (SELECT DISTINCT ON (d."driverId", d.kind) d.id AS "documentId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn", NULL::text AS truck, d.subtype
-    FROM driver_documents d WHERE d."verifiedAt" IS NOT NULL ORDER BY d."driverId", d.kind, d."createdAt" DESC)
+    FROM driver_documents d WHERE d."verifiedAt" IS NOT NULL AND d.kind <> 'RETURN_TO_DUTY' ORDER BY d."driverId", d.kind, d."createdAt" DESC)
     UNION ALL
     SELECT o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), t.unit, NULL
     FROM driver_owner_documents o JOIN driver_trucks t ON t.id = o."truckId" WHERE o."replacedAt" IS NULL AND o."expiresOn" IS NOT NULL AND t."archivedAt" IS NULL
@@ -56,14 +63,44 @@ const blank = (value: string | null | undefined) => value === undefined ? undefi
 export class SafetyService {
  constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly pii: PiiService, private readonly storage: StorageService) {}
 
- async drivers(status: 'OPEN' | 'CLOSED' | 'ALL' = 'ALL') {
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState",
-    d.status, d.version, d."createdAt", d."closedAt", ${person('l')} AS "safetyLead", ${person('o')} AS owner
-   FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId"
+ async drivers(viewer: User, status: 'OPEN' | 'CLOSED' | 'ALL' = 'ALL') {
+  const sees = `($2::boolean OR x."ownerId" = $3::uuid)`;
+  // Each existing driver's counts are grouped once per table (one pass each) and joined, rather than read per row.
+  const restricted = `p.key IN (${RESULT_ITEMS.map(key => `'${key}'`).join(',')})`;
+  const items: Record<string, unknown>[] = await this.db.query(`WITH existing AS (SELECT "driverId", "createdAt" FROM existing_driver_records),
+   paper AS (SELECT p."driverId", count(*) FILTER (WHERE p.status <> 'NOT_ON_FILE') AS done, count(*) FILTER (WHERE p.status <> 'NOT_ON_FILE' AND NOT ${restricted}) AS "doneOpen",
+     count(*) FILTER (WHERE p.status = 'NOT_ON_FILE') AS open, count(*) FILTER (WHERE p.status = 'NOT_ON_FILE' AND NOT ${restricted}) AS "openOpen"
+    FROM driver_paper_items p JOIN existing e ON e."driverId" = p."driverId" GROUP BY p."driverId"),
+   -- Dates from the paper file still in force: the latest checked one of its kind, until a scan is checked.
+   "paperOnly" AS (SELECT l."driverId", count(*) FILTER (WHERE l."fromPaper") AS n FROM (SELECT DISTINCT ON (c."driverId", c.kind) c."driverId", c."fromPaper" FROM driver_documents c
+     JOIN existing e ON e."driverId" = c."driverId" WHERE c."verifiedAt" IS NOT NULL ORDER BY c."driverId", c.kind, c."createdAt" DESC) l GROUP BY l."driverId"),
+   "toCheck" AS (SELECT c."driverId", count(*) AS n FROM driver_documents c JOIN existing e ON e."driverId" = c."driverId"
+    WHERE c."replacedAt" IS NULL AND NOT c."fromPaper" AND c."verifiedAt" IS NULL AND c."unreadableAt" IS NULL AND ${sentScan('c')} GROUP BY c."driverId"),
+   reviewed AS (SELECT DISTINCT v."driverId" FROM driver_annual_reviews v JOIN existing e ON e."driverId" = v."driverId"),
+   links AS (SELECT k."driverId", max(k."createdAt") FILTER (WHERE k."revokedAt" IS NULL AND k."completedAt" IS NULL) AS "linkSentAt", max(k."completedAt") AS "catchUpSentAt"
+    FROM driver_links k JOIN existing e ON e."driverId" = k."driverId" WHERE k.purpose = 'CATCH_UP' GROUP BY k."driverId")
+   SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState",
+    d.status, d.version, d."createdAt", d."closedAt", ${person('l')} AS "safetyLead", ${person('o')} AS owner,
+    -- Drivers added from a paper file (section 34): what their record still needs, for the Missing details tab. The paper
+    -- drug test and Clearinghouse items count only for those who see results (results.ts): the Safety Director,
+    -- administrators and the driver's own Safety Manager.
+    CASE WHEN r."driverId" IS NULL THEN NULL ELSE json_build_object('addedAt', r."createdAt",
+     'paperDone', CASE WHEN ${sees} THEN coalesce(pa.done, 0) ELSE coalesce(pa."doneOpen", 0) END,
+     'paperOpen', CASE WHEN ${sees} THEN coalesce(pa.open, 0) ELSE coalesce(pa."openOpen", 0) END,
+     'paperOnly', coalesce(po.n, 0), 'toCheck', coalesce(tc.n, 0), 'reviewed', rv."driverId" IS NOT NULL,
+     'linkSentAt', lk."linkSentAt", 'catchUpSentAt', lk."catchUpSentAt") END AS existing, ${sees} AS "seesResults"
+   FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN existing r ON r."driverId" = d.id
    LEFT JOIN driver_owners x ON x."driverId" = d.id AND x."endedAt" IS NULL LEFT JOIN users o ON o.id = x."ownerId"
+   LEFT JOIN paper pa ON pa."driverId" = d.id LEFT JOIN "paperOnly" po ON po."driverId" = d.id LEFT JOIN "toCheck" tc ON tc."driverId" = d.id
+   LEFT JOIN reviewed rv ON rv."driverId" = d.id LEFT JOIN links lk ON lk."driverId" = d.id
    WHERE ($1 = 'ALL' OR ($1 = 'CLOSED') = (d.status IN ('REJECTED','WITHDRAWN','LEFT')))
-   ORDER BY d."createdAt" DESC LIMIT 1000`, [status]);
-  return { items };
+   ORDER BY d."createdAt" DESC LIMIT 1000`, [status, ...resultViewer(viewer)]);
+  // Ready for the road (section 39): steps done and the next one, for the Getting ready tab.
+  const ready = await readySummaries(this.db.manager, items.filter(item => item.status === 'CLEARED').map(item => item.id as string));
+  // How many paper file items apply, from the license and type (an existing driver has no application).
+  return { items: items.map(({ seesResults, ...item }) => ({ ...item, ...(item.existing ? { existing: { ...item.existing as object,
+    paperTotal: paperKeys(item as { driverType: string; licenseType: string | null }).filter(key => seesResults || !RESULT_ITEMS.includes(key)).length } } : {}),
+   ...(ready.has(item.id as string) ? { readySummary: ready.get(item.id as string) } : {}) })) };
  }
 
  /**
@@ -93,7 +130,7 @@ export class SafetyService {
   const reminded = await driverReminded(this.db.manager, renewable.map(item => item.documentId as string));
   const link = (scan: Record<string, unknown>) => renewals.find(entry => entry.driverId === scan.driverId && entry.kind === scan.kind)?.link ?? null;
   return { today, warningDays: EXPIRY_WARNING_DAYS, items: items.map(item => ({ ...item, expiresOn: item.expiresOn as string, expired: (item.expiresOn as string) < today, renewal: renewal(item), reminded: reminded.get(item.documentId as string) ?? null })),
-   scans: scans.map(scan => ({ ...scan, link: link(scan) })) };
+   scans: scans.map(scan => ({ ...scan, link: link(scan) })), units: await expiringUnits(this.db.manager, today, addDays(today, EXPIRY_WARNING_DAYS)) };
  }
  /** For the sidebar: the same documents, counted, without the details the page shows. */
  async expiringCount(): Promise<number> {
@@ -102,7 +139,9 @@ export class SafetyService {
   const [row] = await this.db.query(`WITH listed AS (SELECT e."driverId", e.kind ${EXPIRING})
    SELECT (SELECT count(*) FROM listed)::int + (SELECT count(*) ${SCANS_FROM} ${SCANS_WHERE}
     AND NOT EXISTS (SELECT 1 FROM listed l WHERE l."driverId" = n."driverId" AND l.kind = n.kind))::int AS n`, [addDays(usDay('latest'), EXPIRY_WARNING_DAYS)]) as { n: number }[];
-  return row.n;
+  // Plus unit dates (not the year-end permits, which have their own page).
+  const today = usDay('latest');
+  return row.n + await expiringUnitsCount(this.db.manager, today, addDays(today, EXPIRY_WARNING_DAYS));
  }
 
  /**
@@ -110,11 +149,11 @@ export class SafetyService {
   * hold counts), an open renewal link (never its token), and a scan the driver sent through a renewal link that waits for
   * its check or that nobody could read (never a scan from their application: sentWithApplication).
   */
- private async renewals(driverIds: string[]): Promise<{ driverId: string; kind: RenewalKind; checked: { id: string; expiresOn: string | null; current: boolean } | null;
+ private async renewals(driverIds: string[]): Promise<{ driverId: string; kind: RenewalKind; checked: { id: string; expiresOn: string | null; current: boolean; fromPaper: boolean } | null;
   link: { createdAt: string; expiresAt: string; openedAt: string | null; expired: boolean; fromReminder: boolean } | null; scan: { id: string; version: number; pageCount: number; createdAt: string; unreadable: boolean } | null }[]> {
   if (!driverIds.length) return [];
   return this.db.query(`SELECT x."driverId", k.kind,
-    (SELECT json_build_object('id', c.id, 'expiresOn', to_char(c."expiresOn", 'YYYY-MM-DD'), 'current', c."replacedAt" IS NULL) FROM driver_documents c
+    (SELECT json_build_object('id', c.id, 'expiresOn', to_char(c."expiresOn", 'YYYY-MM-DD'), 'current', c."replacedAt" IS NULL, 'fromPaper', c."fromPaper") FROM driver_documents c
      WHERE c."driverId" = x."driverId" AND c.kind = k.kind AND c."verifiedAt" IS NOT NULL ORDER BY c."createdAt" DESC LIMIT 1) AS checked,
     (SELECT json_build_object('createdAt', l."createdAt", 'expiresAt', l."expiresAt", 'openedAt', l."openedAt", 'expired', l."expiresAt" <= now(), 'fromReminder', l."createdBy" IS NULL) FROM driver_links l
      WHERE l."driverId" = x."driverId" AND l.purpose = 'RENEWAL' AND l."documentKind" = k.kind AND l."revokedAt" IS NULL AND l."completedAt" IS NULL) AS link,
@@ -123,41 +162,48 @@ export class SafetyService {
    FROM unnest($1::uuid[]) x("driverId") CROSS JOIN (VALUES ('LICENSE'), ('MEDICAL_CARD')) k(kind)`, [driverIds]);
  }
 
- async driver(id: string) {
+ /** The driver's record; with sees false (see results.ts) nothing that tells how a drug or alcohol test came out is read. */
+ async driver(id: string, sees: boolean) {
   const [driver] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d.email, d."driverType", d."licenseType", d."licenseState", d."experienceYears",
    d.source, d.notes, d.status, d."statusReason", d."closedAt", d.version, d."createdAt", d."updatedAt", ${person('l')} AS "safetyLead", ${person('c')} AS "addedBy",
    d."clearedAt", ${person('k')} AS "clearedBy"
    FROM drivers d LEFT JOIN users l ON l.id = d."safetyLeadId" LEFT JOIN users c ON c.id = d."createdBy" LEFT JOIN users k ON k.id = d."clearedBy" WHERE d.id = $1`, [id]);
   if (!driver) throw new NotFoundException('This driver record no longer exists.');
-  const [owners, activity, [link], [application], documents, checks, [mvr], reviews, consents, currentForms, clearanceItems, employers, assignments, activeOwner, renewals] = await Promise.all([
-   this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, CASE WHEN a.id IS NULL THEN NULL ELSE a."firstName" || ' ' || a."lastName" END AS "assignedBy"
+  // Read once: the profile shows it, and the consent forms that apply follow its license class.
+  const applicationRows = this.db.query(`SELECT status, ${fieldsSql('fields', '$2')} AS fields, history, "ssnLast4", version, "submittedAt", "updatedAt", "correctionNote", "correctionRequestedAt" FROM driver_applications WHERE "driverId" = $1`, [id, sees]);
+  const [owners, activity, [link], [application], documents, checks, reports, reviews, consents, currentForms, clearanceItems, employers, assignments, activeOwner, renewals] = await Promise.all([
+   this.db.query(`SELECT x.id, x."startedAt", x."endedAt", x.reason, ${person('o')} AS owner, ${personName('a')} AS "assignedBy"
     FROM driver_owners x LEFT JOIN users o ON o.id = x."ownerId" LEFT JOIN users a ON a.id = x."actorId" WHERE x."driverId" = $1 ORDER BY x."startedAt" DESC, x."createdAt" DESC`, [id]),
-   this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
-    FROM driver_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."driverId" = $1 ORDER BY e."createdAt" DESC LIMIT 200`, [id]),
+   this.db.query(`SELECT e.id, e.event, ${eventMetadataSql('e', '$2')} AS metadata, e."createdAt", ${personName('u')} AS actor
+    FROM driver_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."driverId" = $1 AND ${eventSql('e', '$2')} ORDER BY e."createdAt" DESC LIMIT 200`, [id, sees]),
    // The open link (never its token) and the driver's answers; the SSN only as its last four digits.
    this.db.query(`SELECT email, "createdAt", "expiresAt", "openedAt", "expiresAt" <= now() AS expired FROM driver_links WHERE "driverId" = $1 AND purpose = 'APPLICATION' AND "revokedAt" IS NULL AND "completedAt" IS NULL`, [id]),
-   this.db.query(`SELECT status, fields, history, "ssnLast4", version, "submittedAt", "updatedAt", "correctionNote", "correctionRequestedAt" FROM driver_applications WHERE "driverId" = $1`, [id]),
+   applicationRows,
    // Current scans and Safety's check of each.
    // A renewal Safety uploaded is marked (uploadedBySafety), and one nobody could read carries unreadableAt.
    this.db.query(`SELECT d.id, d.kind, d.subtype, d."pageCount", d."createdAt", d."verifiedAt", d.number, d.version, to_char(d."expiresOn", 'YYYY-MM-DD') AS "expiresOn",
-     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "verifiedBy", d."uploadedBy" IS NOT NULL AS "uploadedBySafety", d."unreadableAt"
-    FROM driver_documents d LEFT JOIN users u ON u.id = d."verifiedBy" WHERE d."driverId" = $1 AND d."replacedAt" IS NULL ORDER BY d."createdAt"`, [id]),
+     ${personName('u')} AS "verifiedBy", d."uploadedBy" IS NOT NULL AS "uploadedBySafety", d."unreadableAt", d."fromPaper",
+     -- A catch-up scan replaces the paper row at once (one current per kind), but the paper date counts until it's checked.
+     CASE WHEN d."verifiedAt" IS NULL THEN (SELECT json_build_object('expiresOn', to_char(p."expiresOn", 'YYYY-MM-DD')) FROM (SELECT c."fromPaper", c."expiresOn" FROM driver_documents c
+      WHERE c."driverId" = d."driverId" AND c.kind = d.kind AND c."verifiedAt" IS NOT NULL ORDER BY c."createdAt" DESC LIMIT 1) p WHERE p."fromPaper") END AS "paperDate"
+    FROM driver_documents d LEFT JOIN users u ON u.id = d."verifiedBy" WHERE d."driverId" = $1 AND d."replacedAt" IS NULL AND ${documentSql('d.kind', '$2')} ORDER BY d."createdAt"`, [id, sees]),
    // Screening: the Safety lead's checks, the current MVR (never its file here) and the decisions so far, newest first.
-   this.db.query(`SELECT c.key, c.result, c.note, c."checkedAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "checkedBy"
+   this.db.query(`SELECT c.key, c.result, c.note, c."checkedAt", ${personName('u')} AS "checkedBy"
     FROM driver_screening_checks c LEFT JOIN users u ON u.id = c."checkedBy" WHERE c."driverId" = $1`, [id]),
-   this.db.query(`SELECT r.id, to_char(r."pulledOn", 'YYYY-MM-DD') AS "pulledOn", r."pageCount", r."createdAt", r."authorization", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "uploadedBy"
-    FROM driver_reports r LEFT JOIN users u ON u.id = r."uploadedBy" WHERE r."driverId" = $1 AND r.kind = 'MVR' AND r."replacedAt" IS NULL`, [id]),
+   // The current MVR, PSP report and road test certificate (never their files here).
+   this.db.query(`SELECT r.id, r.kind, to_char(r."pulledOn", 'YYYY-MM-DD') AS "pulledOn", r."pageCount", r."createdAt", r."authorization", ${personName('u')} AS "uploadedBy"
+    FROM driver_reports r LEFT JOIN users u ON u.id = r."uploadedBy" WHERE r."driverId" = $1 AND r.kind IN ('MVR','PSP','ROAD_TEST') AND r."replacedAt" IS NULL`, [id]),
    this.db.query(`SELECT r.id, r.action, r.note, r.conditions, to_char(r."noticeSentOn", 'YYYY-MM-DD') AS "noticeSentOn", r."previousStatus", r."newStatus", r."createdAt",
-     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS actor
+     ${personName('u')} AS actor
     FROM driver_reviews r LEFT JOIN users u ON u.id = r."actorId" WHERE r."driverId" = $1 ORDER BY r."createdAt" DESC`, [id]),
    // Consent forms the driver signed (newest version first per form) and the published ones still to sign.
    // hasSignature is false for a form that is only acknowledged (the background check disclosure).
    this.db.query(`SELECT s."documentId", d.kind, d.title, d.version, s."typedName", s."signedAt", s."signatureImage" IS NOT NULL AS "hasSignature" FROM driver_consent_signatures s
     JOIN driver_consent_documents d ON d.id = s."documentId" WHERE s."driverId" = $1 ORDER BY d.kind, d.version DESC`, [id]),
-   this.storage.enabled ? currentConsents(this.db.manager) : [],
+   this.storage.enabled ? applicationRows.then(([row]) => currentConsents(this.db.manager, rulesFor(driver, row?.fields), !!row)) : [],
    // Clearance: results only (no drug test or medical details are entered), the employers asked, and where Dispatch placed the driver.
-   this.db.query(`SELECT c.key, c.status, c.result, to_char(c."doneOn", 'YYYY-MM-DD') AS "doneOn", c.note, c."updatedAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "updatedBy"
-    FROM driver_clearance_items c LEFT JOIN users u ON u.id = c."updatedBy" WHERE c."driverId" = $1`, [id]),
+   this.db.query(`SELECT c.key, c.status, c.result, to_char(c."doneOn", 'YYYY-MM-DD') AS "doneOn", c.note, c."updatedAt", ${personName('u')} AS "updatedBy"
+    FROM driver_clearance_items c LEFT JOIN users u ON u.id = c."updatedBy" WHERE c."driverId" = $1 AND ${resultKeySql('c.key', '$2')}`, [id, sees]),
    this.db.query(`SELECT id, name, "fromMonth", "toMonth", source, location, phone, to_char("requestedOn", 'YYYY-MM-DD') AS "requestedOn", to_char("answeredOn", 'YYYY-MM-DD') AS "answeredOn",
      to_char("goodFaithOn", 'YYYY-MM-DD') AS "goodFaithOn", "goodFaithNote"
     FROM driver_previous_employers WHERE "driverId" = $1 ORDER BY "toMonth" DESC, "createdAt"`, [id]),
@@ -169,14 +215,20 @@ export class SafetyService {
    this.renewals([id]),
   ]);
   const consentsMissing = missingConsents(currentForms, consents.map((row: { documentId: string }) => row.documentId));
+  const report = (kind: string) => reports.find((row: { kind: string }) => row.kind === kind) ?? null, mvr = report('MVR'), psp = report('PSP');
+  // What the license brings (section 39): which clearance items and consent forms apply.
+  const license = rulesFor(driver, application?.fields);
   const gaps = missingForDecision({ application, checkKeys: checks.map((row: { key: string }) => row.key), hasMvr: !!mvr,
-   verifiedKinds: documents.filter((row: { verifiedAt: Date | null }) => row.verifiedAt).map((row: { kind: string }) => row.kind) }, this.storage.enabled);
+   verifiedKinds: documents.filter((row: { verifiedAt: Date | null }) => row.verifiedAt).map((row: { kind: string }) => row.kind),
+   scannedKinds: documents.map((row: { kind: string }) => row.kind) }, this.storage.enabled);
   // While a pre-adverse notice is out, the first day the rejection can be final.
   const notice = driver.status === 'PRE_ADVERSE' ? reviews.find((row: { action: string }) => row.action === 'PRE_ADVERSE') : null;
   const owner = owners.find((row: { endedAt: Date | null }) => row.endedAt === null)?.owner ?? null;
   return { ...driver, owner, owners, activity, link: link ?? null, application: application ?? null, documents, renewals,
-   clearance: { items: clearanceItems, employers, missing: clearanceGaps(clearanceItems, activeOwner, employers, driver) }, assignments,
-   screening: { checks, mvr: mvr ?? null, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null },
+   // Someone who doesn't see results gets the result items as restricted placeholders and no gaps that would say whether they're done.
+   clearance: { items: sees ? clearanceItems : [...clearanceItems, ...hiddenItems(RESULT_ITEMS)], employers, roadTest: report('ROAD_TEST'),
+    missing: sees ? clearanceGaps(clearanceItems, activeOwner, employers, driver, license, psp) : withoutResultGaps(clearanceGaps(clearanceItems, activeOwner, employers, driver, license, psp)) }, assignments, license,
+   screening: { checks, mvr, psp, reviews, missing: gaps, finalRejectionFrom: notice ? earliestFinalRejection(notice.noticeSentOn) : null },
    consents: { signatures: consents, missing: consentsMissing, authorizationSigned: consents.some((row: { kind: string }) => row.kind === 'BACKGROUND_AUTHORIZATION') } };
  }
 
@@ -268,7 +320,7 @@ export class SafetyService {
  async markLeft(user: User, id: string, dto: MarkLeftDto) {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, dto.version);
-   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety contact and the Safety manager can mark a driver as left.');
+   if (!CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only the driver’s Safety Manager and the Safety Director can mark a driver as left.');
    if (!LEAVABLE.includes(driver.status)) throw new ConflictException('Only an approved or cleared driver can be marked as left.');
    if (dto.leftOn > usDay('latest')) throw new BadRequestException('The last day can’t be in the future.');
    if (dto.leftOn < '1980-01-01') throw new BadRequestException('Enter the last day they worked.');
@@ -279,11 +331,13 @@ export class SafetyService {
    const assignments = em.getRepository(DriverAssignment), owners = em.getRepository(DriverOwner);
    const assignment = await assignments.findOneBy({ driverId: id, endedAt: IsNull() });
    if (assignment) await assignments.update(assignment.id, { endedAt: end(assignment.startedAt) });
+   // Also before any Dispatch assignment, when the group was made for Safety's pick.
+   await askGroupChange(em, id, { reason: 'DRIVER_LEFT', unitId: assignment?.unitId ?? await pickedUnitId(em, id), removeMemberId: assignment?.memberId ?? null });
    const owner = await owners.findOneBy({ driverId: id, endedAt: IsNull() });
    if (owner) await owners.update(owner.id, { endedAt: end(owner.startedAt) });
    await em.getRepository(DriverLink).update({ driverId: id, revokedAt: IsNull() }, { revokedAt: new Date() });
    // Their trucks are archived with them (kept for history), so the VIN is free for whoever drives the truck next.
-   const [, archived] = await em.query(`UPDATE driver_trucks SET "archivedAt" = now(), "updatedAt" = now() WHERE "driverId" = $1 AND "archivedAt" IS NULL`, [id]) as [unknown, number];
+   const archived = await changedRows(em, `UPDATE driver_trucks SET "archivedAt" = now(), version = version + 1, "updatedAt" = now() WHERE "driverId" = $1 AND "archivedAt" IS NULL`, [id]);
    await em.getRepository(Driver).update(id, { status: 'LEFT', statusReason: dto.reason, closedAt, version: driver.version + 1 });
    // Field names and flags only, never the reason or the date.
    await driverEvent(em, user.id, id, 'LEFT', { from: driver.status, assignmentEnded: !!assignment, trucksArchived: archived > 0 });
@@ -295,13 +349,13 @@ export class SafetyService {
   requireScreener(user);
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, dto.version);
-   if (!OWNABLE.includes(driver.status)) throw new ConflictException('A Safety contact is assigned once the Safety manager approves the driver.');
+   if (!OWNABLE.includes(driver.status)) throw new ConflictException('A Safety Manager is assigned once the Safety Director approves the driver.');
    const owner = await em.getRepository(User).findOneBy({ id: dto.ownerId });
-   if (!owner || owner.role !== Role.SAFETY_STAFF || owner.status !== UserStatus.ACTIVE) throw new BadRequestException('Choose an active safety staff member.');
+   if (!owner || owner.role !== Role.SAFETY_STAFF || owner.status !== UserStatus.ACTIVE) throw new BadRequestException('Choose an active Safety Manager.');
    const owners = em.getRepository(DriverOwner);
    const current = await owners.findOneBy({ driverId: id, endedAt: IsNull() });
-   if (current?.ownerId === owner.id) throw new BadRequestException('This person is already the driver’s Safety contact.');
-   if (current && !dto.reason) throw new BadRequestException('Say why the driver’s Safety contact is changing.');
+   if (current?.ownerId === owner.id) throw new BadRequestException('This person is already the driver’s Safety Manager.');
+   if (current && !dto.reason) throw new BadRequestException('Say why the driver’s Safety Manager is changing.');
    const now = new Date();
    if (current) await owners.update(current.id, { endedAt: now });
    await owners.save({ driverId: id, ownerId: owner.id, startedAt: now, reason: dto.reason || null, actorId: user.id });
@@ -338,7 +392,7 @@ export class SafetyService {
   */
  async issueLink(em: EntityManager, user: User, driver: Driver) {
   if (!driver.email) throw new BadRequestException('Add the driver’s email first. The link works only with that address.');
-  if (!isProduction(this.config) && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
+  requireMayEmail(this.config, driver.email);
   const resent = await this.cancelOpenLink(em, driver);
   await this.endSubmittedAccess(em, driver.id);
   const token = randomBytes(32).toString('hex');
@@ -361,7 +415,7 @@ export class SafetyService {
  /** The full SSN, for Safety leads, managers, administrators and the driver's owner. Every view is recorded. */
  async revealSsn(user: User, id: string) {
   if (!SCREENERS.includes(user.role) && !await ownsDriver(this.db.manager, user, id))
-   throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can view the full number.');
+   throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety Manager can view the full number.');
   await onboardingLimit(this.db, `ssn-reveal:${user.id}`, 30, 3600);
   const application = await this.db.getRepository(DriverApplication).createQueryBuilder('a').addSelect('a.ssnCiphertext').where('a."driverId" = :id', { id }).getOne();
   if (!application?.ssnCiphertext) throw new NotFoundException('No Social Security number on file.');
@@ -377,7 +431,10 @@ export class SafetyService {
  async documentFile(user: User, id: string, documentId: string): Promise<FileResult> {
   await onboardingLimit(this.db, `driver-document-view:${user.id}`, 60, 900);
   const document = await this.db.getRepository(DriverDocument).findOneBy({ id: documentId, driverId: id, replacedAt: IsNull() });
-  if (!document) throw new NotFoundException('This document was replaced or no longer exists.');
+  // A date typed from a paper file has no scan to open.
+  if (!document || document.fromPaper) throw new NotFoundException('This document was replaced or no longer exists.');
+  // Return-to-duty papers follow the test results rule: the Safety manager, administrators and the driver's Safety contact.
+  if (document.kind === 'RETURN_TO_DUTY' && !CLEARERS.includes(user.role) && !await ownsDriver(this.db.manager, user, id)) throw new NotFoundException('This document was replaced or no longer exists.');
   const body = await this.storage.get(driverDocumentKey(document));
   await driverEvent(this.db.manager, user.id, id, 'DOCUMENT_VIEWED', { kind: document.kind });
   return { body, type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}.pdf` };
@@ -394,19 +451,27 @@ export class SafetyService {
    if (!driver) throw new NotFoundException('This driver record no longer exists.');
    // Checked under the driver lock, so an owner change can't land between the check and the write.
    if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id))
-    throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can verify documents.');
+    throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety Manager can verify documents.');
    if (CLOSED_STATUSES.includes(driver.status)) throw new ConflictException('This driver record is closed and can’t be changed.');
    const application = await em.getRepository(DriverApplication).findOneBy({ driverId: id, status: 'SUBMITTED' });
-   if (!application) throw new ConflictException('Documents are verified once the driver submits their application.');
+   // A driver added from a paper file has no application: their catch-up scans are checked the same way (section 34).
+   const existing = !application && (await em.query(`SELECT 1 FROM existing_driver_records WHERE "driverId" = $1`, [id]) as unknown[]).length > 0;
+   if (!application && !existing) throw new ConflictException('Documents are verified once the driver submits their application.');
    const document = await em.getRepository(DriverDocument).findOne({ where: { id: documentId, driverId: id, replacedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
    if (!document) throw new NotFoundException('This document was replaced or no longer exists.');
    if (document.version !== dto.version) throw new ConflictException('Someone else recorded this document at the same time. Reload and try again.');
    if (document.unreadableAt) throw new ConflictException('This scan was marked as not readable. Send the driver a new link or upload the document.');
+   if (document.fromPaper) throw new ConflictException('This date was typed from the paper file. Renew the document, or wait for the driver’s catch-up scan, to change it.');
+   // Return-to-duty papers show a positive or refused test, so only result viewers check them (49 CFR 40.321), and they
+   // keep no date or number: a date would put them on Expiring documents, which every Safety role reads.
+   const returnToDuty = document.kind === 'RETURN_TO_DUTY';
+   if (returnToDuty && !CLEARERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new NotFoundException('This document was replaced or no longer exists.');
+   if (returnToDuty && (dto.expiresOn || dto.number)) throw new BadRequestException('Return-to-duty papers are checked without a date or number.');
    if (document.kind === 'WORK_AUTHORIZATION' && dto.number) throw new BadRequestException('Don’t record the number of a work authorization document. Its expiration date is enough.');
-   if (document.kind !== 'WORK_AUTHORIZATION' && !dto.expiresOn) throw new BadRequestException('Enter the expiration date shown on the document.');
+   if (document.kind !== 'WORK_AUTHORIZATION' && !returnToDuty && !dto.expiresOn) throw new BadRequestException('Enter the expiration date shown on the document.');
    // A renewal the driver scanned must still be valid: a past date means they photographed the old one, which stays
    // unchecked so Safety can mark it as not readable and send a new link (screening still records any date it reads).
-   const renewalScan = !document.verifiedAt && !document.uploadedBy && (RENEWAL_KINDS as readonly string[]).includes(document.kind) && !sentWithApplication(document, application.submittedAt);
+   const renewalScan = !document.verifiedAt && !document.uploadedBy && (RENEWAL_KINDS as readonly string[]).includes(document.kind) && !sentWithApplication(document, application?.submittedAt ?? null);
    if (renewalScan && dto.expiresOn! < usDay('latest')) throw new BadRequestException('This date has passed, so it isn’t the renewed document. Mark the scan as not readable and send a new link.');
    // A work authorization's type can be corrected (the driver still chose what to give). A US passport or green card
    // isn't re-checked when it expires (Form I-9), so it keeps no date and never shows in Expiring documents.
@@ -422,11 +487,11 @@ export class SafetyService {
  }
 
  /**
-  * Revokes the open application link, if any (with all, renewal links too: they are bound to the same email); an applying
+  * Revokes the open application link, if any (with all, every link bound to the driver's email, never a truck owner's); an applying
   * driver goes back to LEAD on the entity passed in (the caller saves it).
   */
  private async cancelOpenLink(em: EntityManager, driver: Driver, all = false) {
-  if (!await revokeOpenLinks(em, driver.id, all ? {} : { purpose: 'APPLICATION' })) return false;
+  if (!await revokeOpenLinks(em, driver.id, all ? {} : { purpose: 'APPLICATION' }, true)) return false;
   if (driver.status === 'APPLYING') driver.status = 'LEAD';
   return true;
  }
@@ -439,7 +504,7 @@ export class SafetyService {
  }
  private async requireEditor(em: EntityManager, user: User, driver: Driver) {
   if (SCREENERS.includes(user.role)) return;
-  if (!await ownsDriver(em, user, driver.id)) throw new ForbiddenException('Safety staff can change only the drivers they own.');
+  if (!await ownsDriver(em, user, driver.id)) throw new ForbiddenException('Safety Managers can change only the drivers they own.');
  }
  private async safetyLead(em: EntityManager, id: string) {
   const lead = await em.getRepository(User).findOneBy({ id, role: In([Role.SAFETY_LEAD, Role.SAFETY_MANAGER]), status: UserStatus.ACTIVE });

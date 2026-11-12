@@ -50,8 +50,8 @@ export function TestingCard({ driver, canRecord, canVoid }: { driver: DriverProf
     <CardHeader title="Drug and alcohol testing" description="Results only. Never enter substances, levels or medical details."
       actions={canRecord && <Button size="sm" onClick={() => { setAction({ kind: 'record' }); setError(''); }}><FlaskConical aria-hidden="true" className="size-4" />Record result</Button>} />
     <CardBody>
-      {/* Results are for the Safety manager and the driver’s owner only (49 CFR 40.321). */}
-      {driver.testing?.hidden ? <p className="text-[13px] text-muted-foreground">Test results are shown only to the Safety manager and the driver’s Safety contact.</p>
+      {/* Results are for the Safety Director and the driver’s owner only (49 CFR 40.321). */}
+      {driver.testing?.hidden ? <p className="text-[13px] text-muted-foreground">Test results are shown only to the Safety Director and the driver’s Safety Manager.</p>
       : !driver.testing?.items?.length ? <EmptyState compact title="No test results yet" /> : <ul className="divide-y divide-border">
         {driver.testing.items.map(row => <li key={row.id} className={`flex flex-wrap items-start justify-between gap-2 py-3 ${row.voidedAt ? 'opacity-60' : ''}`}>
           <div className="min-w-0">

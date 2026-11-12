@@ -15,6 +15,7 @@ import { DECIDERS, driverEvent } from './driver-records';
 import { publishPdfVersion, readPublishedPdf } from './published-pdfs';
 import { DriverNoticeLetter, NOTICE_KINDS, NOTICE_LABELS, NOTICE_SEGMENTS, type NoticeKind } from './notice-letter.entity';
 import { Driver, DriverApplication, DriverReport, type DriverStatus } from './safety.entity';
+import { personName } from './sql';
 
 /** A new version of a notice letter: the kind, a title and the PDF (base64, 3 MB at most), with where the details go. */
 export class PublishNoticeLetterDto {
@@ -43,7 +44,7 @@ export class NoticeLetterService {
  /** Every version of both letters, newest first, for the Forms and letters page. */
  async list() {
   const rows: (DriverNoticeLetter & { uploader: string | null })[] = await this.db.query(`SELECT l.id, l.kind, l.version, l.title, l.sha256, l."pageCount", l.fields, l."createdAt",
-   CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS uploader FROM driver_notice_letters l LEFT JOIN users u ON u.id = l."uploadedBy" ORDER BY l.kind, l.version DESC`);
+   ${personName('u')} AS uploader FROM driver_notice_letters l LEFT JOIN users u ON u.id = l."uploadedBy" ORDER BY l.kind, l.version DESC`);
   return NOTICE_KINDS.map(kind => ({ kind, label: NOTICE_LABELS[kind], versions: rows.filter(row => row.kind === kind) }));
  }
 
@@ -55,7 +56,7 @@ export class NoticeLetterService {
  }
 
  async publish(user: User, dto: PublishNoticeLetterDto) {
-  if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety manager publishes notice letters.');
+  if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety Director publishes notice letters.');
   if (!this.storage.enabled) throw new ServiceUnavailableException('Document storage is not configured.');
   await onboardingLimit(this.db, `notice-publish:${user.id}`, 10, 3600);
   const { file, pageCount } = await readPublishedPdf(dto.file);
@@ -78,7 +79,7 @@ export class NoticeLetterService {
  async forDriver(user: User, driverId: string, segment: string): Promise<FileResult> {
   const kind = Object.hasOwn(NOTICE_SEGMENTS, segment) ? NOTICE_SEGMENTS[segment] : undefined;
   if (!kind) throw new NotFoundException();
-  if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety manager prepares notice letters.');
+  if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety Director prepares notice letters.');
   await onboardingLimit(this.db, `notice-letter:${user.id}`, 30, 900);
   const driver = await this.db.getRepository(Driver).findOneBy({ id: driverId });
   if (!driver) throw new NotFoundException('This driver record no longer exists.');

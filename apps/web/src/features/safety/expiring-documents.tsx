@@ -12,6 +12,7 @@ import { PageHeader, StatCard } from '@/components/workspace-ui';
 import { queueHref } from '@/lib/navigation';
 import { ExpiringRenewal } from './expiring-renewal';
 import { reminderOutcome } from './reminder-words';
+import { permitLabels, unitKinds, type PermitKind, type UnitKind } from './units-types';
 import { documentLabels, ownerDocumentLabels, type DocumentKind, type RenewalKind, type RenewalLink, type RenewalScan } from './types';
 
 export interface ExpiringItem { documentId: string; driverId: string; kind: string; expiresOn: string; firstName: string; lastName: string; status: string; truck?: string | null; owner: { id?: string; name: string } | null; expired: boolean;
@@ -28,7 +29,8 @@ export interface ScanToCheck { id: string; kind: RenewalKind; version: number; p
   owner: { id?: string; name: string } | null; replacesExpiresOn: string | null;
   // The document's open renewal link, so Not readable warns that a new link stops it; absent from an older API.
   link?: RenewalLink | null }
-export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[]; scans?: ScanToCheck[] }
+export interface UnitDue { unitId: string; number: string; kind: string; document: string; dueOn: string; expired: boolean; responsibleId: string | null; responsible: string | null; owner: string | null; driverNow: string | null }
+export interface ExpiringList { today: string; warningDays: number; items: ExpiringItem[]; scans?: ScanToCheck[]; units?: { items: UnitDue[]; yearEnd: { on: string; due: number; units: number } } }
 
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
 
@@ -60,7 +62,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
   // My drivers with nothing of theirs: say so, and offer the rest, rather than "Nothing is expiring" while All has rows.
   const others = data.items.length - mine.length;
   const empty = filters.view === 'mine' && !query && others > 0
-    ? <EmptyState title="Nothing expiring for your drivers" description={`None of the drivers you’re the Safety contact for has a document that expired or expires within ${data.warningDays} days. ${others} other ${others === 1 ? 'driver has' : 'drivers have'} one.`}
+    ? <EmptyState title="Nothing expiring for your drivers" description={`None of the drivers you’re the Safety Manager for has a document that expired or expires within ${data.warningDays} days. ${others} other ${others === 1 ? 'driver has' : 'drivers have'} one.`}
       action={<Button variant="outline" asChild><Link href={href('all')}>Show all {others}</Link></Button>} />
     : <EmptyState title="Nothing is expiring" description="No verified document has expired or expires soon." />;
   // A scan waiting for its check is checked from Renewal scans to check (an older API sends no scans, so then from its row),
@@ -86,7 +88,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
       <StatCard label="Expired" value={data.items.filter(item => item.expired).length} detail="Renew or replace them now" href={href('all')} tone="danger" />
       <StatCard label="Within 30 days" value={data.items.filter(item => !item.expired && item.expiresOn <= soon).length} detail="Contact the driver now" href={href('all')} tone="warning" />
       <StatCard label={`Within ${data.warningDays} days`} value={data.items.filter(item => !item.expired && item.expiresOn > soon).length} detail="Coming up" href={href('all')} tone="neutral" />
-      <StatCard label="Yours" value={mine.length} detail="Drivers you’re the Safety contact for" href={href('mine')} tone="info" />
+      <StatCard label="Yours" value={mine.length} detail="Drivers you’re the Safety Manager for" href={href('mine')} tone="info" />
     </div>
     {scans.length > 0 && <Card>
       <CardHeader title="Renewal scans to check" description="Sent by drivers through a renewal link. Until someone checks it, the earlier document still counts." />
@@ -96,7 +98,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
           { key: 'document', label: 'Document', cell: scan => `${documentLabels[scan.kind]} · ${scan.pageCount} ${scan.pageCount === 1 ? 'page' : 'pages'}` },
           { key: 'sent', label: 'Sent', nowrap: true, cell: scan => <LocalTime iso={scan.createdAt} /> },
           { key: 'replaces', label: 'Document it replaces', hideBelow: 'lg', cell: scan => scan.replacesExpiresOn ? <>Valid until {day(scan.replacesExpiresOn)}</> : '—' },
-          { key: 'owner', label: 'Safety contact', hideBelow: 'lg', cell: scan => scan.owner?.name ?? '—' },
+          { key: 'owner', label: 'Safety Manager', hideBelow: 'lg', cell: scan => scan.owner?.name ?? '—' },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: scan => checkable(scan) ? checkIt(scan) : null },
         ]} />
     </Card>}
@@ -113,11 +115,16 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
           ...(data.items.some(item => item.reminded !== undefined) ? [{ key: 'reminded', label: 'Driver reminded', hideBelow: 'lg' as const, cell: (item: ExpiringItem) => item.reminded
             ? <>{reminderOutcome({ ...item.reminded, failureCode: item.reminded.failureCode ?? null })} · <LocalTime iso={item.reminded.at} format="date" /></>
             : item.truck || !['LICENSE', 'MEDICAL_CARD'].includes(item.kind) ? <span className="text-muted-foreground">Staff only</span> : '—' }] : []),
-          { key: 'owner', label: 'Safety contact', hideBelow: 'lg', cell: item => item.owner?.name ?? '—' },
+          { key: 'owner', label: 'Safety Manager', hideBelow: 'lg', cell: item => item.owner?.name ?? '—' },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => renewable(item) && !checkedAbove(item) ? <ExpiringRenewal kind={item.kind as RenewalKind} scan={item.renewal?.scan ?? null} link={item.renewal?.link ?? null} expired={item.expired}
             name={`${item.firstName} ${item.lastName}`.trim()} driver={{ id: item.driverId, firstName: item.firstName, email: item.email ?? null, version: item.version! }} /> : null },
         ]} />
     </Card>
+    {/* Dec 31 permits are gathered by unit on their own page (PermitsYearEndScreen), so they don't fill this one. */}
+    {data.units && data.units.yearEnd.due > 0 && data.today.slice(5) >= '10-01' && <Alert tone="info" title={`Permits for ${Number(data.units.yearEnd.on.slice(0, 4)) + 1}: ${data.units.yearEnd.due} to renew by Dec 31`}
+      action={<Button size="sm" variant="outline" asChild><Link href="/safety/expiring/permits">Open year-end permits</Link></Button>}>
+      <p>They’re gathered by unit so they don’t fill this page.</p></Alert>}
+    {data.units && <UnitsDue units={data.units} today={data.today} meId={meId} />}
     <Card>
       <Table<DueReview> caption="Yearly reviews that are due" rows={reviews.items} rowKey={item => item.driverId}
         empty={<EmptyState title="No yearly review is due" description={`No cleared driver is due for a yearly review within ${reviews.warningDays} days.`} />}
@@ -125,7 +132,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
           { key: 'driver', label: 'Yearly review', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'due', label: 'Due', cell: item => <>{day(item.dueOn)} <Badge label={item.notQualified ? 'Not qualified' : item.overdue ? 'Overdue' : 'Due soon'} tone={item.notQualified || item.overdue ? 'danger' : 'warning'} /></> },
           { key: 'last', label: 'Last review', hideBelow: 'md', cell: item => item.lastReviewedOn ? day(item.lastReviewedOn) : 'None yet' },
-          { key: 'owner', label: 'Safety contact', hideBelow: 'md', cell: item => item.owner ?? '—' },
+          { key: 'owner', label: 'Safety Manager', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>
     {reviews.tests && reviews.tests.length > 0 && <Card>
@@ -133,7 +140,7 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
         columns={[
           { key: 'driver', label: 'Test follow-up', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'test', label: 'Latest result', cell: item => <>{item.kind === 'DRUG' ? 'Drug' : 'Alcohol'} · {day(item.testedOn)} <Badge label={item.result === 'REFUSED' ? 'Refused' : 'Not negative'} tone="danger" /></> },
-          { key: 'owner', label: 'Safety contact', hideBelow: 'md', cell: item => item.owner ?? '—' },
+          { key: 'owner', label: 'Safety Manager', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>}
     {reviews.incidents && reviews.incidents.length > 0 && <Card>
@@ -141,8 +148,29 @@ export function ExpiringDocuments({ data, reviews, meId, screener, filters, tele
         columns={[
           { key: 'driver', label: 'Open incidents', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/drivers/${item.driverId}`}>{`${item.firstName} ${item.lastName}`.trim()}</Link> },
           { key: 'what', label: 'What', cell: item => <>{item.kind === 'ACCIDENT' ? 'Accident' : 'Violation'} · {day(item.occurredOn)} <Badge label={item.kind === 'ACCIDENT' ? 'Preventability open' : 'Pending'} tone="warning" /></> },
-          { key: 'owner', label: 'Safety contact', hideBelow: 'md', cell: item => item.owner ?? '—' },
+          { key: 'owner', label: 'Safety Manager', hideBelow: 'md', cell: item => item.owner ?? '—' },
         ]} />
     </Card>}
   </div>;
+}
+
+const unitDocument = (document: string) => document === 'REGISTRATION' ? 'Registration' : document === 'INSPECTION' ? 'Yearly inspection'
+  : document.startsWith('PERMIT:') ? permitLabels[document.slice(7) as PermitKind] ?? 'Permit' : 'Document';
+
+/** Units with a registration, yearly inspection or permit due (ExpiringUnitsScreen). Reminders go to the unit's responsible Safety Manager. */
+function UnitsDue({ units, today, meId }: { units: NonNullable<ExpiringList['units']>; today: string; meId: string }) {
+  const mine = units.items.filter(item => item.responsibleId === meId).length;
+  return <Card>
+    <CardHeader title="Units" description={`Registrations, yearly inspections and permits that have expired or come due soon.${mine ? ` ${mine} on units you’re responsible for.` : ''}`}
+      actions={<Button size="sm" variant="outline" asChild><Link href="/safety/units">All units</Link></Button>} />
+    <Table<UnitDue> caption="Unit dates due" className="mt-3 border-t border-border" rows={units.items} rowKey={item => `${item.unitId}-${item.document}`}
+      empty={<EmptyState compact title="Nothing due on units" description="No registration, inspection or permit has expired or comes due soon." />}
+      columns={[
+        { key: 'unit', label: 'Unit', primary: true, cell: item => <Link className="font-medium underline" href={`/safety/units/${item.unitId}`}>{item.number}</Link> },
+        { key: 'what', label: 'What', cell: item => `${unitDocument(item.document)} · ${unitKinds[item.kind as UnitKind] ?? 'Unit'}` },
+        { key: 'due', label: 'Due', nowrap: true, cell: item => <>{day(item.dueOn)} <Badge label={item.expired ? 'Expired' : item.dueOn === today ? 'Today' : 'Coming up'} tone={item.expired ? 'danger' : 'warning'} /></> },
+        { key: 'driver', label: 'Driver now', hideBelow: 'lg', cell: item => item.driverNow ?? '—' },
+        { key: 'responsible', label: 'Responsible', hideBelow: 'md', cell: item => item.responsible ?? '—' },
+      ]} />
+  </Card>;
 }

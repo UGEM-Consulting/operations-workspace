@@ -17,6 +17,7 @@ import { licenseTypes, type DriverProfile, type LicenseType } from './types';
 // A revealed SSN stays on the page only briefly: it is cleared after a minute, when the tab is hidden and on leaving.
 const SSN_VISIBLE_MS = 60_000;
 const date = (value: string | undefined) => value ? <LocalTime iso={`${value}T12:00:00Z`} format="date" /> : null;
+const yesNo = (value: string) => value === 'YES' ? 'Yes' : value === 'NO' ? 'No' : value;
 
 /**
  * The driver's own application: the link Safety sends (bound to the email on the record, shown once when sent) and the
@@ -92,7 +93,13 @@ export function ApplicationCard({ driver, screener, owns }: { driver: DriverProf
         { label: 'Emergency contact', value: fields.emergencyName ? `${fields.emergencyName}${fields.emergencyRelationship ? ` (${fields.emergencyRelationship})` : ''}${fields.emergencyPhone ? ` · ${fields.emergencyPhone}` : ''}` : null, span: true },
         { label: 'License number', value: fields.licenseNumber ? <span className="font-mono">{fields.licenseNumber}</span> : null },
         { label: 'License', value: fields.licenseClass ? `${licenseTypes[fields.licenseClass as LicenseType] ?? fields.licenseClass}${fields.licenseState ? ` · ${fields.licenseState}` : ''}` : null },
-        { label: 'License expires', value: date(fields.licenseExpiresOn) }]} />}
+        { label: 'License expires', value: date(fields.licenseExpiresOn) },
+        ...(fields.otherNames ? [{ label: 'Other names', value: fields.otherNames }] : []),
+        ...(fields.everHeldCdl ? [{ label: 'Ever held a CDL', value: yesNo(fields.everHeldCdl) }] : []),
+        ...(fields.englishOk ? [{ label: 'English for the job', value: yesNo(fields.englishOk) }] : []),
+        ...(fields.examinerName || fields.examinerRegistry ? [{ label: 'Medical examiner', value: [fields.examinerName, fields.examinerRegistry && `Registry no. ${fields.examinerRegistry}`].filter(Boolean).join(' · ') }] : []),
+        ...(fields.dotPositive ? [{ label: 'Positive or refused DOT test (2 years)', value: yesNo(fields.dotPositive) }] : []),
+        ...(fields.dotFollowUp ? [{ label: 'Return-to-duty or follow-up plan', value: yesNo(fields.dotFollowUp) }] : [])]} />}
       {application?.ssnLast4 && (screener || owns) && <p id="ssn-recorded" className="text-[13px] text-muted-foreground">Viewing the full number is recorded in the activity.{ssn ? ' It hides again after a minute.' : ''}</p>}
       {!confirming && <Notice message={error} error />}
     </CardBody>

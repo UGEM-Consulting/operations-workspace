@@ -13,7 +13,7 @@ const KEYS = [
  `photos/${U}/${U}\\.jpg`, `documents/${U}\\.pdf`, `drivers/${U}/${U}\\.pdf`, `driver-reports/${U}/${U}\\.pdf`, `driver-consents/${U}\\.pdf`,
  // Layout 2.
  `applicants/${U}/(selfie|id-selfie)/${U}\\.jpg`, `applicants/${U}/signed/${S}-v\\d+\\.pdf`, `company-documents/(onboarding|driver-consents|notice-letters)/${S}/${U}\\.pdf`,
- `drivers/${U}/(documents|reports|owner-operator)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`, `members/${U}/paper/${S}/${U}\\.pdf`,
+ `drivers/${U}/(documents|reports|owner-operator)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`, `members/${U}/paper/${S}/${U}\\.pdf`, `units/${U}/${S}/${U}\\.pdf`, `truck-owners/${U}/contracts/${S}/${U}\\.pdf`,
 ];
 const KEY = new RegExp(`^(${KEYS.join('|')})$`);
 // Only these failure codes are logged; raw storage errors can contain bucket paths or credential details.
@@ -78,7 +78,7 @@ export class StorageService {
     catch { /* logged by run() */ }
   }
   /** Stored objects under a prefix and when each was stored. Only API-generated keys are returned; anything else is never touched. */
-  async list(prefix: 'drivers/' | 'driver-reports/' | 'driver-consents/' | 'company-documents/driver-consents/' | 'company-documents/notice-letters/' | 'members/'): Promise<{ key: string; storedAt: Date }[]> {
+  async list(prefix: 'drivers/' | 'driver-reports/' | 'driver-consents/' | 'company-documents/driver-consents/' | 'company-documents/notice-letters/' | 'members/' | 'units/' | 'truck-owners/'): Promise<{ key: string; storedAt: Date }[]> {
     const objects = await this.run('listing', async () => {
       if (!this.directory) return (await (await this.gcs()).getFiles({ prefix, autoPaginate: true }))[0].map(file => ({ key: file.name, storedAt: new Date(String(file.metadata.timeCreated)) }));
       const root = join(this.directory, prefix);
@@ -113,6 +113,10 @@ export const driverConsentKey = (doc: Stored) => doc.storageLayout === 1 ? `driv
 export const noticeLetterKey = (doc: { id: string; kind: string }) => `company-documents/notice-letters/${folder(doc.kind)}/${doc.id}.pdf`;
 /** members/<member>/paper/<nda|sop>/<scan>.pdf: a scan of an NDA or SOP that someone added by hand signed on paper. */
 export const paperScanKey = (scan: { id: string; kind: string; memberId: string }) => `members/${scan.memberId}/paper/${folder(scan.kind)}/${scan.id}.pdf`;
+/** units/<unit>/<registration|inspection|permits|other>/<file>.pdf: an optional copy of a truck's or trailer's paper (always layout 2). */
+export const unitFileKey = (file: { id: string; kind: string; unitId: string }) => `units/${file.unitId}/${folder(file.kind)}/${file.id}.pdf`;
+// A truck owner's signed paper contract (section 39): truck-owners/<owner>/contracts/<kind>/<file>.pdf.
+export const ownerContractKey = (file: { id: string; kind: string; ownerId: string }) => `truck-owners/${file.ownerId}/contracts/${folder(file.kind)}/${file.id}.pdf`;
 /** applicants/<application>/signed/<kind>-v<version>.pdf or drivers/<driver>/signed/<kind>-v<version>.pdf: saved signed copies. */
 export const signedCopyKey = (owner: { applicationId: string } | { driverId: string }, doc: { kind: string; version: number }) =>
  `${'applicationId' in owner ? `applicants/${owner.applicationId}` : `drivers/${owner.driverId}`}/signed/${folder(doc.kind)}-v${doc.version}.pdf`;

@@ -35,7 +35,7 @@ export function DriverForm({ id, driver, leads, defaultLeadId, onSubmit, error }
     </div>
     <Input label="Where they came from" name="source" optional defaultValue={driver?.source ?? ''} maxLength={100} autoComplete="off" width="full" hint="For example a referral, job board or social media." />
     {leads && <Select label="Safety lead" name="safetyLeadId" defaultValue={driver ? driver.safetyLead?.id ?? '' : defaultLeadId ?? ''} placeholder="No Safety lead yet" width="full"
-      options={leads.map(lead => ({ value: lead.id, label: lead.role === 'SAFETY_MANAGER' ? `${lead.name} (Safety manager)` : lead.name }))} hint="Who screens this driver." />}
+      options={leads.map(lead => ({ value: lead.id, label: lead.role === 'SAFETY_MANAGER' ? `${lead.name} (Safety Director)` : lead.name }))} hint="Who screens this driver." />}
     <Textarea label="Notes" name="notes" optional defaultValue={driver?.notes ?? ''} maxLength={2000} rows={3} hint="Only what helps the next call. Never SSNs, medical or drug test details." />
     <Notice message={error} error />
   </form>;

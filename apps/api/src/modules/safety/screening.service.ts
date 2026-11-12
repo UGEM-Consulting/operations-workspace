@@ -52,7 +52,7 @@ export class ScreeningService {
    if (dto.result === null) await checks.delete({ driverId: id, key: key as ScreeningCheckKey });
    else {
     const note = dto.note || null;
-    if (dto.result === 'CONCERN' && !note) throw new BadRequestException('Describe the concern for the Safety manager.');
+    if (dto.result === 'CONCERN' && !note) throw new BadRequestException('Describe the concern for the Safety Director.');
     if (key === 'MVR' && this.storage.enabled && !await em.getRepository(DriverReport).existsBy({ driverId: id, kind: 'MVR', replacedAt: IsNull() })) throw new BadRequestException('Upload the MVR first.');
     await checks.save({ driverId: id, key: key as ScreeningCheckKey, result: dto.result, note, checkedBy: user.id, checkedAt: new Date() });
    }
@@ -116,8 +116,11 @@ export class ScreeningService {
   const report = await this.db.getRepository(DriverReport).findOneBy({ id: reportId, driverId: id });
   if (!report) throw new NotFoundException('This report no longer exists.');
   const body = await this.storage.get(driverReportKey(report));
-  await driverEvent(this.db.manager, user.id, id, 'MVR_VIEWED', {});
-  return { body, type: 'application/pdf', filename: `mvr-${report.pulledOn}.pdf` };
+  if (report.kind === 'PSP') await driverEvent(this.db.manager, user.id, id, 'PSP_VIEWED', {});
+  else if (report.kind === 'ROAD_TEST') await driverEvent(this.db.manager, user.id, id, 'DOCUMENT_VIEWED', { kind: 'ROAD_TEST' });
+  else await driverEvent(this.db.manager, user.id, id, 'MVR_VIEWED', {});
+  const name = { MVR: 'mvr', ANNUAL_MVR: 'mvr', PSP: 'psp-report', ROAD_TEST: 'road-test' }[report.kind];
+  return { body, type: 'application/pdf', filename: `${name}-${report.pulledOn}.pdf` };
  }
 
  /**
@@ -156,7 +159,7 @@ export class ScreeningService {
  }
 
  async decide(user: User, id: string, dto: DecisionDto) {
-  if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety manager decides on a driver.');
+  if (!DECIDERS.includes(user.role)) throw new ForbiddenException('Only the Safety Director decides on a driver.');
   const rule = DECISION_RULES[dto.decision], note = dto.note || null, conditions = dto.conditions || null;
   if (dto.decision !== 'APPROVE' && !note) throw new BadRequestException('Give the reason.');
   if (dto.decision !== 'APPROVE' && conditions) throw new BadRequestException('Conditions go with an approval only.');

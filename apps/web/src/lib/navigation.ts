@@ -47,3 +47,6 @@ export const DISPATCH_DRIVER_DEFAULTS: Record<string, string> = { status: 'READY
 export function queueHref(path: string, filters: Record<string, string>, changes: Record<string, string>) {
   return `${path}?${new URLSearchParams({ ...filters, page: '1', ...changes })}`;
 }
+// Safety › Units and the year-end permits page (section 34): kept here because server pages read them.
+export const UNIT_DEFAULTS: Record<string, string> = { status: 'ALL', search: '' };
+export const PERMIT_DEFAULTS: Record<string, string> = { status: 'MINE', search: '' };
