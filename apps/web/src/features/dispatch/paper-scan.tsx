@@ -14,7 +14,7 @@ import { imageForUpload, PhotoError } from '@/features/onboarding/photo';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { fileToBase64, MAX_PDF_BYTES } from '@/lib/files';
 import { middayIso } from '@/lib/navigation';
-import type { MemberProfile, PaperCopy } from './types';
+import type { ExistingRecord, MemberProfile, PaperCopy } from './types';
 
 // The same limits as other photographed documents: four pages, each small enough that all fit one upload.
 const MAX_PAGES = 4, PAGE_BYTES = 760_000, PAGE_SIDE = 1800;
@@ -30,6 +30,20 @@ function scanDocuments(member: MemberProfile, paper: PaperCopy): ViewableDocumen
  return [...current, ...earlier.map(scan => ({ url: `/api/backend/dispatch/members/${member.id}/paper-scans/${scan.id}/file`, title: `${paper.kind} (paper, replaced) · ${name}`,
   meta: 'Earlier scan, replaced', fallbackName: `${paper.kind.toLowerCase()}-paper-scan.pdf`,
   record: [signed, { label: 'Scan added', value: <>{scan.uploadedBy}, <LocalTime iso={scan.createdAt} format="date" /></> }, { label: 'Replaced', value: <LocalTime iso={scan.replacedAt} format="date" /> }] }))];
+}
+
+/**
+ * History entries for someone added by hand (PaperScanProfileScreen): each paper scan, the first of a kind added and later
+ * ones replacing it, and when the record was added. Each has `at` for sorting with the other history entries.
+ */
+export function paperScanItems(existing: ExistingRecord) {
+ const pages = (count: number) => `${count} ${count === 1 ? 'page' : 'pages'}.`;
+ const scans = existing.paper.flatMap(paper => [...(paper.earlierScans ?? []), ...(paper.scan ? [paper.scan] : [])]
+  .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  .map((scan, index) => ({ id: scan.id, at: scan.createdAt, title: `Paper ${paper.kind} scan ${index ? 'replaced' : 'added'}`, body: pages(scan.pageCount),
+   meta: <>{scan.uploadedBy} · <LocalTime iso={scan.createdAt} format="date" /></> })));
+ return [...scans, { id: 'added', at: existing.createdAt, title: existing.sourceName ? `Added from ${existing.sourceName}` : 'Added by hand',
+  meta: <>{existing.addedBy} · <LocalTime iso={existing.createdAt} format="date" /></> }];
 }
 
 /** The Paperwork card's action for a paper copy: Add scan, or View with Replace beside it (PaperScanAddScreen, PaperScanProfileScreen). */
