@@ -132,7 +132,9 @@ const renewalLink = z.looseObject({ createdAt: text, expiresAt: text, openedAt: 
 const renewalScan = z.looseObject({ id: text, version: z.number(), pageCount: z.number(), createdAt: text, unreadable: z.boolean() });
 const renewalRow = z.looseObject({ kind: z.enum(['LICENSE', 'MEDICAL_CARD']), checked: z.looseObject({ id: text, expiresOn: nullableText, current: z.boolean() }).nullable(), link: renewalLink.nullable(), scan: renewalScan.nullable() });
 const driverRow = z.looseObject({ id: text, firstName: text, lastName: text, phone: text, email: nullableText, driverType: text, status: text, version: z.number(), createdAt: text,
-  closedAt: nullableText, safetyLead: safetyPerson, owner: safetyPerson });
+  closedAt: nullableText, safetyLead: safetyPerson, owner: safetyPerson,
+  readySummary: z.looseObject({ done: z.number(), total: z.number(), next: nullableText, unit: nullableText }).optional().catch(undefined),
+  existing: z.looseObject({ addedAt: text, paperDone: z.number(), paperOpen: z.number(), paperTotal: z.number(), paperOnly: z.number(), toCheck: z.number(), reviewed: z.boolean(), linkSentAt: nullableText, catchUpSentAt: nullableText }).nullable().optional().catch(undefined) });
 /** GET /safety/people: who can be a driver's Safety lead or owner. */
 export const safetyPeopleSchema = z.looseObject({ leads: z.array(z.looseObject({ id: text, name: text, role: text })), staff: z.array(z.looseObject({ id: text, name: text, role: text })) });
 /** GET /safety/drivers */
@@ -147,6 +149,13 @@ export const driverProfileSchema = driverRow.extend({
     // From an API with address and work history; a malformed value is dropped.
     history: z.looseObject({ jobs: z.array(z.looseObject({ id: text, company: text, fromMonth: text })).optional() }).nullable().optional().catch(undefined) }).nullable().optional(),
   documents: z.array(z.looseObject({ id: text, kind: text, pageCount: z.number(), createdAt: text, verifiedAt: nullableText })).optional(),
+  // From an API with Ready for the road (section 39); a malformed value is dropped.
+  roadReady: z.looseObject({ steps: z.array(z.looseObject({ key: text, status: text })), done: z.number(), total: z.number(), ready: z.boolean(), groupChanges: z.array(z.looseObject({ id: text, reason: text })),
+    sharing: z.array(z.string()), choices: z.array(z.looseObject({ id: text, number: text })) }).nullable().optional().catch(undefined),
+  contracts: z.array(z.looseObject({ id: text, unitId: text, unit: text, owner: text })).optional().catch(undefined),
+  // From an API with existing drivers (section 34); a malformed value is dropped.
+  paperFile: z.looseObject({ createdAt: text, keys: z.array(z.string()), paper: z.array(z.looseObject({ key: text })),
+    catchUp: z.looseObject({ link: z.looseObject({ createdAt: text, expiresAt: text, expired: z.boolean() }).nullable(), sentAt: nullableText }) }).nullable().optional().catch(undefined),
   // From an API with renewals; a malformed value is dropped, so the profile still loads without the Renew buttons.
   renewals: z.array(renewalRow).optional().catch(undefined),
   // From an API with screening and decisions. A malformed value is dropped, so the profile still loads without it.
@@ -187,6 +196,14 @@ export const consentListSchema = z.looseObject({ storageEnabled: z.boolean(), ca
   // The notice letters, from an API with them; a malformed value is dropped and the page shows the consent forms only.
   letters: z.array(z.looseObject({ kind: z.enum(['PRE_ADVERSE', 'FINAL']), label: text, versions: z.array(z.looseObject({ id: text, version: z.number(), title: text, createdAt: text })) })).optional().catch(undefined) });
 
+// Units (section 34). The pages read what they show; unknown fields are kept.
+export const unitListSchema = z.looseObject({ today: text, items: z.array(z.looseObject({ id: text, number: text, kind: text, permits: z.array(z.looseObject({ kind: text, expiresOn: text })) })),
+  next: z.looseObject({ truck: text, trailer: text }), permitsFor: z.record(z.string(), z.array(z.string())), choices: z.looseObject({ owners: z.array(z.looseObject({ id: text, name: text })), operators: z.array(z.looseObject({ id: text, name: text })), staff: z.array(z.looseObject({ id: text, name: text })) }) });
+export const unitDetailSchema = z.looseObject({ id: text, number: text, kind: text, version: z.number(), today: text, permitsNeeded: z.array(z.string()), permits: z.array(z.looseObject({ kind: text, expiresOn: text })),
+  files: z.array(z.looseObject({ id: text, kind: text })), drivers: z.array(z.looseObject({ id: text })), trailerNow: z.array(z.looseObject({ id: text })), events: z.array(z.looseObject({ id: text, event: text })), ownerDocuments: z.array(z.looseObject({ id: text })) });
+export const ownerListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, name: text, kind: text })) });
+export const ownerDetailSchema = z.looseObject({ id: text, name: text, version: z.number(), trucks: z.array(z.looseObject({ id: text, number: text })), events: z.array(z.looseObject({ id: text, event: text })) });
+export const permitsYearSchema = z.looseObject({ today: text, yearEnd: text, permitsFor: z.record(z.string(), z.array(z.string())), items: z.array(z.looseObject({ id: text, number: text, kind: text, permits: z.array(z.looseObject({ kind: text, expiresOn: text })) })) });
 export const trucksSchema = z.looseObject({ today: text, items: z.array(z.looseObject({ id: text, driverId: text, firstName: text, lastName: text, unit: text, vin: text, year: z.number(), make: text, plate: nullableText, plateState: nullableText,
   archivedAt: nullableText, insuranceExpiresOn: nullableText, registrationExpiresOn: nullableText, hasLease: z.boolean() })) });
 export const dueReviewsSchema = z.looseObject({ today: text, warningDays: z.number(), items: z.array(z.looseObject({ driverId: text, firstName: text, lastName: text, owner: nullableText, lastReviewedOn: nullableText, dueOn: text, notQualified: z.boolean(), overdue: z.boolean() })),
@@ -201,7 +218,10 @@ export const expiringSchema = z.looseObject({ today: text, warningDays: z.number
   // From an API with section 33: renewal scans drivers sent that wait for a check.
   scans: z.array(z.looseObject({ id: text, kind: z.enum(['LICENSE', 'MEDICAL_CARD']), version: z.number(), pageCount: z.number(), createdAt: text, driverId: text, firstName: text, lastName: text, driverVersion: z.number(),
     email: nullableText, owner: z.looseObject({ name: text }).nullable().catch(null), replacesExpiresOn: nullableText,
-    link: renewalLink.nullable().optional().catch(undefined) })).optional().catch(undefined) });
+    link: renewalLink.nullable().optional().catch(undefined) })).optional().catch(undefined),
+  // From an API with units (section 34): unit registrations, yearly inspections and permits due, and the Dec 31 permits.
+  units: z.looseObject({ items: z.array(z.looseObject({ unitId: text, number: text, kind: text, document: text, dueOn: text, expired: z.boolean(), responsibleId: nullableText, responsible: nullableText, owner: nullableText, driverNow: nullableText })),
+    yearEnd: z.looseObject({ on: text, due: z.number(), units: z.number() }) }).optional().catch(undefined) });
 
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
 export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN', 'SUSPEND', 'RESTORE']), id: text,
@@ -241,4 +261,8 @@ export async function readResponse<T>(response: Response, resource: string, sche
 export const dispatchDriverListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, phone: text, driverType: text, version: z.number(), clearedAt: text, onHold: z.boolean().optional().catch(undefined),
   assignment: z.looseObject({ mcId: text, mc: text, memberId: text, dispatcher: text }).nullable() })) });
 /** GET /dispatch/drivers/options and /team/drivers/options: MCs and the dispatchers in teams under each. */
-export const dispatchDriverOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean().optional().catch(undefined), dispatchers: z.array(z.looseObject({ id: text, name: text, team: nullableText })) })) });
+export const dispatchDriverOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean().optional().catch(undefined), dispatchers: z.array(z.looseObject({ id: text, name: text, team: nullableText })) })),
+  units: z.array(z.looseObject({ id: text, number: text, kind: z.enum(['SEMI', 'PICKUP', 'TRAILER']), trailerType: nullableText, driverId: nullableText, withDrivers: z.array(z.string()) })).optional().catch(undefined) });
+/** GET /safety/drivers/existing/options: what Add one existing driver picks from. */
+export const existingDriverOptionsSchema = z.looseObject({ staff: z.array(z.looseObject({ id: text, name: text })), units: z.array(z.looseObject({ id: text, number: text, kind: text, ownerOperator: z.boolean(), owner: text })),
+  mcs: z.array(z.looseObject({ id: text, name: text, dispatchers: z.array(z.looseObject({ id: text, name: text, team: nullableText })) })) });

@@ -24,5 +24,5 @@ export function StatusBadge({ status }: { status: string }) {
 export function statusLabel(value: string) { return statuses[value]?.[0] ?? (value.charAt(0) + value.slice(1).toLowerCase().replaceAll('_', ' ')).replace(/\b(it|nda|sop)\b/gi, word => word.toUpperCase()); }
 // Role names keep their proper casing (IT, not It).
 const roleLabels: Record<string, string> = { SYSTEM_ADMIN: 'System administrator', DISPATCHER_MANAGER: 'Dispatch manager', IT_SPECIALIST: 'IT specialist', TEAM_LEAD: 'Team lead',
-  SAFETY_MANAGER: 'Safety manager', SAFETY_LEAD: 'Safety lead', SAFETY_STAFF: 'Safety staff' };
+  SAFETY_MANAGER: 'Safety Director', SAFETY_LEAD: 'Safety lead', SAFETY_STAFF: 'Safety Manager' };
 export function roleLabel(role: string) { return roleLabels[role] ?? statusLabel(role); }

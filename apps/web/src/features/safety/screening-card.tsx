@@ -16,6 +16,7 @@ import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { fileToBase64, MAX_PDF_BYTES } from '@/lib/files';
 import { useToday } from './driver-documents';
 import { OneTimeLinkDialog } from './one-time-link-dialog';
+import { PspRow } from './license-items';
 import { gapLabel, screeningChecks, type DriverProfile, type ScreeningCheck, type ScreeningCheckKey } from './types';
 
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
@@ -79,7 +80,7 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
         return;
       } else {
         await mutate(`safety/drivers/${driver.id}/send-for-decision`, 'POST', { version: driver.version, ...(text('note') ? { note: text('note') } : {}) });
-        toast({ title: 'Sent to the Safety manager' });
+        toast({ title: 'Sent to the Safety Director' });
       }
       done();
     });
@@ -101,10 +102,10 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
   }
   const current = action?.kind === 'check' ? checkOf(action.key) : undefined;
   const title = !action ? '' : action.kind === 'check' ? screeningChecks.find(check => check.key === action.key)!.label : action.kind === 'mvr' ? (screening.mvr ? 'Replace the MVR' : 'Upload the MVR')
-    : action.kind === 'corrections' ? 'Send the application back to the driver?' : 'Send to the Safety manager?';
+    : action.kind === 'corrections' ? 'Send the application back to the driver?' : 'Send to the Safety Director?';
   return <Card id="screening" className="scroll-mt-20">
-    <CardHeader title="Screening" headingRef={heading} description={driver.status === 'SCREENING' ? 'Work through each check, upload the MVR and verify the scans, then send the driver to the Safety manager.' : 'The Safety lead’s checks before the decision.'} />
-    {askedBack && <div className="px-4 py-3 sm:px-5"><Alert tone="warning" title="The Safety manager sent this driver back">
+    <CardHeader title="Screening" headingRef={heading} description={driver.status === 'SCREENING' ? 'Work through each check, upload the MVR and verify the scans, then send the driver to the Safety Director.' : 'The Safety lead’s checks before the decision.'} />
+    {askedBack && <div className="px-4 py-3 sm:px-5"><Alert tone="warning" title="The Safety Director sent this driver back">
       <p className="whitespace-pre-wrap">{askedBack.note}</p>
       <p className="mt-1 text-[13px]">{askedBack.actor ?? 'A former account'} · <LocalTime iso={askedBack.createdAt} /></p>
     </Alert></div>}
@@ -122,10 +123,11 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
           {active && <Button size="sm" variant="outline" onClick={() => start({ kind: 'mvr' })}><Upload aria-hidden="true" className="size-4" />{screening.mvr ? 'Replace' : 'Upload'}</Button>}
         </span>
       </li>
+      {driver.license?.psp && <PspRow driver={driver} report={screening.psp ?? null} canUpload={screener && ['SCREENING', 'AWAITING_DECISION', 'PRE_ADVERSE'].includes(driver.status)} />}
     </ul>
     {active && <CardBody className="space-y-4 border-t border-border">
       {screening.missing.length > 0 && <div className="text-sm">
-        <p className="font-medium">Before you send this driver to the Safety manager</p>
+        <p className="font-medium">Before you send this driver to the Safety Director</p>
         <ul id="screening-gaps" className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">{screening.missing.map(code => <li key={code}>
           {code.startsWith('document:') ? <a href="#documents" className="underline underline-offset-2 hover:text-foreground">{gapLabel(code)}</a> : gapLabel(code)}</li>)}</ul>
       </div>}
@@ -139,7 +141,7 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
       description={action.kind === 'check' ? screeningChecks.find(check => check.key === action.key)!.hint
         : action.kind === 'mvr' ? 'The PDF from the state or your MVR provider, 3 MB maximum. An earlier MVR is kept in the record.'
         : action.kind === 'corrections' ? 'It goes back to the driver as a draft with your message, through a new link you send them. Their answers, SSN and scans are kept; screening checks stay as they are.'
-        : 'The Safety manager approves, asks for more, or rejects. Screening is closed while they decide.'}
+        : 'The Safety Director approves, asks for more, or rejects. Screening is closed while they decide.'}
       actions={<>
         {current && (clearing
           ? <Button type="button" variant="destructive" disabled={pending} onClick={() => void clearCheck(current.key)}>Confirm: clear check</Button>
@@ -149,7 +151,7 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
       <form id="screening-action" onSubmit={action.kind === 'mvr' ? submitMvr : submit} className="space-y-4">
         {action.kind === 'check' && <>
           <RadioGroup name="result" label="Result" value={result} onChange={value => setResult(value as 'PASS' | 'CONCERN')} options={[
-            { value: 'PASS', label: 'Passed' }, { value: 'CONCERN', label: 'Concern', description: 'The Safety manager sees your note before deciding.' }]} />
+            { value: 'PASS', label: 'Passed' }, { value: 'CONCERN', label: 'Concern', description: 'The Safety Director sees your note before deciding.' }]} />
           <Textarea label={result === 'CONCERN' ? 'What the concern is' : 'Note'} name="note" optional={result === 'PASS'} required={result === 'CONCERN'} maxLength={1000} rows={3}
             defaultValue={current?.note ?? ''} hint="Never write SSNs, medical or drug test details here." />
         </>}
@@ -166,7 +168,7 @@ export function ScreeningCard({ driver, screener }: { driver: DriverProfile; scr
         </>}
         {action.kind === 'corrections' && <Textarea label="Message to the driver" name="message" required maxLength={1000} rows={4}
           hint="The driver sees this when they open the new link, for example: “Your ZIP code doesn’t match your city.” Don’t mention MVR or background report details." />}
-        {action.kind === 'send' && <Textarea label="Summary for the Safety manager" name="note" optional maxLength={2000} rows={4}
+        {action.kind === 'send' && <Textarea label="Summary for the Safety Director" name="note" optional maxLength={2000} rows={4}
           hint="Anything they should know beyond the checks. Never write SSNs, medical or drug test details." />}
         <Notice message={error} error />
         {conflict && <Button type="button" size="sm" variant="outline" onClick={reload}>Reload the latest version</Button>}

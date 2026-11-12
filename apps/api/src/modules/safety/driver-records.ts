@@ -1,8 +1,8 @@
-import { ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
 import type {} from '../auth/session';
-import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
+import { DataSource, EntityManager, IsNull, Not, QueryFailedError } from 'typeorm';
 import { Role, User } from '../users/user.entity';
 import { CLOSED_STATUSES, Driver, DriverEvent, DriverEventType, DriverLink, DriverOwner, type RenewalKind } from './safety.entity';
 
@@ -16,7 +16,7 @@ export const STALE = 'Someone else changed this driver. Reload and try again.';
 const DUPLICATES: Record<string, string> = {
  UQ_drivers_open_phone: 'Another open driver record already has this phone number.',
  UQ_drivers_open_email: 'Another open driver record already has this email.',
- UQ_driver_owners_open: 'This driver’s Safety contact changed at the same time. Reload and try again.',
+ UQ_driver_owners_open: 'This driver’s Safety Manager changed at the same time. Reload and try again.',
  UQ_driver_reports_current: 'Someone else uploaded a report at the same time. Reload and try again.',
 };
 
@@ -45,12 +45,19 @@ export async function writeDriver<T>(db: DataSource, work: (em: EntityManager) =
 }
 /** Production (and its own deployment purpose) sends links and codes to real addresses; elsewhere only example.test. */
 export const isProduction = (config: ConfigService) => config.get('NODE_ENV') === 'production' || config.get('DEPLOYMENT_PURPOSE') === 'production';
+/** Whether an address may get Safety's links, codes and reminders here: any in production, else example.test only (any case). */
+export const mayEmail = (config: ConfigService, email: string) => isProduction(config) || email.trim().toLowerCase().endsWith('@example.test');
+/** Refuses an address mayEmail doesn't allow, before a link is made for it. */
+export function requireMayEmail(config: ConfigService, email: string, message = 'Outside production, links go only to fictional example.test addresses.') {
+ if (!mayEmail(config, email)) throw new BadRequestException(message);
+}
 /**
  * Stops a driver's open links: every one, or only those of one purpose (and document). True when one was open. The
  * application link and renewal links are bound to the same email, so an email change stops them all.
  */
-export async function revokeOpenLinks(em: EntityManager, driverId: string, only: { purpose?: DriverLink['purpose']; documentKind?: RenewalKind } = {}) {
- return !!(await em.getRepository(DriverLink).update({ driverId, revokedAt: IsNull(), completedAt: IsNull(), ...only }, { revokedAt: new Date() })).affected;
+export async function revokeOpenLinks(em: EntityManager, driverId: string, only: { purpose?: DriverLink['purpose']; documentKind?: RenewalKind } = {}, driversOwn = false) {
+ // driversOwn: only links bound to the driver's email, leaving a truck owner's contract link, which is bound to theirs.
+ return !!(await em.getRepository(DriverLink).update({ driverId, revokedAt: IsNull(), completedAt: IsNull(), ...(driversOwn ? { purpose: Not('CONTRACT_OWNER') } : {}), ...only }, { revokedAt: new Date() })).affected;
 }
 /**
  * The link this driver session verified (an hour, then a fresh code). Each caller then applies its own rules: the

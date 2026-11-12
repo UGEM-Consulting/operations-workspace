@@ -2,7 +2,7 @@ import { renderEmail } from '../email/layout';
 
 /** What a reminder is about, in the words people use. A work authorization here is always one that expires (a work permit or another document). */
 export const REMINDER_WORDS: Record<string, string> = { LICENSE: 'driver’s license', MEDICAL_CARD: 'DOT medical card', WORK_AUTHORIZATION: 'work permit',
- INSURANCE: 'truck insurance', REGISTRATION: 'truck registration', ANNUAL_REVIEW: 'yearly review' };
+ INSURANCE: 'truck insurance', REGISTRATION: 'truck registration', ANNUAL_REVIEW: 'yearly review', INSPECTION: 'yearly inspection', PERMIT: 'permit' };
 const STAFF_WORDS: Record<string, string> = { ...REMINDER_WORDS, MEDICAL_CARD: 'medical card' };
 
 /** "Dec 9, 2026" from a YYYY-MM-DD date. */
@@ -35,12 +35,23 @@ export function driverReminderMessage(kind: string, expiresOn: string, today: st
  return { email: renderEmail({ subject, paragraphs, link: { lead, url }, note }), telegram: `${subject}\n\n${ask}`, button: { text: 'Send the new one', url } };
 }
 
-export interface StaffReminderLine { firstName: string; lastName: string; kind: string; dueOn: string }
-/** The Safety contact's morning message: first name and last initial, what, and when. The link opens Expiring documents. */
+// A unit's line names the unit (unit set) instead of a driver.
+// A permit line lists every permit of that unit due that day.
+export interface StaffReminderLine { firstName: string | null; lastName: string | null; unit?: string | null; kind: string; dueOn: string; permits?: string[] | null }
+const PERMIT_WORDS: Record<string, string> = { NY_HUT: 'NY HUT', KYU: 'KYU', NM: 'New Mexico', OR: 'Oregon', IFTA: 'IFTA' };
+const permitWords = (kinds: string[]) => {
+ const names = kinds.map(kind => PERMIT_WORDS[kind] ?? kind);
+ return `${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]} ${names.length > 1 ? 'permits' : 'permit'}`;
+};
+/** The Safety Manager's morning message: first name and last initial (or the unit), what, and when. The link opens Expiring documents. */
 export function staffReminderMessage(lines: StaffReminderLine[], today: string, url: string) {
  const text = lines.map(line => {
-  const left = daysUntil(line.dueOn, today), word = STAFF_WORDS[line.kind], who = `${line.firstName} ${line.lastName.slice(0, 1)}.`;
+  const left = daysUntil(line.dueOn, today), word = line.permits?.length ? permitWords(line.permits) : line.unit ? ({ REGISTRATION: 'registration', INSPECTION: 'yearly inspection', PERMIT: 'permit' } as Record<string, string>)[line.kind] ?? STAFF_WORDS[line.kind] : STAFF_WORDS[line.kind];
+  const who = line.unit ? `Unit ${line.unit}` : `${line.firstName} ${(line.lastName ?? '').slice(0, 1)}.`;
+  if (line.kind === 'INSPECTION') return `${who}: yearly inspection ${left > 0 ? `due in ${left} days` : left === 0 ? 'due today' : `overdue since ${shortDate(line.dueOn)}`}.`;
   if (line.kind === 'ANNUAL_REVIEW') return `${who}: yearly review ${left > 0 ? `due in ${left} days` : left === 0 ? 'due today' : `overdue since ${shortDate(line.dueOn)}`}.`;
+  const plural = (line.permits?.length ?? 0) > 1;
+  if (plural) return `${who}: ${word} ${left > 1 ? `expire in ${left} days` : left === 1 ? 'expire tomorrow' : left === 0 ? 'expire today' : `expired ${shortDate(line.dueOn)}`}.`;
   return `${who}: ${word} ${left > 1 ? `expires in ${left} days` : left === 1 ? 'expires tomorrow' : left === 0 ? 'expires today' : `expired ${shortDate(line.dueOn)}`}.`;
  });
  const subject = 'Documents to renew';

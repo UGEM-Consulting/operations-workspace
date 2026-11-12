@@ -28,12 +28,16 @@ export function jpeg({ width = 640, height = 480, exif = true, scan = true, eoi 
   ...(scan ? [segment(0xda, Buffer.from([3, 1, 0, 2, 0x11, 3, 0x11, 0, 63, 0])), Buffer.from(entropy), Buffer.from([0xff, 0xd0]), Buffer.from(entropy.subarray(0, 100))] : []),
   ...(eoi ? [Buffer.from([0xff, 0xd9])] : []), ...(trailing ? [Buffer.from('TRAILING-FICTIONAL-DATA', 'latin1')] : [])]);
 }
-/** Text drawn with pdf-lib's standard fonts, recovered from the (deflated) content streams of a PDF. */
+/**
+ * Text drawn with pdf-lib's standard fonts, recovered from the (deflated) content streams of a PDF. Each stream is read
+ * by its /Length: compressed bytes can contain "endstream" by chance, which made a search for the end cut streams short.
+ */
 export function pdfText(pdf: Buffer): string {
  const text: string[] = [], source = pdf.toString('latin1');
- for (const match of source.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
-  let content = match[1];
-  try { content = inflateSync(Buffer.from(match[1], 'latin1')).toString('latin1'); } catch { /* not compressed */ }
+ for (const match of source.matchAll(/\/Length (\d+)\b[^>]*>>\s*stream\r?\n/g)) {
+  const start = match.index! + match[0].length, raw = source.slice(start, start + Number(match[1]));
+  let content = raw;
+  try { content = inflateSync(Buffer.from(raw, 'latin1')).toString('latin1'); } catch { /* not compressed */ }
   for (const hex of content.matchAll(/<([0-9A-Fa-f]+)>\s*Tj/g)) text.push(Buffer.from(hex[1], 'hex').toString('latin1'));
   for (const literal of content.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj/g)) text.push(literal[1]);
  }

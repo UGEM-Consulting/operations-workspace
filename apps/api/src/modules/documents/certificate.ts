@@ -28,10 +28,12 @@ function lines(text: string, font: PDFFont, size: number, width: number): string
 /**
  * The executed copy: the original document, with its marked fields filled in if it has any, followed by a certificate with each
  * signer's typed name, signature image, statement, consent, time, IP address, browser and the document fingerprint.
- * The applicant's copy leaves out the company countersigner's IP address and browser; staff copies include them.
+ * Each party's copy leaves out the other party's IP address and browser: the applicant's copy the company countersigner's,
+ * the countersigner's copy (a truck owner's signer on a driver's acknowledgement) the signer's. Staff copies include both.
  */
 /** `applicationId` names a dispatcher application on the certificate; driver forms pass null (their record ID is internal). */
-export async function executedDocument(original: Buffer, doc: CertificateDocument, applicationId: string | null, signatures: CertificateSignature[], audience: 'applicant'|'staff' = 'staff'): Promise<Buffer> {
+export async function executedDocument(original: Buffer, doc: CertificateDocument, applicationId: string | null, signatures: CertificateSignature[], audience: 'applicant' | 'countersigner' | 'staff' = 'staff'): Promise<Buffer> {
+ const otherParty = audience === 'applicant' ? 'COMPANY' : audience === 'countersigner' ? 'APPLICANT' : null;
  const pdf = await PDFDocument.load(original, { updateMetadata: false });
  const filled = await fillFields(pdf, doc.fields ?? [], signatures);
  const regular = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -56,7 +58,7 @@ export async function executedDocument(original: Buffer, doc: CertificateDocumen
   if (signature.signerTitle) write(`Title: ${signature.signerTitle}`);
   write(`Signed: ${signature.signedAt.toISOString()} (UTC)`);
   if (signature.firstViewedAt) write(`Signer first opened the full document from the signing page: ${signature.firstViewedAt.toISOString()} (UTC)`);
-  if (audience === 'applicant' && signature.signerRole === 'COMPANY') write('IP address and browser: Recorded by UGEM');
+  if (signature.signerRole === otherParty) write('IP address and browser: Recorded by UGEM');
   else { write(`IP address: ${signature.ipAddress ?? 'Not recorded'}`); write(`Browser: ${signature.userAgent ?? 'Not recorded'}`); }
   if (signature.consent) write(`Electronic records consent: ${signature.consent}`);
   write(`Statement agreed to: ${signature.statement}`);

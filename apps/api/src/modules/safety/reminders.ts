@@ -10,7 +10,7 @@ import { TelegramClient, TelegramError } from '../updates/telegram.client';
 import { UpdatesService } from '../updates/updates.service';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { AnnualReviewService } from './annual-review.service';
-import { driverEvent, isProduction, lockOpenDriver, ownsDriver, SCREENERS, sessionLink, writeDriver } from './driver-records';
+import { driverEvent, lockOpenDriver, mayEmail, ownsDriver, SCREENERS, sessionLink, writeDriver } from './driver-records';
 import { onHoldSql } from './holds';
 import { createRenewalLink } from './renewal.service';
 import { daysUntil, driverReminderMessage, staffReminderMessage, type StaffReminderLine, stepFor, weeklySummaryMessage } from './reminder-messages';
@@ -18,6 +18,7 @@ import { type Channel, renewalScanWaiting } from './reminded';
 import { CLOSED_STATUSES, Driver, DriverTelegramLink, DriverTelegramLinkToken, LEAVABLE, RENEWAL_KINDS, type RenewalKind } from './safety.entity';
 import { SafetyService } from './safety.service';
 import { addDays, usDay } from './screening-rules';
+import { expiringUnits } from './units.service';
 
 /** The steps each audience is reminded at: days before the date, and 0 for the day itself (or after). */
 export const STAFF_STEPS = [60, 30, 7, 0] as const;
@@ -40,9 +41,9 @@ const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 type Claimed = { id: string; reminderId: string | null; batchId: string | null; channel: Channel; status: string; attempts: number };
 type Outcome = { result: true | string; channel: Channel };
 type Message = { email: { subject: string; text: string; html: string }; telegram: string; button?: { text: string; url: string } };
-interface Subject { subject: 'DOCUMENT' | 'OWNER_DOCUMENT' | 'ANNUAL_REVIEW'; subjectId: string; driverId: string; kind: string; dueOn: string;
- // Read with the subjects, so queueing needs no query per driver.
- email: string | null; telegram: boolean; waiting: boolean }
+interface Subject { subject: 'DOCUMENT' | 'OWNER_DOCUMENT' | 'ANNUAL_REVIEW' | 'UNIT_REGISTRATION' | 'UNIT_INSPECTION' | 'UNIT_PERMIT'; subjectId: string; driverId: string | null; kind: string; dueOn: string;
+ // Read with the subjects, so queueing needs no query per driver. A unit's date goes to its responsible Safety Manager.
+ email: string | null; telegram: boolean; waiting: boolean; responsibleId?: string | null }
 
 /**
  * Expiration reminders (designed as the Reminders and E-Verify group, approved 2026-11-09). Once a US Eastern day, from
@@ -108,7 +109,7 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
   const last = addDays(today, STAFF_STEPS[0]);
   const documents: Subject[] = await em.query(`SELECT 'DOCUMENT' AS subject, d.id AS "subjectId", d."driverId", d.kind, to_char(d."expiresOn", 'YYYY-MM-DD') AS "dueOn",
      x.email, EXISTS(SELECT 1 FROM driver_telegram_links g WHERE g."driverId" = x.id) AS telegram, ${renewalScanWaiting('d."driverId"', 'd.kind')} AS waiting
-    FROM (SELECT DISTINCT ON ("driverId", kind) * FROM driver_documents WHERE "verifiedAt" IS NOT NULL ORDER BY "driverId", kind, "createdAt" DESC) d JOIN drivers x ON x.id = d."driverId"
+    FROM (SELECT DISTINCT ON ("driverId", kind) * FROM driver_documents WHERE "verifiedAt" IS NOT NULL AND kind <> 'RETURN_TO_DUTY' ORDER BY "driverId", kind, "createdAt" DESC) d JOIN drivers x ON x.id = d."driverId"
     WHERE x.status IN ('APPROVED','CLEARED') AND d."expiresOn" IS NOT NULL AND d."expiresOn" <= $1 AND (d.subtype IS NULL OR d.subtype NOT IN ('US_PASSPORT','GREEN_CARD'))
    UNION ALL
    SELECT 'OWNER_DOCUMENT', o.id, o."driverId", o.kind, to_char(o."expiresOn", 'YYYY-MM-DD'), x.email, false, false
@@ -116,21 +117,34 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
     WHERE o."replacedAt" IS NULL AND o."expiresOn" IS NOT NULL AND o."expiresOn" <= $1 AND t."archivedAt" IS NULL AND x.status IN ('APPROVED','CLEARED')`, [last]);
   const reviews = (await this.annual.due()).items.filter(item => item.dueOn <= last).map(item => ({ subject: 'ANNUAL_REVIEW' as const, subjectId: item.driverId, driverId: item.driverId,
    kind: 'ANNUAL_REVIEW', dueOn: item.dueOn, email: null, telegram: false, waiting: false }));
-  return [...documents, ...reviews];
+  // Unit dates (section 34): the registration, the yearly inspection and a permit outside the year-end batch, from the same
+  // list Expiring documents shows. Staff only; the unit's responsible Safety Manager (or, with none, the Safety Director).
+  // Permits of one unit that end the same day are one reminder (the step is recorded per unit and date), and its line
+  // names every permit due then, so a second permit is never dropped as a repeat.
+  const permitDays = new Set<string>();
+  const units: Subject[] = (await expiringUnits(em, today, last)).items.filter(item => {
+   if (!item.document.startsWith('PERMIT')) return true;
+   const key = `${item.unitId}:${item.dueOn}`;
+   return !permitDays.has(key) && !!permitDays.add(key);
+  }).map(item => ({
+   subject: item.document === 'REGISTRATION' ? 'UNIT_REGISTRATION' : item.document === 'INSPECTION' ? 'UNIT_INSPECTION' : 'UNIT_PERMIT', subjectId: item.unitId, driverId: null,
+   kind: item.document.startsWith('PERMIT') ? 'PERMIT' : item.document, dueOn: item.dueOn, email: null, telegram: false, waiting: false, responsibleId: item.responsibleId }));
+  return [...documents, ...reviews, ...units];
  }
 
  /** One morning message per Safety contact (or each Safety manager, for drivers with none), with every step reached. */
  private async queueStaff(em: EntityManager, subjects: Subject[], today: string) {
-  const contacts: { driverId: string; ownerId: string }[] = await em.query(`SELECT x."driverId", x."ownerId" FROM driver_owners x JOIN users u ON u.id = x."ownerId"
-   WHERE x."endedAt" IS NULL AND u.status = 'ACTIVE' AND u.role::text = 'SAFETY_STAFF'`);
-  const managers = (await em.getRepository(User).findBy({ role: Role.SAFETY_MANAGER, status: UserStatus.ACTIVE })).map(user => user.id);
+  // The active Safety Managers and Safety Directors, read once; a driver's contact counts only while they are active.
+  const people: { id: string; role: string }[] = await em.query(`SELECT id, role::text AS role FROM users WHERE status = 'ACTIVE' AND role::text IN ('SAFETY_STAFF','SAFETY_MANAGER')`);
+  const activeStaff = new Set(people.filter(row => row.role === Role.SAFETY_STAFF).map(row => row.id)), managers = people.filter(row => row.role === Role.SAFETY_MANAGER).map(row => row.id);
+  const contacts: { driverId: string; ownerId: string }[] = await em.query(`SELECT "driverId", "ownerId" FROM driver_owners WHERE "endedAt" IS NULL`);
   const linked = await this.staffOnTelegram(em);
-  const owners = new Map(contacts.map(row => [row.driverId, row.ownerId]));
+  const owners = new Map(contacts.filter(row => activeStaff.has(row.ownerId)).map(row => [row.driverId, row.ownerId]));
   const byRecipient = new Map<string, { subject: Subject; step: number }[]>();
   for (const subject of subjects) {
    const step = stepFor(subject.dueOn, today, STAFF_STEPS);
    if (step === null) continue;
-   const owner = owners.get(subject.driverId);
+   const owner = subject.driverId ? owners.get(subject.driverId) : subject.responsibleId && activeStaff.has(subject.responsibleId) ? subject.responsibleId : undefined;
    for (const recipient of owner ? [owner] : managers) byRecipient.set(recipient, [...byRecipient.get(recipient) ?? [], { subject, step }]);
   }
   const ids: string[] = [];
@@ -189,7 +203,7 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
   if (!this.addressable(subject.email)) return [channel, 'NO_ADDRESS'];
   return [channel, channel === 'EMAIL' && !this.email.enabled ? 'DISABLED' : null];
  }
- private addressable(email: string | null) { return !!email && (isProduction(this.config) || email.endsWith('@example.test')); }
+ private addressable(email: string | null) { return !!email && mayEmail(this.config, email); }
  private async delivery(em: EntityManager, owner: { reminderId?: string; batchId?: string }, [channel, skipped]: [Channel, string | null]) {
   const [row]: { id: string }[] = await em.query(`INSERT INTO safety_reminder_deliveries ("reminderId", "batchId", channel, status, "failureCode") VALUES ($1,$2,$3,$4,$5) RETURNING id`,
    [owner.reminderId ?? null, owner.batchId ?? null, channel, skipped ? 'SKIPPED' : 'PENDING', skipped]);
@@ -291,14 +305,21 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
   let message: Message;
   if (batch.kind === 'WEEKLY') message = weeklySummaryMessage(await this.weeklyCounts(today), url);
   else {
-   const lines: StaffReminderLine[] = await this.db.query(`SELECT x."firstName", x."lastName", r.kind, to_char(r."dueOn", 'YYYY-MM-DD') AS "dueOn" FROM safety_reminders r
-    JOIN drivers x ON x.id = r."driverId" WHERE r."batchId" = $1 AND x.status NOT IN (${CLOSED_STATUSES.map(status => `'${status}'`).join(',')})
+   // A unit line names the unit; it is still due while the unit is in use and its date unchanged.
+   const lines: StaffReminderLine[] = await this.db.query(`SELECT x."firstName", x."lastName", u.unit, r.kind, to_char(r."dueOn", 'YYYY-MM-DD') AS "dueOn",
+     CASE WHEN r.subject = 'UNIT_PERMIT' THEN (SELECT array_agg(p.kind ORDER BY p.kind) FROM unit_permits p WHERE p."unitId" = r."subjectId" AND p."expiresOn" = r."dueOn") END AS permits FROM safety_reminders r
+    LEFT JOIN drivers x ON x.id = r."driverId" LEFT JOIN driver_trucks u ON u.id = r."subjectId" AND r.subject LIKE 'UNIT\\_%'
+    WHERE r."batchId" = $1 AND (CASE WHEN r."driverId" IS NULL THEN u."archivedAt" IS NULL ELSE x.status NOT IN (${CLOSED_STATUSES.map(status => `'${status}'`).join(',')}) END)
      AND CASE r.subject
+      -- An owner-operator's registration on file since then is the date that counts (expiringUnits), so this one no longer does.
+      WHEN 'UNIT_REGISTRATION' THEN u."registrationExpiresOn" = r."dueOn" AND NOT EXISTS(SELECT 1 FROM driver_owner_documents o WHERE o."truckId" = u.id AND o.kind = 'REGISTRATION' AND o."replacedAt" IS NULL)
+      WHEN 'UNIT_INSPECTION' THEN (u."inspectedOn" + interval '1 year')::date = r."dueOn"
+      WHEN 'UNIT_PERMIT' THEN EXISTS(SELECT 1 FROM unit_permits p WHERE p."unitId" = r."subjectId" AND p."expiresOn" = r."dueOn")
       WHEN 'DOCUMENT' THEN EXISTS(SELECT 1 FROM (SELECT c.id, c."expiresOn" FROM driver_documents c WHERE c."driverId" = r."driverId" AND c.kind = r.kind AND c."verifiedAt" IS NOT NULL
         ORDER BY c."createdAt" DESC LIMIT 1) l WHERE l.id = r."subjectId" AND l."expiresOn" = r."dueOn")
       WHEN 'OWNER_DOCUMENT' THEN EXISTS(SELECT 1 FROM driver_owner_documents o WHERE o.id = r."subjectId" AND o."replacedAt" IS NULL AND o."expiresOn" = r."dueOn")
       ELSE NOT EXISTS(SELECT 1 FROM driver_annual_reviews v WHERE v."driverId" = r."driverId" AND v."createdAt" > r."createdAt") END
-    ORDER BY r."dueOn", x."lastName"`, [batchId]);
+    ORDER BY r."dueOn", x."lastName" NULLS LAST, u.unit`, [batchId]);
    if (!lines.length) return { result: 'CLOSED', channel };
    message = staffReminderMessage(lines, today, url);
   }
@@ -330,7 +351,7 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
   await onboardingLimit(this.db, `driver-telegram-link:${user.id}`, 30, 3600);
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, version);
-   if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can do this.');
+   if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety Manager can do this.');
    if (!LEAVABLE.includes(driver.status)) throw new ConflictException('Reminders start once the driver is approved.');
    const link = await this.connectLink(em, id, user.id, DRIVER_LINK_MS);
    await driverEvent(em, user.id, id, 'TELEGRAM_LINK_CREATED', {});
@@ -363,6 +384,8 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
  }
  private async sessionDriver(req: Request) {
   const link = await sessionLink(this.db.manager, req);
+  // A truck owner's contract link opens the acknowledgement only, never the driver's reminders.
+  if (link.purpose === 'CONTRACT_OWNER') throw new ForbiddenException('This link only opens the contract.');
   const driver = await this.db.getRepository(Driver).findOneBy({ id: link.driverId });
   if (link.revokedAt || !driver || CLOSED_STATUSES.includes(driver.status)) throw new UnauthorizedException('Please verify your email again.');
   return driver.id;

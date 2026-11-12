@@ -13,12 +13,13 @@ import { clientBucket, countAttempt, onboardingLimit } from '../onboarding/rate-
 import { digest, generateVerificationCode } from '../onboarding/verification-code';
 import { BeginDriverDto, DriverDocumentDto, SaveDriverApplicationDto, VerifyDriverDto } from './driver-application.dto';
 import { consentStatus } from './consent-rules';
+import { rulesFor } from './license-rules';
 import { scanPdf } from './scan';
 import { PiiService } from './pii';
 import { historyMissing } from './history-rules';
-import { isProduction, sessionLink } from './driver-records';
+import { isProduction, requireMayEmail, sessionLink } from './driver-records';
 import { usDay } from './screening-rules';
-import { DOCUMENT_SEGMENTS, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, LEAVABLE, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
+import { DOCUMENT_SEGMENTS, dotPapersNeeded, Driver, DriverApplication, DriverApplicationFields, DriverChallenge, DriverDocument, DriverEvent, DriverLink, LEAVABLE, packetAnswersMissing, REQUIRED_DRIVER_FIELDS, requiredDriverDocuments } from './safety.entity';
 
 /** Code requests per window, like applicant verification: a circuit breaker plus per-address buckets, no per-link cap. */
 export const DRIVER_BEGIN_LIMITS = { global: 1000, ip: 20, emailIp: 5, linkIp: 10 } as const;
@@ -30,8 +31,11 @@ const INVALID = 'Verification is invalid or expired.';
 const labels: Record<string, string> = { legalFirstName: 'first name', legalLastName: 'last name', dateOfBirth: 'date of birth', phone: 'phone', addressLine1: 'street address',
  city: 'city', state: 'state', zip: 'ZIP code', emergencyName: 'emergency contact name', emergencyRelationship: 'emergency contact relationship',
  emergencyPhone: 'emergency contact phone', licenseNumber: 'license number', licenseState: 'license state', licenseClass: 'license class', licenseExpiresOn: 'license expiration', ssn: 'Social Security number',
- LICENSE: 'license scan', MEDICAL_CARD: 'medical card scan', WORK_AUTHORIZATION: 'work authorization scan',
+ LICENSE: 'license scan', MEDICAL_CARD: 'medical card scan', WORK_AUTHORIZATION: 'work authorization scan', RETURN_TO_DUTY: 'return-to-duty papers',
  'consent:BACKGROUND_DISCLOSURE': 'background check disclosure', 'consent:BACKGROUND_AUTHORIZATION': 'background check authorization', 'consent:CLEARINGHOUSE_CONSENT': 'Clearinghouse consent',
+ 'consent:PSP_AUTHORIZATION': 'PSP disclosure and authorization', 'consent:DOT_TESTING_AUTHORIZATION': 'DOT drug and alcohol testing authorization', 'consent:APPLICATION_CERTIFICATION': 'application certification',
+ englishOk: 'whether you read and speak English for the job', examinerName: 'medical examiner’s name', examinerRegistry: 'National Registry number', everHeldCdl: 'whether you ever held a CDL',
+ dotPositive: 'the question about earlier DOT tests', dotFollowUp: 'the question about a return-to-duty plan',
  'history:currentSince': 'when you moved to your current address', 'history:addresses': 'addresses for the last 3 years', 'history:dates': 'the dates in your history',
  'history:gap': 'what you did in each gap between jobs', 'history:driving': 'driving jobs for the last 10 years', 'history:accidents': 'accidents', 'history:tickets': 'traffic tickets',
  'history:licenses': 'other licenses', 'history:licenseTrouble': 'whether a license was denied, suspended or revoked' };
@@ -57,7 +61,7 @@ export class DriverAccessService {
 
  async begin(dto: BeginDriverDto, req: Request) {
   if (!this.email.enabled) throw new ServiceUnavailableException('Email verification isn’t available right now. Please contact Safety.');
-  if (!this.production && !dto.email.endsWith('@example.test')) throw new BadRequestException('Outside production, use a fictional email ending in @example.test.');
+  requireMayEmail(this.config, dto.email, 'Outside production, use a fictional email ending in @example.test.');
   const ip = clientBucket(req), target = digest(dto.token);
   await onboardingLimit(this.db, 'driver-begin-global', DRIVER_BEGIN_LIMITS.global, 60);
   await onboardingLimit(this.db, `driver-begin-ip:${ip}`, DRIVER_BEGIN_LIMITS.ip);
@@ -101,6 +105,18 @@ export class DriverAccessService {
     await em.getRepository(DriverEvent).save({ driverId: driver.id, actorId: null, event: 'RENEWAL_OPENED', metadata: { kind: current.documentKind } });
     return current;
    }
+   // A contract link opens only that one acknowledgement, for the driver or the truck owner's signer (ContractsService).
+   if (current.purpose === 'CONTRACT' || current.purpose === 'CONTRACT_OWNER') {
+    if (!current.openedAt) await em.getRepository(DriverLink).update(current.id, { openedAt: new Date() });
+    await em.getRepository(DriverEvent).save({ driverId: driver.id, actorId: null, event: 'CONTRACT_OPENED', metadata: { owner: current.purpose === 'CONTRACT_OWNER' } });
+    return current;
+   }
+   // A catch-up link opens only the existing driver's photos and forms (CatchUpService).
+   if (current.purpose === 'CATCH_UP') {
+    if (!current.openedAt) await em.getRepository(DriverLink).update(current.id, { openedAt: new Date() });
+    await em.getRepository(DriverEvent).save({ driverId: driver.id, actorId: null, event: 'CATCH_UP_OPENED', metadata: {} });
+    return current;
+   }
    // The first visit starts the application with what Safety already knows.
    if (!await em.getRepository(DriverApplication).existsBy({ driverId: driver.id })) {
     await em.getRepository(DriverApplication).save({ driverId: driver.id, fields: this.clean({ legalFirstName: driver.firstName, legalLastName: driver.lastName, phone: driver.phone,
@@ -139,19 +155,21 @@ export class DriverAccessService {
    if (dto.history !== undefined) changes.history = JSON.parse(JSON.stringify(dto.history));
    const history = changes.history !== undefined ? changes.history : application.history;
    if (submit) {
-    const missing: string[] = REQUIRED_DRIVER_FIELDS.filter(field => !fields[field]);
+    const missing: string[] = [...REQUIRED_DRIVER_FIELDS.filter(field => !fields[field]), ...packetAnswersMissing(fields)];
     if (!changes.ssnLast4 && !application.ssnLast4) missing.push('ssn');
     // Scans are required whenever private storage is configured (always in production).
     if (this.storage.enabled) {
      const present = (await em.getRepository(DriverDocument).findBy({ driverId: driver.id, replacedAt: IsNull() })).map(document => document.kind);
      missing.push(...requiredDriverDocuments(fields).filter(kind => !present.includes(kind)));
      // Every published consent form, signed in its current version.
-     missing.push(...(await consentStatus(em, driver.id, true)).missing);
+     missing.push(...(await consentStatus(em, driver.id, true, rulesFor(driver, fields))).missing);
     }
     missing.push(...historyMissing(history, usDay('latest').slice(0, 7)));
     if (missing.length) throw new BadRequestException({ message: `Answer every required question first: ${[...new Set(missing.map(label))].join(', ')}.`, missing });
     const age = years(fields.dateOfBirth!);
-    if (age < 18 || age > 100) throw new BadRequestException({ message: 'Check your date of birth.', missing: ['dateOfBirth'] });
+    // Drivers who cross state lines must be 21 (391.11(b)(1)).
+    if (age < 21) throw new BadRequestException({ message: 'You need to be 21 or older to drive between states. Check your date of birth, or contact Safety.', missing: ['dateOfBirth'] });
+    if (age > 100) throw new BadRequestException({ message: 'Check your date of birth.', missing: ['dateOfBirth'] });
     if (fields.licenseExpiresOn! < new Date().toISOString().slice(0, 10)) throw new BadRequestException({ message: 'Your license has expired. Contact Safety before you continue.', missing: ['licenseExpiresOn'] });
     const now = new Date();
     // A resubmission after corrections clears Safety's message.
@@ -178,6 +196,7 @@ export class DriverAccessService {
   if ((kind === 'WORK_AUTHORIZATION') !== !!dto.subtype) throw new BadRequestException(kind === 'WORK_AUTHORIZATION' ? 'Choose which document you’re scanning.' : 'Only work authorization takes a document type.');
   const first = await this.session(this.db.manager, req, false);
   if (first.application.status !== 'DRAFT' || first.link.completedAt) throw new ConflictException('Your application was already sent to Safety.');
+  if (kind === 'RETURN_TO_DUTY' && !dotPapersNeeded(first.application.fields)) throw new BadRequestException('Return-to-duty papers are only needed after a Yes to a DOT question. Save your answers first.');
   await onboardingLimit(this.db, `driver-document:${first.link.id}`, 30);
   const body = await scanPdf(dto.pages), id = randomUUID(), driverId = first.driver.id, stored = { id, driverId, kind, storageLayout: CURRENT_LAYOUT };
   await this.storage.put(driverDocumentKey(stored), body, 'application/pdf');
@@ -210,8 +229,9 @@ export class DriverAccessService {
   * The verified link, its driver and application. With lock, takes the driver row first, like every staff write. Also used
   * by ConsentService for the driver's consent forms.
   */
- async session(em: EntityManager, req: Request, lock: boolean) {
-  const first = await sessionLink(em, req);
+ async session(em: EntityManager, req: Request, lock: boolean, known?: DriverLink) {
+  // known: the session's link already read by the caller (ConsentService), so it isn't read again.
+  const first = known ?? await sessionLink(em, req);
   // A renewal link's session never reads or changes the application.
   if (first.purpose !== 'APPLICATION') throw new UnauthorizedException('Please verify your email again.');
   const driver = await em.getRepository(Driver).findOne({ where: { id: first.driverId }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });
@@ -229,8 +249,8 @@ export class DriverAccessService {
   return { link, driver, application };
  }
  private open(link: DriverLink) { return !link.revokedAt && !link.completedAt && link.expiresAt.getTime() > Date.now(); }
- // An application link works while the driver is applying; a renewal link while they are approved or cleared.
- private usable(link: DriverLink, driver: Driver) { return link.purpose === 'RENEWAL' ? LEAVABLE.includes(driver.status) : driver.status === 'APPLYING'; }
+ // An application link works while the driver is applying; a renewal or catch-up link while they are approved or cleared.
+ private usable(link: DriverLink, driver: Driver) { return link.purpose === 'APPLICATION' ? driver.status === 'APPLYING' : LEAVABLE.includes(driver.status); }
  private clean(fields: DriverApplicationFields): DriverApplicationFields {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => typeof value === 'string' && value !== '')) as DriverApplicationFields;
  }

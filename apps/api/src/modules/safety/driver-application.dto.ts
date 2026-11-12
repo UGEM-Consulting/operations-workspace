@@ -1,7 +1,7 @@
 import { upper, filled } from './dto-helpers';
 import { Transform, Type } from 'class-transformer';
 import { applyDecorators } from '@nestjs/common';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsBoolean, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBase64, IsBoolean, IsDateString, IsDefined, IsEmail, IsIn, IsInt, IsObject, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { MAX_PHOTO_BYTES } from '../documents/documents.dto';
 import { MAX_SCAN_PAGES } from './scan';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
@@ -39,6 +39,14 @@ export class DriverFieldsDto {
  @upper() @IsOptional() @IsString() @ValidateIf(filled) @IsIn(US_STATES, { message: 'Choose the state that issued the license.' }) licenseState?: string;
  @IsOptional() @IsString() @ValidateIf(filled) @IsIn(LICENSE_TYPES) licenseClass?: LicenseType | '';
  @IsOptional() @IsString() @ValidateIf(filled) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(DATE, { message: 'Enter the license expiration as a full date.' }) licenseExpiresOn?: string;
+ // Section 39 (DriverApplicationMorePhoneScreen, DotQuestionsPhoneScreen). Yes or No answers are 'YES' or 'NO'.
+ @text() @IsOptional() @IsString() @MaxLength(200) otherNames?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsIn(['YES', 'NO']) everHeldCdl?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsIn(['YES', 'NO']) englishOk?: string;
+ @text() @IsOptional() @IsString() @MaxLength(100) examinerName?: string;
+ @text() @IsOptional() @IsString() @ValidateIf(filled) @Matches(/^\d{6,12}$/, { message: 'Enter the National Registry number as printed (digits only).' }) examinerRegistry?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsIn(['YES', 'NO']) dotPositive?: string;
+ @IsOptional() @IsString() @ValidateIf(filled) @IsIn(['YES', 'NO']) dotFollowUp?: string;
 }
 // Address and work history. Each entry the driver adds is complete (the page's own forms ask for every part); the whole
 // history is checked for coverage only at submission (history-rules.ts).
@@ -68,6 +76,20 @@ export class HistoryJobDto {
  @IsIn(['YES', 'NO', 'UNSURE']) fmcsr!: 'YES' | 'NO' | 'UNSURE';
  @IsIn(['YES', 'NO', 'UNSURE']) dotTesting!: 'YES' | 'NO' | 'UNSURE';
  @text() @IsString() @MaxLength(200) reasonLeft!: string;
+ // Section 39 (DriverJobMorePhoneScreen): who Safety asks there, and for the current job whether they may ask now. Optional,
+ // so jobs saved before these existed stay valid.
+ @text() @IsOptional() @IsString() @MaxLength(100) contactName?: string;
+ @text() @IsOptional() @IsString() @ValidateIf(filled) @IsEmail({}, { message: 'Enter a valid email address.' }) @MaxLength(254) contactEmail?: string;
+ @IsOptional() @IsIn(['YES', 'NO']) mayContact?: 'YES' | 'NO';
+}
+/** Driving experience: each kind of vehicle driven for work (DriverApplicationMorePhoneScreen). */
+export class HistoryExperienceDto {
+ @IsUUID() id!: string;
+ @required(100) vehicle!: string;
+ @Matches(MONTH, MONTH_MESSAGE) fromMonth!: string;
+ // null: still driving it.
+ @ValidateIf((_object: unknown, value: unknown) => value !== null) @Matches(MONTH, MONTH_MESSAGE) toMonth!: string | null;
+ @IsInt() @Min(0) @Max(5_000_000) miles!: number;
 }
 export class HistoryGapDto {
  @Matches(MONTH, MONTH_MESSAGE) from!: string;
@@ -109,6 +131,7 @@ export class DriverHistoryDto {
  @yesNo() otherLicenses?: 'YES' | 'NO';
  @list(() => HistoryLicenseDto, 5) licenseList?: HistoryLicenseDto[];
  @yesNo() licenseTrouble?: 'YES' | 'NO';
+ @list(() => HistoryExperienceDto, 10) experience?: HistoryExperienceDto[];
  @text() @IsOptional() @IsString() @MaxLength(500) licenseTroubleNote?: string;
 }
 /**

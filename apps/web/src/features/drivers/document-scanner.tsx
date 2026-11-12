@@ -13,9 +13,9 @@ import { imageForUpload, PhotoError } from '@/features/onboarding/photo';
 import { documentLabels, workAuthorizationTypes, type DocumentKind } from '@/features/safety/types';
 import type { DriverApplicationView } from './driver-application';
 
-const segments: Record<DocumentKind, string> = { LICENSE: 'license', MEDICAL_CARD: 'medical-card', WORK_AUTHORIZATION: 'work-authorization' };
+const segments: Record<DocumentKind, string> = { LICENSE: 'license', MEDICAL_CARD: 'medical-card', WORK_AUTHORIZATION: 'work-authorization', RETURN_TO_DUTY: 'return-to-duty' };
 const hints: Record<DocumentKind, string> = { LICENSE: 'Photograph the front, then the back.', MEDICAL_CARD: 'Your DOT medical examiner’s certificate (all pages it has).',
-  WORK_AUTHORIZATION: 'Any document that shows you can work in the US. You choose which one.' };
+  WORK_AUTHORIZATION: 'Any document that shows you can work in the US. You choose which one.', RETURN_TO_DUTY: 'Your return-to-duty completion or your current follow-up testing plan.' };
 // Four pages per document, each small enough that all four fit one upload (the API allows 3.2 MB of photos in total).
 const MAX_PAGES = 4, PAGE_BYTES = 760_000, PAGE_SIDE = 1800;
 interface Page { id: number; file: File; url: string; rotation: number }
@@ -29,10 +29,13 @@ export const scannerId = (kind: DocumentKind) => `scan-${segments[kind]}`;
  * sideways, then save. The API removes photo metadata and combines the pages into one PDF. Saving again replaces it.
  * With `send` (a renewal link), the pages go to Safety once through `send.upload` instead of into the application.
  */
-export function DocumentScanner({ kind, view, required, error, onSaved, onEnded, onDraft, send }: { kind: DocumentKind; view?: DriverApplicationView; required: boolean;
+export function DocumentScanner({ kind, view, required, error, onSaved, onEnded, onDraft, send, catchUp }: { kind: DocumentKind; view?: DriverApplicationView; required: boolean;
   error?: string; onSaved?: (view: DriverApplicationView) => void; onEnded: (end: string | ApiError) => void; onDraft: (kind: DocumentKind, draft: ScanDraft) => void;
-  send?: { label: string; hint: string; upload: (pages: string[]) => Promise<void> } }) {
-  const current = view?.documents?.find(document => document.kind === kind) ?? null;
+  send?: { label: string; hint: string; upload: (pages: string[]) => Promise<void> };
+  // An existing driver's catch-up link (section 34): its own routes, its own scan of this kind, and its page's view back.
+  catchUp?: { current: { id: string; subtype: string | null; pageCount: number; createdAt: string } | null; hint?: string; onSaved: (view: unknown) => void } }) {
+  const current = catchUp ? catchUp.current : view?.documents?.find(document => document.kind === kind) ?? null;
+  const routes = catchUp ? 'driver/catch-up/documents' : 'driver/documents';
   const [pages, setPages] = useState<Page[]>([]);
   const [scanning, setScanning] = useState(!current);
   const [subtype, setSubtype] = useState(current?.subtype ?? '');
@@ -64,8 +67,8 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
       const images: string[] = [];
       for (const page of pages) images.push(await imageForUpload(page.file, { maxSide: PAGE_SIDE, maxBytes: PAGE_BYTES, rotation: page.rotation }));
       if (send) { await send.upload(images); stop(); return; }
-      const saved = await mutate<DriverApplicationView>(`driver/documents/${segments[kind]}`, 'POST', { pages: images, ...(kind === 'WORK_AUTHORIZATION' ? { subtype } : {}) });
-      stop(); onSaved?.(saved); setAnnouncement(`${documentLabels[kind]} saved.`);
+      const saved = await mutate<DriverApplicationView>(`${routes}/${segments[kind]}`, 'POST', { pages: images, ...(kind === 'WORK_AUTHORIZATION' ? { subtype } : {}) });
+      stop(); if (catchUp) catchUp.onSaved(saved); else onSaved?.(saved); setAnnouncement(`${documentLabels[kind]} saved.`);
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'applicant-session') return onEnded(error);
       setFailed(true); setMessage(error instanceof PhotoError ? error.message : errorMessage(error, 'The scan wasn’t saved. Try again.'));
@@ -75,12 +78,12 @@ export function DocumentScanner({ kind, view, required, error, onSaved, onEnded,
     className={cn('space-y-3 rounded-lg border p-4 outline-none focus-visible:ring-2 focus-visible:ring-ring', shownError ? 'border-danger-border' : 'border-border')}>
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0"><h3 id={title} className="font-medium">{documentLabels[kind]}{!required && <span className="font-normal text-muted-foreground"> (optional)</span>}</h3>
-        <p className="text-sm text-muted-foreground">{send?.hint ?? hints[kind]}</p></div>
+        <p className="text-sm text-muted-foreground">{send?.hint ?? catchUp?.hint ?? hints[kind]}</p></div>
       {current && !scanning && <Button type="button" size="sm" variant="outline" onClick={() => { setScanning(true); setMessage(''); setAnnouncement(''); }}>Scan again</Button>}
     </div>
     {current && !scanning && <p className="flex flex-wrap items-center gap-2 text-sm"><CheckCircle2 aria-hidden="true" className="size-4 text-success" />
       Scanned {current.pageCount} {current.pageCount === 1 ? 'page' : 'pages'}{current.subtype ? ` · ${workAuthorizationTypes[current.subtype]}` : ''} · <LocalTime iso={current.createdAt} format="date" />
-      <ViewDocumentButton variant="link" size="sm" className="text-sm" documents={[{ url: `/api/backend/driver/documents/${current.id}/file`, title: documentLabels[kind], meta: `${current.pageCount} ${current.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> {documentLabels[kind].toLowerCase()}</span></ViewDocumentButton></p>}
+      <ViewDocumentButton variant="link" size="sm" className="text-sm" documents={[{ url: `/api/backend/${routes}/${current.id}/file`, title: documentLabels[kind], meta: `${current.pageCount} ${current.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> {documentLabels[kind].toLowerCase()}</span></ViewDocumentButton></p>}
     {scanning && <>
       {kind === 'WORK_AUTHORIZATION' && <Select id="work-authorization-document" label="Document" value={subtype} onChange={event => setSubtype(event.target.value)} placeholder="Choose a document" width="full"
         options={Object.entries(workAuthorizationTypes).map(([value, label]) => ({ value, label }))} />}

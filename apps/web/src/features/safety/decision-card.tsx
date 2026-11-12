@@ -21,11 +21,11 @@ import { CLEARANCE_ITEMS, type DriverProfile, type DriverReviewRow } from './typ
 type Decision = 'APPROVE' | 'MORE_INFO' | 'PRE_ADVERSE' | 'REJECT';
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
 const actions: Record<string, { title: string; tone?: 'success' | 'warning' | 'danger' | 'neutral' }> = {
-  SENT_FOR_DECISION: { title: 'Sent to the Safety manager' }, APPROVED: { title: 'Approved', tone: 'success' }, MORE_INFO: { title: 'Sent back to screening', tone: 'neutral' },
+  SENT_FOR_DECISION: { title: 'Sent to the Safety Director' }, APPROVED: { title: 'Approved', tone: 'success' }, MORE_INFO: { title: 'Sent back to screening', tone: 'neutral' },
   PRE_ADVERSE: { title: 'Pre-adverse notice sent', tone: 'warning' }, REJECTED: { title: 'Rejected: final notice sent', tone: 'danger' },
 };
 const dialogs: Record<Decision, { title: (name: string) => string; description: string; button: string; done: string }> = {
-  APPROVE: { title: name => `Approve ${name}?`, description: 'The Safety lead then assigns a Safety contact, who runs the clearance checklist.', button: 'Approve', done: 'Driver approved' },
+  APPROVE: { title: name => `Approve ${name}?`, description: 'The Safety lead then assigns a Safety Manager, who runs the clearance checklist.', button: 'Approve', done: 'Driver approved' },
   MORE_INFO: { title: () => 'Send back to screening?', description: 'The Safety lead looks into what you ask and sends the driver to you again.', button: 'Send back', done: 'Sent back to screening' },
   PRE_ADVERSE: { title: () => 'Record the pre-adverse notice', button: 'Record notice', done: 'Pre-adverse notice recorded',
     description: 'Before rejecting a driver because of their MVR or another background report, send them a pre-adverse notice with a copy of the report and “A Summary of Your Rights Under the Fair Credit Reporting Act”. They then have 5 business days to respond. The workspace doesn’t send it for you. After you record it, this card shows the first day the rejection can be final.' },
@@ -103,14 +103,14 @@ export function DecisionCard({ driver, decider }: { driver: DriverProfile; decid
     finally { setPending(false); }
   }
   return <Card>
-    <CardHeader title="Decision" headingRef={heading} description={awaiting ? (decider ? 'Review the screening, the scans and the MVR, then decide.' : 'Waiting for the Safety manager’s decision.')
-      : noticeOut ? 'A pre-adverse notice is out. The driver may respond before the rejection is final.' : 'What the Safety manager decided, newest first.'} />
+    <CardHeader title="Decision" headingRef={heading} description={awaiting ? (decider ? 'Review the screening, the scans and the MVR, then decide.' : 'Waiting for the Safety Director’s decision.')
+      : noticeOut ? 'A pre-adverse notice is out. The driver may respond before the rejection is final.' : 'What the Safety Director decided, newest first.'} />
     <CardBody className="space-y-4">
       {noticeOut && notice?.noticeSentOn && finalFrom && <Alert tone="warning" title="Pre-adverse notice out">
         <p>Sent {day(notice.noticeSentOn)}. Final rejection opens on {day(finalFrom)} (5 weekdays after the notice). If the driver disputes the report and it changes your view, approve them or send them back to screening instead.</p>
       </Alert>}
       {failed.length > 0 && <Alert tone="warning" title="A clearance result needs a decision">
-        <p>{failed.map(item => CLEARANCE_ITEMS.find(row => row.key === item.key)?.label ?? item.key).join(', ')}: the driver can’t be cleared with this result. {decider ? 'If you’ll reject them, send the pre-adverse notice. Otherwise the owner records the new result once it’s resolved.' : 'The Safety manager decides what happens next.'}</p>
+        <p>{failed.map(item => CLEARANCE_ITEMS.find(row => row.key === item.key)?.label ?? item.key).join(', ')}: the driver can’t be cleared with this result. {decider ? 'If you’ll reject them, send the pre-adverse notice. Otherwise the owner records the new result once it’s resolved.' : 'The Safety Director decides what happens next.'}</p>
       </Alert>}
       {decider && clearing && <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" className="text-danger" onClick={() => start('PRE_ADVERSE')}><FileWarning aria-hidden="true" className="size-4" />Pre-adverse notice</Button>

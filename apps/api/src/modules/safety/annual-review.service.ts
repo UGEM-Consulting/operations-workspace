@@ -12,6 +12,7 @@ import { authorizationSigned } from './consent-rules';
 import { lockOpenDriver, ownsDriver, writeDriver, driverEvent } from './driver-records';
 import { DriverReport } from './safety.entity';
 import { addDays, usDay } from './screening-rules';
+import { personName } from './sql';
 
 /** A yearly review is due this long after the driver was cleared or last reviewed (FMCSA 391.25: at least every 12 months). */
 export const REVIEW_INTERVAL_DAYS = 365;
@@ -25,7 +26,7 @@ const NO_AUTHORIZATION = { message: 'The driver hasn’t signed the background c
  * Yearly reviews of cleared drivers: the owner or Safety manager (or an administrator) pulls a new MVR, reviews the driving
  * record and records the outcome. Every Safety role reads them. Reviews are append-only; the MVR is an ANNUAL_MVR report.
  */
-const NOT_REVIEWER = 'Only the driver’s Safety contact and the Safety manager can record a yearly review.';
+const NOT_REVIEWER = 'Only the driver’s Safety Manager and the Safety Director can record a yearly review.';
 
 @Injectable()
 export class AnnualReviewService {
@@ -80,11 +81,13 @@ export class AnnualReviewService {
 
  /** A driver's reviews, newest first, with when the next one is due. */
  async forDriver(id: string, clearedAt: Date | null) {
-  const items = await this.db.query(`SELECT r.id, to_char(r."reviewedOn", 'YYYY-MM-DD') AS "reviewedOn", r.outcome, r.note, r."createdAt",
-    CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS reviewer,
+  const items = await this.db.query(`SELECT r.id, to_char(r."reviewedOn", 'YYYY-MM-DD') AS "reviewedOn", r.outcome, r.note, r."createdAt", r."fromPaper",
+    ${personName('u')} AS reviewer,
     CASE WHEN m.id IS NULL THEN NULL ELSE json_build_object('id', m.id, 'pulledOn', to_char(m."pulledOn", 'YYYY-MM-DD'), 'pageCount', m."pageCount") END AS mvr
    FROM driver_annual_reviews r LEFT JOIN users u ON u.id = r."reviewerId" LEFT JOIN driver_reports m ON m.id = r."reportId" WHERE r."driverId" = $1 ORDER BY r."reviewedOn" DESC, r."createdAt" DESC`, [id]) as { reviewedOn: string; outcome: string }[];
-  const base = items[0]?.reviewedOn ?? (clearedAt ? usDay('latest', clearedAt) : null);
+  // A driver added from a paper file with no last review on record is due from the day they were added.
+  const [added] = await this.db.query(`SELECT "createdAt" FROM existing_driver_records WHERE "driverId" = $1`, [id]) as { createdAt: Date }[];
+  const base = items[0]?.reviewedOn ?? (added ? addDays(usDay('latest', added.createdAt), -REVIEW_INTERVAL_DAYS) : clearedAt ? usDay('latest', clearedAt) : null);
   // storageEnabled: whether an MVR file can be attached (it is required then); staging may run without storage.
   return { items, dueOn: base ? addDays(base, REVIEW_INTERVAL_DAYS) : null, notQualified: items[0]?.outcome === 'NOT_QUALIFIED', storageEnabled: this.storage.enabled };
  }
@@ -95,11 +98,12 @@ export class AnnualReviewService {
   const rows = await this.db.query(`SELECT d.id AS "driverId", d."firstName", d."lastName", to_char(d."clearedAt" AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS "clearedOn",
     (SELECT to_char(r."reviewedOn", 'YYYY-MM-DD') FROM driver_annual_reviews r WHERE r."driverId" = d.id ORDER BY r."reviewedOn" DESC, r."createdAt" DESC LIMIT 1) AS "lastOn",
     (SELECT r.outcome FROM driver_annual_reviews r WHERE r."driverId" = d.id ORDER BY r."reviewedOn" DESC, r."createdAt" DESC LIMIT 1) AS "lastOutcome",
-    CASE WHEN o.id IS NULL THEN NULL ELSE o."firstName" || ' ' || o."lastName" END AS owner
+    ${personName('o')} AS owner,
+    (SELECT to_char(x."createdAt" AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') FROM existing_driver_records x WHERE x."driverId" = d.id) AS "addedOn"
    FROM drivers d LEFT JOIN driver_owners w ON w."driverId" = d.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId" WHERE d.status = 'CLEARED'`) as
-   { driverId: string; firstName: string; lastName: string; clearedOn: string; lastOn: string | null; lastOutcome: string | null; owner: string | null }[];
+   { driverId: string; firstName: string; lastName: string; clearedOn: string; lastOn: string | null; lastOutcome: string | null; owner: string | null; addedOn: string | null }[];
   const items = rows.map(row => ({ driverId: row.driverId, firstName: row.firstName, lastName: row.lastName, owner: row.owner, lastReviewedOn: row.lastOn,
-    dueOn: addDays(row.lastOn ?? row.clearedOn, REVIEW_INTERVAL_DAYS), notQualified: row.lastOutcome === 'NOT_QUALIFIED' }))
+    dueOn: row.lastOn ? addDays(row.lastOn, REVIEW_INTERVAL_DAYS) : row.addedOn ?? addDays(row.clearedOn, REVIEW_INTERVAL_DAYS), notQualified: row.lastOutcome === 'NOT_QUALIFIED' }))
    .filter(row => row.dueOn <= addDays(today, REVIEW_WARNING_DAYS) || row.notQualified)
    .map(row => ({ ...row, overdue: row.dueOn < today })).sort((a, b) => a.dueOn.localeCompare(b.dueOn));
   return { today, warningDays: REVIEW_WARNING_DAYS, items };
