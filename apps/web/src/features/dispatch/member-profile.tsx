@@ -25,6 +25,7 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { middayIso } from '@/lib/navigation';
+import { paperScanItems } from './paper-scan';
 import { ExistingAccountsCard, ExistingPaperworkCard, useCatchUpLink } from './paperwork';
 import { askedFor, SupportItChoices, type SupportItItem } from './support-it';
 import { signInItems } from './sign-in-status';
@@ -276,9 +277,10 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
                 title: where(row), meta: <>{when(row)} – {row.endedAt ? <LocalTime iso={row.endedAt} format="date" /> : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
                 body: row.reason ?? undefined }))} /></CardBody>
             </Card>}
-                  {/* One timeline, newest first: onboarding from the invitation to IT setup, and each correction (CorrectionHistoryScreen). */}
-                  {(!!member.activity?.length || !!member.corrections?.length) && <Card><CardHeader title="History" description={member.corrections?.length ? 'Onboarding and corrections. The application keeps what was sent.' : 'From the invitation to IT setup.'} />
-                <CardBody><Timeline items={[...correctionItems(member.corrections ?? []), ...(member.activity ?? []).map(item => ({ id: item.id, at: item.createdAt, title: statusLabel(item.event), meta: <LocalTime iso={item.createdAt} /> }))]
+                  {/* One timeline, newest first: onboarding from the invitation to IT setup, each correction (CorrectionHistoryScreen)
+                      and, for someone added by hand, their paper scans and when they were added (PaperScanProfileScreen). */}
+                  {(!!member.activity?.length || !!member.corrections?.length || !!existing) && <Card><CardHeader title="History" description={member.corrections?.length ? 'Onboarding and corrections. The application keeps what was sent.' : member.activity?.length && !existing ? 'From the invitation to IT setup.' : undefined} />
+                <CardBody><Timeline items={[...correctionItems(member.corrections ?? []), ...(existing ? paperScanItems(existing) : []), ...(member.activity ?? []).map(item => ({ id: item.id, at: item.createdAt, title: statusLabel(item.event), meta: <LocalTime iso={item.createdAt} /> }))]
                   .sort((a, b) => b.at.localeCompare(a.at))} /></CardBody></Card>}
             </div>,
           }} />
