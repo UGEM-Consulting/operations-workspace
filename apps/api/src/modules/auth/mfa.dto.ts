@@ -4,6 +4,8 @@ export class MfaCodeDto {
   // Six-digit authenticator code or an XXXXX-XXXXX recovery code.
   @IsString() @MaxLength(20) @Matches(/^[\s0-9A-Za-z-]{6,20}$/) code!: string;
 }
+// The sign-in code, and whether to skip it on this device for 30 days (never for administrators or a recovery code).
+export class MfaVerifyDto extends MfaCodeDto { @IsOptional() @IsBoolean() trustDevice?: boolean; }
 export class MfaPolicyDto { @IsEnum(MfaPolicy) mfaRequiredFor!: MfaPolicy; }
 // Older clients send no body and get an authenticator app.
 export class MfaEnrolmentDto { @IsOptional() @IsEnum(MfaMethod) method?: MfaMethod; }

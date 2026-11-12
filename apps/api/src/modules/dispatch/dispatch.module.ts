@@ -1,8 +1,8 @@
-import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req, StreamableFile } from '@nestjs/common';
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
+import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
 import { ExistingDispatchersService } from './existing.service';
@@ -11,6 +11,8 @@ import { UpdatesModule } from '../updates/updates.module';
 import { LeavingSweeper } from './leaving-sweeper';
 import { LeaveService } from './leave.service';
 import { MemberDetailsService } from './corrections';
+import { PaperScansService } from './paper-scans';
+import { StorageModule } from '../storage/storage.module';
 
 @Controller('dispatch')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
@@ -61,6 +63,18 @@ class ExistingDispatchersController {
  @Post('members/:id/more-time') moreTime(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.existing.moreTime(req.currentUser, id); }
  @Patch('members/:id/existing') update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateExistingDto) { return this.existing.update(req.currentUser, id, dto); }
 }
+// Scans of an NDA or SOP signed on paper (section 38): added by any dispatch manager or administrator, opened as private files.
+@Controller('dispatch/members')
+@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
+class PaperScansController {
+ constructor(private readonly scans: PaperScansService) {}
+ @Post(':id/paper-scans') add(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: PaperScanDto) { return this.scans.upload(req.currentUser, id, dto); }
+ @Get(':id/paper-scans/:scanId/file') @Header('Cache-Control', 'no-store, private') @Header('X-Content-Type-Options', 'nosniff')
+ async file(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('scanId', ParseUUIDPipe) scanId: string) {
+  const file = await this.scans.file(req.currentUser, id, scanId);
+  return new StreamableFile(file.body, { type: file.type, length: file.body.length, disposition: `inline; filename="${file.filename}"` });
+ }
+}
 @Controller('dispatch/drivers')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class DispatchDriversController {
@@ -90,5 +104,5 @@ class TeamLeadController {
  @Post('promotions') async request(@Req() req: AuthRequest, @Body() dto: CreatePromotionDto) { await this.promotions.requireLead(req.currentUser); return this.promotions.request(req.currentUser, dto); }
  @Post('promotions/:id/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.promotions.cancel(req.currentUser, id); }
 }
-@Module({ imports: [UpdatesModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, LeaveService, MemberDetailsService, ExistingDispatchersService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
+@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
 export class DispatchModule {}

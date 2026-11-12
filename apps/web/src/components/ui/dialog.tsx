@@ -51,7 +51,8 @@ export function Dialog({ open, onClose, title, description, size = 'md', tone, b
   const Icon = tone === 'danger' ? CircleAlert : TriangleAlert;
   return <dialog ref={ref} role={tone ? 'alertdialog' : undefined} aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-description` : undefined}
     onCancel={event => { event.preventDefault(); close(); }}
-    className={cn('fixed inset-0 m-auto h-dvh max-h-dvh w-full max-w-none flex-col border-0 bg-card p-0 text-card-foreground shadow-lg backdrop:bg-overlay open:flex sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%_-_2rem)] sm:rounded-lg sm:border', sizes[size])}>
+    // text-left: a dialog opened from a right-aligned table cell (row actions) would otherwise inherit that alignment.
+    className={cn('fixed inset-0 m-auto h-dvh max-h-dvh w-full max-w-none flex-col border-0 bg-card p-0 text-left text-card-foreground shadow-lg backdrop:bg-overlay open:flex sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%_-_2rem)] sm:rounded-lg sm:border', sizes[size])}>
     <div className="flex shrink-0 items-start justify-between gap-4 border-b px-4 py-4 sm:px-6">
       {tone && <span aria-hidden="true" className={cn('grid size-9 shrink-0 place-items-center rounded-full', tone === 'danger' ? 'bg-danger-background text-danger' : 'bg-warning-background text-warning')}><Icon className="size-5" /></span>}
       <div className="min-w-0 flex-1"><h2 ref={heading} tabIndex={-1} id={`${id}-title`} className="text-[17px] font-semibold leading-6 outline-none">{title}</h2>{description && <p id={`${id}-description`} className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>}</div>

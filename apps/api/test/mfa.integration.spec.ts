@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -13,8 +13,11 @@ import { installSessions } from '../src/modules/auth/session';
 import { hashPassword } from '../src/modules/auth/password';
 import { Role, User, UserStatus } from '../src/modules/users/user.entity';
 import { StaffMfa1792720000000 } from '../src/database/migrations/1792720000000-StaffMfa';
-import { attemptKey } from '../src/modules/auth/attempts';
+import { attemptKey, lockKey } from '../src/modules/auth/attempts';
 import { enrolForTest, totpCode } from './mfa-helpers';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { deviceCookieName } from '../src/modules/auth/trusted-devices';
 
 type Agent = ReturnType<typeof request.agent>;
 const integration = process.env.TEST_DATABASE_URL ? describe : describe.skip;
@@ -352,4 +355,180 @@ integration('Staff two-step verification (isolated PostgreSQL database only)', (
     try { await expect(new StaffMfa1792720000000().down(runner)).rejects.toThrow('Cannot discard'); } finally { await runner.release(); }
     expect(await db.query(`SELECT 1 FROM staff_mfa`)).toHaveLength(1);
   });
+  describe('devices that skip the code (section 38)', () => {
+    const cookieOf = (response: { headers: Record<string, unknown> }) => ([] as string[]).concat((response.headers['set-cookie'] as string[] | undefined) ?? []).find(value => value.startsWith('operations.device='));
+    const devices = async (userId: string) => (await db.query(`SELECT "tokenHash", "authVersion", label FROM staff_trusted_devices WHERE "userId" = $1`, [userId])) as { tokenHash: string; authVersion: number; label: string }[];
+    const signedIn = async (user: User) => {
+      const secret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, user.id), client = agent();
+      await login(client, user).expect(200); await verify(client, totpCode(secret)).expect(200);
+      return { client, secret };
+    };
+    beforeEach(() => db.query('TRUNCATE staff_trusted_devices'));
+    async function trusted(user: User) {
+      const secret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, user.id);
+      const client = agent();
+      await login(client, user).expect(200);
+      expect((await client.post('/api/auth/mfa/challenge').set(headers).send({}).expect(200)).body).toEqual({ method: 'TOTP', trustDevice: true, trustDays: 30 });
+      const verified = await client.post('/api/auth/mfa/verify').set({ ...headers, 'x-client-user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0 Safari/537.36' }).send({ code: totpCode(secret), trustDevice: true }).expect(200);
+      const cookie = cookieOf(verified);
+      expect(cookie).toMatch(/^operations\.device=[A-Za-z0-9_-]{43}; Max-Age=2592000; Path=\/; Expires=.+; HttpOnly; SameSite=Lax$/);
+      return { client, secret, token: cookie!.split(';')[0].split('=')[1] };
+    }
+
+    it('skips the code on a trusted device for 30 days, storing only a hash, and still asks everywhere else', async () => {
+      const { client, token } = await trusted(users.manager);
+      const [row] = await devices(users.manager.id);
+      expect(row).toEqual({ tokenHash: expect.stringMatching(/^[0-9a-f]{64}$/), authVersion: expect.any(Number), label: 'Chrome on Windows' });
+      expect(row.tokenHash).not.toContain(token);
+      // The same browser signs in with the password alone, into a full session.
+      expect((await login(client, users.manager).expect(200)).body.mfa).toBeUndefined();
+      await client.get('/api/auth/me').set(headers).expect(200);
+      // Another browser, or the cookie on another account, still asks for the code.
+      expect((await login(agent(), users.manager).expect(200)).body.mfa).toBe('verify');
+      await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.it.id);
+      const other = await request(app.getHttpServer()).post('/api/auth/login').set({ ...headers, cookie: `operations.device=${token}` }).send({ email: users.it.email, password }).expect(200);
+      expect(other.body.mfa).toBe('verify');
+      const listed = await client.get('/api/auth/mfa/devices').set(headers).expect(200);
+      expect(listed.body).toEqual({ available: true, administrator: false, days: 30, items: [{ id: expect.any(String), label: 'Chrome on Windows', createdAt: expect.any(String), lastUsedAt: expect.any(String), expiresAt: expect.any(String), current: true }] });
+      expect((await events(users.manager.id)).map(event => event.type)).toContain('TRUSTED_DEVICE_ADDED');
+    });
+
+    it('never trusts a device for an administrator or after a recovery code', async () => {
+      const secret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.admin.id);
+      const client = agent();
+      await login(client, users.admin).expect(200);
+      expect((await client.post('/api/auth/mfa/challenge').set(headers).send({}).expect(200)).body).toEqual({ method: 'TOTP', trustDevice: false, trustDays: 30 });
+      expect(cookieOf(await client.post('/api/auth/mfa/verify').set(headers).send({ code: totpCode(secret), trustDevice: true }).expect(200))).toBeUndefined();
+      expect(await devices(users.admin.id)).toEqual([]);
+      expect((await client.get('/api/auth/mfa/devices').set(headers).expect(200)).body).toEqual({ available: false, administrator: true, days: 30, items: [] });
+      // A device trusted while they were a manager stops skipping the code once they're an administrator.
+      const { client: manager } = await trusted(users.manager);
+      await db.query(`UPDATE users SET role = 'SYSTEM_ADMIN' WHERE id = $1`, [users.manager.id]);
+      try { expect((await login(manager, users.manager).expect(200)).body.mfa).toBe('verify'); }
+      finally { await db.query(`UPDATE users SET role = 'DISPATCHER_MANAGER' WHERE id = $1`, [users.manager.id]); }
+      await db.query('TRUNCATE staff_trusted_devices');
+      const { client: recovering, secret: managerSecret } = await signedIn(users.manager);
+      await clearReplay(users.manager.id);
+      const codes = (await recovering.post('/api/auth/mfa/recovery-codes').set(headers).send({ code: totpCode(managerSecret) }).expect(200)).body.recoveryCodes as string[];
+      await login(recovering, users.manager).expect(200);
+      expect(cookieOf(await recovering.post('/api/auth/mfa/verify').set(headers).send({ code: codes[0], trustDevice: true }).expect(200))).toBeUndefined();
+      expect(await devices(users.manager.id)).toEqual([]);
+    });
+
+    it('forgets devices one at a time or all at once without signing anyone out', async () => {
+      const first = await trusted(users.manager);
+      await clearReplay(users.manager.id);
+      const second = await trusted(users.manager);
+      expect(await devices(users.manager.id)).toHaveLength(2);
+      const listed = (await first.client.get('/api/auth/mfa/devices').set(headers).expect(200)).body.items as { id: string; current: boolean }[];
+      const mine = listed.find(item => item.current)!;
+      const forgotten = await first.client.post(`/api/auth/mfa/devices/${mine.id}/forget`).set(headers).send({}).expect(200);
+      expect(forgotten.body).toEqual({ forgotten: 1 });
+      expect(cookieOf(forgotten)).toMatch(/^operations\.device=; /);
+      await first.client.post(`/api/auth/mfa/devices/${mine.id}/forget`).set(headers).send({}).expect(404);
+      await first.client.get('/api/auth/me').set(headers).expect(200);
+      expect((await login(first.client, users.manager).expect(200)).body.mfa).toBe('verify');
+      expect((await login(second.client, users.manager).expect(200)).body.mfa).toBeUndefined();
+      expect((await second.client.post('/api/auth/mfa/devices/forget-all').set(headers).send({}).expect(200)).body).toEqual({ forgotten: 1 });
+      await second.client.get('/api/auth/me').set(headers).expect(200);
+      expect((await login(second.client, users.manager).expect(200)).body.mfa).toBe('verify');
+      expect((await events(users.manager.id)).filter(event => event.type === 'TRUSTED_DEVICE_FORGOTTEN').map(event => event.metadata)).toEqual([{ all: false, count: 1 }, { all: true, count: 1 }]);
+      // Someone else's device can't be forgotten by its ID.
+      await clearReplay(users.manager.id);
+      await trusted(users.manager);
+      const [other] = await db.query(`SELECT id FROM staff_trusted_devices WHERE "userId" = $1`, [users.manager.id]);
+      const { client: it } = await signedIn(users.it);
+      await it.post(`/api/auth/mfa/devices/${other.id}/forget`).set(headers).send({}).expect(404);
+      expect(await devices(users.manager.id)).toHaveLength(1);
+    });
+
+    it('records each sign-in that skipped the code, kept after the device is forgotten', async () => {
+      const { client } = await trusted(users.manager);
+      await login(client, users.manager).expect(200);
+      await client.post('/api/auth/mfa/devices/forget-all').set(headers).send({}).expect(200);
+      expect((await events(users.manager.id)).map(event => event.type)).toEqual(['TRUSTED_DEVICE_ADDED', 'TRUSTED_DEVICE_USED', 'TRUSTED_DEVICE_FORGOTTEN']);
+    });
+
+    it('forgets the earlier person’s device when a second person trusts the same browser', async () => {
+      const { client, token } = await trusted(users.manager);
+      const itSecret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.it.id);
+      await login(client, users.it).expect(200);
+      expect(cookieOf(await client.post('/api/auth/mfa/verify').set(headers).send({ code: totpCode(itSecret), trustDevice: true }).expect(200))).toBeDefined();
+      expect(await devices(users.manager.id)).toEqual([]);
+      expect(await devices(users.it.id)).toHaveLength(1);
+      expect((await events(users.manager.id)).at(-1)).toEqual({ type: 'TRUSTED_DEVICE_FORGOTTEN', actorId: users.it.id, metadata: { all: false, count: 1, replacedOther: true } });
+      // The manager’s earlier cookie no longer skips their code.
+      expect((await request(app.getHttpServer()).post('/api/auth/login').set({ ...headers, cookie: `operations.device=${token}` }).send({ email: users.manager.email, password }).expect(200)).body.mfa).toBe('verify');
+    });
+
+    it('keeps another person’s device cookie when forgetting all devices on a shared browser', async () => {
+      const { client } = await trusted(users.manager);
+      const itSecret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.it.id);
+      await login(client, users.it).expect(200);
+      await client.post('/api/auth/mfa/verify').set(headers).send({ code: totpCode(itSecret) }).expect(200);
+      expect(cookieOf(await client.post('/api/auth/mfa/devices/forget-all').set(headers).send({}).expect(200))).toBeUndefined();
+      expect(await devices(users.manager.id)).toHaveLength(1);
+      expect((await login(client, users.manager).expect(200)).body.mfa).toBeUndefined();
+    });
+
+    it('asks for the code when checking a trusted device fails', async () => {
+      const { client } = await trusted(users.manager);
+      await db.query('ALTER TABLE staff_trusted_devices RENAME TO staff_trusted_devices_away');
+      const logged = jest.spyOn(Logger, 'error').mockImplementation(() => undefined);
+      try {
+        expect((await login(client, users.manager).expect(200)).body.mfa).toBe('verify');
+        expect(logged.mock.calls.map(call => call[0])).toContain('Checking a trusted device failed: 42P01');
+      } finally { logged.mockRestore(); await db.query('ALTER TABLE staff_trusted_devices_away RENAME TO staff_trusted_devices'); }
+      expect((await events(users.manager.id)).map(event => event.type)).not.toContain('TRUSTED_DEVICE_USED');
+    });
+
+    it('keeps the sign-in when trusting the device fails, and leaves no cookie', async () => {
+      const secret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.manager.id), client = agent();
+      await login(client, users.manager).expect(200);
+      await db.query('ALTER TABLE staff_trusted_devices RENAME TO staff_trusted_devices_away');
+      const logged = jest.spyOn(Logger, 'error').mockImplementation(() => undefined);
+      try {
+        const verified = await client.post('/api/auth/mfa/verify').set(headers).send({ code: totpCode(secret), trustDevice: true }).expect(200);
+        expect(cookieOf(verified)).toBeUndefined();
+        // Only a PostgreSQL error code reaches the log: here a missing table, as during a deploy.
+        expect(logged.mock.calls.map(call => call[0])).toContain('Trusting a device failed: 42P01');
+      } finally { logged.mockRestore(); await db.query('ALTER TABLE staff_trusted_devices_away RENAME TO staff_trusted_devices'); }
+      await client.get('/api/auth/me').set(headers).expect(200);
+      expect((await login(client, users.manager).expect(200)).body.mfa).toBe('verify');
+    });
+
+    it('asks for a code on a trusted device while wrong codes have the account locked', async () => {
+      const { client } = await trusted(users.manager);
+      await lockKey(db, attemptKey('mfa-lock', users.manager.id), 900);
+      try {
+        expect((await login(client, users.manager).expect(200)).body.mfa).toBe('verify');
+        await verify(client, '000000').expect(429);
+      } finally { await db.query('TRUNCATE login_attempts'); }
+      expect((await login(client, users.manager).expect(200)).body.mfa).toBeUndefined();
+    });
+
+    it('uses the device cookie name the web forwards', async () => {
+      const web = readFileSync(join(__dirname, '../../web/src/lib/session-cookie.ts'), 'utf8');
+      const named = web.match(/deviceCookieName[^\n]*\? '([^']+)' : '([^']+)'/);
+      expect(named?.slice(1)).toEqual([deviceCookieName(true), deviceCookieName(false)]);
+    });
+
+    it('forgets every device when their sessions are revoked, and ignores a device from before an authVersion change', async () => {
+      const { client } = await trusted(users.manager);
+      await db.query(`UPDATE users SET "authVersion" = "authVersion" + 1 WHERE id = $1`, [users.manager.id]);
+      expect((await login(client, users.manager).expect(200)).body.mfa).toBe('verify');
+      await client.get('/api/auth/mfa/devices').set(headers).expect(401);
+      await db.query('TRUNCATE staff_trusted_devices');
+      await clearReplay(users.manager.id);
+      const fresh = await trusted(users.manager);
+      // An administrator's reset revokes their sessions, which deletes their devices too.
+      const { client: admin } = await signedIn(users.admin);
+      await admin.post(`/api/users/${users.manager.id}/mfa/reset`).set(headers).send({}).expect(200);
+      expect(await devices(users.manager.id)).toEqual([]);
+      // The reset turned two-step verification off; set up again, the device they trusted before still asks for a code.
+      await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, users.manager.id);
+      expect((await login(fresh.client, users.manager).expect(200)).body.mfa).toBe('verify');
+    });
+  });
 });
+

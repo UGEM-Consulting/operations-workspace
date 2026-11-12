@@ -5,6 +5,7 @@ import { EnvironmentError, validateEnvironment } from '../src/config/environment
 import { SecretBox, formatManualKey, matchTotp, newRecoveryCode, newTotpSecret, normalizeRecoveryCode, totpUri } from '../src/modules/auth/mfa-crypto';
 import { MfaPolicy } from '../src/modules/auth/mfa.entity';
 import { LOCKOUT_STEPS, MfaService, mfaRequired } from '../src/modules/auth/mfa.service';
+import { deviceLabel } from '../src/modules/auth/trusted-devices';
 import { Role } from '../src/modules/users/user.entity';
 
 const code = (secret: string, timestamp: number) => new TOTP({ algorithm: 'SHA1', digits: 6, period: 30, secret: Secret.fromBase32(secret) }).generate({ timestamp });
@@ -129,5 +130,16 @@ describe('Staff email codes', () => {
     expect(message.text).toContain('to finish signing in');
     expect(`${message.text}${message.html}`).not.toMatch(/https?:|@/);
     expect(() => staffCodeEmail('12345', 'login')).toThrow();
+  });
+});
+
+describe('trusted device labels', () => {
+  it('names the browser and system people will recognise', () => {
+    expect(deviceLabel('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36 Edg/130.0')).toBe('Edge on Windows');
+    expect(deviceLabel('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 FxiOS/130.0 Mobile/15E148 Safari/605.1.15')).toBe('Firefox on iPhone');
+    expect(deviceLabel('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 EdgiOS/130.0 Mobile/15E148 Safari/605.1.15')).toBe('Edge on iPhone');
+    expect(deviceLabel('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 CriOS/130.0 Mobile/15E148 Safari/604.1')).toBe('Chrome on iPad');
+    expect(deviceLabel('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15')).toBe('Safari on Mac');
+    expect(deviceLabel(undefined)).toBe('A browser');
   });
 });

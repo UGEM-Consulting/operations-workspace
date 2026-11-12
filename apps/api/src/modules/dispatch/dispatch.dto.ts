@@ -1,10 +1,11 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, Equals, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
 import { EXTENSION } from './account-details';
 import { SUPPORT_TYPES, type SupportType } from './dispatch.entity';
 import { SUPPORT_IT_ITEM_KEYS, type SupportItItem } from '../it/it.entity';
+import { ScanUploadDto } from '../safety/scan.dto';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
 const present = (_object: unknown, value: unknown) => value !== undefined;
@@ -212,4 +213,14 @@ export class LeaveReasonDto {
 }
 export class LeaveVersionDto {
  @IsInt() @Min(1) version!: number;
+}
+/**
+ * A scan of an NDA or SOP signed on paper (section 38): one PDF or photographed pages (exactly one of them), the paper date
+ * when it was recorded wrong, and the confirmation that it is this person's signed document, every page.
+ */
+export class PaperScanDto extends ScanUploadDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(['NDA', 'SOP']) kind!: 'NDA' | 'SOP';
+ @IsOptional() @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(/^\d{4}-\d{2}-\d{2}$/) signedOn?: string;
+ @Equals(true, { message: 'Confirm that this is their signed document, every page.' }) confirmed!: boolean;
 }

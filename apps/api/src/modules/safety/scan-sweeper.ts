@@ -21,6 +21,9 @@ const OWNER_DOCUMENTS = `SELECT id FROM driver_owner_documents WHERE id = ANY($1
 const CONSENTS = `SELECT id FROM driver_consent_documents WHERE id = ANY($1::uuid[])`;
 // A notice letter whose publish never committed; every published version is kept.
 const LETTERS = `SELECT id FROM driver_notice_letters WHERE id = ANY($1::uuid[])`;
+// A paper NDA or SOP scan (every scan is kept, replaced ones included); only a file no row names is a leftover: an upload
+// refused after storing its file whose own removal failed.
+const PAPER_SCANS = `SELECT id FROM member_paper_scans WHERE id = ANY($1::uuid[])`;
 /**
  * Each listed prefix, and which file patterns under it are swept against which rows (both storage layouts). The captured
  * group is the record ID. A file matching no pattern, such as a saved signed copy under drivers/<driver>/signed/, is never touched.
@@ -35,6 +38,7 @@ const SWEPT = [
  { prefix: 'driver-consents/', rules: [{ pattern: new RegExp(`^driver-consents/(${U})\\.pdf$`), kept: CONSENTS }] },
  { prefix: 'company-documents/driver-consents/', rules: [{ pattern: new RegExp(`^company-documents/driver-consents/${S}/(${U})\\.pdf$`), kept: CONSENTS }] },
  { prefix: 'company-documents/notice-letters/', rules: [{ pattern: new RegExp(`^company-documents/notice-letters/${S}/(${U})\\.pdf$`), kept: LETTERS }] },
+ { prefix: 'members/', rules: [{ pattern: new RegExp(`^members/${U}/paper/${S}/(${U})\\.pdf$`), kept: PAPER_SCANS }] },
 ] as const;
 
 /**
@@ -42,7 +46,7 @@ const SWEPT = [
  * and committing, or its driver was deleted) and a replaced scan Safety never verified whose best-effort removal failed.
  * Current scans, verified ones (kept when a reopened application replaces them) and ones the driver sent with their
  * application (kept when a renewal replaces them) are never touched, and neither is any
- * MVR or consent form (in either storage layout) that a row names, or any saved signed copy. Runs at startup
+ * MVR, consent form (in either storage layout) or paper scan that a row names, or any saved signed copy. Runs at startup
  * and every 6 hours; overlapping instances are harmless because removal is idempotent. Each file is checked against its
  * own row, and any failure stops the sweep, so a failed query never reads as "nothing is referenced".
  */

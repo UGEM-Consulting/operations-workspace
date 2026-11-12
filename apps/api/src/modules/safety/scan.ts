@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { PDFDocument } from 'pdf-lib';
-import { decodeJpeg } from '../documents/images';
+import { inspectPdf } from '../documents/certificate';
+import { decodeJpeg, decodePdf } from '../documents/images';
 
 /** Up to four photographed pages per document, and what one upload may carry in total (under the BFF's 4.4 MB body limit). */
 export const MAX_SCAN_PAGES = 4, MAX_SCAN_BYTES = 3_200_000;
@@ -27,4 +28,27 @@ export async function scanPdf(pages: string[]): Promise<Buffer> {
   page.drawImage(image, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
  }
  return Buffer.from(await pdf.save({ updateFieldAppearances: false }));
+}
+
+/** An upload checked by oneUpload: exactly one of a PDF or photographed pages. */
+export type OneUpload = { file: string; pages?: undefined } | { pages: string[]; file?: undefined };
+
+/** Exactly one of a PDF or photographed pages; callers check it before rate limits, so a malformed request spends nothing. */
+export function oneUpload(input: { file?: string | null; pages?: string[] | null }, missing: string): OneUpload {
+ // null counts as absent: the DTO's IsOptional lets `pages: null` through, which must not reach scanPdf.
+ const file = input.file ?? undefined, pages = input.pages ?? undefined;
+ if ((file === undefined) === (pages === undefined)) throw new BadRequestException(missing);
+ return (file !== undefined ? { file } : { pages }) as OneUpload;
+}
+
+/**
+ * An upload (checked by oneUpload) as one PDF: a PDF checked to open with at most `maxPdfPages` pages, or photographed pages
+ * (scanPdf). Shared by document renewals and paper NDA or SOP scans, so a fix to either reaches both.
+ */
+export async function uploadedPdf(upload: OneUpload, maxPdfPages: number): Promise<{ body: Buffer; pageCount: number }> {
+ if (upload.pages !== undefined) return { body: await scanPdf(upload.pages), pageCount: upload.pages.length };
+ const body = decodePdf(upload.file);
+ const pageCount = await inspectPdf(body).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
+ if (pageCount > maxPdfPages) throw new BadRequestException(`Upload at most ${maxPdfPages} pages.`);
+ return { body, pageCount };
 }

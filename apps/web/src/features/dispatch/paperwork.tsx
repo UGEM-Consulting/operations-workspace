@@ -20,6 +20,7 @@ import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
+import { PaperScanActions } from './paper-scan';
 import { SignIn } from './sign-in';
 import { signInItems } from './sign-in-status';
 import { assists, supportName, underMc, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
@@ -134,17 +135,21 @@ export function ExistingPaperworkCard({ member }: { member: MemberProfile }) {
   const finished = !!existing.acceptedAt;
   const doc = (label: string, kind: string) => {
     const onPaper = paper(kind), done = signed(kind);
-    return { label, detail: onPaper ? <>Signed on paper <LocalTime iso={middayIso(onPaper.signedOn)} format="date" />. Recorded by {onPaper.recordedBy}.</> : done ? <>{kind === 'CONTACT_LIST' ? 'Acknowledged' : 'Signed'} in the workspace <LocalTime iso={done.signedAt} format="date" />.</> : kind === 'CONTACT_LIST' ? 'Acknowledged in the workspace.' : 'The current version, in the workspace.',
+    // With storage, a paper copy shows its scan or Add scan (PaperScanAddScreen, PaperScanProfileScreen).
+    const scans = onPaper && existing.paperScans;
+    return { label, action: scans ? <PaperScanActions member={member} paper={onPaper} /> : null, detail: onPaper ? <><div>Signed on paper <LocalTime iso={middayIso(onPaper.signedOn)} format="date" />. Recorded by {onPaper.recordedBy}.{scans && !onPaper.scan ? ' No scan yet.' : ''}</div>
+      {onPaper.scan && <div className="text-[13px] leading-5 text-muted-foreground">Scan added by {onPaper.scan.uploadedBy} on <LocalTime iso={onPaper.scan.createdAt} format="date" /> · {onPaper.scan.pageCount} {onPaper.scan.pageCount === 1 ? 'page' : 'pages'}</div>}</> : done ? <>{kind === 'CONTACT_LIST' ? 'Acknowledged' : 'Signed'} in the workspace <LocalTime iso={done.signedAt} format="date" />.</> : kind === 'CONTACT_LIST' ? 'Acknowledged in the workspace.' : 'The current version, in the workspace.',
       status: onPaper ? <Badge label="Paper on file" tone="neutral" /> : done ? <Badge label={kind === 'CONTACT_LIST' ? 'Acknowledged' : 'Signed'} tone="success" /> : <Badge label={kind === 'CONTACT_LIST' ? 'To acknowledge' : 'To sign'} tone="warning" /> };
   };
   // Only documents that exist to sign, or that are on file on paper.
   const docs = ([['NDA', 'NDA'], ['SOP', 'SOP'], ['Contact list', 'CONTACT_LIST']] as const).filter(([, kind]) => existing.published.includes(kind) || paper(kind) || signed(kind)).map(([label, kind]) => doc(label, kind));
   const rows = [...docs,
-    { label: 'Photos', detail: 'Selfie and selfie with ID.', status: finished ? <Badge label="Added" tone="success" /> : <Badge label="To add" tone="warning" /> },
-    { label: 'Personal details', detail: 'Legal name, American name and Telegram.', status: finished ? <Badge label="Confirmed" tone="success" /> : <Badge label="To confirm" tone="warning" /> }];
+    { label: 'Photos', action: null, detail: 'Selfie and selfie with ID.', status: finished ? <Badge label="Added" tone="success" /> : <Badge label="To add" tone="warning" /> },
+    { label: 'Personal details', action: null, detail: 'Legal name, American name and Telegram.', status: finished ? <Badge label="Confirmed" tone="success" /> : <Badge label="To confirm" tone="warning" /> }];
   return <Card><CardHeader title="Paperwork" description={finished ? <>Finished <LocalTime iso={existing.acceptedAt!} format="date" />.</> : `${member.firstName} started before the workspace, so there’s no application.`}
     actions={catchUp?.status && ['SUBMITTED', 'RESUBMITTED'].includes(catchUp.status) && catchUp.canReview ? <Button asChild size="sm"><Link href={`/dispatch/dispatchers/${member.id}/paperwork`}>Review</Link></Button> : undefined} />
-    <Table className="mt-3 border-t border-border" caption={`${member.firstName} ${member.lastName}’s paperwork`} rows={rows} rowKey={row => row.label} columns={[{ key: 'item', label: 'Item', primary: true, cell: row => row.label }, { key: 'detail', label: 'Detail', cell: row => row.detail }, { key: 'status', label: 'Status', cell: row => row.status }]}
+    <Table className="mt-3 border-t border-border" caption={`${member.firstName} ${member.lastName}’s paperwork`} rows={rows} rowKey={row => row.label} columns={[{ key: 'item', label: 'Item', primary: true, cell: row => row.label }, { key: 'detail', label: 'Detail', cell: row => row.detail }, { key: 'status', label: 'Status', cell: row => row.status },
+      ...(existing.paperScans ? [{ key: 'action', label: 'Actions', srOnly: true, align: 'right' as const, action: true, cell: (row: typeof rows[number]) => row.action }] : [])]}
       footer={<div className="space-y-2 text-[13px] text-muted-foreground">
         {!finished && !existing.personalEmail && <p className="flex items-center gap-1.5 text-warning"><TriangleAlert aria-hidden="true" className="size-3.5" />Add their personal email to create a catch-up link.</p>}
         {catchUp && !catchUp.started && !finished && <p>Link sent. It works until <LocalTime iso={catchUp.expiresAt} format="date" />.</p>}

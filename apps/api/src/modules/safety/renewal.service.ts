@@ -4,8 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { webOrigins } from '../../config/environment';
-import { inspectPdf } from '../documents/certificate';
-import { decodePdf, sha256 } from '../documents/images';
+import { sha256 } from '../documents/images';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { digest } from '../onboarding/verification-code';
 import { CURRENT_LAYOUT, driverDocumentKey, StorageService } from '../storage/storage.service';
@@ -14,7 +13,7 @@ import { DriverDocumentDto } from './driver-application.dto';
 import { driverEvent, isProduction, lockOpenDriver, ownsDriver, revokeOpenLinks, SCREENERS, sentWithApplication, sessionLink, writeDriver } from './driver-records';
 import { DocumentVersionDto, RenewalLinkDto, RenewDocumentDto } from './renewal.dto';
 import { Driver, DriverApplication, DriverDocument, DriverLink, LEAVABLE, RENEWAL_KINDS, type RenewalKind } from './safety.entity';
-import { MAX_SCAN_PAGES, scanPdf } from './scan';
+import { MAX_SCAN_PAGES, oneUpload, scanPdf, uploadedPdf } from './scan';
 import { addDays, usDay } from './screening-rules';
 
 /** How long a renewal link works: until the driver sends the document, Safety cancels it, or this many days pass. */
@@ -48,19 +47,14 @@ export class RenewalService {
 
  async upload(user: User, id: string, dto: RenewDocumentDto) {
   if (!this.storage.enabled) throw new ServiceUnavailableException('Uploads aren’t available right now.');
-  if ((dto.file === undefined) === (dto.pages === undefined)) throw new BadRequestException('Upload a PDF or photos of each page.');
   const today = usDay('latest');
   if (dto.expiresOn < today) throw new BadRequestException(`This date has passed. Check the date printed on the ${renewalWords[dto.kind]}.`);
   if (dto.expiresOn > addDays(today, 3660)) throw new BadRequestException('Check the year of the expiration date.');
+  const upload = oneUpload(dto, 'Upload a PDF or photos of each page.');
   // Checked again under the driver lock; this early check keeps someone who'd be refused from storing a file first.
   await this.mayRenew(this.db.manager, user, id);
   await onboardingLimit(this.db, `driver-renewal-upload:${user.id}`, 30, 3600);
-  let body: Buffer, pageCount: number;
-  if (dto.file !== undefined) {
-   body = decodePdf(dto.file);
-   pageCount = await inspectPdf(body).catch(() => { throw new BadRequestException('The PDF could not be read. Upload an unencrypted PDF.'); });
-   if (pageCount > MAX_SCAN_PAGES) throw new BadRequestException(`Upload at most ${MAX_SCAN_PAGES} pages.`);
-  } else { body = await scanPdf(dto.pages!); pageCount = dto.pages!.length; }
+  const { body, pageCount } = await uploadedPdf(upload, MAX_SCAN_PAGES);
   const stored = { id: randomUUID(), driverId: id, kind: dto.kind, storageLayout: CURRENT_LAYOUT };
   await this.storage.put(driverDocumentKey(stored), body, 'application/pdf');
   let removable: DriverDocument | null;
