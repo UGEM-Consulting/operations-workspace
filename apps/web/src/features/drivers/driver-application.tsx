@@ -4,7 +4,7 @@ import { CheckCircle2 } from 'lucide-react';
 import { Alert, Notice } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Input, Select } from '@/components/ui/field';
+import { Input, RadioGroup, Select } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { ApiError, errorMessage, mutate, readApi } from '@/lib/client-api';
@@ -12,6 +12,8 @@ import { DOCUMENT_KINDS, documentLabels, licenseTypes, requiredDocuments, US_STA
 import { ConsentSigning, consentSectionId, type ConsentItem } from './consent-signing';
 import { DocumentScanner, scannerId, type ScanDraft } from './document-scanner';
 import { DriverRenewal, type DriverRenewalView } from './driver-renewal';
+import { DriverCatchUp, type DriverCatchUpView } from './driver-catch-up';
+import { DriverContract, type DriverContractView } from './driver-contract';
 import { historyMissing, type DriverHistory } from './history-rules';
 import { HistoryEditor, historySection, HistorySections, type HistoryEditing } from './history-section';
 import { DriverTelegram } from './driver-telegram';
@@ -27,7 +29,15 @@ export interface DriverApplicationView { email: string; expiresAt: string; statu
   history?: DriverHistory | null }
 const REQUIRED = ['legalFirstName', 'legalLastName', 'dateOfBirth', 'phone', 'addressLine1', 'city', 'state', 'zip', 'emergencyName', 'emergencyRelationship', 'emergencyPhone',
   'licenseNumber', 'licenseState', 'licenseClass', 'licenseExpiresOn'];
-const FIELDS = [...REQUIRED, 'legalMiddleName', 'addressLine2'];
+// Section 39: what Safety's paper packet asks (DriverApplicationMorePhoneScreen, DotQuestionsPhoneScreen).
+const PACKET = ['otherNames', 'everHeldCdl', 'englishOk', 'examinerName', 'examinerRegistry', 'dotPositive', 'dotFollowUp'];
+const FIELDS = [...REQUIRED, 'legalMiddleName', 'addressLine2', ...PACKET];
+const YES_NO = [{ value: 'YES', label: 'Yes' }, { value: 'NO', label: 'No' }];
+const isCdl = (licenseClass: string) => !!licenseClass && licenseClass !== 'DL';
+/** The section 39 answers a submission needs, as the API's packetAnswersMissing decides them. */
+function packetMissing(fields: Record<string, string>): string[] {
+  return [...['englishOk', 'examinerName', 'examinerRegistry'], ...(fields.licenseClass === 'DL' ? ['everHeldCdl'] : []), ...(isCdl(fields.licenseClass) ? ['dotPositive', 'dotFollowUp'] : [])].filter(key => !fields[key]);
+}
 const states = US_STATES.map(state => ({ value: state, label: state }));
 const names = (kinds: DocumentKind[]) => kinds.map(kind => documentLabels[kind].toLowerCase()).join(', ');
 
@@ -51,8 +61,12 @@ export function DriverApplicationPage() {
   const [view, setView] = useState<DriverApplicationView | null>(null);
   // A renewal link opens the page for one document instead of the application (DriverRenewal).
   const [renewal, setRenewal] = useState<DriverRenewalView | null>(null);
-  const [purpose, setPurpose] = useState<'APPLICATION' | 'RENEWAL' | null>(null);
-  const [state, setState] = useState<'loading' | 'form' | 'renewal' | 'closed'>('loading');
+  // A catch-up link (an existing driver, section 34) opens their photos and forms instead (DriverCatchUp).
+  const [catchUp, setCatchUp] = useState<DriverCatchUpView | null>(null);
+  // A contract link (section 39) opens the one acknowledgement, for the driver or the truck owner's signer (DriverContract).
+  const [contract, setContract] = useState<DriverContractView | null>(null);
+  const [purpose, setPurpose] = useState<Purpose | null>(null);
+  const [state, setState] = useState<'loading' | 'form' | 'renewal' | 'catchup' | 'contract' | 'closed'>('loading');
   const [closedMessage, setClosedMessage] = useState('');
   // Set when the link closed because Safety sent a newer one: when they sent it.
   const [newerSince, setNewerSince] = useState<string | null>(null);
@@ -61,7 +75,7 @@ export function DriverApplicationPage() {
   // own verification, so the previous driver's session never answers for it.
   const [verifiedToken, setVerifiedToken] = useState<string | null>(null);
   const [shownToken, setShownToken] = useState(token);
-  if (shownToken !== token) { setShownToken(token); setView(null); setRenewal(null); setPurpose(null); setState('loading'); setClosedMessage(''); }
+  if (shownToken !== token) { setShownToken(token); setView(null); setRenewal(null); setCatchUp(null); setContract(null); setPurpose(null); setState('loading'); setClosedMessage(''); }
   useEffect(() => { if (window.location.hash) window.history.replaceState(null, '', window.location.pathname); }, [token]);
   // Opening a link always verifies for that link, so an earlier session in this browser (another driver's, or a submitted
   // application) never answers for it. Without a link, the current session (a reload) opens the form, if there is one.
@@ -71,10 +85,14 @@ export function DriverApplicationPage() {
   useEffect(() => {
     if (token === null || malformed || (linked && !verified)) return;
     let current = true;
-    const showRenewal = () => readApi<DriverRenewalView>('driver/renewal').then(result => { if (current) { setRenewal(result); setState('renewal'); } });
-    // After a reload the session may be a renewal link's, which the application refuses: then open the renewal. A link
+    const showContract = () => readApi<DriverContractView>('driver/contract').then(result => { if (current) { setContract(result); setState('contract'); } });
+    const showCatchUp = () => readApi<DriverCatchUpView>('driver/catch-up').then(result => { if (current) { setCatchUp(result); setState('catchup'); } },
+      (error: unknown) => { if (purpose === null && error instanceof ApiError && error.status === 401) return showContract(); throw error; });
+    const showRenewal = () => readApi<DriverRenewalView>('driver/renewal').then(result => { if (current) { setRenewal(result); setState('renewal'); } },
+      (error: unknown) => { if (purpose === null && error instanceof ApiError && error.status === 401) return showCatchUp(); throw error; });
+    // After a reload the session may be a renewal or catch-up link's, which the application refuses: then open that. A link
     // Safety replaced (NEWER_LINK) is an application link, so it keeps its reason instead.
-    const open = purpose === 'RENEWAL' ? showRenewal()
+    const open = purpose === 'CONTRACT' || purpose === 'CONTRACT_OWNER' ? showContract() : purpose === 'CATCH_UP' ? showCatchUp() : purpose === 'RENEWAL' ? showRenewal()
       : readApi<DriverApplicationView>('driver/application').then(result => { if (current) { setView(result); setState('form'); } },
         (error: unknown) => { if (purpose === null && error instanceof ApiError && error.status === 401 && error.reason?.code !== 'NEWER_LINK') return showRenewal(); throw error; });
     open.catch((error: unknown) => {
@@ -89,6 +107,8 @@ export function DriverApplicationPage() {
   if (linked && !verified) return <VerifyDriver key={token} token={token} onVerified={next => { setPurpose(next); setVerifiedToken(token); }} />;
   if (state === 'loading') return <p role="status" className="text-sm text-muted-foreground">Opening your application…</p>;
   if (state === 'renewal' && renewal) return <DriverRenewal view={renewal} focusHeading={verified} onEnded={ended} />;
+  if (state === 'catchup' && catchUp) return <DriverCatchUp view={catchUp} focusHeading={verified} onEnded={ended} />;
+  if (state === 'contract' && contract) return <DriverContract view={contract} focusHeading={verified} onEnded={ended} />;
   if (state === 'closed' && newerSince !== null) return <NewerLink since={newerSince} />;
   if (state === 'closed' || !view) return <Closed message={closedMessage} />;
   return <DriverForm view={view} focusHeading={verified} onSaved={setView} onEnded={ended} />;
@@ -116,7 +136,8 @@ function firstOnPage(form: HTMLFormElement | null, keys: string[]) {
   return elements.sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)[0];
 }
 
-function VerifyDriver({ token, onVerified }: { token: string; onVerified: (purpose: 'APPLICATION' | 'RENEWAL' | null) => void }) {
+type Purpose = 'APPLICATION' | 'RENEWAL' | 'CATCH_UP' | 'CONTRACT' | 'CONTRACT_OWNER';
+function VerifyDriver({ token, onVerified }: { token: string; onVerified: (purpose: Purpose | null) => void }) {
   const [challenge, setChallenge] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false), [failed, setFailed] = useState(false);
   const code = useRef<HTMLInputElement>(null);
   useEffect(() => { if (challenge) code.current?.focus(); }, [challenge]);
@@ -129,7 +150,7 @@ function VerifyDriver({ token, onVerified }: { token: string; onVerified: (purpo
   async function verify(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setFailed(false); setMessage('');
     // An older API says nothing about the link, which then is an application link.
-    try { const result = await mutate<{ purpose?: 'APPLICATION' | 'RENEWAL' }>('driver/verify', 'POST', { challengeId: challenge, code: new FormData(event.currentTarget).get('code') }); onVerified(result?.purpose ?? 'APPLICATION'); }
+    try { const result = await mutate<{ purpose?: Purpose }>('driver/verify', 'POST', { challengeId: challenge, code: new FormData(event.currentTarget).get('code') }); onVerified(result?.purpose ?? 'APPLICATION'); }
     catch (error) { setFailed(true); setMessage(errorMessage(error, 'The code is wrong or has expired.')); }
     finally { setBusy(false); }
   }
@@ -156,7 +177,8 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
   // Straight after verification, and on the confirmation after submitting, screen readers land on the heading rather than at the top of the page.
   useEffect(() => { if (focusHeading || view.status === 'SUBMITTED') heading.current?.focus(); }, [focusHeading, view.status]);
   const today = useToday();
-  const adult = useSyncExternalStore(noSubscription, () => localDate(18), () => undefined);
+  // Drivers who cross state lines must be 21.
+  const adult = useSyncExternalStore(noSubscription, () => localDate(21), () => undefined);
   // Without SSN entry (no encryption key yet) the API refuses submission; say so instead of asking for a number.
   const ssnBlocked = !view.ssnAvailable && !view.ssnLast4;
   const [pending, setPending] = useState<'save' | 'submit' | null>(null);
@@ -164,6 +186,9 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
   const [errors, setErrors] = useState<Record<string, string>>({});
   // The class chosen on the page decides whether a medical card is needed, before it is saved.
   const [licenseClass, setLicenseClass] = useState(view.fields.licenseClass ?? '');
+  // The DOT answers decide whether the return-to-duty papers are needed, before they are saved.
+  const [dot, setDot] = useState({ dotPositive: view.fields.dotPositive ?? '', dotFollowUp: view.fields.dotFollowUp ?? '' });
+  const required = requiredDocuments({ licenseClass, ...dot }), kinds: DocumentKind[] = [...DOCUMENT_KINDS, ...(required.includes('RETURN_TO_DUTY') ? ['RETURN_TO_DUTY' as const] : [])];
   // Pages each scanner holds unsaved, and whether one is uploading.
   const [drafts, setDrafts] = useState<Partial<Record<DocumentKind, ScanDraft>>>({});
   const [scanErrors, setScanErrors] = useState<Partial<Record<DocumentKind, string>>>({});
@@ -201,14 +226,14 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
     const { fields, ssn } = read();
     const sentHistory = nextHistory ?? history;
     // Pages taken but not saved would be lost on submit; Save and finish later keeps answers only.
-    const unsaved = DOCUMENT_KINDS.filter(kind => drafts[kind]?.pages);
+    const unsaved = kinds.filter(kind => drafts[kind]?.pages);
     if (submit) {
-      const missing: Record<string, string> = Object.fromEntries([...REQUIRED.filter(key => !fields[key]), ...(!ssn && !view.ssnLast4 && view.ssnAvailable ? ['ssn'] : [])].map(key => [key, 'Required']));
-      // Guidance only; the API decides (age 18 to 100, license not expired).
-      if (fields.dateOfBirth && adult && fields.dateOfBirth > adult) missing.dateOfBirth = 'You must be at least 18.';
+      const missing: Record<string, string> = Object.fromEntries([...REQUIRED.filter(key => !fields[key]), ...packetMissing(fields), ...(!ssn && !view.ssnLast4 && view.ssnAvailable ? ['ssn'] : [])].map(key => [key, 'Required']));
+      // Guidance only; the API decides (age 21 to 100, license not expired).
+      if (fields.dateOfBirth && adult && fields.dateOfBirth > adult) missing.dateOfBirth = 'You need to be 21 or older to drive between states.';
       if (fields.licenseExpiresOn && today && fields.licenseExpiresOn < today) missing.licenseExpiresOn = 'Your license has expired.';
       setErrors(missing);
-      const unscanned = view.documentsEnabled ? requiredDocuments(fields.licenseClass).filter(kind => !unsaved.includes(kind) && !view.documents?.some(document => document.kind === kind)) : [];
+      const unscanned = view.documentsEnabled ? requiredDocuments(fields).filter(kind => !unsaved.includes(kind) && !view.documents?.some(document => document.kind === kind)) : [];
       const problems: Partial<Record<DocumentKind, string>> = Object.fromEntries([...unsaved.map(kind => [kind, 'Save these pages before you submit, or remove them.']),
         ...unscanned.map(kind => [kind, 'Scan this document before you submit.'])]);
       setScanErrors(problems);
@@ -224,7 +249,7 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
           : historyGaps.length ? 'Finish your address and work history first.' : unsaved.length ? `Save the pages you took for: ${names(unsaved)}.` : unscanned.length ? `Scan these documents first: ${names(unscanned)}.`
           : `Sign these forms first: ${unsigned.map(item => item.label.toLowerCase()).join(', ')}.`);
         // Answers come before the documents on the page, so the first answer in page order is the first problem.
-        const answer = firstOnPage(form.current, Object.keys(missing)), scan = DOCUMENT_KINDS.find(kind => problems[kind]);
+        const answer = firstOnPage(form.current, Object.keys(missing)), scan = kinds.find(kind => problems[kind]);
         const section = historyGaps.map(historySection).find(Boolean);
         if (answer) answer.focus();
         else if (section) document.getElementById(section)?.focus();
@@ -287,8 +312,9 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
         <Input label="Middle name" optional {...field('legalMiddleName')} maxLength={100} autoComplete="additional-name" />
         <Input label="Last name" {...field('legalLastName')} maxLength={100} autoComplete="family-name" />
       </div>
+      <Input label="Other names you’ve used" optional {...field('otherNames')} maxLength={200} hint="A maiden name or an earlier legal name, if any." />
     </Section>
-    <Section title="Date of birth and Social Security number" hint="Safety needs these to check your driving record. Your SSN is encrypted, and only UGEM Safety staff and administrators can see it.">
+    <Section title="Date of birth and Social Security number" hint="Safety needs these to check your driving record. Your SSN is encrypted, and only UGEM Safety and administrators can see it.">
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Date of birth" type="date" {...field('dateOfBirth')} max={adult} autoComplete="bday" />
         {view.ssnAvailable ? <Input label="Social Security number" name="ssn" error={errors.ssn} width="full" inputMode="numeric" autoComplete="off" maxLength={11} placeholder="123-45-6789"
@@ -323,11 +349,30 @@ function DriverForm({ view, focusHeading, onSaved, onEnded }: { view: DriverAppl
         <Select label="Class" {...field('licenseClass')} onChange={event => setLicenseClass(event.target.value)} placeholder="Choose a class" options={Object.entries(licenseTypes).map(([value, label]) => ({ value, label }))} />
         <Input label="Expiration date" type="date" {...field('licenseExpiresOn')} min={today} />
       </div>
+      {licenseClass === 'DL' && <RadioGroup name="everHeldCdl" label="Have you ever held a CDL?" hint="Including one that expired, was suspended or cancelled." defaultValue={value('everHeldCdl')} options={YES_NO} />}
+      {errors.everHeldCdl && <p className="text-sm text-danger">{errors.everHeldCdl === 'Required' ? 'Answer this question.' : errors.everHeldCdl}</p>}
+      <RadioGroup name="englishOk" label="Can you read and speak English well enough to talk with officers, read road signs and fill in reports?" defaultValue={value('englishOk')} options={YES_NO} />
+      {errors.englishOk && <p className="text-sm text-danger">Answer this question.</p>}
     </Section>
+    <Section title="Medical card" hint="From your DOT medical examiner’s certificate. Every driver needs one, pickup drivers too.">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Input label="Medical examiner’s name" {...field('examinerName')} maxLength={100} />
+        <Input label="National Registry number" {...field('examinerRegistry')} inputMode="numeric" maxLength={12} hint="Printed on the card, next to the examiner’s name." />
+      </div>
+    </Section>
+    {isCdl(licenseClass) && <Section title="DOT drug and alcohol testing" hint="For CDL drivers. Answer truthfully: a Yes doesn’t end your application, but Safety needs your papers.">
+      <RadioGroup name="dotPositive" label="In the last 2 years, did you test positive or refuse a DOT pre-employment test for a job you didn’t get?" defaultValue={dot.dotPositive}
+        onChange={next => setDot(current => ({ ...current, dotPositive: next }))} options={YES_NO} />
+      {errors.dotPositive && <p className="text-sm text-danger">Answer this question.</p>}
+      <RadioGroup name="dotFollowUp" label="Are you on a return-to-duty or follow-up testing plan from a Substance Abuse Professional?" defaultValue={dot.dotFollowUp}
+        onChange={next => setDot(current => ({ ...current, dotFollowUp: next }))} options={YES_NO} />
+      {errors.dotFollowUp && <p className="text-sm text-danger">Answer this question.</p>}
+      {required.includes('RETURN_TO_DUTY') && <Alert tone="info" title="Add your papers">Photograph your return-to-duty completion or your current follow-up plan under Documents. Only the Safety Director and your Safety Manager see them. Save your answers first.</Alert>}
+    </Section>}
     {historyEnabled && <HistorySections history={history} onChange={setHistory} onEdit={edit} now={now} currentAddress={currentAddress} missing={historyErrors} Section={Section} />}
-    {view.documentsEnabled && <Section title="Documents" hint="Use your phone’s camera. We remove photo details such as location before saving, and only UGEM Safety staff and administrators can see your documents.">
-      {DOCUMENT_KINDS.map(kind => <DocumentScanner key={kind} kind={kind} view={view} onSaved={onSaved} onEnded={onEnded} onDraft={onDraft} error={scanErrors[kind]}
-        required={requiredDocuments(licenseClass).includes(kind)} />)}
+    {view.documentsEnabled && <Section title="Documents" hint="Use your phone’s camera. We remove photo details such as location before saving, and only UGEM Safety and administrators can see your documents.">
+      {kinds.map(kind => <DocumentScanner key={kind} kind={kind} view={view} onSaved={onSaved} onEnded={onEnded} onDraft={onDraft} error={scanErrors[kind]}
+        required={required.includes(kind)} />)}
     </Section>}
     {view.consents?.required && <div id={consentSectionId} tabIndex={-1} className="scroll-mt-20 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring">
       <Section title="Consent forms" hint="Safety needs your consent before checking your driving record and background. Open and read each form in full, then sign it. You can download a signed copy afterwards.">

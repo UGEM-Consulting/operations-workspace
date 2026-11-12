@@ -58,6 +58,14 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
+    await db.undoLastMigration(); // RoadReady, with none here
+
+    await db.undoLastMigration(); // ExistingDrivers, with none here
+
+    await db.undoLastMigration(); // Units, with none here
+
+    await db.undoLastMigration(); // LicenseRules, with none here
+
     await db.undoLastMigration(); // TrustedDevicesPaperScans, with none here
     await db.undoLastMigration(); // MemberLeave, with none here
     await db.undoLastMigration(); // DetailCorrections, with none here
@@ -97,7 +105,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const long = 'X'.repeat(120);
     await approved(['Zed', 'North'], { mcName: 'Northwind Freight', teamLead: long, jobTitle: 'Dispatcher' });
     await approved(['Zed', 'Lake'], { mcName: 'Lakeside Carriers', teamLead: long, jobTitle: 'Dispatcher' });
-    await db.runMigrations(); expect(await latest()).toBe('TrustedDevicesPaperScans1793170000000');
+    await db.runMigrations(); expect(await latest()).toBe('RoadReady1793210000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -115,7 +123,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('TrustedDevicesPaperScans1793170000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('RoadReady1793210000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -352,6 +360,14 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.manager.patch(`/api/dispatch/teams/${blue.id}`).set(headers).send({ version: 1, leadMemberId: blake.id }).expect(200);
     // The state DispatcherContacts left behind: a backfilled lead moved back to ONBOARDING while still leading.
     await db.query(`UPDATE dispatch_members SET status = 'ONBOARDING' WHERE id = $1`, [avery.id]);
+    await db.undoLastMigration(); // RoadReady, with none here
+
+    await db.undoLastMigration(); // ExistingDrivers, with none here
+
+    await db.undoLastMigration(); // Units, with none here
+
+    await db.undoLastMigration(); // LicenseRules, with none here
+
     await db.undoLastMigration(); // TrustedDevicesPaperScans, with none here
     await db.undoLastMigration(); // MemberLeave, with none here
     await db.undoLastMigration(); // DetailCorrections, with none here
@@ -390,6 +406,14 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
+    await db.undoLastMigration(); // RoadReady, with none here
+
+    await db.undoLastMigration(); // ExistingDrivers, with none here
+
+    await db.undoLastMigration(); // Units, with none here
+
+    await db.undoLastMigration(); // LicenseRules, with none here
+
     await db.undoLastMigration(); // TrustedDevicesPaperScans, with none here
     await db.undoLastMigration(); // MemberLeave, with none here
     await db.undoLastMigration(); // DetailCorrections, with none here

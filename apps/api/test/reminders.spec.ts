@@ -33,6 +33,10 @@ describe('Safety reminder rules and messages', () => {
       { firstName: 'Alex', lastName: 'Kim', kind: 'LICENSE', dueOn: '2026-11-30' }, { firstName: 'Drew', lastName: 'Patel', kind: 'ANNUAL_REVIEW', dueOn: '2026-11-01' }], '2026-11-09', 'https://w.example.test/safety/expiring');
     expect(daily.telegram).toContain('Morgan R.: medical card expires today.\nAlex K.: driver’s license expires in 21 days.\nDrew P.: yearly review overdue since Nov 1, 2026.');
     expect(daily.telegram).not.toMatch(/Reyes|Kim|Patel/);
+    // Permits of one unit due the same day share one line that names each of them.
+    const permits = staffReminderMessage([{ firstName: null, lastName: null, unit: '233', kind: 'PERMIT', dueOn: '2026-11-16', permits: ['IFTA', 'NM'] },
+      { firstName: null, lastName: null, unit: '240', kind: 'PERMIT', dueOn: '2026-11-16', permits: ['OR'] }], '2026-11-09', 'https://w.example.test/safety/expiring');
+    expect(permits.telegram).toContain('Unit 233: IFTA and New Mexico permits expire in 7 days.\nUnit 240: Oregon permit expires in 7 days.');
     const weekly = weeklySummaryMessage({ expired: 1, onHold: 1, expiringSoon: 3, waiting: 2, reviewsDue: 0 }, 'https://w.example.test/safety/expiring');
     expect(weekly.telegram).toContain('Expired: 1 document, 1 driver on hold.\nExpiring within 30 days: 3.\nWaiting for a check: 2 renewal scans.\nYearly reviews due: 0.');
   });

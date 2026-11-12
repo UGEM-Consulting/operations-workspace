@@ -10,7 +10,7 @@ import { digest } from '../onboarding/verification-code';
 import { CURRENT_LAYOUT, driverDocumentKey, StorageService } from '../storage/storage.service';
 import { User } from '../users/user.entity';
 import { DriverDocumentDto } from './driver-application.dto';
-import { driverEvent, isProduction, lockOpenDriver, ownsDriver, revokeOpenLinks, SCREENERS, sentWithApplication, sessionLink, writeDriver } from './driver-records';
+import { driverEvent, lockOpenDriver, ownsDriver, requireMayEmail, revokeOpenLinks, SCREENERS, sentWithApplication, sessionLink, writeDriver } from './driver-records';
 import { DocumentVersionDto, RenewalLinkDto, RenewDocumentDto } from './renewal.dto';
 import { Driver, DriverApplication, DriverDocument, DriverLink, LEAVABLE, RENEWAL_KINDS, type RenewalKind } from './safety.entity';
 import { MAX_SCAN_PAGES, oneUpload, scanPdf, uploadedPdf } from './scan';
@@ -84,7 +84,7 @@ export class RenewalService {
   return writeDriver(this.db, async em => {
    const driver = await this.lockRenewable(em, user, id, dto.version);
    if (!driver.email) throw new BadRequestException('Add the driver’s email first. The link works only with that address.');
-   if (!isProduction(this.config) && !driver.email.endsWith('@example.test')) throw new BadRequestException('Outside production, links go only to fictional example.test addresses.');
+   requireMayEmail(this.config, driver.email);
    const link = await createRenewalLink(em, driver, dto.kind, user.id, webOrigins({ WEB_ORIGIN: this.config.getOrThrow<string>('WEB_ORIGIN') })[0]);
    await em.getRepository(Driver).update(id, { version: driver.version + 1 });
    await driverEvent(em, user.id, id, 'RENEWAL_LINK_SENT', { kind: dto.kind, resent: link.resent });
@@ -196,7 +196,7 @@ export class RenewalService {
   return driver;
  }
  private async requireRenewer(em: EntityManager, user: User, driver: Driver) {
-  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, driver.id)) throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety contact can renew documents.');
+  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, driver.id)) throw new ForbiddenException('Only Safety leads, managers and the driver’s Safety Manager can renew documents.');
   if (!LEAVABLE.includes(driver.status)) throw new ConflictException('Documents are renewed here once the driver is approved.');
  }
  private async mayRenew(em: EntityManager, user: User, id: string) {

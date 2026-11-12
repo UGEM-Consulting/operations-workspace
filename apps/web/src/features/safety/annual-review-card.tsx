@@ -61,8 +61,8 @@ export function AnnualReviewCard({ driver, canRecord }: { driver: DriverProfile;
       {reviews.items.length === 0 ? <EmptyState compact title="No yearly review yet" /> : <ul className="divide-y divide-border">
         {reviews.items.map(row => <li key={row.id} className="flex flex-wrap items-start justify-between gap-2 py-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium">{day(row.reviewedOn)} <Badge label={row.outcome === 'QUALIFIED' ? 'Qualified' : 'Not qualified'} tone={row.outcome === 'QUALIFIED' ? 'success' : 'danger'} /></p>
-            <p className="text-[13px] text-muted-foreground">{row.reviewer ? `Reviewed by ${row.reviewer}` : 'Reviewer account removed'}{row.mvr ? <> · MVR pulled {day(row.mvr.pulledOn)}</> : ''}</p>
+            <p className="text-sm font-medium">{day(row.reviewedOn)} {row.fromPaper ? <Badge label="Paper file" tone="neutral" /> : <Badge label={row.outcome === 'QUALIFIED' ? 'Qualified' : 'Not qualified'} tone={row.outcome === 'QUALIFIED' ? 'success' : 'danger'} />}</p>
+            <p className="text-[13px] text-muted-foreground">{row.fromPaper ? `Typed when they were added${row.reviewer ? ` by ${row.reviewer}` : ''} · no MVR in the workspace` : row.reviewer ? `Reviewed by ${row.reviewer}` : 'Reviewer account removed'}{row.mvr ? <> · MVR pulled {day(row.mvr.pulledOn)}</> : ''}</p>
             {row.note && <p className="mt-1 whitespace-pre-wrap text-sm">{row.note}</p>}</div>
           {row.mvr && <ViewDocumentButton documents={[{ url: `/api/backend/safety/drivers/${driver.id}/reports/${row.mvr.id}/file`, title: `Yearly MVR · ${driver.firstName} ${driver.lastName}`, meta: `${row.mvr.pageCount} ${row.mvr.pageCount === 1 ? 'page' : 'pages'}` }]}>View<span className="sr-only"> the MVR</span></ViewDocumentButton>}
         </li>)}</ul>}

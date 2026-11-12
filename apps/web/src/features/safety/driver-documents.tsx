@@ -45,7 +45,8 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   // Always license, medical card, work authorization, so a renewed one keeps its place.
-  const documents = [...(driver.documents ?? [])].sort((a, b) => DOCUMENT_KINDS.indexOf(a.kind) - DOCUMENT_KINDS.indexOf(b.kind)), submitted = driver.application?.status === 'SUBMITTED';
+  // A driver added from a paper file has no application; their catch-up scans are checked like submitted ones (section 34).
+  const documents = [...(driver.documents ?? [])].sort((a, b) => DOCUMENT_KINDS.indexOf(a.kind) - DOCUMENT_KINDS.indexOf(b.kind)), submitted = driver.application?.status === 'SUBMITTED' || !!driver.paperFile;
   const fileUrl = (document: DriverDocumentRow) => `/api/backend/safety/drivers/${driver.id}/documents/${document.id}/file`;
   const renewing = (document: DriverDocumentRow) => renewals && (RENEWAL_KINDS as string[]).includes(document.kind) ? driver.renewals?.find(row => row.kind === document.kind) ?? null : null;
   async function verify(event: React.FormEvent<HTMLFormElement>) {
@@ -69,16 +70,24 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
     <CardHeader title="Documents" description={description} />
     {documents.length ? <ul className="mt-3 divide-y divide-border border-t border-border">{documents.map(document => {
       const renewal = renewing(document), kind = document.kind as RenewalKind;
+      // A catch-up scan waiting for its check: the paper file's date still counts (holds, Expiring documents).
+      const paperNote = document.paperDate ? <> · paper file {document.paperDate.expiresOn ? <>date {date(document.paperDate.expiresOn)}</> : 'record'} counts until it’s checked</> : null;
       // A scan the driver sent is the current document until someone checks it; the hold still counts the checked one.
       const scan = renewal?.scan?.id === document.id ? renewal.scan : null;
       const checkedOn = renewal ? renewal.checked?.expiresOn ?? null : document.expiresOn;
       const expired = !!(today && checkedOn && checkedOn < today);
-      const view = <ViewDocumentButton documents={[{ url: fileUrl(document), title: documentLabels[document.kind], meta: pages(document.pageCount) }]}>View<span className="sr-only"> {documentLabels[document.kind]}</span></ViewDocumentButton>;
+      // A date typed from the paper file has no scan to open.
+      const view = document.fromPaper ? null : <ViewDocumentButton documents={[{ url: fileUrl(document), title: documentLabels[document.kind], meta: pages(document.pageCount) }]}>View<span className="sr-only"> {documentLabels[document.kind]}</span></ViewDocumentButton>;
+      const size = document.fromPaper ? 'Paper file · no scan yet' : pages(document.pageCount);
       const label = <span className="sr-only"> {documentLabels[document.kind]}</span>;
       let meta: React.ReactNode, badge: React.ReactNode, actions: React.ReactNode;
       // What needs someone first: a scan to check, then a link that is out (also after Not readable), then an unreadable scan.
-      if (renewal && renewals && scan && !scan.unreadable) {
-        meta = <>New scan <LocalTime iso={scan.createdAt} format="date" /> · {pages(scan.pageCount)} · waiting for your check</>;
+      if (document.kind === 'RETURN_TO_DUTY') {
+        meta = <>{pages(document.pageCount)} · scanned <LocalTime iso={document.createdAt} format="date" /> · for the Safety Director, after a Yes to a DOT question</>;
+        badge = <Badge label="Restricted" tone="neutral" />;
+        actions = view;
+      } else if (renewal && renewals && scan && !scan.unreadable) {
+        meta = <>New scan <LocalTime iso={scan.createdAt} format="date" /> · {pages(scan.pageCount)} · waiting for your check{paperNote}</>;
         badge = <Badge label="Waiting for your check" tone="warning" />;
         actions = <>{view}<Button size="sm" onClick={() => renewals.check(kind, scan)}>Check it{label}</Button></>;
       } else if (renewal && renewals && renewal.link) {
@@ -98,18 +107,18 @@ export function DriverDocuments({ driver, canVerify, renewals }: { driver: Drive
         // A US passport or green card isn't re-checked when it expires (WorkAuthCheckGreenCardScreen).
         const notRechecked = !!document.subtype && NOT_RECHECKED.includes(document.subtype);
         const reminded = latestReminder(driver, document.kind, document.expiresOn);
-        meta = <>{notRechecked ? 'Not re-checked when it expires · ' : document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{pages(document.pageCount)}{document.uploadedBySafety ? ' · uploaded by Safety' : ''}
+        meta = <>{notRechecked ? 'Not re-checked when it expires · ' : document.expiresOn ? <>{expired ? 'Expired' : 'Expires'} {date(document.expiresOn)} · </> : null}{size}{document.uploadedBySafety && !document.fromPaper ? ' · uploaded by Safety' : ''}
           {reminded && reminded.status === 'SENT' && <> · reminded by {reminded.channel === 'TELEGRAM' ? 'Telegram' : 'email'} <LocalTime iso={reminded.sentAt ?? reminded.createdAt} format="date" /></>}</>;
         badge = <Badge label={expired && !notRechecked ? 'Expired' : 'Checked'} tone={expired && !notRechecked ? 'danger' : 'success'} />;
         actions = <>{view}{renewal ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
-          : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => open(document)}>Edit{label}</Button>}</>;
+          : canVerify && submitted && !document.fromPaper && <Button size="sm" variant="outline" onClick={() => open(document)}>Edit{label}</Button>}</>;
       } else {
-        meta = <>{pages(document.pageCount)} · {document.uploadedBySafety ? 'uploaded' : 'scanned'} <LocalTime iso={document.createdAt} format="date" />
+        meta = <>{size}{document.fromPaper ? null : <> · {document.uploadedBySafety ? 'uploaded' : 'scanned'} <LocalTime iso={document.createdAt} format="date" /></>}{paperNote}
           {document.verifiedAt && <> · {document.number ? <>No. <span className="font-mono">{document.number}</span> · </> : null}{document.expiresOn ? <>expires {date(document.expiresOn)} · </> : null}verified by {document.verifiedBy ?? 'a former account'}</>}</>;
         badge = document.verifiedAt ? <Badge label={expired ? 'Expired' : 'Verified'} tone={expired ? 'danger' : 'success'} /> : <Badge label="Not verified" tone="neutral" />;
         actions = <>{view}
           {renewal && renewals ? <Button size="sm" variant={expired ? 'default' : 'outline'} onClick={() => renewals.renew(kind)}>Renew{label}</Button>
-            : canVerify && submitted && <Button size="sm" variant="outline" onClick={() => open(document)}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : 'Verify'}{label}</Button>}</>;
+            : canVerify && submitted && !document.fromPaper && <Button size="sm" variant="outline" onClick={() => open(document)}><BadgeCheck aria-hidden="true" className="size-4" />{document.verifiedAt ? 'Edit' : checking ? 'Check' : 'Verify'}{label}</Button>}</>;
       }
       return <li key={document.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
         <FileText aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />

@@ -24,7 +24,11 @@ export interface ConsentList { storageEnabled: boolean; canPublish: boolean; kin
 const hints: Record<string, string> = {
   BACKGROUND_DISCLOSURE: 'The standalone disclosure that a background check, including the MVR, may be obtained.',
   BACKGROUND_AUTHORIZATION: 'The driver’s written authorization to obtain those reports. Required before Safety pulls an MVR.',
-  CLEARINGHOUSE_CONSENT: 'The driver’s consent to the FMCSA Clearinghouse limited query.',
+  CLEARINGHOUSE_CONSENT: 'The driver’s consent to the FMCSA Clearinghouse limited query. CDL drivers only.',
+  PSP_AUTHORIZATION: 'FMCSA’s PSP disclosure and authorization, in their exact wording and on its own. CDL drivers and anyone who once held a CDL; needed before the PSP report is pulled.',
+  DOT_TESTING_AUTHORIZATION: 'The DOT drug and alcohol testing authorization, signed with the DOT pre-employment questions. CDL drivers only.',
+  APPLICATION_CERTIFICATION: 'That the driver’s answers are true and complete. Every driver signs it last, before sending the application.',
+  CONTRACTOR_ACKNOWLEDGEMENT: 'For a driver on a truck owner’s truck: signed by the driver through a link, then by the truck owner’s signer. Never part of the application. Mark the driver’s name, address and signature and the owner’s signature and title.',
   PRE_ADVERSE: 'Sent before a rejection based on the MVR or background report. Your adviser’s letter, with the driver’s name, address and the date filled in. The summary of rights goes inside it.',
   FINAL: 'The final adverse action notice: the decision, the reporting company’s contact details and the driver’s right to dispute. Name, address and date filled in.',
 };
@@ -73,7 +77,7 @@ export function ConsentForms({ initial }: { initial: ConsentList }) {
     <PageHeader title="Forms and letters" description="Publish the final PDFs your legal or compliance adviser approved. The workspace adds no legal text of its own; it only fills in the driver’s details where you place them." />
     {!initial.storageEnabled && <Alert tone="warning" title="Document storage is not configured"><p>Nothing can be published, and drivers aren’t asked to sign.</p></Alert>}
     <Card>
-      <CardHeader title="Consent forms" description="Signed by drivers in their application: background check disclosure, authorization and Clearinghouse consent." />
+      <CardHeader title="Consent forms" description="Signed by drivers in their application. Each driver signs those their license calls for. Check that every form names the carrier the driver works under." />
       <ul className="mt-3 divide-y divide-border border-t border-border">{consents.map(item => <li key={item.kind} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3 sm:px-5">
         <div className="min-w-0 flex-1 text-sm">
           <p className="font-medium">{item.label}</p>
@@ -89,6 +93,7 @@ export function ConsentForms({ initial }: { initial: ConsentList }) {
         : <p className="text-sm text-muted-foreground">Not published. Until it is, Safety writes the {item.kind === 'FINAL' ? 'final' : 'pre-adverse'} letter outside the workspace, as today.</p>}</div>
     </Card>)}
     {publishing && placing && <FieldPlacer file={placing.file} title={placing.title} signerLabel="The driver" signature={publishing.signature} letter={publishing.letter}
+      {...(publishing.kind === 'CONTRACTOR_ACKNOWLEDGEMENT' ? { countersign: true, address: true, company: 'The truck owner’s signer' } : {})}
       initial={publishing.versions[0]?.fields ?? []} onBack={() => setPlacing(null)} onPublish={fields => send(placing.title, placing.file, fields)} />}
     {publishing && !placing && <Dialog open title={`Publish the ${publishing.label.toLowerCase()}`} onClose={() => setPublishing(null)}
       description={publishing.letter ? 'Upload the final PDF (3 MB maximum), then mark where the driver’s name, address and the date go. It can’t be edited or deleted after publishing; upload a new version instead.'

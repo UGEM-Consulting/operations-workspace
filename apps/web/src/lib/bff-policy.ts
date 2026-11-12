@@ -4,9 +4,9 @@ const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test
 // Private files served as-is (JPEG photos and PDFs) instead of JSON.
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
   `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
-  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
-  `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
-const SCAN = '(license|medical-card|work-authorization)';
+  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `driver/catch-up/documents/${ID}/file`, 'driver/contract/file', 'driver/contract/signed', `safety/drivers/${ID}/contracts/${ID}/signed`, `safety/owners/${ID}/contracts/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
+  `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/units/${ID}/files/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
+const SCAN = '(license|medical-card|work-authorization|return-to-duty)';
 export function allowedEndpoint(method: string, path: string): boolean {
   return (method === 'GET' && ['it/onboarding','notifications'].includes(path)) ||
     (method === 'GET' && /^it\/onboarding\/[0-9a-f-]{36}$/.test(path)) ||
@@ -66,14 +66,24 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && match(`safety/drivers/${ID}/(documents/renew|renewals|renewals/cancel|documents/${ID}/unreadable)`, path)) ||
     // A driver's renewal link: which document, and sending its scan.
     ((method === 'GET' || method === 'POST') && path === 'driver/renewal') ||
+    // An existing driver's catch-up link (section 34): photos of current documents and the current forms.
+    (method === 'GET' && path === 'driver/catch-up') ||
+    // Contract links (section 39): the one acknowledgement, for the driver or the truck owner's signer; and Safety's side of it and Ready for the road.
+    (method === 'GET' && path === 'driver/contract') || (method === 'POST' && ['driver/contract/view', 'driver/contract/sign'].includes(path)) ||
+    (method === 'POST' && match(`safety/drivers/${ID}/(contracts|contracts/${ID}/owner-link|contracts/${ID}/cancel|road-ready/unit|road-ready/[A-Z_]+|group-changes/${ID}/done)`, path)) ||
+    (method === 'POST' && match(`safety/owners/${ID}/contracts`, path)) || (method === 'POST' && (path === 'driver/catch-up/send' || match(`driver/catch-up/documents/${SCAN}`, path))) ||
+    (method === 'POST' && (['safety/drivers/existing/check', 'safety/drivers/existing/add'].includes(path) || match(`safety/drivers/${ID}/(paper/[A-Z_]+|catch-up|catch-up/cancel)`, path))) ||
     // Expiration reminders on Telegram: the driver connects their own chat; Safety makes a one-time link to send.
     (method === 'GET' && path === 'driver/telegram') || (method === 'POST' && ['driver/telegram/connect', 'driver/telegram/check'].includes(path)) ||
     (method === 'POST' && match(`safety/drivers/${ID}/telegram-link`, path)) ||
     (method === 'POST' && (match(`safety/drivers/${ID}/documents/${ID}/verify`, path) || match(`safety/drivers/${ID}/(tests|incidents)/${ID}/void`, path) || match(`safety/drivers/${ID}/incidents/${ID}/settle`, path))) ||
     // Screening (checks, the MVR, corrections, the hand-off) and the Safety manager's decision.
-    (method === 'POST' && match(`safety/drivers/${ID}/(checks/[A-Z_]+|mvr|corrections|send-for-decision|decision)`, path)) ||
+    (method === 'POST' && match(`safety/drivers/${ID}/(checks/[A-Z_]+|mvr|psp|road-test|corrections|send-for-decision|decision)`, path)) ||
     // Owner-operators' trucks: add, change, archive, and upload a lease, insurance or registration PDF.
     (method === 'POST' && match(`safety/drivers/${ID}/trucks(/${ID}(/archive|/documents)?)?`, path)) ||
+    // Units, trailers and truck owners (section 34).
+    (method === 'POST' && (['safety/units', 'safety/units/check', 'safety/units/add', 'safety/units/permits/renew', 'safety/owners'].includes(path) || match(`safety/units/${ID}/(dates|status|responsible|files)`, path) || match(`safety/owners/${ID}/archive`, path))) ||
+    (method === 'PATCH' && (match(`safety/units/${ID}`, path) || match(`safety/owners/${ID}`, path))) ||
     // Clearance of an approved driver: checklist items, previous employers and Cleared.
     (method === 'POST' && match(`safety/drivers/${ID}/(clearance/[A-Z_]+|employers|employers/${ID}|employers/${ID}/remove|clear)`, path)) ||
     // Driver consent forms: the Safety manager publishes them; a driver opens and signs them in their application.
@@ -85,11 +95,11 @@ export function allowedEndpoint(method: string, path: string): boolean {
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/drivers/${ID}/(mvr|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
-  // A list of existing dispatchers, up to 500 rows of text.
-  if (path === 'dispatch/existing/check' || path === 'dispatch/existing/add') return 1_000_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`driver/catch-up/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/owners/${ID}/contracts`, path) || match(`safety/drivers/${ID}/(mvr|psp|road-test|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`safety/units/${ID}/files`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
+  // A list of existing dispatchers, units or drivers, up to 500 rows of text.
+  if (['dispatch/existing/check', 'dispatch/existing/add', 'safety/units/check', 'safety/units/add', 'safety/drivers/existing/check', 'safety/drivers/existing/add'].includes(path)) return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).
-  if (match(`applicant/documents/${ID}/sign`, path) || match(`driver/consents/${ID}/sign`, path) || match(`onboarding/applications/${ID}/reviews`, path) || path === 'staff/signature') return 400_000;
+  if (match(`applicant/documents/${ID}/sign`, path) || match(`driver/consents/${ID}/sign`, path) || path === 'driver/contract/sign' || match(`onboarding/applications/${ID}/reviews`, path) || path === 'staff/signature') return 400_000;
   return 16384;
 }
 export function validMutation(headers: Headers, origins: string[]): boolean {

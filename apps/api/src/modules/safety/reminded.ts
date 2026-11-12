@@ -8,7 +8,12 @@ export type Channel = 'EMAIL' | 'TELEGRAM';
  * show it as waiting for a check (or not readable), and reminders aren't sent while one waits.
  */
 export const renewalScanWhere = (driverId: string, kind: string) => `n."driverId" = ${driverId} AND n.kind = ${kind} AND n."replacedAt" IS NULL AND n."verifiedAt" IS NULL AND n."uploadedBy" IS NULL
-  AND n."createdAt" > coalesce((SELECT a."submittedAt" FROM driver_applications a WHERE a."driverId" = ${driverId}), '-infinity')`;
+  AND n."createdAt" > coalesce((SELECT a."submittedAt" FROM driver_applications a WHERE a."driverId" = ${driverId}), '-infinity') AND ${sentScan('n')}`;
+/**
+ * A catch-up scan counts once the driver sent it (section 34): until then it isn't Safety's to check and doesn't stop
+ * reminders, and the paper date it will replace keeps counting. Scans of other links are always sent with them.
+ */
+export const sentScan = (alias: string) => `NOT EXISTS(SELECT 1 FROM driver_links k WHERE k."driverId" = ${alias}."driverId" AND k.purpose = 'CATCH_UP' AND k."completedAt" IS NULL AND k."createdAt" <= ${alias}."createdAt")`;
 /** A renewal scan waiting for its check (not marked as not readable). */
 export const renewalScanWaiting = (driverId: string, kind: string) => `EXISTS(SELECT 1 FROM driver_documents n WHERE ${renewalScanWhere(driverId, kind)} AND n."unreadableAt" IS NULL)`;
 

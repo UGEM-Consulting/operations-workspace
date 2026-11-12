@@ -71,7 +71,7 @@ integration('Assigning cleared drivers to dispatch (disposable PostgreSQL)', () 
     await one(`INSERT INTO drivers ("firstName", "lastName", phone, "phoneKey", "driverType", status) VALUES ('Still', 'Approved', '5550109999', '5550109999', 'COMPANY', 'APPROVED') RETURNING id`, []);
     const body = await list(agents.manager, 'dispatch');
     expect(body.items.map((row: { id: string }) => row.id)).toEqual([sam.id]);
-    expect(Object.keys(body.items[0]).sort()).toEqual(['assignment', 'clearedAt', 'clearedBy', 'driverType', 'firstName', 'id', 'lastName', 'licenseType', 'onHold', 'phone', 'version']);
+    expect(Object.keys(body.items[0]).sort()).toEqual(['assignment', 'clearedAt', 'clearedBy', 'driverType', 'firstName', 'gettingReady', 'id', 'lastName', 'licenseType', 'onHold', 'phone', 'version']);
     expect(JSON.stringify(body)).not.toContain('Safety-only note');
     // Options: active dispatchers in open teams, grouped by MC.
     const options = (await agents.manager.get('/api/dispatch/drivers/options').set(headers).expect(200)).body;
@@ -106,10 +106,69 @@ integration('Assigning cleared drivers to dispatch (disposable PostgreSQL)', () 
     const history = await db.query(`SELECT "memberId", "endedAt" IS NULL AS open, reason FROM driver_assignments WHERE "driverId" = $1 ORDER BY "createdAt"`, [sam.id]);
     expect(history).toEqual([{ memberId: taylor.id, open: false, reason: null }, { memberId: casey.id, open: true, reason: 'Moving to Lakeside lanes' }]);
     expect((await db.query(`SELECT event, metadata FROM driver_events WHERE "driverId" = $1 ORDER BY "createdAt"`, [sam.id])).map((row: { metadata: unknown }) => row.metadata))
-      .toEqual([{ first: true, truck: true }, { first: false, truck: false }]);
+      .toEqual([{ first: true, truck: true, trailer: false }, { first: false, truck: false, trailer: false }]);
     // Only cleared drivers.
     const approved = await one<{ id: string }>(`INSERT INTO drivers ("firstName", "lastName", phone, "phoneKey", "driverType", status) VALUES ('Not', 'Cleared', '5550108888', '5550108888', 'COMPANY', 'APPROVED') RETURNING id`, []);
     await assign(agents.manager, 'dispatch', approved.id, { version: 1, mcId: northwind, memberId: taylor.id, startsOn: today() }).expect(409);
+  });
+
+  it('picks the truck and trailer from Units: a truck owner’s truck for a company driver, never a trailer as a truck or a unit out of service', async () => {
+    await db.query('TRUNCATE truck_owners CASCADE');
+    const sam = await cleared('Sam', '5550102600');
+    await db.query(`UPDATE drivers SET "driverType" = 'COMPANY' WHERE id = $1`, [sam.id]);
+    const [owner] = await db.query(`INSERT INTO truck_owners (name, "nameKey") VALUES ('Yemba Invest LLC', 'yemba invest llc') RETURNING id`) as { id: string }[];
+    const unit = async (number: string, kind: string, extra: string, values: unknown[]) => (await db.query(`INSERT INTO driver_trucks (unit, kind, vin, year, make, ${extra}) VALUES ($1, $2, $3, 2022, 'Fictional', ${values.map((_, n) => `$${n + 4}`).join(', ')}) RETURNING id`,
+      [number, kind, `1FUJHHDR3PLNE${String(number.replace(/\D/g, '')).padStart(4, '0')}`, ...values]) as { id: string }[])[0].id;
+    const truck = await unit('233', 'SEMI', '"ownerId"', [owner.id]), trailer = await unit('T-108', 'TRAILER', 'company', [true]), shop = await unit('241', 'SEMI', '"ownerId", "outOfServiceAt"', [owner.id, new Date()]);
+    const options = (await agents.manager.get('/api/dispatch/drivers/options').set(headers).expect(200)).body;
+    expect(options.units.map((row: { number: string; kind: string }) => [row.number, row.kind])).toEqual([['233', 'SEMI'], ['T-108', 'TRAILER']]);
+    const base = { version: sam.version, mcId: northwind, memberId: taylor.id, startsOn: today() };
+    await assign(agents.manager, 'dispatch', sam.id, { ...base, unitId: trailer }).expect(400);
+    await assign(agents.manager, 'dispatch', sam.id, { ...base, trailerId: truck }).expect(400);
+    expect((await assign(agents.manager, 'dispatch', sam.id, { ...base, unitId: shop }).expect(400)).body.message).toMatch(/out of service/);
+    const placed = (await assign(agents.manager, 'dispatch', sam.id, { ...base, unitId: truck, trailerId: trailer }).expect(201)).body;
+    expect((await list(agents.manager, 'dispatch')).items[0].assignment).toMatchObject({ truck: '233', unitId: truck, trailerId: trailer, trailer: 'T-108' });
+    // The same truck and trailer again is no change; dropping the trailer is.
+    await assign(agents.manager, 'dispatch', sam.id, { ...base, version: placed.version, unitId: truck, trailerId: trailer, reason: 'Same' }).expect(400);
+    await assign(agents.manager, 'dispatch', sam.id, { ...base, version: placed.version, unitId: truck, reason: 'Trailer back at the yard' }).expect(201);
+    // An owner-operator drives their own truck only.
+    const own = await cleared('Olive', '5550104400');
+    expect((await assign(agents.manager, 'dispatch', own.id, { ...base, version: own.version, unitId: truck }).expect(400)).body.message).toMatch(/their own truck/);
+    const theirs = await unit('300', 'SEMI', '"driverId"', [own.id]);
+    await assign(agents.manager, 'dispatch', own.id, { ...base, version: own.version, unitId: theirs }).expect(201);
+    // Nobody else can be given an owner-operator's truck.
+    const other = await cleared('Pat', '5550104500');
+    await db.query(`UPDATE drivers SET "driverType" = 'COMPANY' WHERE id = $1`, [other.id]);
+    expect((await assign(agents.manager, 'dispatch', other.id, { ...base, version: other.version, unitId: theirs }).expect(400)).body.message).toMatch(/belongs to an owner-operator/);
+    // Nor their trailer.
+    const theirTrailer = await unit('T-301', 'TRAILER', '"driverId"', [own.id]);
+    expect((await assign(agents.manager, 'dispatch', other.id, { ...base, version: other.version, trailerId: theirTrailer }).expect(400)).body.message).toMatch(/trailer belongs to an owner-operator/);
+    expect((await db.query(`SELECT metadata FROM driver_events WHERE "driverId" = $1 ORDER BY "createdAt"`, [sam.id])).map((row: { metadata: unknown }) => row.metadata))
+      .toEqual([{ first: true, truck: true, trailer: true }, { first: false, truck: true, trailer: false }]);
+  });
+
+  it('asks for a Telegram group update when the first assignment differs from what Safety made the group for', async () => {
+    await db.query('TRUNCATE truck_owners CASCADE');
+    const [owner] = await db.query(`INSERT INTO truck_owners (name, "nameKey") VALUES ('Yemba Invest LLC', 'yemba invest llc') RETURNING id`) as { id: string }[];
+    const truck = async (number: string) => (await db.query(`INSERT INTO driver_trucks (unit, kind, vin, year, make, "ownerId") VALUES ($1, 'SEMI', $2, 2022, 'Fictional', $3) RETURNING id`,
+      [number, `1FUJHHDR3PLNE${number.padStart(4, '0')}`, owner.id]) as { id: string }[])[0].id;
+    const picked = await truck('233'), other = await truck('234');
+    // Safety picked unit 233 and made its group before Dispatch assigned anyone.
+    const ready = async (first: string, phone: string) => {
+      const row = await cleared(first, phone);
+      await db.query(`UPDATE drivers SET "driverType" = 'COMPANY' WHERE id = $1`, [row.id]);
+      await db.query(`INSERT INTO driver_road_ready ("driverId", "unitId") VALUES ($1, $2)`, [row.id, picked]);
+      await db.query(`INSERT INTO driver_road_ready_steps ("driverId", key, status, "updatedAt") VALUES ($1, 'TELEGRAM_GROUP', 'COMPLETED', now())`, [row.id]);
+      return row;
+    };
+    const changes = async (id: string) => db.query(`SELECT reason, "unitId", "addMemberId", "removeMemberId", "newUnitId" FROM telegram_group_changes WHERE "driverId" = $1`, [id]);
+    const sam = await ready('Sam', '5550107100'), pat = await ready('Pat', '5550107200');
+    // The same truck: only the dispatcher is new to the group.
+    await assign(agents.manager, 'dispatch', sam.id, { version: sam.version, mcId: northwind, memberId: taylor.id, startsOn: today(), unitId: picked }).expect(201);
+    expect(await changes(sam.id)).toEqual([{ reason: 'DISPATCHER_CHANGED', unitId: picked, addMemberId: taylor.id, removeMemberId: null, newUnitId: null }]);
+    // Another truck: the dispatcher and the truck.
+    await assign(agents.manager, 'dispatch', pat.id, { version: pat.version, mcId: northwind, memberId: taylor.id, startsOn: today(), unitId: other }).expect(201);
+    expect(await changes(pat.id)).toEqual([{ reason: 'DISPATCHER_CHANGED', unitId: picked, addMemberId: taylor.id, removeMemberId: null, newUnitId: other }]);
   });
 
   it('assigns drivers to an independent dispatcher (an MC with no team), but never to someone with no MC or to a team lead outside their team', async () => {

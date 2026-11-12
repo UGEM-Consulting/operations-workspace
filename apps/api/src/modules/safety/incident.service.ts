@@ -5,6 +5,7 @@ import { CLEARERS } from './clearance.service';
 import { driverEvent, lockOpenDriver, ownsDriver, writeDriver } from './driver-records';
 import { RecordIncidentDto, SettleIncidentDto, VoidIncidentDto } from './incident.dto';
 import { usDay } from './screening-rules';
+import { personName } from './sql';
 
 type Incident = { kind: string; preventable: string | null; disposition: string | null; voidedAt: Date | null };
 
@@ -21,7 +22,7 @@ export class IncidentService {
   return writeDriver(this.db, async em => {
    const driver = await lockOpenDriver(em, id, version);
    if (voiding ? !CLEARERS.includes(user.role) : !CLEARERS.includes(user.role) && !await ownsDriver(em, user, id))
-    throw new ForbiddenException(voiding ? 'Only the Safety manager can void an entry.' : 'Only the driver’s Safety contact and the Safety manager can record incidents.');
+    throw new ForbiddenException(voiding ? 'Only the Safety Director can void an entry.' : 'Only the driver’s Safety Manager and the Safety Director can record incidents.');
    return work(em, driver);
   });
  }
@@ -74,7 +75,7 @@ export class IncidentService {
  async forDriver(id: string) {
   const items = await this.db.query(`SELECT i.id, i.kind, to_char(i."occurredOn", 'YYYY-MM-DD') AS "occurredOn", i.state, i.summary, i.note, i.preventable, i.injuries, i.fatalities, i."towAway",
     i.disposition, i."outOfService", i."violationCount", i."createdAt", i."settledAt", i."voidedAt", i."voidReason",
-    CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "recordedBy"
+    ${personName('u')} AS "recordedBy"
    FROM driver_incidents i LEFT JOIN users u ON u.id = i."recordedBy" WHERE i."driverId" = $1 ORDER BY i."occurredOn" DESC, i."createdAt" DESC`, [id]);
   return { items };
  }
@@ -82,7 +83,7 @@ export class IncidentService {
  /** Accidents not yet judged preventable or not, and violations still pending, for cleared drivers. */
  async attention() {
   return await this.db.query(`SELECT i.id AS "incidentId", d.id AS "driverId", d."firstName", d."lastName", i.kind, to_char(i."occurredOn", 'YYYY-MM-DD') AS "occurredOn",
-    CASE WHEN o.id IS NULL THEN NULL ELSE o."firstName" || ' ' || o."lastName" END AS owner
+    ${personName('o')} AS owner
    FROM driver_incidents i JOIN drivers d ON d.id = i."driverId" LEFT JOIN driver_owners w ON w."driverId" = d.id AND w."endedAt" IS NULL LEFT JOIN users o ON o.id = w."ownerId"
    WHERE d.status = 'CLEARED' AND i."voidedAt" IS NULL AND (i.preventable = 'UNDETERMINED' OR i.disposition = 'PENDING') ORDER BY i."occurredOn"`) as { incidentId: string }[];
  }

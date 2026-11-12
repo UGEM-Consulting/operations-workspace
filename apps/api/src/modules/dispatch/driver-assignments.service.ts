@@ -9,6 +9,8 @@ import { DispatchMember, MemberAssignment } from './dispatch.entity';
 import { day, notBefore } from './dispatch.service';
 import { ledTeams, lockTeam, onLeave, onLeaveSql, onNotice } from './create-member';
 import { onHoldSql } from '../safety/holds';
+import { askGroupChange, pickedUnitId, readySummaries } from '../safety/road-ready';
+import { unitChoices } from '../safety/units.service';
 
 /** A team lead acts only inside the teams they lead; everyone else here is a dispatch manager or administrator. */
 type Scope = { teamIds: string[] } | null;
@@ -29,13 +31,16 @@ export class DriverAssignmentsService {
   const scope = await this.scope(this.db.manager, user);
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d."driverType", d."licenseType", d.version, d."clearedAt", ${onHoldSql()} AS "onHold",
     CASE WHEN k.id IS NULL THEN NULL ELSE ${name('k')} END AS "clearedBy",
-    CASE WHEN a.id IS NULL THEN NULL ELSE json_build_object('mcId', m.id, 'mc', m.name, 'memberId', x.id, 'dispatcher', ${name('x')}, 'teamId', t.id, 'team', t.name, 'truck', a.truck, 'startedAt', a."startedAt") END AS assignment
+    CASE WHEN a.id IS NULL THEN NULL ELSE json_build_object('mcId', m.id, 'mc', m.name, 'memberId', x.id, 'dispatcher', ${name('x')}, 'teamId', t.id, 'team', t.name, 'truck', a.truck, 'startedAt', a."startedAt",
+     'unitId', a."unitId", 'trailerId', a."trailerId", 'trailer', (SELECT tr.unit FROM driver_trucks tr WHERE tr.id = a."trailerId")) END AS assignment
    FROM drivers d LEFT JOIN users k ON k.id = d."clearedBy"
    LEFT JOIN driver_assignments a ON a."driverId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN dispatch_members x ON x.id = a."memberId"
    LEFT JOIN member_assignments ma ON ma."memberId" = x.id AND ma."endedAt" IS NULL LEFT JOIN teams t ON t.id = ma."teamId"
    WHERE d.status = 'CLEARED' AND ($1::uuid[] IS NULL OR a.id IS NULL OR ma."teamId" = ANY($1::uuid[]))
    ORDER BY a.id IS NOT NULL, d."clearedAt" DESC LIMIT 1000`, [scope?.teamIds ?? null]);
-  return { items };
+  // Getting ready (section 39): Safety’s Ready for the road isn’t finished. A flag only; it never holds the driver.
+  const ready = await readySummaries(this.db.manager, items.map(item => item.id as string));
+  return { items: items.map(item => { const summary = ready.get(item.id as string); return { ...item, gettingReady: !!summary && summary.done < summary.total }; }) };
  }
 
  /**
@@ -59,7 +64,21 @@ export class DriverAssignmentsService {
    mc.dispatchers.push({ id: row.memberId, name: row.dispatcher, teamId: row.teamId, team: row.team });
    mcs.set(row.mcId, mc);
   }
-  return { mcs: [...mcs.values()] };
+  return { mcs: [...mcs.values()], units: await unitChoices(this.db.manager) };
+ }
+ /**
+  * A truck or trailer from Units for this driver, locked for share: in service (or the one they already have), the right
+  * kind, and either a truck owner's (the company's, for a trailer) or the driver's own: never another owner-operator's.
+  */
+ private async unit(em: EntityManager, id: string, trailer: boolean, driver: Driver, kept: string | null) {
+  const [unit] = await em.query(`SELECT id, unit, kind, "driverId", "ownerId", "archivedAt", "outOfServiceAt" FROM driver_trucks WHERE id = $1 FOR SHARE`, [id]) as
+   { id: string; unit: string; kind: string; driverId: string | null; ownerId: string | null; archivedAt: Date | null; outOfServiceAt: Date | null }[];
+  const what = trailer ? 'trailer' : 'truck';
+  if (!unit || (trailer ? unit.kind !== 'TRAILER' : unit.kind === 'TRAILER')) throw new BadRequestException(`Choose a ${what} from Units.`);
+  if (unit.id !== kept && (unit.archivedAt || unit.outOfServiceAt)) throw new BadRequestException(`This ${what} is out of service. Choose another.`);
+  if (!trailer && driver.driverType === 'OWNER_OPERATOR' && unit.driverId !== driver.id) throw new BadRequestException('An owner-operator drives their own truck. Choose one of theirs.');
+  if (unit.driverId && unit.driverId !== driver.id) throw new BadRequestException(trailer ? 'This trailer belongs to an owner-operator. Choose another.' : 'This truck belongs to an owner-operator. Choose a truck owner’s truck.');
+  return unit;
  }
 
  /**
@@ -95,15 +114,30 @@ export class DriverAssignmentsService {
    // Someone leaving keeps the drivers they have, but takes on no new ones.
    if (current?.memberId !== member.id && await onNotice(em, member.id)) throw new ConflictException('This dispatcher is leaving. Choose another dispatcher.');
    if (current?.memberId !== member.id && await onLeave(em, member.id)) throw new ConflictException('This dispatcher is on leave. Choose another dispatcher.');
-   const truck = dto.truck || null;
-   if (current && current.mcId === mc.id && current.memberId === member.id && current.truck === truck) throw new BadRequestException('The driver already works with this MC, dispatcher and truck.');
+   // A page with Units sends unitId and trailerId, null to clear one. An older page sends neither (only the truck text):
+   // the unit stays while that text is unchanged, and the trailer, which it never shows, stays too.
+   const olderPage = dto.unitId === undefined && dto.trailerId === undefined;
+   const keepUnit = olderPage && !!current?.unitId && (dto.truck || null) === current.truck;
+   const unitWanted = keepUnit ? current!.unitId : dto.unitId ?? null, trailerWanted = olderPage ? current?.trailerId ?? null : dto.trailerId ?? null;
+   const unit = unitWanted ? await this.unit(em, unitWanted, false, driver, current?.unitId ?? null) : null;
+   const trailer = trailerWanted ? await this.unit(em, trailerWanted, true, driver, current?.trailerId ?? null) : null;
+   // The number stays as text too, for older readers; a page without Units sends the text itself.
+   const truck = unit ? unit.unit : dto.truck || null, unitId = unit?.id ?? null, trailerId = trailer?.id ?? null;
+   if (current && current.mcId === mc.id && current.memberId === member.id && current.truck === truck && current.unitId === unitId && current.trailerId === trailerId)
+    throw new BadRequestException('The driver already works with this MC, dispatcher, truck and trailer.');
    if (current && !dto.reason) throw new BadRequestException('Say why the driver is changing MC, dispatcher or truck.');
    let startedAt = notBefore(day(dto.startsOn), driver.clearedAt!, 'The start date can’t be before Safety cleared the driver.');
    if (current) startedAt = notBefore(startedAt, current.startedAt, 'The change can’t start before the current assignment did.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
-   await assignments.save({ driverId: id, mcId: mc.id, memberId: member.id, truck, startedAt, reason: dto.reason || null, actorId: user.id });
+   // Once the truck's Telegram group exists, a new dispatcher or truck asks the driver's Safety Manager to update it (section 39).
+   // The group was made for the truck they have (or Safety's pick before any assignment, also when an assignment names
+   // none) with their dispatcher (none before the first assignment); a new dispatcher or truck asks for an update.
+   const groupUnit = current?.unitId ?? await pickedUnitId(em, id), groupMember = current?.memberId ?? null;
+   if (groupMember !== member.id || groupUnit !== unitId) await askGroupChange(em, id, { reason: groupMember !== member.id ? 'DISPATCHER_CHANGED' : 'TRUCK_CHANGED',
+    unitId: groupUnit, removeMemberId: groupMember !== member.id ? groupMember : null, addMemberId: groupMember !== member.id ? member.id : null, newUnitId: groupUnit !== unitId ? unitId : null });
+   await assignments.save({ driverId: id, mcId: mc.id, memberId: member.id, truck, unitId, trailerId, startedAt, reason: dto.reason || null, actorId: user.id });
    await em.getRepository(Driver).update(id, { version: driver.version + 1 });
-   await driverEvent(em, user.id, id, 'DISPATCH_ASSIGNED', { first: !current, truck: !!truck });
+   await driverEvent(em, user.id, id, 'DISPATCH_ASSIGNED', { first: !current, truck: !!truck, trailer: !!trailerId });
    return { id, version: driver.version + 1 };
   });
  }

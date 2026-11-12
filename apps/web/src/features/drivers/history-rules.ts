@@ -6,7 +6,9 @@ export type YesNo = 'YES' | 'NO';
 export type YesNoUnsure = YesNo | 'UNSURE';
 export interface HistoryAddress { id: string; line1: string; city: string; state: string; zip: string; fromMonth: string; toMonth: string }
 export interface HistoryJob { id: string; company: string; city: string; state: string; phone: string; position: string; fromMonth: string; toMonth: string | null;
- drove: YesNo; fmcsr: YesNoUnsure; dotTesting: YesNoUnsure; reasonLeft: string }
+ drove: YesNo; fmcsr: YesNoUnsure; dotTesting: YesNoUnsure; reasonLeft: string; contactName?: string; contactEmail?: string; mayContact?: YesNo }
+/** A kind of vehicle the driver drove for work, with their estimate of the miles (section 39). */
+export interface HistoryExperience { id: string; vehicle: string; fromMonth: string; toMonth: string | null; miles: number }
 export interface HistoryGap { from: string; to: string; explanation: string }
 export interface HistoryAccident { id: string; month: string; state: string; description: string }
 export interface HistoryTicket { id: string; month: string; state: string; violation: string; vehicle: 'CMV' | 'OTHER' }
@@ -14,7 +16,7 @@ export interface HistoryLicense { id: string; state: string; number: string; lic
 export interface DriverHistory {
  currentSince?: string; addresses?: HistoryAddress[]; jobs?: HistoryJob[]; gaps?: HistoryGap[]; noEarlierDriving?: boolean;
  accidents?: YesNo; accidentList?: HistoryAccident[]; tickets?: YesNo; ticketList?: HistoryTicket[];
- otherLicenses?: YesNo; licenseList?: HistoryLicense[]; licenseTrouble?: YesNo; licenseTroubleNote?: string;
+ otherLicenses?: YesNo; licenseList?: HistoryLicense[]; licenseTrouble?: YesNo; licenseTroubleNote?: string; experience?: HistoryExperience[];
 }
 export const HISTORY_YEARS = 3, DRIVING_YEARS = 10;
 

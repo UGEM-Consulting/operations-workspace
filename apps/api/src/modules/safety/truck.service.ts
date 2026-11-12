@@ -11,15 +11,18 @@ import { Driver } from './safety.entity';
 import { driverEvent, lockOpenDriver, ownsDriver, SCREENERS, writeDriver } from './driver-records';
 import { ArchiveTruckDto, OwnerDocumentDto, TruckDto } from './truck.dto';
 import { usDay } from './screening-rules';
+import { assigned, numberFree, UNIT_NUMBER_LOCK } from './units.service';
 
 const WORKING = ['APPROVED', 'CLEARED'];
 const DUPLICATE_VIN = 'Another truck on the list already has this VIN.';
 const KIND_WORDS: Record<string, string> = { LEASE: 'lease', INSURANCE: 'insurance', REGISTRATION: 'registration' };
 
 /**
- * Owner-operators' trucks and their lease, insurance and registration PDFs (private storage). Safety leads, the Safety
+ * Owner-operators' trucks (rows of the Units table, section 34) and their lease, insurance and registration PDFs (private storage). Safety leads, the Safety
  * manager, administrators and the driver's current owner add and change them; every Safety role reads them and opens the
  * files (each open is recorded and rate-limited). Dates are typed from the document; nothing is read from the files.
+ * Writes keep the Units rules: the number is checked under the unit number lock, the unit's version goes up (so a page
+ * open on Units sees the change), and a truck a driver has can't be archived.
  */
 @Injectable()
 export class TruckService {
@@ -30,15 +33,15 @@ export class TruckService {
    const driver = await lockOpenDriver(em, id, version);
    await this.mayChange(em, user, id);
    if (driver.driverType !== 'OWNER_OPERATOR') throw new ConflictException('Trucks are kept for owner-operators.');
-   if (!WORKING.includes(driver.status)) throw new ConflictException('Trucks are added once the Safety manager approves the driver.');
+   if (!WORKING.includes(driver.status)) throw new ConflictException('Trucks are added once the Safety Director approves the driver.');
    return work(em, driver);
   });
  }
  private async mayChange(em: Parameters<Parameters<typeof writeDriver>[1]>[0], user: User, id: string) {
-  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, the Safety manager and the driver’s Safety contact can change trucks.');
+  if (!SCREENERS.includes(user.role) && !await ownsDriver(em, user, id)) throw new ForbiddenException('Only Safety leads, the Safety Director and the driver’s Safety Manager can change trucks.');
  }
  private async truck(em:Parameters<Parameters<typeof writeDriver>[1]>[0], driverId: string, truckId: string) {
-  const [row] = await em.query(`SELECT id, "archivedAt" FROM driver_trucks WHERE id = $1 AND "driverId" = $2 FOR UPDATE`, [truckId, driverId]) as { id: string; archivedAt: Date | null }[];
+  const [row] = await em.query(`SELECT id, unit, kind, "archivedAt" FROM driver_trucks WHERE id = $1 AND "driverId" = $2 FOR UPDATE`, [truckId, driverId]) as { id: string; unit: string; kind: 'SEMI' | 'PICKUP' | 'TRAILER'; archivedAt: Date | null }[];
   if (!row) throw new NotFoundException('This truck is no longer on the list.');
   return row;
  }
@@ -46,6 +49,8 @@ export class TruckService {
  async add(user: User, id: string, dto: TruckDto) {
   return this.write(user, id, dto.version, async (em, driver) => {
    if ((dto.plate ? 1 : 0) !== (dto.plateState ? 1 : 0)) throw new BadRequestException('Enter the plate and its state together.');
+   await em.query('SELECT pg_advisory_xact_lock($1)', [UNIT_NUMBER_LOCK]);
+   await numberFree(em, dto.unit, 'SEMI', null);
    await em.query(`INSERT INTO driver_trucks ("driverId", unit, vin, year, make, plate, "plateState", "createdBy") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [id, dto.unit, dto.vin, dto.year, dto.make, dto.plate || null, dto.plateState || null, user.id]).catch(duplicate);
    await em.query(`UPDATE drivers SET version = version + 1 WHERE id = $1`, [id]);
@@ -59,7 +64,9 @@ export class TruckService {
    if ((dto.plate ? 1 : 0) !== (dto.plateState ? 1 : 0)) throw new BadRequestException('Enter the plate and its state together.');
    const truck = await this.truck(em, id, truckId);
    if (truck.archivedAt) throw new ConflictException('This truck is archived.');
-   await em.query(`UPDATE driver_trucks SET unit = $2, vin = $3, year = $4, make = $5, plate = $6, "plateState" = $7, "updatedAt" = now() WHERE id = $1`,
+   await em.query('SELECT pg_advisory_xact_lock($1)', [UNIT_NUMBER_LOCK]);
+   if (truck.unit.toLowerCase() !== dto.unit.toLowerCase()) await numberFree(em, dto.unit, truck.kind, truckId);
+   await em.query(`UPDATE driver_trucks SET unit = $2, vin = $3, year = $4, make = $5, plate = $6, "plateState" = $7, version = version + 1, "updatedAt" = now() WHERE id = $1`,
     [truckId, dto.unit, dto.vin, dto.year, dto.make, dto.plate || null, dto.plateState || null]).catch(duplicate);
    await em.query(`UPDATE drivers SET version = version + 1 WHERE id = $1`, [id]);
    await driverEvent(em, user.id, id, 'TRUCK_SAVED', { action: 'updated' });
@@ -71,7 +78,8 @@ export class TruckService {
   return this.write(user, id, dto.version, async (em, driver) => {
    const truck = await this.truck(em, id, truckId);
    if (truck.archivedAt) throw new ConflictException('This truck is already archived.');
-   await em.query(`UPDATE driver_trucks SET "archivedAt" = now(), "updatedAt" = now() WHERE id = $1`, [truckId]);
+   if (await assigned(em, truckId)) throw new ConflictException('A driver still has this truck. Ask Dispatch to change their unit first.');
+   await em.query(`UPDATE driver_trucks SET "archivedAt" = now(), version = version + 1, "updatedAt" = now() WHERE id = $1`, [truckId]);
    await em.query(`UPDATE drivers SET version = version + 1 WHERE id = $1`, [id]);
    await driverEvent(em, user.id, id, 'TRUCK_SAVED', { action: 'archived' });
    return { id, version: driver.version + 1 };
@@ -95,6 +103,7 @@ export class TruckService {
     const truck = await this.truck(em, id, truckId);
     if (truck.archivedAt) throw new ConflictException('This truck is archived.');
     await em.query(`UPDATE driver_owner_documents SET "replacedAt" = now() WHERE "truckId" = $1 AND kind = $2 AND "replacedAt" IS NULL`, [truckId, dto.kind]);
+    await em.query(`UPDATE driver_trucks SET version = version + 1, "updatedAt" = now() WHERE id = $1`, [truckId]);
     await em.query(`INSERT INTO driver_owner_documents (id, "driverId", "truckId", kind, "expiresOn", "pageCount", sha256, "byteSize", "storageLayout", "uploadedBy") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
      [documentId, id, truckId, dto.kind, dto.expiresOn || null, pageCount, sha256(file), file.length, CURRENT_LAYOUT, user.id]);
     await em.query(`UPDATE drivers SET version = version + 1 WHERE id = $1`, [id]);

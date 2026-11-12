@@ -15,12 +15,52 @@ import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { useToday } from './driver-documents';
-import { CLEARANCE_ITEMS, clearanceApplies, clearanceGapLabel, clearanceResults, type ClearanceItemRow, type ClearanceKey, type DriverProfile, type EmployerRow } from './types';
+import { ViewDocumentButton } from '@/features/documents/document-modal';
+import { PspDialog, reportMeta, RoadTestDialog } from './license-items';
+import { CLEARANCE_ITEMS, clearanceApplies, clearanceGapLabel, clearanceResults, itemText, licenseDecides, type ClearanceItemRow, type ClearanceKey, type DriverProfile, type EmployerRow } from './types';
 
 const day = (value: string) => <LocalTime iso={`${value}T12:00:00Z`} format="date" />;
 const month = (value: string) => new Date(`${value}-15T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 const done = (status: string | undefined) => status === 'COMPLETED' || status === 'NOT_NEEDED';
 type Editing = { kind: 'item'; key: ClearanceKey } | { kind: 'add' } | { kind: 'employer'; employer: EmployerRow } | { kind: 'remove'; employer: EmployerRow };
+const RESTRICTED = 'The result is shown only to the Safety Director and the driver’s Safety Manager.';
+/** One row of the checklist, and whether it counts as done (hidden rows count as neither). */
+type Row = { id: string; title: string; description: string; status: string; note?: string; meta?: React.ReactNode; action?: React.ReactNode; done: boolean; hidden?: boolean };
+
+/**
+ * The checklist in order, for this driver's license (section 39): items that don't apply say why, a CDL stands in for the
+ * road test, and the PSP report joins after the Clearinghouse query when the license calls for one. `act` adds each
+ * row's button for someone who may work on clearance.
+ */
+function clearanceRows(driver: DriverProfile, act?: { item: (key: ClearanceKey) => void; roadTest: () => void; psp: () => void }): Row[] {
+  const clearance = driver.clearance!, items = new Map(clearance.items.map(item => [item.key, item])), rules = driver.license;
+  const rows: Row[] = [];
+  for (const item of CLEARANCE_ITEMS) {
+    const row = items.get(item.key), text = itemText(item, rules), decided = licenseDecides(item.key, rules);
+    if (!clearanceApplies(item, driver)) rows.push({ id: item.key, title: text.label, description: 'Only for company drivers, who are UGEM employees.', status: 'NOT_NEEDED', meta: 'Not needed: owner-operator (not an employee)', done: true });
+    else if (decided) rows.push({ id: item.key, title: text.label, description: text.hint, status: decided.status, meta: decided.meta, done: true });
+    else if (row?.hidden) rows.push({ id: item.key, title: text.label, description: text.hint, status: 'RESTRICTED', meta: RESTRICTED, done: false, hidden: true });
+    else {
+      // A DL driver's road test is recorded with its signed certificate, in its own dialog.
+      const roadTest = item.key === 'ROAD_TEST' && !!rules, certificate = roadTest ? clearance.roadTest : null;
+      const meta = certificate ? <>{itemMeta(row, item.key, clearance.employers)}{' · '}<ViewDocumentButton documents={[{ url: `/api/backend/safety/drivers/${driver.id}/reports/${certificate.id}/file`, title: `Road test certificate · ${driver.firstName} ${driver.lastName}`, meta: `${certificate.pageCount} ${certificate.pageCount === 1 ? 'page' : 'pages'}` }]}>View certificate</ViewDocumentButton></> : itemMeta(row, item.key, clearance.employers);
+      rows.push({ id: item.key, title: text.label, description: text.hint, status: row?.status ?? 'PENDING', note: row?.note ?? undefined, meta,
+        done: done(row?.status) && !clearance.missing.includes(`expired:${item.key}`),
+        action: act ? <Button size="sm" variant="outline" onClick={() => roadTest ? act.roadTest() : act.item(item.key)}>{roadTest ? (row ? 'Record again' : 'Record road test') : row ? 'Edit' : 'Record'}<span className="sr-only">: {text.label}</span></Button> : undefined });
+    }
+    // The PSP report, after the Clearinghouse query: needed for CDL drivers and anyone who once held a CDL.
+    if (item.key === 'CLEARINGHOUSE' && rules) {
+      const psp = driver.screening?.psp ?? null;
+      rows.push(rules.psp
+        ? { id: 'PSP', title: 'PSP report', description: 'Crashes (5 years) and inspections (3 years) from FMCSA. Pulled only after the driver signed the PSP consent.', status: psp ? 'COMPLETED' : 'PENDING',
+          meta: psp ? <>{reportMeta(psp)}{' · '}<ViewDocumentButton documents={[{ url: `/api/backend/safety/drivers/${driver.id}/reports/${psp.id}/file`, title: `PSP report · ${driver.firstName} ${driver.lastName}`, meta: `${psp.pageCount} ${psp.pageCount === 1 ? 'page' : 'pages'}` }]}>View</ViewDocumentButton></> : undefined,
+          // Like the other dated items, a report pulled more than a year ago no longer counts.
+          done: !!psp && !clearance.missing.includes('expired:PSP'), action: act ? <Button size="sm" variant="outline" onClick={act.psp}>{psp ? 'Replace' : 'Upload'}<span className="sr-only">: PSP report</span></Button> : undefined }
+        : { id: 'PSP', title: 'PSP report', description: 'Only for CDL drivers and drivers who once held a CDL.', status: 'NOT_NEEDED', meta: 'Not needed: never held a CDL (from their application)', done: true });
+    }
+  }
+  return rows;
+}
 
 /** What the checklist row says under the title: the result and its date, or who recorded what and when. */
 function itemMeta(item: ClearanceItemRow | undefined, key: ClearanceKey, employers: EmployerRow[]) {
@@ -43,6 +83,7 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
   const toast = useToast();
   const today = useToday();
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [extra, setExtra] = useState<'psp' | 'road-test' | null>(null);
   const [result, setResult] = useState('');
   const [status, setStatus] = useState('');
   const [pending, setPending] = useState(false);
@@ -78,14 +119,11 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
   return <>
     <Card>
       <CardHeader title="Clearance" description="What has to be on file before this driver can run loads. Results only: drug test, medical and immigration details stay out of the workspace." />
-      <Checklist className="mt-3 border-t border-border" items={CLEARANCE_ITEMS.map(item => {
-        const row = items.get(item.key);
-        if (!clearanceApplies(item, driver)) return { id: item.key, title: item.label, description: 'Only for company drivers, who are UGEM employees.', status: 'NOT_NEEDED', meta: 'Not needed: owner-operator (not an employee)' };
-        if (row?.hidden) return { id: item.key, title: item.label, description: item.hint, status: 'RESTRICTED', meta: 'The result is shown only to the Safety manager and the driver’s Safety contact.' };
-        return { id: item.key, title: item.label, description: item.hint, status: row?.status ?? 'PENDING', note: row?.note ?? undefined, meta: itemMeta(row, item.key, clearance.employers),
-          action: canWork ? <Button size="sm" variant="outline" onClick={() => open({ kind: 'item', key: item.key })}>{row ? 'Edit' : 'Record'}<span className="sr-only">: {item.label}</span></Button> : undefined };
-      })} />
+      <Checklist className="mt-3 border-t border-border" items={clearanceRows(driver, canWork ? { item: key => open({ kind: 'item', key }), roadTest: () => setExtra('road-test'), psp: () => setExtra('psp') } : undefined)
+        .map(row => ({ id: row.id, title: row.title, description: row.description, status: row.status, note: row.note, meta: row.meta, action: row.action }))} />
     </Card>
+    {extra === 'psp' && <PspDialog driver={driver} replacing={!!driver.screening?.psp} onClose={() => setExtra(null)} />}
+    {extra === 'road-test' && <RoadTestDialog driver={driver} storageEnabled={driver.annualReviews?.storageEnabled !== false} onClose={() => setExtra(null)} />}
     <Card>
       <CardHeader title="Previous employers" description="DOT-regulated employers from the last 3 years, asked about the driver’s safety performance within 30 days of hire. Kept with the qualification file."
         actions={canWork ? <Button size="sm" variant="outline" onClick={() => open({ kind: 'add' })}><Plus aria-hidden="true" className="size-4" />Add employer</Button> : undefined} />
@@ -100,7 +138,7 @@ export function ClearanceCard({ driver, canWork }: { driver: DriverProfile; canW
         ...(canWork ? [{ key: 'actions', label: 'Actions', srOnly: true, align: 'right' as const, action: true, cell: (row: EmployerRow) => <div className="flex justify-end gap-2">
           {!row.requestedOn && <Button size="sm" variant="ghost" onClick={() => open({ kind: 'remove', employer: row })}>Remove<span className="sr-only">: {row.name}</span></Button>}
           <Button size="sm" variant="outline" onClick={() => open({ kind: 'employer', employer: row })}>{row.requestedOn ? 'Record answer' : 'Record request'}<span className="sr-only">: {row.name}</span></Button></div> }] : []),
-      ]} /> : <CardBody><EmptyState compact title="No employers yet" description={canWork ? 'Add each DOT-regulated employer the driver worked for in the last 3 years.' : 'The driver’s Safety contact adds them.'} /></CardBody>}
+      ]} /> : <CardBody><EmptyState compact title="No employers yet" description={canWork ? 'Add each DOT-regulated employer the driver worked for in the last 3 years.' : 'The driver’s Safety Manager adds them.'} /></CardBody>}
     </Card>
     {editing && <Dialog open onClose={() => setEditing(null)} busy={pending} tone={editing.kind === 'remove' ? 'danger' : undefined}
       title={editing.kind === 'item' ? rule!.label : editing.kind === 'add' ? 'Add a previous employer' : editing.kind === 'remove' ? `Remove ${editing.employer.name}?` : editing.employer.name}
@@ -148,11 +186,10 @@ export function ClearanceProgress({ driver, canWork }: { driver: DriverProfile; 
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const clearance = driver.clearance!, name = `${driver.firstName} ${driver.lastName}`.trim();
-  // An item that doesn't apply (E-Verify for an owner-operator) counts as done. Items whose result this person may not see
-  // (hidden) count as neither, so the bar and the text never guess how they came out.
-  const hidden = CLEARANCE_ITEMS.filter(item => clearance.items.find(row => row.key === item.key)?.hidden);
-  const shown = CLEARANCE_ITEMS.length - hidden.length;
-  const finished = CLEARANCE_ITEMS.filter(item => !hidden.includes(item) && (!clearanceApplies(item, driver) || (done(clearance.items.find(row => row.key === item.key)?.status) && !clearance.missing.includes(`expired:${item.key}`)))).length;
+  // An item that doesn't apply (E-Verify for an owner-operator, what the license rules out) counts as done. Items whose
+  // result this person may not see (hidden) count as neither, so the bar and the text never guess how they came out.
+  const rows = clearanceRows(driver), hidden = rows.filter(row => row.hidden);
+  const shown = rows.length - hidden.length, finished = rows.filter(row => row.done).length;
   async function clear() {
     if (pending) return;
     setPending(true); setError('');
@@ -175,7 +212,7 @@ export function ClearanceProgress({ driver, canWork }: { driver: DriverProfile; 
     <CardBody className="space-y-3">
       <Progress label="Items done" value={finished} max={shown} valueLabel={`${finished} of ${shown}`} />
       {clearance.missing.length > 0 ? <ul className="list-disc space-y-1 pl-5 text-[13px] text-muted-foreground">{clearance.missing.map(code => <li key={code}>{clearanceGapLabel(code)}</li>)}</ul>
-        : hidden.length > 0 ? <p className="text-[13px] text-muted-foreground">Every item you can see is done. The drug test and Clearinghouse results are shown only to the Safety manager and the driver’s Safety contact.</p>
+        : hidden.length > 0 ? <p className="text-[13px] text-muted-foreground">Every item you can see is done. The drug test and Clearinghouse results are shown only to the Safety Director and the driver’s Safety Manager.</p>
         : <p className="text-[13px] text-muted-foreground">Every item is done. Mark the driver as cleared so Dispatch can assign them.</p>}
       {canWork && <Button className="w-full" disabled={clearance.missing.length > 0} onClick={() => { setConfirming(true); setError(''); }}><ShieldCheck aria-hidden="true" className="size-4" />Mark as cleared</Button>}
     </CardBody>

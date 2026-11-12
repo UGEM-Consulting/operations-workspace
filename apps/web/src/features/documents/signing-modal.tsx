@@ -15,12 +15,14 @@ export interface SignableDocument {
   id: string; title: string; short: string; pageCount: number; requiresSignature: boolean; statement: string; translatedStatement?: string | null; fields: DocumentField[];
   fileUrl: string; signedUrl: string; viewPath: string; signPath: string; /** Read with one button: nothing to tick, type or sign. */ acknowledgePath?: string;
   state: 'done' | 'todo'; fallbackName: string;
+  /** Sent with the signature (a contract's address or title, section 39). */ extra?: Record<string, string>;
+  /** Who signs the other marked places, when it isn't UGEM at approval (the truck owner, or the driver already). */ otherSigner?: string;
 }
 export interface SigningMemory { consented: boolean; name: string; signature: { image: string; method: SignatureMethod } | null; read: string[] }
 export const emptyMemory: SigningMemory = { consented: false, name: '', signature: null, read: [] };
 type Step = 'read' | 'agree' | 'sign' | 'done';
 
-const markLabel = (field: DocumentField) => field.signer === 'COMPANY' ? ({ SIGNATURE: 'Your manager signs at approval', NAME: 'Manager’s name', TITLE: 'Manager’s title', DATE: 'Date of approval' } as Record<string, string>)[field.kind] ?? 'At approval'
+const markLabel = (field: DocumentField, other?: string) => field.signer === 'COMPANY' && other ? other : field.signer === 'COMPANY' ? ({ SIGNATURE: 'Your manager signs at approval', NAME: 'Manager’s name', TITLE: 'Manager’s title', DATE: 'Date of approval' } as Record<string, string>)[field.kind] ?? 'At approval'
   : ({ SIGNATURE: 'Your signature', NAME: 'Your full legal name', AMERICAN_NAME: 'Your American name', DATE: 'Filled in when you sign', DAY: 'Day', MONTH: 'Month', YEAR: 'Yr' } as Record<string, string>)[field.kind] ?? '';
 
 const Dots = ({ at, onSee }: { at: number; onSee?: () => void }) => <div className="shrink-0 border-b px-4 py-2 short:py-0 lg:px-5 lg:py-4"><div className="flex items-center justify-between gap-3"><p className="text-[13px] font-medium leading-5 text-muted-foreground">Step {at + 1} of 3: <span className="font-semibold text-foreground">{['Read', 'Agree', 'Sign'][at]}</span></p>
@@ -77,7 +79,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
     const mine = field.signer === 'SIGNER' && step === 'sign';
     if (mine && field.kind === 'SIGNATURE' && signature) return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} image={signature.image} />;
     if (mine && field.kind !== 'SIGNATURE') { const text = fieldText(field.kind, { name: name.trim(), american, at: now }); if (text) return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} text={text} />; }
-    return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} label={markLabel(field)} active={step === 'sign' && field.signer === 'SIGNER' && field.kind === 'SIGNATURE'} />;
+    return <FieldMark key={index} field={field} pageWidth={width} pageHeight={height} label={markLabel(field, doc.otherSigner)} active={step === 'sign' && field.signer === 'SIGNER' && field.kind === 'SIGNATURE'} />;
   });
   const signerFields = doc.fields.filter(field => field.signer === 'SIGNER'), pagesWithFields = [...new Set(signerFields.map(field => field.page))];
   const remaining = documents.filter(item => item.id !== doc.id && item.state === 'todo'), next = remaining[0];
@@ -88,7 +90,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
     if (doc.requiresSignature && !signature) { setError('Draw or adopt your signature first.'); return; }
     setBusy(true);
     try {
-      onSigned(await mutate(doc.signPath, 'POST', { typedName: name.trim(), consent: consented, agreed, ...(doc.requiresSignature && signature ? { signature: signature.image, signatureMethod: signature.method } : {}) }));
+      onSigned(await mutate(doc.signPath, 'POST', { typedName: name.trim(), consent: consented, agreed, ...(doc.requiresSignature && signature ? { signature: signature.image, signatureMethod: signature.method } : {}), ...doc.extra }));
       onMemory({ ...memory, consented: true, name: name.trim(), read: [...memory.read, doc.id] });
       setSignedDoc(true); setStep('done'); setError('');
     } catch (cause) { failed(cause, 'Unable to sign. Your entries have been kept. Please try again.'); }
@@ -139,7 +141,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
       {doc.acknowledgePath && <div className="space-y-3 rounded-md bg-brand-subtle p-4"><p className="text-[15px] font-semibold leading-[22px]">Keep this list handy</p>
         <p className="text-sm leading-[22px]">It says who to contact when a driver has an accident, a breakdown or a load problem. Save it to your phone so it’s there when you need it.</p>
         <Button type="button" size="lg" className="w-full" disabled={!file} onClick={() => file && downloadBlob(file.blob, 'quick-contact-list.pdf')}><Download aria-hidden="true" className="size-4" />Save the contact list</Button></div>}
-      {!doc.acknowledgePath && <><p className="text-sm leading-[22px] text-muted-foreground">{name.trim() ? `Thank you, ${name.trim().split(' ')[0]}. ` : ''}Signed {fieldText('DATE', { at: now })}.{doc.fields.some(field => field.signer === 'COMPANY') ? ' UGEM adds its signature when your manager approves.' : ''}</p>
+      {!doc.acknowledgePath && <><p className="text-sm leading-[22px] text-muted-foreground">{name.trim() ? `Thank you, ${name.trim().split(' ')[0]}. ` : ''}Signed {fieldText('DATE', { at: now })}.{doc.otherSigner ? '' : doc.fields.some(field => field.signer === 'COMPANY') ? ' UGEM adds its signature when your manager approves.' : ''}</p>
         <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={!file} onClick={() => file && downloadBlob(file.blob, file.filename)}><Download aria-hidden="true" className="size-4" />Download my copy</Button>
           <PrintButton file={file} variant="outline" size="default" className="max-lg:hidden" /></div></>}
       <ul className="space-y-2 text-sm">{documents.map(item => { const done = item.id === doc.id || item.state === 'done'; return <li key={item.id} className="flex items-center justify-between gap-3">{item.short}{done ? <Badge label={item.acknowledgePath ? 'Read' : 'Signed'} tone="success" /> : <Badge label={item.acknowledgePath ? 'To read' : 'To sign'} tone="warning" />}</li>; })}</ul></div>

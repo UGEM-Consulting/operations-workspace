@@ -1,21 +1,27 @@
 import { EntityManager } from 'typeorm';
 import { CONSENT_KINDS, CONSENT_RULES, consentStatement, type ConsentKind, DRIVER_ESIGN_CONSENT, DriverConsentDocument } from './consent.entity';
+import { driverLicenseRules, type LicenseRules } from './license-rules';
 
-/** The latest published version of each consent form kind, in the order drivers see them. */
-export async function currentConsents(em: EntityManager): Promise<DriverConsentDocument[]> {
+/**
+ * The latest published version of each consent form kind, in the order drivers see them; with rules, only those that
+ * apply, and with hasApplication false (a driver added from a paper file), none that certifies an application.
+ */
+export async function currentConsents(em: EntityManager, rules?: LicenseRules, hasApplication = true): Promise<DriverConsentDocument[]> {
  const rows = await em.getRepository(DriverConsentDocument).createQueryBuilder('d').distinctOn(['d.kind']).orderBy('d.kind').addOrderBy('d.version', 'DESC').getMany();
- return rows.sort((a, b) => CONSENT_KINDS.indexOf(a.kind) - CONSENT_KINDS.indexOf(b.kind));
+ return rows.filter(row => (!rules || CONSENT_RULES[row.kind].appliesTo(rules)) && (hasApplication || !CONSENT_RULES[row.kind].application))
+  .sort((a, b) => CONSENT_KINDS.indexOf(a.kind) - CONSENT_KINDS.indexOf(b.kind));
 }
 
 /**
  * The consent forms a driver must sign before submitting, and what they have signed. Required only with private storage
- * (the forms are stored files) and only for kinds Safety has published. A signature on an earlier version shows as
+ * (the forms are stored files), only for kinds Safety has published and only those their license calls for. A signature on an earlier version shows as
  * signed but doesn't satisfy the current version. `missing` holds `consent:<KIND>` codes.
  */
-export async function consentStatus(em: EntityManager, driverId: string, storageEnabled: boolean) {
+export async function consentStatus(em: EntityManager, driverId: string, storageEnabled: boolean, rules?: LicenseRules, hasApplication = true) {
  if (!storageEnabled) return { required: false, consent: DRIVER_ESIGN_CONSENT, items: [], missing: [] as string[] };
  // One after another: inside a transaction they share one connection.
- const current = await currentConsents(em);
+ // Rules passed in come from answers being saved in the same request; otherwise from the stored ones.
+ const current = await currentConsents(em, rules ?? await driverLicenseRules(em, driverId), hasApplication);
  const signed: { documentId: string; kind: ConsentKind; version: number; signedAt: Date }[] = await em.query(`SELECT s."documentId", d.kind, d.version, s."signedAt"
   FROM driver_consent_signatures s JOIN driver_consent_documents d ON d.id = s."documentId" WHERE s."driverId" = $1 ORDER BY d.version DESC`, [driverId]);
  const viewed: { documentId: string }[] = await em.query(`SELECT "documentId" FROM driver_consent_views WHERE "driverId" = $1`, [driverId]);
@@ -33,9 +39,13 @@ export function missingConsents(current: DriverConsentDocument[], signedDocument
  return current.filter(document => !signedDocumentIds.includes(document.id)).map(document => `consent:${document.kind}`);
 }
 
-/** Whether the driver signed any version of the background check authorization in the workspace. */
-export async function authorizationSigned(em: EntityManager, driverId: string): Promise<boolean> {
- const [row] = await em.query(`SELECT 1 FROM driver_consent_signatures s JOIN driver_consent_documents d ON d.id = s."documentId"
-  WHERE s."driverId" = $1 AND d.kind = 'BACKGROUND_AUTHORIZATION' LIMIT 1`, [driverId]);
- return !!row;
+/** Whether the driver signed any version of the background check authorization (or, with kind, another form) in the workspace. */
+export async function authorizationSigned(em: EntityManager, driverId: string, kind: ConsentKind = 'BACKGROUND_AUTHORIZATION'): Promise<boolean> {
+ return !!await firstSigned(em, driverId, kind);
+}
+/** When the driver first signed any version of a form, or null. A report may not be dated before it. */
+export async function firstSigned(em: EntityManager, driverId: string, kind: ConsentKind): Promise<string | null> {
+ const [row]: { signedOn: string }[] = await em.query(`SELECT to_char(min(s."signedAt") AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS "signedOn" FROM driver_consent_signatures s
+  JOIN driver_consent_documents d ON d.id = s."documentId" WHERE s."driverId" = $1 AND d.kind = $2`, [driverId, kind]);
+ return row?.signedOn ?? null;
 }

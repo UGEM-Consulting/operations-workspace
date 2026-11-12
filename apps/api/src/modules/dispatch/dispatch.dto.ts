@@ -172,6 +172,10 @@ export class AssignDriverDto {
  @IsUUID() memberId!: string;
  @IsDateString({ strict: true }) startsOn!: string;
  @text() @IsOptional() @IsString() @MaxLength(40) truck?: string;
+ // From Units (section 34): an owner-operator's own truck or a truck owner's, and a trailer; null clears one. An older page
+ // sends truck text instead and neither field, which keeps the unit and trailer it can't show.
+ @IsOptional() @IsUUID() unitId?: string | null;
+ @IsOptional() @IsUUID() trailerId?: string | null;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 /**
