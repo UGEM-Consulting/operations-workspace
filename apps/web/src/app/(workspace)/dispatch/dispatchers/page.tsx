@@ -67,15 +67,16 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
   const filters = clean(await searchParams);
   const paperworkNow = filters.status === 'PAPERWORK';
   // Paperwork has its own table; the counts still come from the list.
-  const response = await apiRequest(`dispatch/members?${listQuery(filters, paperworkNow ? { status: 'ACTIVE', page: '1', pageSize: '20' } : {})}`);
+  // The list, the Paperwork tab (an older API has none) and, whatever the filters, whose last day has passed while someone is
+  // still assigned to them: three independent requests, made together.
+  const [response, paperworkResponse, leavingResponse] = await Promise.all([
+    apiRequest(`dispatch/members?${listQuery(filters, paperworkNow ? { status: 'ACTIVE', page: '1', pageSize: '20' } : {})}`),
+    apiRequest('dispatch/paperwork'),
+    apiRequest(`dispatch/members?${listQuery({ status: 'LEAVING', page: '1', pageSize: '100' })}`)]);
   if (!response.ok) throw new Error('Unable to load dispatchers');
   const data = await readResponse<MemberList>(response, 'dispatchers', memberListSchema);
-  // From an API with existing dispatchers; an older one simply has no Paperwork tab.
-  const paperworkResponse = await apiRequest('dispatch/paperwork');
   const paperwork = paperworkResponse.ok ? await readResponse<PaperworkList>(paperworkResponse, 'paperwork', paperworkSchema) : null;
-  // Whose last day has passed while someone is still assigned to them, wherever they are in the list.
-  const leavingResponse = (data.counts.leaving ?? 0) > 0 ? await apiRequest(`dispatch/members?${listQuery({ status: 'LEAVING', page: '1', pageSize: '100' })}`) : null;
-  const passed = leavingResponse?.ok ? (await readResponse<MemberList>(leavingResponse, 'leaving dispatchers', memberListSchema)).items.filter(member => member.lastDayPassed) : [];
+  const passed = leavingResponse.ok ? (await readResponse<MemberList>(leavingResponse, 'leaving dispatchers', memberListSchema)).items.filter(member => member.lastDayPassed) : [];
   const status = filters.status, items = data.items, total = data.total ?? items.length, pageSize = data.pageSize ?? Number(filters.pageSize), page = data.page ?? 1;
   const options = data.options ?? { mcs: [], teams: [], leads: [], jobTitles: [] };
   const filtered = FILTER_KEYS.some(key => filters[key]) || filters.search !== '';

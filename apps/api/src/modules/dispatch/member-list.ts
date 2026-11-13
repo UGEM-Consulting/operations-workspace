@@ -5,7 +5,7 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { usDay } from '../safety/screening-rules';
 import { DispatchEvent, NO_MC } from './dispatch.entity';
 import { companyEmailSql } from './lead-sign-in';
-import type { MemberFilters, MemberListQueryDto } from './dispatch.dto';
+import type { MemberFilters, MemberListQueryDto, MemberViewDto } from './dispatch.dto';
 
 /**
  * One row per dispatcher, support or updater with where they work now, as Dispatch › Dispatchers lists them. Parameters are
@@ -44,6 +44,8 @@ const TAB_SQL: Record<MemberTab, string> = {
  // Missing details, as features/dispatch/types.ts missingDetails: no start date recorded, or a dispatcher with no MC yet.
  MISSING: `b.status <> 'LEFT' AND (NOT b."startDateKnown" OR (b.position = 'DISPATCHER' AND NOT b.placed))`, ALL: 'true',
 };
+/** The tab a request asks for: everyone when it names none, as the whole-list answer does, and for an older web's ARCHIVED. */
+const memberTab = (status?: MemberViewDto['status']): MemberTab => !status || status === 'ARCHIVED' ? 'ALL' : status;
 const COUNT_KEYS: Record<MemberTab, string> = { ONBOARDING: 'onboarding', ACTIVE: 'active', ON_LEAVE: 'onLeave', LEAVING: 'leaving', LEFT: 'left', MISSING: 'missing', ALL: 'all' };
 // The Paperwork tab's count, as GET dispatch/paperwork lists it (added by hand, not left, not accepted), so it follows the filters too.
 const PAPERWORK_SQL = `b."addedByHand" AND b.status <> 'LEFT' AND NOT b."paperworkAccepted"`;
@@ -54,17 +56,24 @@ const SORTS: Record<MemberListQueryDto['sort'] & string, string> = {
 };
 export const EXPORT_LIMIT = 2000;
 
+/**
+ * A person's IT setups, as companyEmailSql reads them: by application, and support setups by member, as two sides so each
+ * uses its index (an OR of the two can use neither).
+ */
+const SETUPS = `(SELECT r.* FROM it_onboarding_requests r WHERE r."applicationId" = b."applicationId" AND r."cancelledAt" IS NULL
+   UNION ALL SELECT r.* FROM it_onboarding_requests r WHERE r."memberId" = b.id AND r."cancelledAt" IS NULL)`;
+/** An application answer, unless an administrator corrected it: a corrected value that was cleared stays cleared. */
+const corrected = (key: string, answer: string) => `CASE WHEN dm."correctedDetails" ? '${key}' THEN dm."correctedDetails"->>'${key}' ELSE ${answer} END`;
 /** A person's contact details with what each one is, for search: company accounts, personal contacts, staff-added ones, and other and legal names (section 33). */
 const CONTACT_POINTS = `(
-   SELECT 'Company email' AS label, r."companyEmail" AS value FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL
-   UNION ALL SELECT 'RingCentral number', r."assignedRingCentralPhoneNumber" FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL
-   UNION ALL SELECT 'RingCentral extension', r."ringCentralExtension" FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL
+   SELECT x.label, x.value FROM ${SETUPS} r CROSS JOIN LATERAL (VALUES ('Company email', r."companyEmail"), ('RingCentral number', r."assignedRingCentralPhoneNumber"),
+     ('RingCentral extension', r."ringCentralExtension")) x(label, value)
    UNION ALL SELECT x.label, x.value FROM existing_member_records e CROSS JOIN LATERAL (VALUES ('Company email', e."companyEmail"), ('RingCentral number', e."ringCentralNumber"),
      ('RingCentral extension', e."ringCentralExtension"), ('Personal email', e."personalEmail"), ('Personal phone', e."personalPhone"), ('Telegram', e.telegram)) x(label, value) WHERE e."memberId" = b.id
    UNION ALL SELECT x.label, x.value FROM dispatcher_applications a JOIN invitations i ON i.id = a."invitationId" JOIN dispatch_members dm ON dm.id = b.id
      LEFT JOIN LATERAL (SELECT s.fields FROM application_submissions s WHERE s."applicationId" = a.id ORDER BY s.version DESC LIMIT 1) s ON true
-     CROSS JOIN LATERAL (VALUES ('Personal email', coalesce(dm."correctedDetails"->>'personalEmail', i.email)), ('Personal phone', coalesce(dm."correctedDetails"->>'personalPhoneNumber', s.fields->>'personalPhoneNumber')),
-     ('Telegram', coalesce(dm."correctedDetails"->>'telegram', s.fields->>'telegram'))) x(label, value) WHERE a.id = b."applicationId"
+     CROSS JOIN LATERAL (VALUES ('Personal email', ${corrected('personalEmail', 'i.email')}), ('Personal phone', ${corrected('personalPhoneNumber', `s.fields->>'personalPhoneNumber'`)}),
+     ('Telegram', ${corrected('telegram', `s.fields->>'telegram'`)})) x(label, value) WHERE a.id = b."applicationId"
    UNION ALL SELECT 'Other name', o.name || coalesce(' at ' || om.name, '') FROM member_other_names o LEFT JOIN mcs om ON om.id = o."mcId" WHERE o."memberId" = b.id UNION ALL SELECT 'Legal name', concat_ws(' ', e."legalFirstName", e."legalLastName") FROM existing_member_records e WHERE e."memberId" = b.id AND (e."legalFirstName" IS NOT NULL OR e."legalLastName" IS NOT NULL)
    UNION ALL SELECT CASE WHEN c.kind = 'EMAIL' THEN 'Added email' ELSE 'Added phone' END, c.value FROM member_contacts c WHERE c."memberId" = b.id AND c."removedAt" IS NULL
   ) p WHERE p.value IS NOT NULL`;
@@ -104,14 +113,18 @@ export class MemberListService {
    const { text, digits } = searchTerms(query.search), like = add(`%${escapeLike(text)}%`);
    const pointMatch = digits ? `regexp_replace(p.value, '\\D', '', 'g') LIKE ${add(`%${digits}%`)}` : `lower(p.value) LIKE ${like}`;
    const own = `lower(concat_ws(' ', b."firstName", b."lastName", b.mc, b.team, b."jobTitle", b."teamLead", b.dispatcher)) LIKE ${like}`;
-   where.push(`(${own} OR EXISTS (SELECT 1 FROM ${CONTACT_POINTS} AND ${pointMatch}))`);
-   // Say which contact detail matched, unless the name or place did.
+   // Which contact detail matched, unless the name or place did: worked out once per row, in base(), and filtered on here.
    matched = `CASE WHEN ${own} THEN NULL ELSE (SELECT json_build_object('label', p.label, 'value', p.value) FROM ${CONTACT_POINTS} AND ${pointMatch} LIMIT 1) END`;
+   where.push(`(${own} OR b.matched IS NOT NULL)`);
   }
   return { params, add, where: where.length ? where.join(' AND ') : 'true', matched };
  }
+ /** The rows to filter, each with what its search matched. */
+ private base(matched: string) {
+  return `WITH a AS (${memberRowsSql('$1', '$2')}), b AS (SELECT b.*, ${matched} AS matched FROM a b) `;
+ }
 
- private order(query: MemberListQueryDto, tab: MemberTab) {
+ private order(query: MemberViewDto, tab: MemberTab) {
   const direction = query.direction === 'desc' ? 'DESC' : 'ASC', name = 'lower(b."firstName"), lower(b."lastName"), b.id';
   // Leaving and On leave keep their own default order: soonest last day, soonest return.
   if (!query.sort && tab === 'LEAVING') return `b."lastDay", ${name}`;
@@ -121,13 +134,15 @@ export class MemberListService {
  }
 
  async list(query: MemberListQueryDto) {
-  const tab: MemberTab = query.status ?? 'ACTIVE', { params, add, where, matched } = this.filters(query);
-  const base = `WITH b AS (${memberRowsSql('$1', '$2')}) `;
+  const tab = memberTab(query.status), { params, add, where, matched } = this.filters(query), base = this.base(matched);
   const [counts] = await this.db.query(`${base}SELECT ${MEMBER_TABS.map(key => `count(*) FILTER (WHERE ${TAB_SQL[key]})::integer AS "${COUNT_KEYS[key]}"`).join(', ')}, count(*) FILTER (WHERE ${PAPERWORK_SQL})::integer AS paperwork FROM b WHERE ${where}`, params);
-  const total: number = counts[COUNT_KEYS[tab]], pageSize = query.pageSize ?? 20, pages = Math.max(1, Math.ceil(total / pageSize)), page = Math.min(query.page ?? 1, pages);
+  const total: number = counts[COUNT_KEYS[tab]];
+  if (query.only === 'counts') return { counts, total };
+  const pageSize = query.pageSize ?? 20, pages = Math.max(1, Math.ceil(total / pageSize)), page = Math.min(query.page ?? 1, pages);
   const limit = add(pageSize), offset = add((page - 1) * pageSize);
-  const items = await this.db.query(`${base}SELECT b.*, ${matched} AS matched FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params);
-  return { items, counts, total, page, pageSize, options: await this.options() };
+  const [items, options] = await Promise.all([
+   this.db.query(`${base}SELECT b.* FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params), this.options()]);
+  return { items, counts, total, page, pageSize, options };
  }
 
  /** What the filters offer: active MCs, teams, job titles and current team leads, plus archived ones someone still has. */
@@ -148,20 +163,19 @@ export class MemberListService {
   * The view on screen, every page of it, with work details only: never personal email or phone, legal names, sign-ins or
   * reasons. Rate-limited, and recorded with the count and the filters used, never the rows.
   */
- async export(user: User, query: MemberFilters & { status?: MemberTab; sort?: MemberListQueryDto['sort']; direction?: MemberListQueryDto['direction'] }) {
+ async export(user: User, query: MemberViewDto) {
   await onboardingLimit(this.db, `members-export:${user.id}`, 10, 900);
-  const tab: MemberTab = query.status ?? 'ACTIVE', { params, where } = this.filters(query);
-  const base = `WITH b AS (${memberRowsSql('$1', '$2')}) `;
+  const tab = memberTab(query.status), { params, where, matched } = this.filters(query), base = this.base(matched);
   const [{ total }] = await this.db.query(`${base}SELECT count(*)::integer AS total FROM b WHERE ${where} AND ${TAB_SQL[tab]}`, params);
   if (total > EXPORT_LIMIT) throw new BadRequestException(`This view has ${total} people. Narrow the filters to ${EXPORT_LIMIT.toLocaleString('en-US')} or fewer to export.`);
   const rows = await this.db.query(`${base}SELECT b.id, b."firstName", b."lastName", b.position, b."supportType", b.mc, b.team, b."teamLead", b."jobTitle", b.since, b."sinceKnown", b.status, b."lastDay", b.leave,
     b."wholeTeam", b.dispatcher, b."companyEmail",
-    coalesce((SELECT r."assignedRingCentralPhoneNumber" FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL AND r."assignedRingCentralPhoneNumber" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
+    coalesce((SELECT r."assignedRingCentralPhoneNumber" FROM ${SETUPS} r WHERE r."assignedRingCentralPhoneNumber" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
      (SELECT e."ringCentralNumber" FROM existing_member_records e WHERE e."memberId" = b.id)) AS "ringCentralNumber",
-    coalesce((SELECT r."ringCentralExtension" FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL AND r."ringCentralExtension" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
+    coalesce((SELECT r."ringCentralExtension" FROM ${SETUPS} r WHERE r."ringCentralExtension" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
      (SELECT e."ringCentralExtension" FROM existing_member_records e WHERE e."memberId" = b.id)) AS "ringCentralExtension",
-    coalesce((SELECT coalesce(dm."correctedDetails"->>'telegram', s.fields->>'telegram') FROM dispatch_members dm LEFT JOIN LATERAL (SELECT x.fields FROM application_submissions x WHERE x."applicationId" = dm."applicationId" ORDER BY x.version DESC LIMIT 1) s ON true WHERE dm.id = b.id),
-     (SELECT e.telegram FROM existing_member_records e WHERE e."memberId" = b.id)) AS telegram
+    (SELECT ${corrected('telegram', `coalesce(s.fields->>'telegram', e.telegram)`)} FROM dispatch_members dm LEFT JOIN existing_member_records e ON e."memberId" = dm.id
+      LEFT JOIN LATERAL (SELECT x.fields FROM application_submissions x WHERE x."applicationId" = dm."applicationId" ORDER BY x.version DESC LIMIT 1) s ON true WHERE dm.id = b.id) AS telegram
    FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)}`, params);
   const used = (['search', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers'] as const).filter(key => query[key]);
   await this.db.getRepository(DispatchEvent).save({ memberId: null, teamId: null, event: 'MEMBERS_EXPORTED', actorId: user.id, metadata: { count: rows.length, tab, filters: used } });

@@ -151,6 +151,18 @@ integration('Leave, corrections and the already-here check (disposable PostgreSQ
       await act(agents.admin, riley.memberId, 'correct', { reason: 'Again.', legalLastName: 'Santos' }, 400);
       await act(agents.admin, riley.memberId, 'correct', { reason: 'Hand name.', firstName: 'Riley' }, 400);
     });
+    it('never finds or exports an application answer an administrator cleared', async () => {
+      const riley = await dispatcher('Riley');
+      await db.query(`UPDATE application_submissions SET fields = fields || '{"telegram": "@riley_old"}' WHERE "applicationId" = $1`, [riley.applicationId]);
+      const search = async () => (await agents.manager.get('/api/dispatch/members?page=1&status=ALL&search=riley_old').set(headers).expect(200)).body.items;
+      const exported = async () => (await agents.manager.post('/api/dispatch/members/export').set(headers).send({ status: 'ALL' }).expect(201)).body.items[0].telegram;
+      expect((await search()).map((row: { matched: unknown }) => row.matched)).toEqual([{ label: 'Telegram', value: '@riley_old' }]);
+      expect(await exported()).toBe('@riley_old');
+      // Cleared: the correction holds the key with no value, and the application's answer stays out of search and export.
+      await db.query(`UPDATE dispatch_members SET "correctedDetails" = '{"telegram": null}' WHERE id = $1`, [riley.memberId]);
+      expect(await search()).toEqual([]);
+      expect(await exported()).toBeNull();
+    });
     it('corrects the name of someone added by hand', async () => {
       const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName","joinedAt") VALUES ('Riley','Santo',now()) RETURNING id`);
       await db.query(`INSERT INTO existing_member_records ("memberId","addedBy") VALUES ($1,$2)`, [member.id, users.manager.id]);

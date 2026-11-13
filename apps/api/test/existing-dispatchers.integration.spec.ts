@@ -1257,6 +1257,14 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect(await page('page=9&pageSize=20')).toMatchObject({ page: 1, pageSize: 20, total: 5 });
       await agents.manager.get('/api/dispatch/members?page=1&pageSize=30').set(headers).expect(400);
       await agents.manager.get('/api/dispatch/members?page=1&teamId=Red').set(headers).expect(400);
+      // An older web's ARCHIVED is everyone, paged too; with no tab named, a page is of everyone, like the whole list.
+      expect((await page('page=1&status=ARCHIVED')).total).toBe(5);
+      await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() WHERE id = $1`, [id('Morgan')]);
+      expect((await page('page=1')).total).toBe(5);
+      expect((await page('page=1&status=ACTIVE')).total).toBe(4);
+      // Counts only, for the filters dialog.
+      expect((await agents.manager.get(`/api/dispatch/members?status=ACTIVE&only=counts&mcId=${lakeside.id}`).set(headers).expect(200)).body).toEqual({ counts: expect.objectContaining({ active: 1 }), total: 1 });
+      await db.query(`UPDATE dispatch_members SET status = 'ACTIVE', "leftAt" = NULL WHERE id = $1`, [id('Morgan')]);
       // An older web asking without a page gets the whole list as before.
       const old = (await agents.manager.get('/api/dispatch/members').set(headers).expect(200)).body;
       expect(old.items).toHaveLength(5);
@@ -1368,6 +1376,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const id = (await add([gone(2, 'Jamie', { leftOn: '', startedOn: '' })])).body.members[0].id as string;
       const { version } = await profile(id);
       await agents.manager.post(`/api/dispatch/members/${id}/left-day`).set(headers).send({ version, leftOn: addDays(usDay('latest'), 2) }).expect(400);
+      await agents.manager.post(`/api/dispatch/members/${id}/left-day`).set(headers).send({ version, leftOn: '0201-03-04' }).expect(400);
       await agents.manager.post(`/api/dispatch/members/${id}/left-day`).set(headers).send({ version, leftOn: '2024-12-20', reason: 'Contract ended.' }).expect(201);
       const page = await profile(id);
       expect(page).toMatchObject({ leftReason: 'Contract ended.', existing: { leftDateKnown: true } });
@@ -1408,6 +1417,61 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       // Sending the same names again changes nothing.
       await names(page.version, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id }, { name: 'Riley Stone' }] }).expect(201);
       expect((await profile(id)).version).toBe(page.version);
+      // In another order too: names saved together share a time, so the order they come back in isn't a change.
+      await names(page.version, { otherNames: [{ name: 'Riley Stone' }, { name: 'Ryan Sands', mcId: mc.id }] }).expect(201);
+      expect((await profile(id)).version).toBe(page.version);
+      expect((await db.query(`SELECT count(*)::integer AS n FROM dispatch_events WHERE "memberId" = $1 AND event = 'NAMES_CHANGED'`, [id]))[0].n).toBe(1);
+    });
+    it('fills in nothing from a row with a problem, so a value the check refused never reaches the record', async () => {
+      const first = await add([gone(2, 'Drew', { leftOn: '', personalEmail: 'drew.home@example.test' })]);
+      const drew = first.body.members[0].id as string;
+      // A password in the DAT column, next to a number that could be filled in.
+      const again = gone(2, 'Drew', { leftOn: '', personalEmail: 'drew.home@example.test', ringCentralNumber: '+1 469 555 0118', datEmail: 'hunter2' });
+      const checked = (await check([again])).body.rows[0];
+      expect(checked).toMatchObject({ status: 'ALREADY', match: { id: drew, options: ['DIFFERENT'] } });
+      expect(checked.problems.join(' ')).toMatch(/isn’t an email address/);
+      expect((await add([{ ...again, alreadyAction: 'FILL' }])).body).toMatchObject({ added: 0, filled: 0 });
+      expect((await profile(drew)).existing).toMatchObject({ ringCentralNumber: null, datEmail: null });
+    });
+    it('fills a last day only where Add last day would put it, and moves an unrecorded start back to it', async () => {
+      const known = (await add([gone(2, 'Drew', { leftOn: '', startedOn: '2024-03-04', personalEmail: 'drew.home@example.test' })])).body.members[0].id as string;
+      const before = gone(2, 'Drew', { leftOn: '2023-01-01', startedOn: '', personalEmail: 'drew.home@example.test' });
+      const refused = (await check([before])).body.rows[0];
+      expect(refused.match.options).toEqual(['DIFFERENT']);
+      expect(refused.problems.join(' ')).toMatch(/can’t be before Drew Fictional started/);
+      expect((await add([{ ...before, alreadyAction: 'FILL' }])).body).toMatchObject({ filled: 0 });
+      expect((await profile(known)).existing).toMatchObject({ leftDateKnown: false });
+      // With no start recorded, the start and the undated period move back to the last day, as Add last day does.
+      const unknown = (await add([gone(3, 'Jamie', { leftOn: '', startedOn: '', personalEmail: 'jamie.home@example.test' })])).body.members[0].id as string;
+      expect((await add([{ ...gone(3, 'Jamie', { leftOn: '2023-01-01', startedOn: '', personalEmail: 'jamie.home@example.test' }), alreadyAction: 'FILL' }])).body).toMatchObject({ filled: 1 });
+      const page = await profile(unknown);
+      expect(page.leftAt.slice(0, 10)).toBe('2023-01-01');
+      expect(page.history[0].startedAt.slice(0, 10)).toBe('2023-01-01');
+      expect(page.history[0].endedAt.slice(0, 10)).toBe('2023-01-01');
+    });
+    it('sends an account filled in from a file to IT’s open removal, as Edit recorded details does', async () => {
+      const id = await addOne('Riley');
+      await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version: 1, leftAt: addDays(usDay('latest'), 10), reason: 'Moved on.' }).expect(201);
+      // A dispatcher added by hand always gets a removal; it has no company email yet, and IT already finished that step.
+      const [open] = await db.query(`SELECT id, profile FROM it_removal_requests WHERE "memberId" = $1`, [id]);
+      expect(open.profile.companyEmail ?? null).toBeNull();
+      await db.query(`UPDATE it_removal_tasks SET status = 'COMPLETED' WHERE "requestId" = $1 AND key = 'GOOGLE_WORKSPACE'`, [open.id]);
+      const row = base(2, 'Riley', { personalEmail: 'riley.home@example.test', companyEmail: 'riley@example.test' });
+      expect((await check([row])).body.rows[0].match.fills).toEqual(['company email']);
+      expect((await add([{ ...row, alreadyAction: 'FILL' }])).body).toMatchObject({ filled: 1 });
+      const [removal] = await db.query(`SELECT profile FROM it_removal_requests WHERE id = $1`, [open.id]);
+      expect(removal.profile).toMatchObject({ companyEmail: 'riley@example.test' });
+      expect((await db.query(`SELECT status FROM it_removal_tasks WHERE "requestId" = $1 AND key = 'GOOGLE_WORKSPACE'`, [open.id]))[0].status).toBe('PENDING');
+    });
+    it('lets only one row say a person who left came back', async () => {
+      await add([gone(2, 'Drew', { personalEmail: 'drew.home@example.test', personalPhone: '+1 202 555 0190' })]);
+      // Matched by different details under different names, so nothing else holds the second row back.
+      const rows = [{ ...base(2, 'Drew', { personalEmail: 'drew.home@example.test' }), alreadyAction: 'CAME_BACK' }, { ...base(3, 'Andy', { personalPhone: '+1 202 555 0190' }), alreadyAction: 'CAME_BACK' }];
+      const checked = (await check(rows)).body.rows;
+      expect(checked[0].status).toBe('READY');
+      expect(checked[1]).toMatchObject({ status: 'PROBLEM' });
+      expect(checked[1].problems.join(' ')).toMatch(/Row 2 already says Drew Fictional came back/);
+      expect((await add(rows)).body).toMatchObject({ added: 1 });
     });
     it('refuses a rollback while people added as Left or other names are recorded', async () => {
       await add([gone(2, 'Drew')]);

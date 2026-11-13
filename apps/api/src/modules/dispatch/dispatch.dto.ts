@@ -81,20 +81,23 @@ export class MemberFilters {
  @IsOptional() @IsIn(['ONBOARDED', 'ADDED']) source?: 'ONBOARDED' | 'ADDED';
  @IsOptional() @IsIn(['WITH', 'WITHOUT']) drivers?: 'WITH' | 'WITHOUT';
 }
-/** A page of Dispatch › Dispatchers. A request with none of page, filters or sort gets the whole list as before, for an older web. */
-export class MemberListQueryDto extends MemberFilters {
- @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL', 'ARCHIVED']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL';
+/** The view on screen: the tab, filters and sort. ARCHIVED is an older web's name for everyone, read as ALL. */
+export class MemberViewDto extends MemberFilters {
+ @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL', 'ARCHIVED']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL' | 'ARCHIVED';
  @IsOptional() @IsIn(['name', 'mc', 'team', 'lead', 'drivers', 'since', 'status']) sort?: 'name' | 'mc' | 'team' | 'lead' | 'drivers' | 'since' | 'status';
  @IsOptional() @IsIn(['asc', 'desc']) direction?: 'asc' | 'desc';
+}
+/**
+ * A page of Dispatch › Dispatchers. A request with none of page, filters or sort gets the whole list as before, for an older web.
+ * only=counts answers just the counts and total, for the filters dialog's "6 of 44 people match".
+ */
+export class MemberListQueryDto extends MemberViewDto {
  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100000) page?: number;
  @IsOptional() @Type(() => Number) @IsIn([20, 50, 100]) pageSize?: number;
+ @IsOptional() @IsIn(['counts']) only?: 'counts';
 }
-/** Export takes the view on screen: the tab, filters and sort, never a page. */
-export class MemberExportDto extends MemberFilters {
- @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL';
- @IsOptional() @IsIn(['name', 'mc', 'team', 'lead', 'drivers', 'since', 'status']) sort?: 'name' | 'mc' | 'team' | 'lead' | 'drivers' | 'since' | 'status';
- @IsOptional() @IsIn(['asc', 'desc']) direction?: 'asc' | 'desc';
-}
+/** Export takes the view on screen, never a page. */
+export class MemberExportDto extends MemberViewDto {}
 export class StatusQueryDto {
  @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
 }

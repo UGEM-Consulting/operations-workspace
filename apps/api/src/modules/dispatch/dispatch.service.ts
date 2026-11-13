@@ -255,7 +255,7 @@ export class DispatchService {
   const corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string }[] = await this.details.history(this.db, id);
   const [previousRecord] = member.previousMemberId ? await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN e."leftDateKnown" IS FALSE THEN NULL ELSE d."leftAt" END AS "leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $1`, [member.previousMemberId]) : [];
   // Other names (section 33), each with the MC where it was used when known.
-  const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt"`, [id]);
+  const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt", lower(o.name), o.id`, [id]);
   const [laterRecord] = await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "joinedAt", status FROM dispatch_members WHERE "previousMemberId" = $1`, [id]);
   return { sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,

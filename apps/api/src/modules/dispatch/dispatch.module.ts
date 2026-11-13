@@ -27,7 +27,7 @@ class DispatchController {
  @Get('members') members(@Query() query: MemberListQueryDto) {
   const paged = Object.entries(query).some(([key, value]) => key !== 'status' && value !== undefined);
   if (paged || query.status === 'LEAVING' || query.status === 'MISSING') return this.list.list(query);
-  return this.dispatch.members(query.status === undefined ? 'ALL' : query.status === ('ARCHIVED' as string) ? 'ALL' : query.status);
+  return this.dispatch.members(query.status === undefined || query.status === 'ARCHIVED' ? 'ALL' : query.status);
  }
  // Export the view on screen: a POST, because it is recorded; rate-limited, work details only.
  @Post('members/export') exportMembers(@Req() req: AuthRequest, @Body() dto: MemberExportDto) { return this.list.export(req.currentUser, dto); }

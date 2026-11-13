@@ -181,7 +181,7 @@ describe('the Dispatchers list through the BFF', () => {
   it('reads the list with its filters, so the filter sheet can say how many match, and nothing else under it', () => {
     assert.equal(allowedEndpoint('GET', 'dispatch/members'), true);
     assert.equal(allowedEndpoint('POST', 'dispatch/members'), false);
-    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers']);
+    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only']);
     assert.deepEqual(forwardedQuery('onboarding/review-queue'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction']);
     assert.deepEqual(forwardedQuery('dispatch/teams'), []);
   });
