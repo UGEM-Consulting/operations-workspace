@@ -20,6 +20,7 @@ import { companyEmailSql, lockAccount, syncSignIns, turnOffAccount } from './lea
 import { applicationDetails, currentDetails, MemberDetailsService } from './corrections';
 import { LeaveService } from './leave.service';
 import { PaperScansService } from './paper-scans';
+import { memberRowsSql } from './member-list';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 /** Who last corrected each field, and when, for "Corrected by … on …". */
@@ -148,27 +149,7 @@ export class DispatchService {
  }
 
  async members(status: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEFT' | 'ALL' = 'ALL') {
-  const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a."mcId" IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a."mcId" IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
-    coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", coalesce(st.id, t.id) AS "teamId", coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", (t."leadMemberId" = d.id) IS TRUE AS lead,
-    sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
-    ${companyEmailSql()} AS "companyEmail",
-    n."lastDay"::text AS "lastDay", n."lastDay" < $2::date AS "lastDayPassed",
-    CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM driver_assignments da WHERE da."memberId" = d.id AND da."endedAt" IS NULL) END AS "driversToReassign",
-    CASE WHEN n.id IS NULL THEN NULL ELSE (SELECT count(*)::integer FROM member_support_links ml WHERE ml."dispatcherId" = d.id AND ml."endedAt" IS NULL) END AS "supportsToReassign",
-    CASE WHEN n.id IS NULL OR rm.id IS NULL THEN NULL WHEN rm."completedAt" IS NOT NULL THEN 'COMPLETED' WHEN rm."removeNowAt" IS NULL AND rm."dueOn" > $3::date THEN 'SCHEDULED' ELSE 'IN_PROGRESS' END AS "itRemoval",
-    CASE WHEN lv.id IS NULL THEN NULL ELSE json_build_object('firstDay', lv."firstDay"::text, 'backOn', lv."backOn"::text, 'started', lv."startedAt" IS NOT NULL,
-     'it', (SELECT CASE WHEN r.id IS NULL THEN 'NONE' WHEN r."completedAt" IS NOT NULL THEN 'SUSPENDED' ELSE 'IN_PROGRESS' END
-      FROM (SELECT 1) one LEFT JOIN it_leave_requests r ON r."leaveId" = lv.id AND r.kind = 'SUSPEND' AND r."cancelledAt" IS NULL)) END AS leave
-   FROM dispatch_members d LEFT JOIN job_titles jt ON jt.id = d."jobTitleId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
-   LEFT JOIN LATERAL (SELECT * FROM member_support_links l WHERE l."supportId" = d.id AND l."endedAt" IS NULL AND d.position = 'SUPPORT' LIMIT 1) sl ON true
-   LEFT JOIN dispatch_members sd ON sd.id = sl."dispatcherId" LEFT JOIN teams st ON st.id = sl."teamId" LEFT JOIN mcs sm ON sm.id = st."mcId"
-   LEFT JOIN LATERAL (SELECT * FROM member_assignments x WHERE x."memberId" = coalesce(sl."dispatcherId", d.id) ORDER BY x."startedAt" DESC, x."createdAt" DESC LIMIT 1) a ON true
-   LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId"
-   LEFT JOIN member_notices n ON n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL
-   LEFT JOIN it_removal_requests rm ON rm."memberId" = d.id AND rm."cancelledAt" IS NULL
-   -- Leave (section 35): the open leave, upcoming or started, and how far IT's suspend checklist is.
-   LEFT JOIN member_leaves lv ON lv."memberId" = d.id AND lv."endedAt" IS NULL
+  const items: Record<string, unknown>[] = await this.db.query(`${memberRowsSql()}
    WHERE ($1 = 'ALL' OR d.status = $1 OR ($1 = 'ON_LEAVE' AND lv.id IS NOT NULL)) ORDER BY lower(d."firstName"), lower(d."lastName") LIMIT 1000`, [status, usDay('earliest'), usDay('latest')]);
   const [counts] = await this.db.query(`SELECT count(*) FILTER (WHERE status = 'ONBOARDING')::integer AS onboarding, count(*) FILTER (WHERE status = 'ACTIVE')::integer AS active, count(*) FILTER (WHERE status = 'LEFT')::integer AS left,
    count(*) FILTER (WHERE EXISTS(SELECT 1 FROM member_leaves l WHERE l."memberId" = dispatch_members.id AND l."endedAt" IS NULL))::integer AS "onLeave" FROM dispatch_members`);

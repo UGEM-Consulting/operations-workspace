@@ -12,6 +12,8 @@ export interface Column<T> {
   align?: 'right'; nowrap?: boolean; mono?: boolean; muted?: boolean; srOnly?: boolean;
   /** Lower-priority columns leave the table below this width (they still show in stacked rows). */
   hideBelow?: 'md' | 'lg' | 'xl';
+  /** false leaves the column out of stacked rows on phones too, when the primary cell already says it. */
+  stacked?: false;
   /** Server-side sorting: the URL that sorts by this column, and the current direction when sorted. */
   sort?: { href: string; direction?: 'asc' | 'desc' };
 }
@@ -44,7 +46,7 @@ export function Table<T>({ caption, columns, rows, rowKey, rowClassName, dense =
             const labelled = !column.primary && !column.action && !column.srOnly;
             return <td key={column.key} data-label={labelled ? column.label : undefined}
               className={cn('px-4 align-middle', dense ? 'py-2' : 'py-3', column.align === 'right' && 'text-right', column.nowrap && 'whitespace-nowrap', column.mono && 'font-mono text-[13px]', column.muted && 'text-muted-foreground',
-                column.hideBelow && hidden[column.hideBelow], stack, !labelled && 'max-sm:before:hidden', column.primary && stackTitle, column.action && stackAction)}><div className="min-w-0 max-sm:flex-1">{column.cell(row)}</div></td>;
+                column.hideBelow && hidden[column.hideBelow], stack, !labelled && 'max-sm:before:hidden', column.primary && stackTitle, column.action && stackAction, column.stacked === false && 'max-sm:!hidden')}><div className="min-w-0 max-sm:flex-1">{column.cell(row)}</div></td>;
           })}
         </tr>)}</tbody>}
       </table>
