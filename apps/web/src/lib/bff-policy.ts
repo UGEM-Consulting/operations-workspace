@@ -4,7 +4,7 @@ const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test
 // Private files served as-is (JPEG photos and PDFs) instead of JSON.
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
   `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
-  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `driver/catch-up/documents/${ID}/file`, 'driver/contract/file', 'driver/contract/signed', `safety/drivers/${ID}/contracts/${ID}/signed`, `safety/owners/${ID}/contracts/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
+  `dispatch/members/${ID}/photos/${PHOTO}`, `member-photos/${ID}/(profile|id)`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `driver/catch-up/documents/${ID}/file`, 'driver/contract/file', 'driver/contract/signed', `safety/drivers/${ID}/contracts/${ID}/signed`, `safety/owners/${ID}/contracts/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
   `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/units/${ID}/files/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
 const SCAN = '(license|medical-card|work-authorization|return-to-duty)';
 export function allowedEndpoint(method: string, path: string): boolean {
@@ -64,6 +64,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||
     // A scan of an NDA or SOP signed on paper (section 38).
     (method === 'POST' && match(`dispatch/members/${ID}/paper-scans`, path)) ||
+    // A photo an administrator adds for someone added by hand (section 33).
+    (method === 'POST' && match(`dispatch/members/${ID}/hand-photos/(profile|id)`, path)) ||
     // Cleared drivers: a dispatch manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
     (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||
     // Promotions: a team lead's request or cancellation, and a manager's decision.
@@ -112,7 +114,7 @@ export function forwardedQuery(path: string): string[] {
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`driver/catch-up/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/owners/${ID}/contracts`, path) || match(`safety/drivers/${ID}/(mvr|psp|road-test|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`safety/units/${ID}/files`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`dispatch/members/${ID}/hand-photos/(profile|id)`, path) || match(`driver/documents/${SCAN}`, path) || match(`driver/catch-up/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/owners/${ID}/contracts`, path) || match(`safety/drivers/${ID}/(mvr|psp|road-test|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`safety/units/${ID}/files`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
   // A list of existing dispatchers, units or drivers, up to 500 rows of text.
   if (['dispatch/existing/check', 'dispatch/existing/add', 'safety/units/check', 'safety/units/add', 'safety/drivers/existing/check', 'safety/drivers/existing/add'].includes(path)) return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).

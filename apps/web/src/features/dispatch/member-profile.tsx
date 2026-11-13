@@ -1,5 +1,6 @@
 'use client';
 import Link from 'next/link';
+import { MemberPhotosCard } from './member-photos';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, UserCheck, UserMinus, Users, type LucideIcon } from 'lucide-react';
@@ -268,15 +269,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             </Card>
                 </div>,
             files: <div className="space-y-6">
-              {(member.photo || member.idPhoto) && <Card><CardHeader title="Photos" description="As the applicant sent them. Open a photo to see it full size." />
-                <CardBody><div className="grid max-w-md grid-cols-2 gap-4">
-                  {member.photo && <figure className="space-y-2"><PhotoButton photos={photos} src={selfieUrl(member.id)} label={`Open the selfie of ${name}`} className="w-full">
-              <PrivateImage src={selfieUrl(member.id)} alt={`Selfie of ${name}`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></PhotoButton>
-              <figcaption className="text-[13px] leading-5"><span className="font-medium">Selfie</span><span className="block text-muted-foreground">Also the profile photo.</span></figcaption></figure>}
-                  {member.idPhoto && <figure className="space-y-2"><PhotoButton photos={photos} src={idSelfieUrl(member.id)} label={`Open the selfie of ${name} holding an ID`} className="w-full">
-              <PrivateImage src={idSelfieUrl(member.id)} alt={`Selfie of ${name} holding an ID`} className="aspect-[4/5] w-full rounded-md border bg-muted object-cover" /></PhotoButton>
-              <figcaption className="text-[13px] leading-5"><span className="font-medium">Selfie holding an ID</span><span className="block text-muted-foreground">Visible to the responsible manager and administrators only.</span></figcaption></figure>}
-                </div></CardBody></Card>}
+              <MemberPhotosCard member={member} name={name} photos={photos} profileUrl={selfieUrl(member.id)} idUrl={idSelfieUrl(member.id)} admin={admin} />
             {member.documents && member.documents.length > 0 && <Card>
               <CardHeader title="Signed documents" />
               <ul className="mt-3 divide-y divide-border border-t border-border">{member.documents.map(doc => <li key={doc.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">

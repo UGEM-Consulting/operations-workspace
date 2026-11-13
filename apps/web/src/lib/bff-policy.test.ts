@@ -177,6 +177,16 @@ describe('trusted devices and paper scans through the BFF (section 38)', () => {
   });
 });
 
+describe('photos of people added by hand through the BFF', () => {
+  it('lets an administrator add one and staff open them, and nothing else', () => {
+    const id = '2c3c0529-044c-450f-901f-201b8d17aa00';
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${id}/hand-photos/profile`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${id}/hand-photos/passport`), false);
+    assert.equal(isFileEndpoint(`member-photos/${id}/id`), true);
+    assert.ok(bodyLimit(`dispatch/members/${id}/hand-photos/id`) > 1_000_000);
+  });
+});
+
 describe('load board accounts and seats through the BFF', () => {
   it('lets IT and administrators keep the accounts and seats, and nothing else under them', () => {
     assert.equal(allowedEndpoint('POST', 'lists/load-board-accounts'), true);

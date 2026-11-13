@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { photoSummary } from '../documents/member-photos';
 import { askForMoveAccounts } from '../company-accounts/account-requests';
 import { memberCompanyAccounts } from '../company-accounts/accounts';
 import { memberSeats } from '../load-boards/seats';
@@ -82,7 +83,8 @@ export class DispatchService {
   */
  async team(id: string) {
   const person = `d.id, d."firstName", d."lastName", d.status, d.position, d."supportType", d.version,
-   EXISTS(SELECT 1 FROM dispatcher_applications a JOIN applicant_photos p ON p."applicationId" = a.id AND p.kind = 'SELFIE' AND p."createdAt" <= a."submittedAt" WHERE a.id = d."applicationId" AND a.status = 'APPROVED') AS photo,
+   (EXISTS(SELECT 1 FROM dispatcher_applications a JOIN applicant_photos p ON p."applicationId" = a.id AND p.kind = 'SELFIE' AND p."createdAt" <= a."submittedAt" WHERE a.id = d."applicationId" AND a.status = 'APPROVED')
+    OR (d."applicationId" IS NULL AND EXISTS(SELECT 1 FROM member_photos mp WHERE mp."memberId" = d.id AND mp.kind = 'PROFILE' AND mp."replacedAt" IS NULL))) AS photo,
    ${lastDaySql('d')}, ${onLeaveUntilSql('d')} AS "onLeaveUntil"`;
   // The three reads don't depend on each other, so they run at once.
   const [[team], dispatchers, helpers] = await Promise.all([
@@ -186,7 +188,10 @@ export class DispatchService {
    application ? this.db.query(`SELECT DISTINCT ON (d.id) d.id, d.kind, d.title, d.version, s."signedAt" FROM document_signatures s JOIN company_documents d ON d.id = s."documentId"
     WHERE s."applicationId" = $1 AND s."signerRole" = 'APPLICANT' ORDER BY d.id, s."signedAt"`, [application.id]) : [],
    application ? this.db.query(`SELECT EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'SELFIE' AND p."createdAt" <= $2) AS present,
-     EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'ID_SELFIE' AND p."createdAt" <= $2) AS "idPresent"`, [application.id, application.submittedAt]) : [{ present: false, idPresent: false }],
+     EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'ID_SELFIE' AND p."createdAt" <= $2) AS "idPresent"`, [application.id, application.submittedAt])
+    // Someone added by hand: the photos an administrator added (section 33).
+    : this.db.query(`SELECT EXISTS(SELECT 1 FROM member_photos p WHERE p."memberId" = $1 AND p.kind = 'PROFILE' AND p."replacedAt" IS NULL) AS present,
+     EXISTS(SELECT 1 FROM member_photos p WHERE p."memberId" = $1 AND p.kind = 'ID' AND p."replacedAt" IS NULL) AS "idPresent"`, [id]),
    this.db.query(`SELECT c.id, c.kind, c.value, c.label, c."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "addedBy"
     FROM member_contacts c LEFT JOIN users u ON u.id = c."addedBy" WHERE c."memberId" = $1 AND c."removedAt" IS NULL ORDER BY c."createdAt"`, [id]),
    application ? this.db.query(`SELECT id, event, "createdAt" FROM application_activity WHERE "invitationId" = $1 ORDER BY "createdAt"`, [application.invitationId]) : [],
@@ -272,7 +277,7 @@ export class DispatchService {
     mcName: fields.mcName ?? null, teamLead: fields.teamLead ?? null, jobTitle: fields.jobTitle ?? null, submittedAt: application.submittedAt } : null,
    corrections, correctedFields: correctedFields(corrections), previousRecord: previousRecord ?? null, laterRecord: laterRecord ?? null,
    leave, restore, leaveHistory: leaves.filter(row => row.endedAt),
-   otherNames, existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
+   otherNames, existing, documents, photo: !!photo[0]?.present, idPhoto: !!photo[0]?.idPresent, handPhotos: application ? null : await photoSummary(this.db, id), contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
    noticeHistory: notices.filter(row => row.cancelledAt || row.changes.length).map(row => ({ id: row.id, lastDay: row.lastDay, reason: row.reason, recordedBy: row.recorder, createdAt: row.createdAt, cancelledAt: row.cancelledAt, cancelledBy: row.canceller, cancelReason: row.cancelReason, changes: row.changes.map(({ from, to, reason, at }) => ({ from, to, reason, at })) })) };
  }
 

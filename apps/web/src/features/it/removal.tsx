@@ -1,5 +1,6 @@
 'use client';
 import { useRouter } from 'next/navigation';
+import { WhoThisIs } from './who';
 import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
@@ -111,6 +112,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
    <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(event=>({id:event.id,tone:activityTone(event),title:activityTitle(event),meta:<LocalTime iso={event.createdAt}/>}))}/></CardBody></Card>
   </div>
   <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
+   <WhoThisIs memberId={request.memberId} name={profile.displayName} photos={data.photos}/>
    <Card><CardHeader title="Accounts to remove"/><CardBody className="space-y-4">
     <div className="flex items-center gap-3"><Avatar name={profile.displayName} size="lg"/>
      <div className="min-w-0"><p className="truncate font-medium">{profile.displayName}</p><p className="text-[13px] text-muted-foreground">{profile.position??'Dispatcher'}{profile.mcName?` · ${profile.mcName}`:''}{profile.teamName?` · ${profile.teamName}`:''}</p></div></div>

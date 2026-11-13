@@ -13,7 +13,7 @@ const KEYS = [
  `photos/${U}/${U}\\.jpg`, `documents/${U}\\.pdf`, `drivers/${U}/${U}\\.pdf`, `driver-reports/${U}/${U}\\.pdf`, `driver-consents/${U}\\.pdf`,
  // Layout 2.
  `applicants/${U}/(selfie|id-selfie)/${U}\\.jpg`, `applicants/${U}/signed/${S}-v\\d+\\.pdf`, `company-documents/(onboarding|driver-consents|notice-letters)/${S}/${U}\\.pdf`,
- `drivers/${U}/(documents|reports|owner-operator)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`, `members/${U}/paper/${S}/${U}\\.pdf`, `units/${U}/${S}/${U}\\.pdf`, `truck-owners/${U}/contracts/${S}/${U}\\.pdf`,
+ `drivers/${U}/(documents|reports|owner-operator)/${S}/${U}\\.pdf`, `drivers/${U}/signed/${S}-v\\d+\\.pdf`, `members/${U}/paper/${S}/${U}\\.pdf`, `members/${U}/photos/(profile|id)/${U}\\.jpg`, `units/${U}/${S}/${U}\\.pdf`, `truck-owners/${U}/contracts/${S}/${U}\\.pdf`,
 ];
 const KEY = new RegExp(`^(${KEYS.join('|')})$`);
 // Only these failure codes are logged; raw storage errors can contain bucket paths or credential details.
@@ -112,6 +112,8 @@ export const driverConsentKey = (doc: Stored) => doc.storageLayout === 1 ? `driv
 /** company-documents/notice-letters/<kind>/<letter>.pdf: the notice letters Safety publishes (always layout 2). */
 export const noticeLetterKey = (doc: { id: string; kind: string }) => `company-documents/notice-letters/${folder(doc.kind)}/${doc.id}.pdf`;
 /** members/<member>/paper/<nda|sop>/<scan>.pdf: a scan of an NDA or SOP that someone added by hand signed on paper. */
+/** members/<member>/photos/<profile|id>/<photo>.jpg: a photo an administrator added for someone added by hand (always layout 2). */
+export const memberPhotoKey = (photo: { id: string; kind: 'PROFILE' | 'ID'; memberId: string }) => `members/${photo.memberId}/photos/${photo.kind === 'PROFILE' ? 'profile' : 'id'}/${photo.id}.jpg`;
 export const paperScanKey = (scan: { id: string; kind: string; memberId: string }) => `members/${scan.memberId}/paper/${folder(scan.kind)}/${scan.id}.pdf`;
 /** units/<unit>/<registration|inspection|permits|other>/<file>.pdf: an optional copy of a truck's or trailer's paper (always layout 2). */
 export const unitFileKey = (file: { id: string; kind: string; unitId: string }) => `units/${file.unitId}/${folder(file.kind)}/${file.id}.pdf`;

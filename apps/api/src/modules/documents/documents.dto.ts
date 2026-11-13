@@ -49,3 +49,8 @@ export class PublishDocumentDto {
  @IsString() @IsBase64() @MaxLength(base64Length(MAX_PDF_BYTES)) file!: string;
  @IsOptional() @IsArray() @ArrayMaxSize(MAX_FIELDS) @ValidateNested({ each: true }) @Type(() => DocumentFieldDto) fields?: DocumentFieldDto[];
 }
+/** A photo an administrator adds for someone added by hand (section 33), confirmed as theirs and clear. */
+export class HandPhotoDto {
+ @IsString() @IsBase64() @MaxLength(base64Length(MAX_PHOTO_BYTES)) image!: string;
+ @Equals(true, { message: 'Confirm that this is them and that the photo shows their face clearly.' }) confirmed!: boolean;
+}
