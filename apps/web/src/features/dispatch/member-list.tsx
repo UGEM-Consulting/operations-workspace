@@ -9,23 +9,14 @@ import { inputClass, RadioGroup, Select } from '@/components/ui/field';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { MEMBER_DEFAULTS } from '@/lib/navigation';
 import { cn } from '@/lib/utils';
+import { FILTER_KEYS, membersHref, type FilterKey } from './member-filters';
 import { membersCsv, type ExportRow } from './members-csv';
 import type { MemberOptions } from './types';
 
-const PATH = '/dispatch/dispatchers';
-/** The filters under the tabs; search, tab, sort and page live beside them in the URL. */
-export const FILTER_KEYS = ['mcId', 'teamId', 'leadId', 'position', 'jobTitleId', 'source', 'drivers'] as const;
-type FilterKey = typeof FILTER_KEYS[number];
 const POSITIONS = [{ value: 'DISPATCHER', label: 'Dispatcher' }, { value: 'SUPPORT', label: 'Support' }, { value: 'UPDATER', label: 'Updater' }];
 const SOURCES = [{ value: '', label: 'Everyone' }, { value: 'ONBOARDED', label: 'Came through onboarding' }, { value: 'ADDED', label: 'Added by hand' }];
 const DRIVERS = [{ value: '', label: 'Everyone' }, { value: 'WITH', label: 'With drivers' }, { value: 'WITHOUT', label: 'Without drivers' }];
 
-/** A Dispatchers URL with these changes, back to page 1, leaving out whatever is at its default so links stay short. */
-export function membersHref(filters: Record<string, string>, changes: Record<string, string>) {
-  const next = { ...filters, page: '1', ...changes };
-  const params = new URLSearchParams(Object.entries(next).filter(([key, value]) => value !== '' && MEMBER_DEFAULTS[key] !== value));
-  return params.size ? `${PATH}?${params}` : PATH;
-}
 const archived = (item: { name: string; archived?: boolean }) => item.archived ? `${item.name} (archived)` : item.name;
 const teamChoices = (options: MemberOptions, mcId: string) => [{ value: 'NONE', label: 'Independent (no team)' },
   ...options.teams.filter(team => !mcId || team.mcId === mcId).map(team => ({ value: team.id, label: archived(team) }))];
