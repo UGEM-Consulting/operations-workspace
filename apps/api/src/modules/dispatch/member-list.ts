@@ -12,7 +12,7 @@ import type { MemberFilters, MemberListQueryDto } from './dispatch.dto';
  * the Eastern dates (earliest and latest) that "last day passed" and IT's removal state compare with.
  */
 export const memberRowsSql = (earliest = '$2', latest = '$3') => `SELECT d.id, d."firstName", d."lastName", d.position, d."supportType", d.status, d.version, d."joinedAt", d."leftAt",
-    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a."mcId" IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a."mcId" IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
+    jt.name AS "jobTitle", e."memberId" IS NOT NULL AS "addedByHand", e."acceptedAt" IS NOT NULL AS "paperworkAccepted", coalesce(sl."startedAt", a."startedAt") AS since, CASE WHEN st.id IS NOT NULL THEN sm.name WHEN a."mcId" IS NULL AND d.status <> 'LEFT' THEN '${NO_MC}' ELSE m.name END AS mc, a."mcId" IS NOT NULL OR st.id IS NOT NULL AS placed, coalesce(e."startDateKnown", true) AS "startDateKnown",
     coalesce(e."periodDateKnown", true) OR (SELECT count(*) FROM member_assignments p WHERE p."memberId" = d.id) + (SELECT count(*) FROM member_support_links p WHERE p."supportId" = d.id) > 1 AS "sinceKnown", coalesce(st.id, t.id) AS "teamId", coalesce(st.name, t.name) AS team, st.name AS "wholeTeam", (t."leadMemberId" = d.id) IS TRUE AS lead,
     sl."dispatcherId", CASE WHEN sd.id IS NULL THEN NULL ELSE sd."firstName" || ' ' || sd."lastName" END AS dispatcher,
     ${companyEmailSql()} AS "companyEmail",
@@ -45,9 +45,12 @@ const TAB_SQL: Record<MemberTab, string> = {
  MISSING: `b.status <> 'LEFT' AND (NOT b."startDateKnown" OR (b.position = 'DISPATCHER' AND NOT b.placed))`, ALL: 'true',
 };
 const COUNT_KEYS: Record<MemberTab, string> = { ONBOARDING: 'onboarding', ACTIVE: 'active', ON_LEAVE: 'onLeave', LEAVING: 'leaving', LEFT: 'left', MISSING: 'missing', ALL: 'all' };
+// The Paperwork tab's count, as GET dispatch/paperwork lists it (added by hand, not left, not accepted), so it follows the filters too.
+const PAPERWORK_SQL = `b."addedByHand" AND b.status <> 'LEFT' AND NOT b."paperworkAccepted"`;
+// Sorting puts what has no value last either way: supports and updaters have no drivers, and an unrecorded start date only holds the day they were added.
 const SORTS: Record<MemberListQueryDto['sort'] & string, string> = {
- name: 'lower(b."firstName"), lower(b."lastName")', mc: 'lower(b.mc)', team: 'lower(b.team)', lead: 'lower(b."teamLead")', drivers: 'b.drivers',
- since: 'b.since', status: `CASE WHEN b."lastDay" IS NOT NULL THEN 2 WHEN b.leave IS NOT NULL THEN 1 WHEN b.status = 'ONBOARDING' THEN 0 WHEN b.status = 'LEFT' THEN 4 ELSE 3 END`,
+ name: 'lower(b."firstName"), lower(b."lastName")', mc: 'lower(b.mc)', team: 'lower(b.team)', lead: 'lower(b."teamLead")', drivers: `CASE WHEN b.position = 'DISPATCHER' THEN b.drivers END`,
+ since: 'CASE WHEN b."sinceKnown" THEN b.since END', status: `CASE WHEN b."lastDay" IS NOT NULL THEN 2 WHEN b.leave IS NOT NULL THEN 1 WHEN b.status = 'ONBOARDING' THEN 0 WHEN b.status = 'LEFT' THEN 4 ELSE 3 END`,
 };
 export const EXPORT_LIMIT = 2000;
 
@@ -119,7 +122,7 @@ export class MemberListService {
  async list(query: MemberListQueryDto) {
   const tab: MemberTab = query.status ?? 'ACTIVE', { params, add, where, matched } = this.filters(query);
   const base = `WITH b AS (${memberRowsSql('$1', '$2')}) `;
-  const [counts] = await this.db.query(`${base}SELECT ${MEMBER_TABS.map(key => `count(*) FILTER (WHERE ${TAB_SQL[key]})::integer AS "${COUNT_KEYS[key]}"`).join(', ')} FROM b WHERE ${where}`, params);
+  const [counts] = await this.db.query(`${base}SELECT ${MEMBER_TABS.map(key => `count(*) FILTER (WHERE ${TAB_SQL[key]})::integer AS "${COUNT_KEYS[key]}"`).join(', ')}, count(*) FILTER (WHERE ${PAPERWORK_SQL})::integer AS paperwork FROM b WHERE ${where}`, params);
   const total: number = counts[COUNT_KEYS[tab]], pageSize = query.pageSize ?? 20, pages = Math.max(1, Math.ceil(total / pageSize)), page = Math.min(query.page ?? 1, pages);
   const limit = add(pageSize), offset = add((page - 1) * pageSize);
   const items = await this.db.query(`${base}SELECT b.*, ${matched} AS matched FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params);
