@@ -39,7 +39,7 @@ export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' &&
 export const assists = (row: { dispatcher?: string | null; wholeTeam?: string | null }) => row.wholeTeam ?? row.dispatcher ?? 'a dispatcher';
 /** "3 drivers, 1 support", for someone on notice. */
 export const toReassign = (drivers: number, supports: number) => [drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', supports ? (supports === 1 ? '1 support or updater' : `${supports} supports or updaters`) : ''].filter(Boolean).join(drivers && supports ? ', ' : '') || 'Nobody';
-export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number; leaving?: number; missing?: number; all?: number };
+export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number; leaving?: number; missing?: number; all?: number; paperwork?: number };
   // A page of the Dispatchers table, with what its filters offer.
   total?: number; page?: number; pageSize?: number; options?: MemberOptions }
 export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[] }

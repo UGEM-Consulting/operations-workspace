@@ -1215,11 +1215,11 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     async function people() {
       const { body } = await add([
         base(2, 'Riley', { personalPhone: '+1 202 555 0147', companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', telegram: '@riley_disp' }),
-        base(3, 'Morgan', { team: '' }), base(4, 'Avery', { mc: 'Lakeside Carriers', team: '' }),
+        base(3, 'Morgan', { team: '', startedOn: '' }), base(4, 'Avery', { mc: 'Lakeside Carriers', team: '' }),
         { row: 5, firstName: 'Sky', lastName: 'Fictional', position: 'Support', supports: 'Riley Fictional', startedOn: '2025-01-02', personalEmail: 'sky.home@example.test' },
-        { row: 6, firstName: 'Ula', lastName: 'Fictional', position: 'Updater', team: 'Red team', startedOn: '2025-01-02' }]);
+        { row: 6, firstName: 'Abe', lastName: 'Fictional', position: 'Updater', team: 'Red team', startedOn: '2025-01-02' }]);
       expect(body.left).toEqual([]);
-      const rows: Record<string, number> = { Riley: 2, Morgan: 3, Avery: 4, Sky: 5, Ula: 6 };
+      const rows: Record<string, number> = { Riley: 2, Morgan: 3, Avery: 4, Sky: 5, Abe: 6 };
       const id = (name: string) => body.members.find((member: { row: number }) => member.row === rows[name]).id as string;
       const [team] = await db.query(`SELECT id, version FROM teams WHERE name = 'Red team'`);
       await agents.manager.patch(`/api/dispatch/teams/${team.id}`).set(headers).send({ version: team.version, leadMemberId: id('Riley') }).expect(200);
@@ -1228,22 +1228,32 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     it('filters by MC, team, team lead and position on the server, with counts that follow the filters', async () => {
       const { id, teamId } = await people();
       const [lakeside] = await db.query(`SELECT id FROM mcs WHERE name = 'Lakeside Carriers'`);
-      expect(names(await page('page=1'))).toEqual(['Avery', 'Morgan', 'Riley', 'Sky', 'Ula']);
+      expect(names(await page('page=1'))).toEqual(['Abe', 'Avery', 'Morgan', 'Riley', 'Sky']);
       expect(names(await page(`page=1&mcId=${lakeside.id}`))).toEqual(['Avery']);
-      expect(names(await page(`page=1&teamId=${teamId}`))).toEqual(['Riley', 'Sky', 'Ula']);
+      expect(names(await page(`page=1&teamId=${teamId}`))).toEqual(['Abe', 'Riley', 'Sky']);
       expect(names(await page('page=1&teamId=NONE'))).toEqual(['Avery', 'Morgan']);
       // A team lead's people: the lead, their dispatchers and whoever helps them or the whole team.
       const lead = await page(`page=1&leadId=${id('Riley')}`);
-      expect(names(lead)).toEqual(['Riley', 'Sky', 'Ula']);
+      expect(names(lead)).toEqual(['Abe', 'Riley', 'Sky']);
       expect(lead.items.every(item => item.teamLead === 'Riley Fictional')).toBe(true);
-      expect(names(await page('page=1&position=UPDATER'))).toEqual(['Ula']);
+      expect(names(await page('page=1&position=UPDATER'))).toEqual(['Abe']);
       expect(names(await page('page=1&position=DISPATCHER&drivers=WITHOUT'))).toEqual(['Avery', 'Morgan', 'Riley']);
       expect(names(await page('page=1&source=ONBOARDED'))).toEqual([]);
       expect((await page(`page=1&mcId=${lakeside.id}`)).counts).toMatchObject({ active: 1, all: 1, left: 0 });
       expect((await page('page=1')).options.leads).toEqual([{ id: id('Riley'), name: 'Riley Fictional' }]);
       // Sorting, and a page past the end shows the last one.
-      expect(names(await page('page=1&sort=name&direction=desc'))).toEqual(['Ula', 'Sky', 'Riley', 'Morgan', 'Avery']);
+      expect(names(await page('page=1&sort=name&direction=desc'))).toEqual(['Sky', 'Riley', 'Morgan', 'Avery', 'Abe']);
       expect(names(await page('page=1&sort=mc'))[0]).toBe('Avery');
+      // What has no value sorts last either way: supports and updaters have no drivers, and Morgan's start date isn't recorded.
+      expect(names(await page('page=1&sort=drivers&direction=asc'))).toEqual(['Avery', 'Morgan', 'Riley', 'Abe', 'Sky']);
+      expect(names(await page('page=1&sort=drivers&direction=desc'))).toEqual(['Avery', 'Morgan', 'Riley', 'Abe', 'Sky']);
+      expect(names(await page('page=1&sort=since&direction=desc'))).toEqual(['Abe', 'Sky', 'Avery', 'Riley', 'Morgan']);
+      expect(names(await page('page=1&sort=since&direction=asc'))).toEqual(['Avery', 'Riley', 'Abe', 'Sky', 'Morgan']);
+      // The Paperwork tab's count follows the filters like the others: everyone here was added by hand and nobody's paperwork is accepted.
+      expect((await page('page=1')).counts.paperwork).toBe(5);
+      expect((await page(`page=1&mcId=${lakeside.id}`)).counts.paperwork).toBe(1);
+      await db.query(`UPDATE existing_member_records SET "acceptedAt" = now() WHERE "memberId" = $1`, [id('Avery')]);
+      expect((await page(`page=1&mcId=${lakeside.id}`)).counts.paperwork).toBe(0);
       expect(await page('page=9&pageSize=20')).toMatchObject({ page: 1, pageSize: 20, total: 5 });
       await agents.manager.get('/api/dispatch/members?page=1&pageSize=30').set(headers).expect(400);
       await agents.manager.get('/api/dispatch/members?page=1&teamId=Red').set(headers).expect(400);
@@ -1269,8 +1279,8 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       const { teamId } = await people();
       const { body } = await agents.manager.post('/api/dispatch/members/export').set(headers).send({ status: 'ACTIVE', teamId, sort: 'name' }).expect(201);
       expect(body.total).toBe(3);
-      expect(body.items.map((item: { firstName: string }) => item.firstName)).toEqual(['Riley', 'Sky', 'Ula']);
-      expect(body.items[0]).toMatchObject({ companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', telegram: 'riley_disp', teamLead: 'Riley Fictional' });
+      expect(body.items.map((item: { firstName: string }) => item.firstName)).toEqual(['Abe', 'Riley', 'Sky']);
+      expect(body.items[1]).toMatchObject({ companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', telegram: 'riley_disp', teamLead: 'Riley Fictional' });
       for (const item of body.items) for (const key of ['personalEmail', 'personalPhone', 'legalFirstName', 'leftReason']) expect(item).not.toHaveProperty(key);
       const [event] = await db.query(`SELECT "actorId", metadata FROM dispatch_events WHERE event = 'MEMBERS_EXPORTED'`);
       expect(event).toEqual({ actorId: users.manager.id, metadata: { count: 3, tab: 'ACTIVE', filters: ['teamId'] } });

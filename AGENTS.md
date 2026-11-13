@@ -161,8 +161,10 @@ Dispatchers table (designed as the Dispatchers table group and approved by the u
 - **Where it lives:** Dispatch › Dispatchers filters, searches, sorts and pages on the server through MemberListService (dispatch/member-list.ts). memberRowsSql is the one row query, shared with the older whole-list answer.
 - **List request:** GET dispatch/members with any of page, pageSize (20, 50 or 100), sort, direction or the filters returns { items, counts per tab, total, page, pageSize, options }.
   - Filters: mcId, teamId (NONE = Independent), leadId, jobTitleId, position (DISPATCHER, SUPPORT, UPDATER), source (ONBOARDED, ADDED), drivers (WITH, WITHOUT) and search.
-  - Tabs: ONBOARDING, ACTIVE, ON_LEAVE, LEAVING, LEFT, MISSING, ALL. Counts follow every filter but the tab.
+  - Tabs: ONBOARDING, ACTIVE, ON_LEAVE, LEAVING, LEFT, MISSING, ALL. Counts follow every filter but the tab, and counts.paperwork (added by hand, not left, paperwork not accepted, as dispatch/paperwork lists them) follows them too.
+  - Sorting puts what has no value last either way: supports' drivers and an unrecorded start date (sinceKnown false).
   - A request with at most a status gets the whole list as before, for an older web.
+  - The BFF lets the browser read GET dispatch/members with its query fields (forwardedQuery in bff-policy.ts), only so the filter sheet can say "6 of 44 people match" while filters are being chosen.
 - **Team lead filter:** the lead, their dispatchers, and the supports and updaters who help one of them or the whole team.
 - **Search:** matches the name, MC, team, job title and team lead. It also matches every contact detail through CONTACT_POINTS: company and personal email, phones by their digits (with or without the US 1), RingCentral number and extension, Telegram and added contacts. A row says which detail matched (matched), unless its name or place did.
 - **Export:** POST dispatch/members/export (dispatch managers and administrators, 10 per 15 minutes per user, at most 2,000 rows) returns the view on screen with work details only: never personal email or phone, legal names, sign-ins or reasons.

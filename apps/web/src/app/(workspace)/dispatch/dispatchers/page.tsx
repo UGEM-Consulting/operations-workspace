@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { PaperworkTable } from '@/features/dispatch/paperwork';
 import { MemberFilters, PageSizeSelect } from '@/features/dispatch/member-list';
 import { FILTER_KEYS, membersHref } from '@/features/dispatch/member-filters';
+import { describeView, matchedRange } from '@/features/dispatch/member-view';
 import { assists, fullName, underMc, memberBadge, supportName, toReassign, type MemberList, type MemberRow, type PaperworkList } from '@/features/dispatch/types';
 export const metadata = { title: 'Dispatchers' };
 type Row = MemberList['items'][number];
@@ -53,6 +54,12 @@ function statusBadge(member: Row) {
   return <Badge {...memberBadge(member.status)} />;
 }
 const exceptional = (member: Row) => !!(member.lastDay || member.leave || member.status !== 'ACTIVE');
+/** The contact detail a search found, with the part that matched marked (DispatchersSearchContactScreen). */
+function Matched({ value, search }: { value: string; search: string }) {
+  const range = matchedRange(value, search);
+  if (!range) return value;
+  return <>{value.slice(0, range[0])}<mark className="rounded-xs bg-warning/25 px-0.5 text-foreground">{value.slice(...range)}</mark>{value.slice(range[1])}</>;
+}
 
 /** Dispatch › Dispatchers: every dispatch member record (no login), filtered, sorted and paged on the server. */
 export default async function DispatchersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -72,19 +79,20 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
   const status = filters.status, items = data.items, total = data.total ?? items.length, pageSize = data.pageSize ?? Number(filters.pageSize), page = data.page ?? 1;
   const options = data.options ?? { mcs: [], teams: [], leads: [], jobTitles: [] };
   const filtered = FILTER_KEYS.some(key => filters[key]) || filters.search !== '';
+  // With no sort chosen the list is by name (DispatchersFiltersScreen: "Name ↑"), except Leaving and On leave, which keep their own order.
+  const sorted = filters.sort || (status === 'LEAVING' || status === 'ON_LEAVE' ? '' : 'name');
   const sortBy = (key: string) => {
-    const direction = filters.sort === key ? (filters.direction === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc' : undefined;
+    const direction = sorted === key ? (filters.direction === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc' : undefined;
     return { href: membersHref(filters, { sort: key, direction: direction === 'asc' ? 'desc' : 'asc' }), direction };
   };
   const tabLabel = { ONBOARDING: 'Onboarding', ACTIVE: 'Active', ON_LEAVE: 'On leave', LEAVING: 'Leaving', LEFT: 'Left', MISSING: 'Missing details', ALL: 'All' }[status] ?? 'Active';
-  const view = [tabLabel, ...FILTER_KEYS.filter(key => filters[key]).map(key => ({ mcId: 'MC', teamId: 'Team', leadId: 'Team lead', position: 'Position', jobTitleId: 'Job title', source: 'Source', drivers: 'Drivers' })[key]),
-    filters.search && `search “${filters.search}”`, `sorted by ${filters.sort === 'lead' ? 'team lead' : filters.sort || 'name'}`].filter(Boolean).join(' · ');
+  const view = describeView(tabLabel, filters, options);
   const name: Column<Row> = { key: 'name', label: 'Name', primary: true, sort: sortBy('name'), cell: member => <Link href={`/dispatch/dispatchers/${member.id}`} className="block rounded-sm hover:underline focus-visible:outline-2">
     <span className="max-sm:hidden"><Person name={fullName(member)} secondary={role(member)} /></span>
     {/* Phones (DispatchersFiltersPhoneScreen): role, team and drivers on one line, and a badge only when it says something. */}
     <span className="grid justify-items-start gap-1.5 sm:hidden"><Person name={fullName(member)} secondary={[role(member), member.position === 'SUPPORT' ? '' : member.team, driversText(member)].filter(Boolean).join(' · ')} />
       {exceptional(member) && <span className="pl-11">{statusBadge(member)}</span>}</span>
-    {member.matched && <span className="mt-0.5 block truncate pl-11 text-xs text-muted-foreground">{member.matched.label} {member.matched.value}</span>}
+    {member.matched && <span className="mt-0.5 block truncate pl-11 text-xs text-muted-foreground">{member.matched.label} <Matched value={member.matched.value} search={filters.search} /></span>}
   </Link> };
   const team = (member: Row) => member.team ?? <span className="text-muted-foreground">{underMc(member.mc) ? 'Independent' : '—'}</span>;
   const columns: Column<Row>[] = [name, { key: 'mc', label: 'MC', hideBelow: 'md', stacked: false, sort: sortBy('mc'), cell: member => member.mc ?? <span className="text-muted-foreground">No MC yet</span> },
@@ -112,13 +120,13 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
       action={paperwork && <Button asChild variant="outline"><Link href="/dispatch/dispatchers/add"><Plus aria-hidden="true" className="size-4" />Add existing dispatchers</Link></Button>} />
     {passed.map(member => <Alert key={member.id} tone="danger" title={`${fullName(member)}’s last day has passed`}><p>{toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0)} still assigned, so the record stays Leaving until they’re reassigned. IT’s removal of their access doesn’t wait for this.</p></Alert>)}
     <Card>
-      <FilterBar path="/dispatch/dispatchers" filters={filters} defaults={MEMBER_DEFAULTS} searchLabel="Search name, email or phone" statuses={[
+      <FilterBar path="/dispatch/dispatchers" filters={filters} defaults={MEMBER_DEFAULTS} searchLabel="Search name, email or phone" wideSearch statuses={[
         { key: 'ONBOARDING', label: 'Onboarding', count: data.counts.onboarding ?? 0 },
         { key: 'ACTIVE', label: 'Active', count: data.counts.active },
         { key: 'ON_LEAVE', label: 'On leave', count: data.counts.onLeave ?? 0 },
         { key: 'LEAVING', label: 'Leaving', count: data.counts.leaving ?? 0 },
         { key: 'LEFT', label: 'Left', count: data.counts.left },
-        ...(paperwork ? [{ key: 'PAPERWORK', label: 'Paperwork', count: paperwork.items.filter(row => row.state !== 'FINISHED').length }, { key: 'MISSING', label: 'Missing details', count: data.counts.missing ?? 0 }] : []),
+        ...(paperwork ? [{ key: 'PAPERWORK', label: 'Paperwork', count: data.counts.paperwork ?? paperwork.items.filter(row => row.state !== 'FINISHED').length }, { key: 'MISSING', label: 'Missing details', count: data.counts.missing ?? 0 }] : []),
         { key: 'ALL', label: 'All', count: data.counts.all ?? total }]} />
       {paperworkNow && paperwork ? <PaperworkTable list={paperwork} search={filters.search} /> : <>
         <MemberFilters filters={filters} options={options} total={total} view={view} />
@@ -127,6 +135,7 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
             action={<Button asChild variant="outline"><Link href={membersHref(filters, { search: '', ...Object.fromEntries(FILTER_KEYS.map(key => [key, ''])) })}>Clear filters</Link></Button>} />
             : <EmptyState compact title={status === 'ACTIVE' ? 'No dispatchers yet' : 'Nobody here'} description="Approving an application adds the dispatcher here. Add existing dispatchers for people already working here." />}
           footer={total > 0 && <div className="flex flex-wrap items-center justify-between gap-3">
+            {filters.search && <p className="basis-full text-[13px] text-muted-foreground">{total === 1 ? '1 person matches' : `${total} people match`} “{filters.search}”. A number or email someone used before they left still finds them.</p>}
             <Pagination label="Dispatchers pages" page={page} pageCount={pageCount} pageSize={pageSize} total={total} href={target => membersHref(filters, { page: String(target) })} />
             <PageSizeSelect filters={filters} />
           </div>} />

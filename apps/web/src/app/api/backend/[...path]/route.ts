@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { backendConfig } from '@/lib/auth';
-import { allowedEndpoint, bodyLimit, isFileEndpoint, validMutation } from '@/lib/bff-policy';
+import { allowedEndpoint, bodyLimit, forwardedQuery, isFileEndpoint, validMutation } from '@/lib/bff-policy';
 import { backendFailureCode } from '@/lib/backend-connection';
 import { deviceCookieName, sessionCookieName, sessionKindForPath, usesDeviceCookie } from '@/lib/session-cookie';
 export const runtime = 'nodejs';
@@ -21,11 +21,9 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path: string
     const name = sessionCookieName(sessionKindForPath(path));
     const cookie = req.cookies.get(name), device = usesDeviceCookie(path) ? req.cookies.get(deviceCookieName()) : undefined;
     const query = new URLSearchParams();
-    if (path === 'onboarding/review-queue' || path === 'it/onboarding') {
-      for (const name of ['page','pageSize','status','search','sort','direction']) {
-        const value = req.nextUrl.searchParams.get(name);
-        if (value !== null) query.set(name,value);
-      }
+    for (const name of forwardedQuery(path)) {
+      const value = req.nextUrl.searchParams.get(name);
+      if (value !== null) query.set(name,value);
     }
     const upstream = await fetch(`${base}/api/${path}${query.size ? `?${query}` : ''}`, { method: req.method, body,
       headers: { 'content-type': 'application/json', 'x-workspace-key': key, origin,

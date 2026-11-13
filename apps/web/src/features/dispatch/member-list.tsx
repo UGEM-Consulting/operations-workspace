@@ -1,39 +1,21 @@
 'use client';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, Download, SlidersHorizontal, X } from 'lucide-react';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { inputClass, RadioGroup, Select } from '@/components/ui/field';
-import { errorMessage, mutate } from '@/lib/client-api';
+import { errorMessage, mutate, readApi } from '@/lib/client-api';
 import { MEMBER_DEFAULTS } from '@/lib/navigation';
 import { cn } from '@/lib/utils';
 import { FILTER_KEYS, membersHref, type FilterKey } from './member-filters';
+import { archived, chipValue, DRIVERS, FILTER_LABELS as LABELS, POSITIONS, SOURCES } from './member-view.ts';
 import { membersCsv, type ExportRow } from './members-csv';
 import type { MemberOptions } from './types';
 
-const POSITIONS = [{ value: 'DISPATCHER', label: 'Dispatcher' }, { value: 'SUPPORT', label: 'Support' }, { value: 'UPDATER', label: 'Updater' }];
-const SOURCES = [{ value: '', label: 'Everyone' }, { value: 'ONBOARDED', label: 'Came through onboarding' }, { value: 'ADDED', label: 'Added by hand' }];
-const DRIVERS = [{ value: '', label: 'Everyone' }, { value: 'WITH', label: 'With drivers' }, { value: 'WITHOUT', label: 'Without drivers' }];
-
-const archived = (item: { name: string; archived?: boolean }) => item.archived ? `${item.name} (archived)` : item.name;
 const teamChoices = (options: MemberOptions, mcId: string) => [{ value: 'NONE', label: 'Independent (no team)' },
   ...options.teams.filter(team => !mcId || team.mcId === mcId).map(team => ({ value: team.id, label: archived(team) }))];
-/** What a chosen filter says on its chip. */
-function chipValue(key: FilterKey, value: string, options: MemberOptions) {
-  const named = (items: { id: string; name: string; archived?: boolean }[]) => { const item = items.find(entry => entry.id === value); return item ? archived(item) : 'Not listed'; };
-  switch (key) {
-    case 'mcId': return named(options.mcs);
-    case 'teamId': return value === 'NONE' ? 'Independent (no team)' : named(options.teams);
-    case 'leadId': return named(options.leads);
-    case 'jobTitleId': return named(options.jobTitles);
-    case 'position': return POSITIONS.find(item => item.value === value)?.label ?? value;
-    case 'source': return SOURCES.find(item => item.value === value)?.label ?? value;
-    case 'drivers': return DRIVERS.find(item => item.value === value)?.label ?? value;
-  }
-}
-const LABELS: Record<FilterKey, string> = { mcId: 'MC', teamId: 'Team', leadId: 'Team lead', position: 'Position', jobTitleId: 'Job title', source: 'Source', drivers: 'Drivers' };
 const smallSelect = cn(inputClass, 'mt-0 w-full cursor-pointer appearance-none pr-8');
 
 function FilterSelect({ label, value, all, options, onChange, className }: { label: string; value: string; all: string; options: { value: string; label: string }[]; onChange: (value: string) => void; className?: string }) {
@@ -83,11 +65,32 @@ export function MemberFilters({ filters, options, total, view }: { filters: Reco
 }
 const FilterCount = ({ count }: { count: number }) => <span className="ml-0.5 inline-grid min-w-5 place-items-center rounded-full bg-muted px-1.5 text-xs font-semibold tabular-nums">{count}</span>;
 
+/**
+ * How many people on this tab the filters being chosen would show, of everyone on it (DispatchersFilterSheetPhoneScreen:
+ * "6 of 44 people match"), asked again a moment after each change. Null until known, or when the API can't say (an older one).
+ */
+function useMatchCount(filters: Record<string, string>, draft: Record<FilterKey, string>) {
+  const [count, setCount] = useState<{ match: number; of: number } | null>(null);
+  const tab = filters.status || MEMBER_DEFAULTS.status, search = filters.search ?? '', draftKey = JSON.stringify(draft);
+  useEffect(() => {
+    let current = true;
+    const chosen = Object.fromEntries(Object.entries({ ...JSON.parse(draftKey) as Record<string, string>, search }).filter(([, value]) => value));
+    const total = (query: Record<string, string>) => readApi<{ total?: unknown }>(`dispatch/members?${new URLSearchParams({ status: tab, page: '1', pageSize: '20', ...query })}`)
+      .then(body => typeof body.total === 'number' ? body.total : null);
+    const timer = setTimeout(() => {
+      Promise.all([total(chosen), total({})]).then(([match, of]) => { if (current) setCount(match === null || of === null ? null : { match, of }); }, () => { if (current) setCount(null); });
+    }, 250);
+    return () => { current = false; clearTimeout(timer); };
+  }, [draftKey, tab, search]);
+  return count;
+}
+
 /** Every filter on a phone, or Source and Drivers from More filters; nothing changes until Show. */
 function FiltersDialog({ all, filters, options, onClose, onApply }: { all: boolean; filters: Record<string, string>; options: MemberOptions; onClose: () => void; onApply: (changes: Record<string, string>) => void }) {
   const [draft, setDraft] = useState<Record<FilterKey, string>>(() => Object.fromEntries(FILTER_KEYS.map(key => [key, filters[key] ?? ''])) as Record<FilterKey, string>);
   const set = (changes: Partial<Record<FilterKey, string>>) => setDraft(current => ({ ...current, ...changes }));
-  return <Dialog open onClose={onClose} title={all ? 'Filters' : 'More filters'} protectChanges={false}
+  const count = useMatchCount(filters, draft);
+  return <Dialog open onClose={onClose} title={all ? 'Filters' : 'More filters'} protectChanges={false} description={count ? `${count.match} of ${count.of} people match` : undefined}
     actions={<Button onClick={() => onApply(draft)}>Show results</Button>}>
     <div className="grid gap-4">
       {all && <>
