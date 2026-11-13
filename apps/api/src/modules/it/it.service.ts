@@ -208,7 +208,7 @@ export class ItService {
   const tasks=await em.getRepository(ItRemovalTask).findBy({requestId:removal.id});
   const activity=await em.getRepository(ItRemovalActivity).find({where:{requestId:removal.id},order:{createdAt:'ASC'}});
   const [names]=await em.query(`SELECT (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $1) AS manager, (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $2) AS "forwardTo",
-    (SELECT "leftAt" FROM dispatch_members WHERE id = $3) AS "leftAt", (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $4) AS "recordedBy"`,[removal.managerId,removal.forwardTo,removal.memberId,removal.createdBy]);
+    (SELECT d."leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $3 AND coalesce(e."leftDateKnown", true)) AS "leftAt", (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $4) AS "recordedBy"`,[removal.managerId,removal.forwardTo,removal.memberId,removal.createdBy]);
   // Anyone else using these sign-ins: IT changes the password rather than closing an account someone still needs.
   const shared=await sharedSignIns(em,removal.memberId,{dat:removal.profile.datEmail??null,truckstop:removal.profile.truckstopEmail??null});
   return {sharedSignIns:shared,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},

@@ -32,6 +32,7 @@ import { signInItems } from './sign-in-status';
 import { SignIn } from './sign-in';
 import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard, LeaveDialog, LeaveHistory, LeaveItCard, leaveBadge, shortDay, WorkingWithCard, type LeaveAction } from './leave';
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
+import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
 
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
@@ -75,6 +76,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [assisting, setAssisting] = useState(member.supportOf?.wholeTeam ? 'TEAM' : 'DISPATCHER');
   // Leave (section 35) and an administrator's corrections (section 36) have their own dialogs.
   const [leaveAction, setLeaveAction] = useState<LeaveAction | null>(null), [correcting, setCorrecting] = useState(false);
+  // People who left and other names (section 33) have their own dialogs.
+  const [leftDialog, setLeftDialog] = useState<'names' | 'lastDay' | 'close' | null>(null);
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts, photos = memberPhotos(member.id, !!member.photo, !!member.idPhoto, name);
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
@@ -148,7 +151,11 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const others = [...(needsLink ? ['link' as const] : []), ...(support ? ['reassign' as const] : noMc ? ['place' as const] : !onNotice && !away ? ['move' as const] : [])].filter(key => key !== mainKey);
   const leaveItems: MenuEntry[] = leave ? [{ label: 'Change return date', icon: Calendar, onSelect: () => setLeaveAction('backOn') }, { label: 'Edit leave reason', icon: Pencil, onSelect: () => setLeaveAction('leaveReason') },
     ...(canCancelLeave(leave) ? [{ label: 'Cancel leave', icon: RotateCcw, onSelect: () => setLeaveAction('cancelLeave') }] : [])] : canPutOnLeave(member) ? [{ label: 'Put on leave', icon: CalendarClock, onSelect: () => setLeaveAction('putOnLeave') }] : [];
-  const correctItem: MenuEntry[] = admin && open && details ? [{ label: 'Correct details', icon: FilePenLine, onSelect: () => setCorrecting(true) }] : [];
+  const correctItem: MenuEntry[] = [...(admin && open && details ? [{ label: 'Correct details', icon: FilePenLine, onSelect: () => setCorrecting(true) }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }];
+  const leftMeta = lastDayMissing(member) ? 'Left, last day not recorded' : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : null;
+  // Someone who left: the record can't be moved, but a missing last day, their names and (once) closing their accounts still can.
+  const leftMenu: MenuEntry[] = [{ label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }, ...(canAskItToClose(member) ? [{ separator: true as const }, { label: 'Ask IT to close their accounts', icon: Monitor, onSelect: () => setLeftDialog('close') }] : [])];
+  const leftActions = <div className="flex flex-wrap items-center gap-2 max-sm:w-full">{lastDayMissing(member) && <Button className="max-sm:flex-1" onClick={() => setLeftDialog('lastDay')}><Calendar aria-hidden="true" className="size-4" />Add last day</Button>}<DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={leftMenu} /></div>;
   const ending = onNotice ? [{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') }, ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]
     : [{ label: 'Mark as leaving', icon: UserMinus, danger: true, onSelect: () => start('leave') }];
   const otherItems: MenuEntry[] = others.map(key => ({ label: actions[key].label, icon: actions[key].icon, onSelect: actions[key].onClick }));
@@ -163,14 +170,14 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       {member.photo ? <PhotoButton photos={photos} src={selfieUrl(member.id)} label={`Open the profile photo of ${name}`} className="shrink-0 rounded-lg">
         <PrivateImage src={selfieUrl(member.id)} alt={`Profile photo of ${name}`} className="size-24 rounded-lg border object-cover sm:size-28" /></PhotoButton> : <Avatar name={name} size="lg" />}
       <div className="min-w-0 flex-1"><PageHeader title={name} badge={<span className="flex flex-wrap gap-2">{!away && <Badge label={badge.label} tone={badge.tone} />}{leave && <Badge {...leaveBadge(leave)} />}{existing && <Badge label="Added by hand" tone="neutral" />}{notice && <Badge label={notice.passed ? 'Last day passed' : `Leaving ${new Date(middayIso(notice.lastDay)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`} tone={notice.passed ? 'danger' : 'warning'} />}</span>}
-        meta={[support ? (supportOf ? <>{called} for {assists(supportOf)} · {supportOf.wholeTeam ? supportOf.mc : where(supportOf)}</> : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : 'No dispatcher')
-          : current ? (current.id === undated || !current.mc ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : noMc ? 'No MC yet' : 'No MC or team',
+        meta={[support ? (supportOf ? <>{called} for {assists(supportOf)} · {supportOf.wholeTeam ? supportOf.mc : where(supportOf)}</> : leftMeta ? leftMeta : 'No dispatcher')
+          : current ? (current.id === undated || !current.mc ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : leftMeta ? leftMeta : noMc ? 'No MC yet' : 'No MC or team',
           ...(support ? [] : [member.leadOf ? `Team lead of ${member.leadOf.name}` : member.jobTitle?.name ?? 'Dispatcher']),
           notice ? <>Last day <LastDay day={notice.lastDay} /></> : leave ? <>Away {shortDay(leave.firstDay)} to <Day day={leave.backOn} /></> : existing ? (startKnown ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : 'Start date not recorded') : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
-        action={open && <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
+        action={open ? <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
           <Button className="max-sm:flex-1" variant={main.outline ? 'outline' : 'default'} disabled={catchUp.busy && mainKey === 'link'} onClick={main.onClick}><main.icon aria-hidden="true" className="size-4" />{main.label}</Button>
           {more.length > 0 && <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={more} />}
-          {catchUp.result}</div>} /></div>
+          {catchUp.result}</div> : leftActions} /></div>
     </div>
     {notice && (notice.passed ? <Alert tone="danger" title="Their last day has passed"><p>{anyoneLeft ? `${reassign} still assigned, so this record stays Leaving until they’re reassigned, then it becomes Left automatically. ` : 'They’ll be marked as left within a few minutes. '}IT’s removal of their access doesn’t wait for this.</p></Alert>
       : anyoneLeft ? <Alert tone="warning" title={<>{reassign} to reassign by <LastDay day={notice.lastDay} /></>}><p>{name} can’t be marked as left while anyone is still with them. IT removes their access at the end of that day either way.</p></Alert>
@@ -184,7 +191,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     {member.status === 'ONBOARDING' && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
     {member.status === 'LEFT' && (removal && removalOpen ? <Alert tone="warning" title={`IT is removing access: ${removal.done} of ${removal.total} done`}>
       <p>{emailNow ? `Company email ${emailNow}. ` : ''}The record and its history are kept; it can’t be moved or edited.</p></Alert>
-      : <Alert tone="info" title="This dispatcher has left"><p>{removal?.completedAt ? <>IT removed their access <LocalTime iso={removal.completedAt} format="date" />. </> : null}The record and its history are kept. It can’t be moved or edited.</p></Alert>)}
+      : existing?.addedAsLeft && !removal ? <AddedAsLeftAlert member={member} /> : <Alert tone="info" title="This dispatcher has left"><p>{removal?.completedAt ? <>IT removed their access <LocalTime iso={removal.completedAt} format="date" />. </> : null}The record and its history are kept. It can’t be moved or edited.</p></Alert>)}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0">
         <Tabs label="Dispatcher sections" defaultValue="overview" items={[{ key: 'overview', label: 'Overview' }, { key: 'files', label: 'Photos and documents', count: (member.photo ? 1 : 0) + (member.idPhoto ? 1 : 0) + (member.documents?.length ?? 0) }, { key: 'history', label: 'History' }]}
@@ -204,7 +211,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               {removal?.removeNowAt && <p className="pt-2 text-sm"><span className="font-medium">Access removal requested <LocalTime iso={removal.removeNowAt} format="date" />:</span> {removal.removeNowReason}</p>}</CardBody></Card>}
             {member.status === 'LEFT' && member.leftReason && <Card><CardHeader title="Why they left" />
               <CardBody className="space-y-1"><p className="whitespace-pre-wrap text-sm">{member.leftReason}</p>
-                {(member.leftBy || member.leftAt) && <p className="text-[13px] text-muted-foreground">Marked as left{member.leftBy ? ` by ${member.leftBy}` : ''}{member.leftAt ? <> on <LocalTime iso={member.leftAt} format="date" /></> : null}.</p>}</CardBody></Card>}
+                {existing?.addedAsLeft ? <p className="text-[13px] text-muted-foreground">From {existing.sourceName ? 'the file' : 'their record'}, added by {existing.addedBy} on <LocalTime iso={existing.createdAt} format="date" />.</p>
+                  : (member.leftBy || member.leftAt) && <p className="text-[13px] text-muted-foreground">Marked as left{member.leftBy ? ` by ${member.leftBy}` : ''}{member.leftAt ? <> on <LocalTime iso={member.leftAt} format="date" /></> : null}.</p>}</CardBody></Card>}
+            <NamesCard member={member} onEdit={() => setLeftDialog('names')} />
             {existing && <ExistingPaperworkCard member={member} />}
             {details && <Card>
               <CardHeader title="Personal details" description={<>From the approved application{details.submittedAt ? <>, last submitted <LocalTime iso={details.submittedAt} format="date" /></> : null}.</>} />
@@ -354,6 +363,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         <p className="text-xs leading-5 text-muted-foreground">Dispatch managers and administrators see this record. Dispatchers don’t have accounts and never see the workspace.</p>
       </div>
     </div>
+    {leftDialog === 'names' && <NamesDialog member={member} mcs={mcs} onClose={() => setLeftDialog(null)} />}
+    {leftDialog === 'lastDay' && <LeftDayDialog member={member} onClose={() => setLeftDialog(null)} />}
+    {leftDialog === 'close' && <CloseAccountsDialog member={member} onClose={() => setLeftDialog(null)} />}
     {action && <Dialog open onClose={() => setAction(null)} busy={pending === 'form'} tone={action === 'leave' || action === 'removeNow' ? 'danger' : undefined} size={action === 'leave' && removesAccess ? 'lg' : undefined} closeLabel={action === 'cancel' ? 'Keep notice' : undefined}
       title={action === 'supportType' ? `Change ${name} to ${otherName}?` : action === 'place' ? `Set ${name}’s MC and team` : action === 'startDate' ? `${startKnown ? 'Correct' : 'Add'} ${name}’s start date` : action === 'reassign' ? `Change who ${name} assists` : action === 'move' ? `Move ${name}` : action === 'leave' ? `Mark ${name} as leaving` : action === 'lastDay' ? `Change ${name}’s last day` : action === 'cancel' ? `Cancel ${name}’s notice?` : action === 'removeNow' ? `Remove ${name}’s access now?` : action === 'title' ? 'Change job title' : action === 'askIt' ? `Ask IT to set up for ${name}` : 'Add email or phone'}
       description={action === 'supportType' ? `Only what they’re called changes. They keep assisting ${supportOf ? assists(supportOf) : 'their dispatcher'}, with the same MC and team.` : action === 'place' ? 'Where they work now. Once they have an MC, in a team or independent, they can be given drivers.' : action === 'startDate' ? (startKnown ? `Now ${new Date(member.joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}. Their first period in the history changes with it; later moves stay as they are.` : 'Their start date here, from payroll or an offer letter.') : action === 'reassign' ? `${supportOf ? `Now ${assists(supportOf)}. ` : ''}Their MC and team follow whoever they assist, and the current one stays in the history.` : action === 'move' ? 'The current MC and team end on the start date and stay in the history.' : action === 'leave' ? (leave ? `${member.firstName} is on leave ${leave.started ? `until ${shortDay(leave.backOn)}` : `from ${shortDay(leave.firstDay)}`}. Recording a last day ends the leave.` : 'Record the last day as soon as you know it. The record and its history are kept; leaving a team also ends being its lead.') : action === 'lastDay' ? 'IT’s checklist moves to the new date and shows that it changed.' : action === 'cancel' ? `${member.firstName} stays with no last day. The cancelled notice stays in their history.` : action === 'removeNow' ? 'Use this when they shouldn’t keep their accounts until their last day. It can’t be undone from here.' : action === 'contact' ? 'For another way to reach the dispatcher. Every manager can see it.' : action === 'askIt' ? 'IT gets an alert and a checklist with what you choose. When they finish, you get a notice and the accounts show here.' : undefined}

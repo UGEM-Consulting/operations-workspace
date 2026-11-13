@@ -253,7 +253,9 @@ export class DispatchService {
   const signIns = { dat: it[0]?.datEmail ?? existing?.datEmail ?? null, truckstop: it[0]?.truckstopEmail ?? existing?.truckstopEmail ?? null };
   // Corrections with their values (staff only), and the record they left before coming back, or the one they came back as (section 37).
   const corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string }[] = await this.details.history(this.db, id);
-  const [previousRecord] = member.previousMemberId ? await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "leftAt" FROM dispatch_members WHERE id = $1`, [member.previousMemberId]) : [];
+  const [previousRecord] = member.previousMemberId ? await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN e."leftDateKnown" IS FALSE THEN NULL ELSE d."leftAt" END AS "leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $1`, [member.previousMemberId]) : [];
+  // Other names (section 33), each with the MC where it was used when known.
+  const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt"`, [id]);
   const [laterRecord] = await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "joinedAt", status FROM dispatch_members WHERE "previousMemberId" = $1`, [id]);
   return { sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
@@ -265,7 +267,7 @@ export class DispatchService {
     mcName: fields.mcName ?? null, teamLead: fields.teamLead ?? null, jobTitle: fields.jobTitle ?? null, submittedAt: application.submittedAt } : null,
    corrections, correctedFields: correctedFields(corrections), previousRecord: previousRecord ?? null, laterRecord: laterRecord ?? null,
    leave, restore, leaveHistory: leaves.filter(row => row.endedAt),
-   existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
+   otherNames, existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
    noticeHistory: notices.filter(row => row.cancelledAt || row.changes.length).map(row => ({ id: row.id, lastDay: row.lastDay, reason: row.reason, recordedBy: row.recorder, createdAt: row.createdAt, cancelledAt: row.cancelledAt, cancelledBy: row.canceller, cancelReason: row.cancelReason, changes: row.changes.map(({ from, to, reason, at }) => ({ from, to, reason, at })) })) };
  }
 
@@ -696,7 +698,8 @@ export class DispatchService {
 
  /** Someone recorded by hand: what a manager recorded, the paper copies, and how far their paperwork has come. */
  private async existingRecord(user: User, id: string) {
-  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r.telegram, r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", u."firstName" || ' ' || u."lastName" AS "addedBy"
+  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r.telegram, r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", r."leftDateKnown", r."legalFirstName", r."legalLastName",
+    EXISTS (SELECT 1 FROM dispatch_events e WHERE e."memberId" = r."memberId" AND e.event = 'EXISTING_ADDED' AND (e.metadata->>'left')::boolean) AS "addedAsLeft", u."firstName" || ' ' || u."lastName" AS "addedBy"
    FROM existing_member_records r JOIN users u ON u.id = r."addedBy" WHERE r."memberId" = $1`, [id]);
   if (!record) return null;
   // Each paper copy with its current scan and the earlier ones it replaced (section 38), reading its scans once.

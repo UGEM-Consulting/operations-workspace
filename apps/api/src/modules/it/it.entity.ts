@@ -146,6 +146,8 @@ export class ItRemovalRequest {
  // A manager asked to remove access before the last day: due today, tasks can be completed at once.
  @Column('timestamptz',{nullable:true}) removeNowAt!:Date|null;
  @Column('text',{nullable:true}) removeNowReason!:string|null;
+ // A short note for IT from whoever asked to close the accounts of someone added as Left (never passwords).
+ @Column('varchar',{length:500,nullable:true}) note!:string|null;
  // When IT got the alert that the removal is due; empty while it is scheduled.
  @Column('timestamptz',{nullable:true}) dueAlertedAt!:Date|null;
  // The notice was cancelled before IT started. Kept for the history; out of every list.
