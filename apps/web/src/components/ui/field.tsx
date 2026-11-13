@@ -1,6 +1,7 @@
-import type { ComponentProps, ReactNode } from 'react';
+import { useId, type ComponentProps, type ReactNode } from 'react';
 import { ChevronDown, CircleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fieldIdFor } from './field-id';
 
 // Height and text size follow the page density (44px/16px for applicants and phones, 36px/14px on staff screens).
 const control = 'w-full rounded-sm border border-input bg-card px-3 py-1.5 shadow-xs transition-colors hover:border-foreground focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring aria-invalid:border-danger aria-invalid:focus:ring-danger read-only:bg-muted read-only:shadow-none';
@@ -12,7 +13,7 @@ export type FieldWidth = 'xs' | 'sm' | 'md' | 'lg' | 'full';
 const widths: Record<FieldWidth, string> = { xs: 'max-w-32', sm: 'max-w-48', md: 'max-w-[22rem]', lg: 'max-w-lg', full: '' };
 interface FieldProps { label: ReactNode; hint?: ReactNode; error?: string; optional?: boolean; width?: FieldWidth; className?: string }
 const describedBy = (id: string, hint?: ReactNode, error?: string) => [hint && `${id}-hint`, error && `${id}-error`].filter(Boolean).join(' ') || undefined;
-const fieldId = (id: string | undefined, name: string | undefined) => id ?? `field-${name}`;
+const useFieldId = (id: string | undefined, name: string | undefined) => fieldIdFor(id, name, useId());
 
 /** Label, hint, control and error. The hint stays when an error shows, so the format is still explained. */
 export function Field({ id, label, hint, error, optional, width = 'full', className, children }: FieldProps & { id: string; children: ReactNode }) {
@@ -25,13 +26,13 @@ export function Field({ id, label, hint, error, optional, width = 'full', classN
 }
 
 export function Input({ id, label, hint, error, optional, width = 'lg', className, ...props }: FieldProps & ComponentProps<'input'>) {
-  const key = fieldId(id, props.name);
+  const key = useFieldId(id, props.name);
   return <Field id={key} label={label} hint={hint} error={error} optional={optional} width={width} className={className}>
     <input id={key} aria-invalid={error ? true : undefined} aria-describedby={describedBy(key, hint, error)} className={control} {...props} />
   </Field>;
 }
 export function Textarea({ id, label, hint, error, optional, width = 'full', className, rows = 4, ...props }: FieldProps & ComponentProps<'textarea'>) {
-  const key = fieldId(id, props.name);
+  const key = useFieldId(id, props.name);
   return <Field id={key} label={label} hint={hint} error={error} optional={optional} width={width} className={className}>
     <textarea id={key} rows={rows} aria-invalid={error ? true : undefined} aria-describedby={describedBy(key, hint, error)} className={cn(control, 'min-h-24 resize-y py-2')} {...props} />
   </Field>;
@@ -39,7 +40,7 @@ export function Textarea({ id, label, hint, error, optional, width = 'full', cla
 export type Option = string | { value: string; label: string };
 /** Native select (keyboard behaviour and the phone picker) styled like Input. Option labels are sentence case. */
 export function Select({ id, label, hint, error, optional, width = 'md', className, options, placeholder, ...props }: FieldProps & ComponentProps<'select'> & { options: readonly Option[]; placeholder?: string }) {
-  const key = fieldId(id, props.name);
+  const key = useFieldId(id, props.name);
   return <Field id={key} label={label} hint={hint} error={error} optional={optional} width={width} className={className}>
     <div className="relative flex items-center">
       <select id={key} aria-invalid={error ? true : undefined} aria-describedby={describedBy(key, hint, error)} className={cn(control, 'cursor-pointer appearance-none pr-9')} {...props}>

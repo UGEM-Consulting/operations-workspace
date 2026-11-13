@@ -10,6 +10,7 @@ import { LATIN_NAME, SignaturePad, SignatureShown, type SignatureMethod } from '
 import { DocumentModal, PeekPanel } from './document-modal';
 import { FieldMark, fieldText, type DocumentField } from './fields';
 import { downloadBlob, PdfPages, PrintButton, usePdf } from './pdf';
+import { signButtonLabel } from './sign-label';
 
 export interface SignableDocument {
   id: string; title: string; short: string; pageCount: number; requiresSignature: boolean; statement: string; translatedStatement?: string | null; fields: DocumentField[];
@@ -102,6 +103,8 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
     catch (cause) { failed(cause, 'Unable to save that. Please try again.'); }
     finally { setBusy(false); }
   }
+  // A long document name stays off the button so it fits a phone (SignSignatureScreen, AckSignPhoneScreen).
+  const signButton = signButtonLabel(doc.short, doc.requiresSignature);
   const body = 'min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:p-5', foot = 'shrink-0 space-y-3 border-t bg-card p-4 lg:px-5';
   const progress = !file ? 'Opening the document…' : atEnd ? 'You’ve reached the end.' : `Page ${page} of ${file.sizes.length}. Keep scrolling to the last page.`;
   const panel = step === 'read' ? (doc.acknowledgePath ? <>
@@ -134,7 +137,7 @@ export function SigningModal({ doc, documents, consent, consentTranslation, memo
       <dl className="hidden space-y-2 rounded-md bg-muted px-4 py-3 text-[13px] leading-5 lg:block"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">Date</dt><dd className="font-medium">{fieldText('DATE', { at: now })}</dd></div>
         {signerFields.length > 0 && <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Places filled in</dt><dd className="text-right font-medium">{signerFields.length}, on {pagesWithFields.length === 1 ? 'page' : 'pages'} {pagesWithFields.join(' and ')}</dd></div>}</dl></div>
     <div className={`${foot} short:flex short:items-center short:gap-3 short:space-y-0 short:py-2`}><p className="text-xs leading-[18px] text-muted-foreground">Your electronic signature is legally binding, the same as a handwritten one. We record the date, time, your IP address and browser.</p>
-      <Notice message={error} error /><Button type="button" size="lg" className="w-full short:w-auto short:shrink-0" disabled={busy || cantSign} onClick={() => void sign()}><PenLine aria-hidden="true" className="size-4" />{busy ? 'Signing…' : `${doc.requiresSignature ? 'Sign' : 'Confirm'} ${doc.short}`}</Button></div>
+      <Notice message={error} error /><Button type="button" size="lg" className="w-full short:w-auto short:shrink-0" disabled={busy || cantSign} aria-label={busy ? undefined : signButton.label} onClick={() => void sign()}><PenLine aria-hidden="true" className="size-4" />{busy ? 'Signing…' : signButton.text}</Button></div>
   </> : <>
     <div className={body}><span className="grid size-11 place-items-center rounded-full bg-success-background text-success"><CircleCheck aria-hidden="true" className="size-6" /></span>
       <h3 role="status" className="text-[17px] font-semibold leading-6">{doc.acknowledgePath ? `${doc.short} read` : `${doc.short} ${doc.requiresSignature ? 'signed' : 'confirmed'}`}</h3>
