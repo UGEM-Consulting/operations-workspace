@@ -1,5 +1,6 @@
 import { sharedSignIns } from '../dispatch/account-details';
 import { ItAccountRequest } from '../company-accounts/account-requests.entity';
+import { photoPresence } from '../documents/member-photos';
 import { endSeatsOnLeaving, removalSeats, syncRecordedSeats } from '../load-boards/seats';
 import { companyEmailSql } from '../dispatch/lead-sign-in';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
@@ -224,7 +225,9 @@ export class ItService {
   const shared=await sharedSignIns(em,removal.memberId,{dat:removal.profile.datEmail??null,truckstop:removal.profile.truckstopEmail??null});
   // Their load board seats: live while IT works on it (who shares each sign-in now), as they were once it's finished.
   const seats=removal.completedAt?((removal.profile as unknown as {seats?:unknown[]}).seats??[]):await removalSeats(em,removal.memberId);
-  return {sharedSignIns:shared,seats,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
+  // Who this is (HandPhotosItScreen): which photos IT can open, through member-photos.
+  const photos=await photoPresence(em,removal.memberId);
+  return {photos,sharedSignIns:shared,seats,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
    tasks:REMOVAL_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
  }
  async getRemoval(user:User,id:string){
@@ -273,7 +276,8 @@ export class ItService {
   const [suspended]=request.kind==='RESTORE'?await em.query(`SELECT u."firstName" || ' ' || u."lastName" AS by, t."updatedAt" AS at FROM it_leave_tasks t JOIN it_leave_requests r ON r.id = t."requestId" AND r.kind = 'SUSPEND' AND r."leaveId" = $1
     LEFT JOIN users u ON u.id = t."updatedBy" WHERE t.status = 'COMPLETED' ORDER BY t."updatedAt" DESC LIMIT 1`,[request.leaveId]):[];
   const [signIn]=request.kind==='RESTORE'&&request.profile.teamLead?await em.query(`SELECT kind FROM team_lead_sign_ins WHERE "memberId" = $1 AND "doneAt" IS NULL AND "cancelledAt" IS NULL LIMIT 1`,[request.memberId]):[];
-  return {sharedSignIns:shared,request:{...request,status:itStatus(request,tasks),scheduled:this.leaveScheduled(request),managerName:names.manager as string|null,suspended:suspended?{by:suspended.by as string|null,at:new Date(suspended.at).toISOString()}:null,signInWaiting:!!signIn,leaveEnded:names.leaveEnded as string|null},
+  const photos=await photoPresence(em,request.memberId);
+  return {photos,sharedSignIns:shared,request:{...request,status:itStatus(request,tasks),scheduled:this.leaveScheduled(request),managerName:names.manager as string|null,suspended:suspended?{by:suspended.by as string|null,at:new Date(suspended.at).toISOString()}:null,signInWaiting:!!signIn,leaveEnded:names.leaveEnded as string|null},
    tasks:LEAVE_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:request.kind==='SUSPEND'?template.suspend:template.restore,optional:!!template.optional}]:[];}),activity};
  }
  /** Suspending waits for the first day away: IT plans before then, but nothing is suspended while they're still working. */
