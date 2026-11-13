@@ -76,6 +76,8 @@ const CONTACT_POINTS = `(
      ('Telegram', ${corrected('telegram', `s.fields->>'telegram'`)})) x(label, value) WHERE a.id = b."applicationId"
    UNION ALL SELECT 'Other name', o.name || coalesce(' at ' || om.name, '') FROM member_other_names o LEFT JOIN mcs om ON om.id = o."mcId" WHERE o."memberId" = b.id UNION ALL SELECT 'Legal name', concat_ws(' ', e."legalFirstName", e."legalLastName") FROM existing_member_records e WHERE e."memberId" = b.id AND (e."legalFirstName" IS NOT NULL OR e."legalLastName" IS NOT NULL)
    UNION ALL SELECT CASE WHEN c.kind = 'EMAIL' THEN 'Added email' ELSE 'Added phone' END, c.value FROM member_contacts c WHERE c."memberId" = b.id AND c."removedAt" IS NULL
+   UNION ALL SELECT x.label || coalesce(' at ' || coalesce(xm.name, a."companyName"), ''), x.value FROM member_company_accounts a LEFT JOIN mcs xm ON xm.id = a."mcId"
+     CROSS JOIN LATERAL (VALUES ('Company email', a."companyEmail"), ('RingCentral number', a."ringCentralNumber"), ('RingCentral extension', a."ringCentralExtension")) x(label, value) WHERE a."memberId" = b.id
   ) p WHERE p.value IS NOT NULL`;
 
 /** What a search for this text matches: words anywhere, and a number by its digits whatever the separators (with or without the US 1). */

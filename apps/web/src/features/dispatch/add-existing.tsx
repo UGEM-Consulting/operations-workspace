@@ -21,15 +21,15 @@ import { supportName } from './types';
 export interface ExistingOptions { loadBoardAccounts?: { id: string; name: string; provider: 'DAT' | 'TRUCKSTOP'; placeholder: boolean }[]; mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
 type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 /** Someone already recorded that a row matches (section 33): what the file would add, and what can be done with the row. */
-interface Match { id: string; name: string; status: string; why: string; options: ('FILL' | 'CAME_BACK' | 'DIFFERENT')[]; fills: string[] }
+interface Match { id: string; name: string; status: string; why: string; options: ('FILL' | 'CAME_BACK' | 'DIFFERENT' | 'ACCOUNT')[]; fills: string[]; account?: { mcId: string; mc: string; adds: string[] } }
 interface CheckedRow { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean; left?: boolean; leftOn?: string | null; hasAccounts?: boolean; match?: Match | null }
 interface Checked { rows: CheckedRow[]; choices: { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number; wholeTeam?: number; sharedSignIn?: number; left?: number; noLastDay?: number; fill?: number } }
-interface Added { added: number; filled?: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
+interface Added { added: number; accounts?: number; filled?: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
 const STEPS = ['Upload the file', 'Check the rows', 'Add dispatchers'];
 const key = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
 // Independent is a team choice under an MC (no team), never an MC; the API reads it the same in a file's team column.
 const INDEPENDENT = 'Independent', NO_MC = 'No MC yet';
-const OPTION_LABELS = { SKIP: 'Skip this row', FILL: 'Add missing details', CAME_BACK: 'Same person, came back', DIFFERENT: 'A different person, add them' } as const;
+const OPTION_LABELS = { SKIP: 'Skip this row', FILL: 'Add missing details', CAME_BACK: 'Same person, came back', DIFFERENT: 'A different person, add them', ACCOUNT: 'Add as their account' } as const;
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 /** The notice above the rows: what will be added with details missing, and which MCs came from a team. */
 function missingNote({ noStartDate = 0, noMc = 0, mcFromTeam = 0 }: Checked['counts']) {
@@ -86,7 +86,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
   /** What to do with a row that matches someone recorded: Skip clears the choice, and the row is checked again. */
   function decide(row: number, match: Match, value: string) {
     setChosen(current => { const next = { ...current }; if (value === 'SKIP') delete next[row]; else next[row] = match; return next; });
-    void check(rows.map(item => item.row !== row ? item : { ...item, alreadyAction: value === 'FILL' || value === 'CAME_BACK' ? value : undefined, differentPerson: value === 'DIFFERENT' ? true : undefined }));
+    void check(rows.map(item => item.row !== row ? item : { ...item, alreadyAction: value === 'FILL' || value === 'CAME_BACK' || value === 'ACCOUNT' ? value : undefined, differentPerson: value === 'DIFFERENT' ? true : undefined }));
   }
   const matched = (checked?.rows ?? []).flatMap(row => { const match = row.match ?? chosen[row.row]; return match ? [{ ...row, match }] : []; });
   const choiceOf = (row: number) => { const item = rows.find(entry => entry.row === row); return item?.alreadyAction ?? (item?.differentPerson && chosen[row] ? 'DIFFERENT' : 'SKIP'); };
@@ -99,7 +99,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
 
   if (done) return <div className="space-y-6">
     <Steps current={2} />
-    <Alert tone="success" title={`Added ${plural(done.added, 'person', 'people')}${done.filled ? `, filled in ${done.filled}` : ''}`}><p>People who work here are Active and people who left are under the Left tab. Nobody was messaged, and IT was asked only to close the accounts you ticked.</p></Alert>
+    <Alert tone="success" title={`Added ${plural(done.added, 'person', 'people')}${done.filled ? `, filled in ${done.filled}` : ''}${done.accounts ? `, ${plural(done.accounts, 'account', 'accounts')} at other companies` : ''}`}><p>People who work here are Active and people who left are under the Left tab. Nobody was messaged, and IT was asked only to close the accounts you ticked.</p></Alert>
     {done.left.length > 0 && <Card><CardHeader title={`${done.left.length} ${done.left.length === 1 ? 'row' : 'rows'} left out`} description="Correct these and upload them again. Rows already added show as Already here." />
       <Table caption="Rows left out" rows={done.left} rowKey={row => String(row.row)} columns={[{ key: 'row', label: 'Row', nowrap: true, cell: row => row.row }, { key: 'name', label: 'Person', primary: true, cell: row => row.name || 'No name' }, { key: 'why', label: 'Why', cell: row => row.problems.join(' ') || 'It still needs a choice.' }]} /></Card>}
     <div className="flex flex-wrap gap-2"><Button asChild><Link href="/dispatch/dispatchers?status=PAPERWORK">Go to Paperwork</Link></Button><Button asChild variant="outline"><Link href="/dispatch/dispatchers?status=LEFT">See who left</Link></Button><Button asChild variant="outline"><Link href="/dispatch/dispatchers?status=MISSING">See missing details</Link></Button><Button variant="outline" onClick={() => { setDone(null); setChecked(null); setRows([]); setFileName(''); setChosen({}); }}>Upload another file</Button></div>
@@ -140,9 +140,9 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
     {matched.length > 0 && <Card><CardHeader title="Already here" description="These people have a record. Choose what to do with each row; leaving it means the row is skipped." />
       <ul className="mt-3 divide-y divide-border border-t border-border">{matched.map(row => <li key={row.row} className="flex flex-wrap items-end justify-between gap-3 px-4 py-3 sm:px-5">
         <div className="min-w-0 flex-[1_1_320px]"><Person name={row.match.name} secondary={`Row ${row.row}${row.left ? ' · Left in the file' : ''} · ${row.match.why}`} />
-          <p className="mt-1 pl-11 text-[13px] text-muted-foreground">{choiceOf(row.row) === 'CAME_BACK' ? 'Same person, came back: a new record linked to the old one, which stays as history.' : choiceOf(row.row) === 'DIFFERENT' ? 'Added as a new person.' : row.match.fills.length ? `The file adds: ${row.match.fills.join(', ')}.` : row.match.options.length ? 'Nothing new: every value in the row is already recorded.' : row.problems[0]}</p></div>
+          <p className="mt-1 pl-11 text-[13px] text-muted-foreground">{choiceOf(row.row) === 'ACCOUNT' && row.match.account ? `Adds their account at ${row.match.account.mc}: ${row.match.account.adds.join(', ')}. Nothing else on their record changes.` : choiceOf(row.row) === 'CAME_BACK' ? 'Same person, came back: a new record linked to the old one, which stays as history.' : choiceOf(row.row) === 'DIFFERENT' ? 'Added as a new person.' : row.match.fills.length ? `The file adds: ${row.match.fills.join(', ')}.` : row.match.options.length ? 'Nothing new: every value in the row is already recorded.' : row.problems[0]}</p></div>
         {row.match.options.length > 0 && <Select label="What to do" value={choiceOf(row.row)} disabled={busy} width="sm" onChange={event => decide(row.row, row.match, event.target.value)}
-          options={[{ value: 'SKIP', label: OPTION_LABELS.SKIP }, ...row.match.options.map(option => ({ value: option, label: OPTION_LABELS[option] }))]} />}
+          options={[{ value: 'SKIP', label: OPTION_LABELS.SKIP }, ...row.match.options.map(option => ({ value: option, label: option === 'ACCOUNT' && row.match.account ? `Add as their account at ${row.match.account.mc}` : OPTION_LABELS[option] }))]} />}
       </li>)}</ul>
       <div className="border-t border-border px-4 py-3 sm:px-5"><p className="text-[13px] text-muted-foreground">Recorded values never change here. A value that differs from what’s recorded is left as it is. An administrator can change it with Correct details, with a reason.</p></div></Card>}
     {lookAt.length > 0 && <Card><CardHeader title="Rows to look at" actions={<Button size="sm" variant="outline" onClick={() => download('rows-to-correct.csv', existingCsv(leftOut))}><Download aria-hidden="true" className="size-4" />Download these rows</Button>} />

@@ -51,6 +51,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && ['lists/mcs', 'lists/job-titles', 'lists/load-board-accounts'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles|load-board-accounts)/${ID}`, path)) ||
     // Load board seats (section 33): IT and administrators add one, or suspend, resume, move, end it or change its sign-in.
     (method === 'POST' && (path === 'load-board-seats' || match(`load-board-seats/${ID}`, path))) ||
+    // Accounts at other companies (section 33): IT and administrators add and change them.
+    (method === 'POST' && path === 'company-accounts') || (method === 'PATCH' && match(`company-accounts/${ID}`, path)) ||
     // Dispatchers table: export the view on screen (recorded, so a POST).
     (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.

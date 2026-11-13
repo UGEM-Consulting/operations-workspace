@@ -26,7 +26,7 @@ export function notificationView(item:Notifications['items'][number]){
  return {title:'IT setup completed',text:`${name??'Dispatcher'} is ready to work.`,href:`/onboarding/applications/${item.applicationId}`,link:'View application'};
 }
 export type ItTasks=import('zod').infer<typeof import('@/lib/api-schemas').itTasksSchema>;
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;companyAccounts?:RemovalCompanyAccount[];}
 export type NumberOutcome='KEPT'|'FORWARDED'|'RELEASED';
 export interface RemovalRequest {id:string;memberId:string;version:number;status:TaskStatus;scheduled:boolean;removeNowAt:string|null;cancelledAt:string|null;dueOn:string;emailAfter:'FORWARD'|'SUSPEND';forwardToName:string|null;managerName:string|null;recordedByName?:string|null;leftAt:string|null;note?:string|null;numberOutcome:NumberOutcome|null;profile:RemovalProfile;completedAt:string|null;}
 /** Leave (section 35): suspending accounts while someone is away (SUSPEND), and restoring them (RESTORE). */
@@ -36,5 +36,7 @@ export interface LeaveDetail {request:LeaveRequest;tasks:ItTask[];activity:ItDet
 export interface RemovalDetail {request:RemovalRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};
  /** Their load board seats (section 33): live while open, as they were once finished. An older API sends none. */
  seats?:RemovalSeat[];}
+/** An account at another company, as the removal kept it (section 33). */
+export interface RemovalCompanyAccount {id:string;company:string;nameUsed:string|null;companyEmail:string|null;ringCentralNumber:string|null;ringCentralExtension:string|null;status:string;keptFor:string[];}
 export interface RemovalSeat {id:string;account:string;provider:'DAT'|'TRUCKSTOP';signInEmail:string;status:string;sharedWith:string[];}
 

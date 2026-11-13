@@ -222,7 +222,8 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
   // Newer migrations go first, each after removing the records its rollback refuses to discard.
   const cleanup:Record<string,string>={DriverDocuments1792880000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,DriverApplications1792870000000:`TRUNCATE drivers CASCADE; TRUNCATE driver_sessions, driver_challenges`,SafetyDrivers1792860000000:`TRUNCATE drivers CASCADE; DELETE FROM users WHERE role::text LIKE 'SAFETY_%'`,TeamLeads1792850000000:`UPDATE dispatch_members SET "accountUserId" = NULL; TRUNCATE promotion_requests; DELETE FROM dispatch_events WHERE event LIKE 'PROMOTION_%'; DELETE FROM users WHERE role::text = 'TEAM_LEAD'`,SupportMembers1792840000000:`TRUNCATE member_support_links; UPDATE invitations SET position = 'DISPATCHER', "supportsMemberId" = NULL WHERE position = 'SUPPORT'; DELETE FROM dispatch_events WHERE event = 'SUPPORT_REASSIGNED'`,DispatcherContacts1792830000000:'TRUNCATE member_contacts',DispatchTeams1792820000000:'TRUNCATE dispatch_events',ManagedLists1792810000000:'TRUNCATE list_events',OptionalEquipmentTask1792740000000:`DELETE FROM it_onboarding_tasks WHERE key='EQUIPMENT'`,
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
-  expect(await latestMigration()).toBe('LoadBoardSeats1793240000000');
+  expect(await latestMigration()).toBe('CompanyAccounts1793250000000');
+  await db.undoLastMigration(); // CompanyAccounts, with none here
   await db.undoLastMigration(); // LoadBoardSeats, with no real accounts here
   await db.undoLastMigration(); // LeftAndNames, with none here
   await db.undoLastMigration(); // MembersExported, with none here

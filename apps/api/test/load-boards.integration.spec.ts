@@ -169,7 +169,8 @@ integration('Load board accounts and seats (disposable PostgreSQL)', () => {
   it('turns the sign-ins recorded before it into seats when the migration runs', async () => {
     const riley = await addOne('Riley', { datEmail: 'riley.dat@example.test' }), gone = await addOne('Gone', { personalEmail: 'gone.home@example.test', truckstopEmail: 'gone.ts@example.test' });
     await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() WHERE id = $1`, [gone]);
-    await db.undoLastMigration();
+    await db.undoLastMigration(); // CompanyAccounts, with none here
+    await db.undoLastMigration(); // LoadBoardSeats
     await db.runMigrations();
     expect((await seatsOf(riley)).map((row: Row) => [row.account, row.signInEmail, row.status])).toEqual([['DAT account not recorded', 'riley.dat@example.test', 'ACTIVE']]);
     expect((await seatsOf(gone)).map((row: Row) => [row.account, row.status, row.endedHow])).toEqual([['Truckstop account not recorded', 'ENDED', 'LEFT']]);

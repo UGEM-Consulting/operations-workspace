@@ -35,6 +35,7 @@ import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-deta
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
 import { itNotAsked, lastWorked } from './left-record';
 import { LoadBoardsCard, type LoadBoardAccount } from '@/features/load-boards/seats';
+import { CompanyAccountsCard } from '@/features/company-accounts/card';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
 
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
@@ -360,6 +361,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         {/* A support added by hand keeps the accounts a manager recorded beside anything IT set up for them. */}
         {existing && (!accounts || support) && <ExistingAccountsCard member={member} open={open} admin={admin} />}
         {addedLeft && !removal && <Card><CardHeader title="IT access" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">{itNotAsked(canAskItToClose(member))}</p></CardBody></Card>}
+        {/* Accounts at other companies (section 33): an administrator adds and changes them here. */}
+        {member.companyAccounts && <CompanyAccountsCard memberId={member.id} accounts={member.companyAccounts} mcs={mcs} canChange={admin} />}
         {(!existing || accounts) && <Card>
           <CardHeader title={support ? 'Onboarding' : 'IT setup'} />
           <CardBody className="space-y-3 text-sm">

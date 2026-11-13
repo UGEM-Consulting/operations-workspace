@@ -6,7 +6,7 @@ export interface ExistingRow {
   // The load board account each sign-in is on, by its name in Admin › Lists (section 33).
   datAccount?: string; truckstopAccount?: string;
   // People who left and other names (section 33). askIt and alreadyAction are choices made on the check step, never columns.
-  status?: string; leftOn?: string; leftReason?: string; legalFirstName?: string; legalLastName?: string; otherNames?: string; askIt?: boolean; alreadyAction?: 'FILL' | 'CAME_BACK';
+  status?: string; leftOn?: string; leftReason?: string; legalFirstName?: string; legalLastName?: string; otherNames?: string; askIt?: boolean; alreadyAction?: 'FILL' | 'CAME_BACK' | 'ACCOUNT';
 }
 type Field = Exclude<keyof ExistingRow, 'row' | 'differentPerson' | 'supportsMemberId' | 'supportsTeamId' | 'askIt' | 'alreadyAction'>;
 export const COLUMNS: readonly [string, Field][] = [['first_name', 'firstName'], ['last_name', 'lastName'], ['position', 'position'], ['mc', 'mc'], ['team', 'team'], ['job_title', 'jobTitle'], ['started_on', 'startedOn'],

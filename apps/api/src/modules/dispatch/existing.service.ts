@@ -15,7 +15,9 @@ import { createRemoval, memberSetups, removalTaskKeys, setupAccounts } from '../
 import { alreadyHere, type HereMatch } from '../onboarding/already-here';
 import { NotificationsService } from '../updates/notifications.service';
 import { EXTENSION, signInsInUse, telegramUsername } from './account-details';
-import { refreshRemovalSeats, removalSeats, syncRecordedSeats } from '../load-boards/seats';
+import { placeholderAccount, refreshRemovalSeats, removalSeats, syncRecordedSeats } from '../load-boards/seats';
+import { refreshRemovalAccounts } from '../company-accounts/accounts';
+import { addCompanyAccount } from '../company-accounts/company-accounts.service';
 import { LoadBoardSeat, type Provider } from '../load-boards/load-boards.entity';
 import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberOtherName, MemberPaperDocument, MemberSupportLink, NO_MC, Position, positionLabel, SupportType, Team } from './dispatch.entity';
@@ -81,13 +83,17 @@ async function placeLeftDay(em: EntityManager, member: DispatchMember, record: E
 
 export type RowStatus = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 /** What can be done with a row that matches someone already recorded (section 33). Leaving it means the row is skipped. */
-export type AlreadyOption = 'FILL' | 'CAME_BACK' | 'DIFFERENT';
-export interface AlreadyMatch { id: string; name: string; status: string; why: string; options: AlreadyOption[]; fills: string[] }
+export type AlreadyOption = 'FILL' | 'CAME_BACK' | 'DIFFERENT' | 'ACCOUNT';
+export interface AlreadyMatch { id: string; name: string; status: string; why: string; options: AlreadyOption[]; fills: string[];
+ // Add as their account at another of our companies (section 33): which MC, and what the row adds there.
+ account?: { mcId: string; mc: string; adds: string[] } }
 export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; supportType: SupportType; status: RowStatus; problems: string[]; sameName: boolean;
  mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean; sharesSignIn: boolean;
  left: boolean; leftOn: string | null; hasAccounts: boolean; askIt: boolean; otherNames: string[]; match: AlreadyMatch | null; fill: boolean; previousMemberId: string | null;
  // The load board account each sign-in is on (section 33); null puts it on "account not recorded".
- seatAccounts: Record<Provider, string | null> }
+ seatAccounts: Record<Provider, string | null>;
+ // Recorded as their account at another company instead of a second record.
+ account: boolean }
 // forSupports: the same team text on support and updater rows is its own choice, because they need a real team.
 export interface Choice { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }
 
@@ -107,6 +113,8 @@ interface Known {
  companyEmails: Map<string, string[]>; personalEmails: Map<string, string[]>; phones: Map<string, string[]>;
  // The load board accounts a file's dat_account and truckstop_account columns name.
  loadBoards: { id: string; name: string; provider: Provider; placeholder: boolean }[];
+ // The MCs each person already has an open account at (section 33), so a file doesn't add another.
+ accountMcs: Map<string, Set<string>>;
 }
 const NAME = /^[A-Za-z][A-Za-z .'-]*$/;
 /** The status column: Active (or blank) or Left. Suspended means on leave, which isn't a status: they're added as Active and put on leave from their page. */
@@ -166,7 +174,8 @@ export class ExistingDispatchersService {
    UNION ALL SELECT d.id, r."companyEmail", i.email, s.fields->>'personalPhoneNumber' FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" JOIN invitations i ON i.id = a."invitationId"
     LEFT JOIN it_onboarding_requests r ON r."applicationId" = a.id LEFT JOIN LATERAL (SELECT fields FROM application_submissions x WHERE x."applicationId" = a.id ORDER BY x.version DESC LIMIT 1) s ON true
    UNION ALL SELECT r."memberId", r."companyEmail", NULL, NULL FROM it_onboarding_requests r WHERE r."memberId" IS NOT NULL AND r."companyEmail" IS NOT NULL AND r."cancelledAt" IS NULL
-   UNION ALL SELECT c."memberId", CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'PHONE' THEN c.value END FROM member_contacts c WHERE c."removedAt" IS NULL`);
+   UNION ALL SELECT c."memberId", CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'PHONE' THEN c.value END FROM member_contacts c WHERE c."removedAt" IS NULL
+   UNION ALL SELECT x."memberId", x."companyEmail", NULL, NULL FROM member_company_accounts x WHERE x.status <> 'CLOSED' AND x."companyEmail" IS NOT NULL`);
   const owners = (pick: (row: typeof rows[number]) => string | null, normal: (value: string) => string) => {
    const map = new Map<string, string[]>();
    for (const row of rows) { const value = pick(row); if (!value) continue; const key = normal(value), ids = map.get(key) ?? []; if (!ids.includes(row.id)) ids.push(row.id); map.set(key, ids); }
@@ -179,8 +188,10 @@ export class ExistingDispatchersService {
     EXISTS (SELECT 1 FROM it_removal_requests x WHERE x."memberId" = r."memberId" AND x."cancelledAt" IS NULL AND x."completedAt" IS NOT NULL) AS "removalDone"
    FROM existing_member_records r JOIN dispatch_members d ON d.id = r."memberId"`);
   const loadBoards = await em.query(`SELECT id, name, provider, placeholder FROM load_board_accounts`);
+  const accountMcs = new Map<string, Set<string>>();
+  for (const row of await em.query(`SELECT "memberId", "mcId" FROM member_company_accounts WHERE status <> 'CLOSED' AND "mcId" IS NOT NULL`) as { memberId: string; mcId: string }[]) accountMcs.set(row.memberId, (accountMcs.get(row.memberId) ?? new Set()).add(row.mcId));
   const active = <T extends { archived: boolean }>(items: T[]) => items.filter(item => !item.archived);
-  return { loadBoards, mcs: new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
+  return { loadBoards, accountMcs, mcs: new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
    allMcs: new Map([...mcs].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item])), allTeams: teams, allTitles: new Map([...titles].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item.id])),
    members, byId: new Map(members.map(item => [item.id, item])), records: new Map(records.map(item => [item.memberId, item])),
    companyEmails: owners(row => row.company, value => value.toLowerCase()), personalEmails: owners(row => row.personal, value => value.toLowerCase()), phones: owners(row => row.phone, digits) };
@@ -389,11 +400,19 @@ export class ExistingDispatchersService {
      if (!match.fills.length || problems.length) match.options = match.options.filter(option => option !== 'FILL');
     }
    }
+   // Someone here now who also works, or worked, at another of our companies: the row can record their account there (section 33).
+   if (match && hereNow && !left && !problems.length) {
+    const atMc = known.allMcs.get(listNameKey(text(row.mc))), person = known.byId.get(match.id)!;
+    const adds = [...(company ? ['company email'] : []), ...(number ? ['RingCentral number'] : []), ...(listNameKey(name) !== listNameKey(person.name) ? ['other name'] : []),
+     ...(text(row.datEmail) ? ['DAT seat'] : []), ...(text(row.truckstopEmail) ? ['Truckstop seat'] : [])];
+    if (atMc && listNameKey(atMc.name) !== listNameKey(person.mc ?? '') && !known.accountMcs.get(person.id)?.has(atMc.id) && (company || number)) { match.options.push('ACCOUNT'); match.account = { mcId: atMc.id, mc: atMc.name, adds }; }
+   }
    const fill = !!match && row.alreadyAction === 'FILL' && match.options.includes('FILL');
+   const account = !!match && row.alreadyAction === 'ACCOUNT' && match.options.includes('ACCOUNT');
    if (already) { state = 'ALREADY'; problems.unshift(already); }
    const hasAccounts = left && !!(company || number || text(row.datEmail) || text(row.truckstopEmail));
    return { row: row.row, name, position, supportType, status: state, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsTeamId, supportsRow: null, startedOn, noMc, mcFromTeam, sharesSignIn: false,
-    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, match, fill, previousMemberId, seatAccounts };
+    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, match, fill, previousMemberId, seatAccounts, account };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
@@ -432,14 +451,14 @@ export class ExistingDispatchersService {
  async check(rows: ExistingRowDto[]) {
   const { results, choices } = this.evaluate(rows, await this.known(this.db.manager), await signInsInUse(this.db.manager));
   return { rows: results.map(({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, match }) => ({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts,
-   match: match && { id: match.id, name: match.name, status: match.status, why: match.why, options: match.options, fills: match.fills.map(fill => fill.startsWith('otherNames:') ? `${fill.slice(11)} other ${fill.slice(11) === '1' ? 'name' : 'names'}` : FIELD_LABELS[fill] ?? fill) } })),
+   match: match && { id: match.id, name: match.name, status: match.status, why: match.why, options: match.options, ...(match.account ? { account: match.account } : {}), fills: match.fills.map(fill => fill.startsWith('otherNames:') ? `${fill.slice(11)} other ${fill.slice(11) === '1' ? 'name' : 'names'}` : FIELD_LABELS[fill] ?? fill) } })),
    choices, counts: this.counts(results) };
  }
  private counts(results: RowResult[]) {
   const count = (status: RowStatus) => results.filter(row => row.status === status).length;
   const ready = results.filter(row => row.status === 'READY');
   return { ready: count('READY'), choice: count('CHOICE'), problem: count('PROBLEM'), already: count('ALREADY'), noStartDate: ready.filter(row => !row.startedOn).length, noMc: ready.filter(row => row.noMc && !row.left).length, mcFromTeam: ready.filter(row => row.mcFromTeam).length, wholeTeam: ready.filter(row => row.supportsTeamId).length, sharedSignIn: ready.filter(row => row.sharesSignIn).length,
-   left: ready.filter(row => row.left).length, noLastDay: ready.filter(row => row.left && !row.leftOn).length, askIt: ready.filter(row => row.askIt).length, cameBack: ready.filter(row => row.previousMemberId).length, fill: results.filter(row => row.fill).length };
+   left: ready.filter(row => row.left).length, noLastDay: ready.filter(row => row.left && !row.leftOn).length, askIt: ready.filter(row => row.askIt).length, cameBack: ready.filter(row => row.previousMemberId).length, fill: results.filter(row => row.fill).length, account: results.filter(row => row.account).length };
  }
  /** Adds the rows that are ready and fills in the ones chosen for it, checked again under one lock so two uploads can't both add the same person. */
  async add(user: User, rows: ExistingRowDto[], sourceName?: string) {
@@ -494,8 +513,10 @@ export class ExistingDispatchersService {
    }
    let filled = 0;
    for (const result of results.filter(row => row.fill)) { alerts.push(...await this.fillIn(em, user, byRow.get(result.row)!, result)); filled += 1; }
-   return { added: added.size, filled, members: [...added.entries()].map(([row, id]) => ({ row, id })),
-    left: results.filter(row => row.status !== 'READY' && !row.fill).map(({ row, name, status, problems, sameName }) => ({ row, name, status, problems, sameName })) };
+   let accounts = 0;
+   for (const result of results.filter(row => row.account)) { await this.addAccount(em, user, byRow.get(result.row)!, result, sourceName); accounts += 1; }
+   return { added: added.size, filled, accounts, members: [...added.entries()].map(([row, id]) => ({ row, id })),
+    left: results.filter(row => row.status !== 'READY' && !row.fill && !row.account).map(({ row, name, status, problems, sameName }) => ({ row, name, status, problems, sameName })) };
   });
   this.alerts.dispatch(alerts);
   return result;
@@ -532,10 +553,33 @@ export class ExistingDispatchersService {
   return alerts;
  }
  /** A seat for each sign-in the row puts on a named account; one already open there keeps it. Only fields filled in, when given. */
- private async fileSeats(em: EntityManager, user: User, member: DispatchMember, row: ExistingRowDto, result: RowResult, fields?: string[]) {
+ /**
+  * A row for someone here now, recorded as their account at another of our companies (section 33): its email, number and
+  * extension there (an email they already have stays where it is), the name used there as another name, and its sign-ins as
+  * seats. Nothing about their main accounts changes, and nobody is messaged.
+  */
+ private async addAccount(em: EntityManager, user: User, row: ExistingRowDto, result: RowResult, sourceName?: string) {
+  const match = result.match!, at = match.account!;
+  const member = await em.getRepository(DispatchMember).findOne({ where: { id: match.id }, lock: { mode: 'pessimistic_write' } });
+  if (!member || member.status === 'LEFT') throw new ConflictException('A record changed while this was being added. Check the rows again.');
+  const email = text(row.companyEmail).toLowerCase() || null;
+  const theirs = email ? (await alreadyHere(em, [{ key: 'own', email, phone: null, applicationId: null, skipMemberId: null }])).get('own')?.some(item => item.memberId === member.id) : false;
+  const used = listNameKey(result.name) !== listNameKey(`${member.firstName} ${member.lastName}`) ? result.name : null;
+  await addCompanyAccount(em, user.id, member.id, { mcId: at.mcId, companyName: null, nameUsed: used, companyEmail: theirs ? null : email, ringCentralNumber: text(row.ringCentralNumber) || null,
+   ringCentralExtension: text(row.ringCentralExtension) || null, status: 'ACTIVE', closedOn: null, sourceName: sourceName?.trim().slice(0, 200) || 'file' });
+  const fields = ['companyAccount'];
+  if (used && !(await em.getRepository(MemberOtherName).existsBy({ memberId: member.id, name: used }))) { await saveOtherNames(em, member.id, [{ name: used, mcId: at.mcId }], user.id); fields.push('otherNames'); }
+  if (text(row.datEmail) || text(row.truckstopEmail)) { await this.fileSeats(em, user, member, row, result, undefined, true); fields.push('seats'); }
+  member.version += 1; await em.save(member);
+  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file' } });
+  await refreshRemovalAccounts(em, member.id, user.id); await refreshRemovalSeats(em, member.id, user.id);
+ }
+ private async fileSeats(em: EntityManager, user: User, member: DispatchMember, row: ExistingRowDto, result: RowResult, fields?: string[], unnamed = false) {
   for (const [provider, field] of [['DAT', 'datEmail'], ['TRUCKSTOP', 'truckstopEmail']] as const) {
-   const accountId = result.seatAccounts[provider], email = text(row[field]).toLowerCase();
+   // Unnamed: a sign-in with no account named goes on "account not recorded", for rows that write no recorded sign-in.
+   const accountId = result.seatAccounts[provider] ?? (unnamed && text(row[field]) ? (await placeholderAccount(em, provider)).id : null), email = text(row[field]).toLowerCase();
    if (!accountId || !email || (fields && !fields.includes(field))) continue;
+   if (unnamed && await em.getRepository(LoadBoardSeat).existsBy({ memberId: member.id, signInEmail: email, status: Not('ENDED') })) continue;
    if (await em.getRepository(LoadBoardSeat).existsBy({ memberId: member.id, accountId, status: Not('ENDED') })) continue;
    const left = member.status === 'LEFT';
    await em.getRepository(LoadBoardSeat).save({ memberId: member.id, accountId, signInEmail: email, startedAt: left ? member.leftAt ?? new Date() : new Date(), createdBy: user.id,

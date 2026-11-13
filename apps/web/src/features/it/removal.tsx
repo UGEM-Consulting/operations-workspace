@@ -123,6 +123,12 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
      ...(profile.ringCentralNumber?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),
      {label:'Set up',value:profile.setUpAt&&<LocalTime iso={profile.setUpAt} format="date"/>,emptyLabel:profile.noSetupRecord?'Before the workspace':'Setup wasn’t finished'}]}/>
    </CardBody></Card>
+   {!!profile.companyAccounts?.length&&<Card><CardHeader title="Accounts at other companies" description="Remove each as well. A kept email still signs in to a load board seat below."/><CardBody>
+    <ul className="divide-y divide-border">{profile.companyAccounts.map(account=><li key={account.id} className="grid gap-1 py-3 first:pt-0 last:pb-0">
+     <span className="font-medium">{account.company}{account.nameUsed?<span className="font-normal text-muted-foreground"> · as {account.nameUsed}</span>:null}</span>
+     <DescriptionList layout="rows" stacked items={[...(account.companyEmail?[{label:'Company email',value:<span className="break-all">{account.companyEmail}</span>}]:[]),...(account.ringCentralNumber?[{label:'RingCentral number',value:account.ringCentralNumber,mono:true}]:[]),...(account.ringCentralExtension?[{label:'Extension',value:account.ringCentralExtension,mono:true}]:[])]}/>
+     {account.keptFor.length>0&&<span className="text-[13px] text-muted-foreground">Signs in to {account.keptFor.join(' and ')}</span>}</li>)}</ul>
+   </CardBody></Card>}
    {seats&&seats.length>0&&<Card><CardHeader title="Load board seats" description="End each, or change its password when someone else shares the sign-in."/><CardBody>
     <DescriptionList layout="rows" items={seats.map(seat=>({label:seat.account,value:<><span className="block break-all">{seat.signInEmail}</span>{seat.sharedWith.length>0&&<span className="block text-[13px] text-muted-foreground">Also used by {seat.sharedWith.join(', ')}</span>}{seat.status==='SUSPENDED'&&<span className="block text-[13px] text-muted-foreground">Suspended</span>}</>}))}/>
    </CardBody></Card>}

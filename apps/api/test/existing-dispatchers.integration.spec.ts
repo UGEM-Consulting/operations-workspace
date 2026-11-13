@@ -100,7 +100,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect(status(10).status).toBe('PROBLEM');
     expect(body.choices.find((item: Row) => item.field === 'mc')).toMatchObject({ text: 'Northwind Frieght', rows: [3, 4] });
     expect(body.choices.find((item: Row) => item.field === 'team')).toMatchObject({ text: 'Chen', mc: 'Northwind Freight', rows: [5] });
-    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0 });
+    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0, account: 0 });
     expect((await db.query(`SELECT count(*)::integer AS n FROM dispatch_members`))[0].n).toBe(0);
     // Refused without saving: a row with the same email as an earlier one.
     const twice = await check([base(2, 'One', { companyEmail: 'same@example.test' }), base(3, 'Two', { companyEmail: 'SAME@example.test' })]);
@@ -401,7 +401,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     it('counts rows with no start date or MC as ready, and says how many, but a date that can’t be read is still a problem', async () => {
       const { body } = await check([missing(2, 'Blank'), base(3, 'Undated', { startedOn: '' }), missing(4, 'Typo', { startedOn: 'Marhc 2024' }), missing(5, 'Team', { team: 'Red team' }), missing(6, 'Typed', { mc: 'No MC yet' })]);
       expect(body.rows.map((row: Row) => row.status)).toEqual(['READY', 'READY', 'PROBLEM', 'READY', 'READY']);
-      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0 });
+      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0, account: 0 });
     });
     it('still needs a job title for a dispatcher', async () => {
       expect((await check([missing(2, 'Untitled', { jobTitle: '' })])).body.rows[0]).toMatchObject({ status: 'PROBLEM', problems: ['Job title is empty.'] });

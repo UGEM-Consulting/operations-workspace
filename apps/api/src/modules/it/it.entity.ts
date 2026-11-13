@@ -123,7 +123,9 @@ export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return 
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];companyAccounts?:RemovalCompanyAccount[];}
+/** An account at another of our companies, as IT's removal lists it (section 33). */
+export interface RemovalCompanyAccount {id:string;company:string;nameUsed:string|null;companyEmail:string|null;ringCentralNumber:string|null;ringCentralExtension:string|null;status:string;keptFor:string[];}
 /** A load board seat as IT's removal lists it (section 33). */
 export interface RemovalSeat {id:string;account:string;provider:string;signInEmail:string;status:string;sharedWith:string[];}
 @Entity('it_removal_requests')

@@ -185,6 +185,9 @@ describe('load board accounts and seats through the BFF', () => {
     assert.equal(allowedEndpoint('POST', 'load-board-seats/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
     assert.equal(allowedEndpoint('GET', 'load-board-seats/people'), false);
     assert.equal(allowedEndpoint('POST', 'load-board-seats/people'), false);
+    assert.equal(allowedEndpoint('POST', 'company-accounts'), true);
+    assert.equal(allowedEndpoint('PATCH', 'company-accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('GET', 'company-accounts'), false);
   });
 });
 
