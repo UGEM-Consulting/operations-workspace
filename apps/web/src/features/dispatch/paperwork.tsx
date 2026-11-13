@@ -183,12 +183,14 @@ export function ExistingAccountsCard({ member, open, admin = false }: { member: 
     finally { setBusy(false); }
   }
   const paperOn = (kind: string) => existing.paper.find(item => item.kind === kind)?.signedOn ?? '';
-  return <Card><CardHeader title="Accounts" actions={open && <Button size="sm" variant="ghost" onClick={() => { setEditing(true); setError(''); }}><Pencil aria-hidden="true" className="size-3.5" />Edit</Button>} />
+  // Someone added as Left (LeftRecordScreen): the accounts they had, as recorded.
+  const addedLeft = member.status === 'LEFT' && !!existing.addedAsLeft;
+  return <Card><CardHeader title={addedLeft ? 'Accounts they had' : 'Accounts'} description={addedLeft ? (existing.sourceName ? 'Recorded from the file.' : 'Recorded by a manager.') : undefined} actions={open && <Button size="sm" variant="ghost" onClick={() => { setEditing(true); setError(''); }}><Pencil aria-hidden="true" className="size-3.5" />Edit</Button>} />
     <CardBody className="space-y-3">
       <DescriptionList layout="rows" stacked items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
         ...(existing.ringCentralExtension ? [{ label: 'Extension', value: existing.ringCentralExtension, mono: true }] : []),
         { label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }, ...signInItems(member)]} />
-      <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>
+      {!addedLeft && <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>}
     </CardBody>
     {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description="What you know now. Nobody is messaged." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
       <form id="edit-existing" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">

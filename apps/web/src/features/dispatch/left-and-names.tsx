@@ -37,9 +37,9 @@ export function NamesCard({ member, onEdit }: { member: MemberProfile; onEdit?: 
   if (!handAdded && !others.length && !onEdit) return null;
   return <Card><CardHeader title="Names" actions={onEdit && <Button size="sm" variant="ghost" onClick={onEdit}><Pencil aria-hidden="true" className="size-4" />Edit names</Button>} />
     <CardBody><DescriptionList layout="rows" items={[
-      { label: 'Name at work', value: `${member.firstName} ${member.lastName}` },
+      { label: 'American name', value: `${member.firstName} ${member.lastName}` },
       ...(handAdded ? [{ label: 'Legal name', value: legalName(member) || null, emptyLabel: 'Not recorded' }] : []),
-      { label: 'Other names', value: others.length ? <ul className="grid gap-1.5">{others.map(item => <li key={item.id} className="flex flex-wrap items-baseline gap-x-2"><span>{item.name}</span>{item.mc && <span className="text-[13px] text-muted-foreground">{item.mc}</span>}</li>)}</ul> : null, emptyLabel: 'None recorded' }]} />
+      { label: 'Other names', value: others.length ? <ul className="grid gap-1.5">{others.map(item => <li key={item.id} className="flex flex-wrap items-baseline gap-x-2"><span>{item.name}</span><span className="text-[13px] text-muted-foreground">{item.mc ?? 'earlier name'}</span></li>)}</ul> : null, emptyLabel: 'None recorded' }]} />
     </CardBody></Card>;
 }
 

@@ -177,6 +177,16 @@ describe('trusted devices and paper scans through the BFF (section 38)', () => {
   });
 });
 
+describe('people who left and other names through the BFF', () => {
+  it('lets the dispatcher page save a last day, ask IT to close accounts and edit names', () => {
+    for (const route of ['left-day', 'close-accounts', 'names']) {
+      assert.equal(allowedEndpoint('POST', `dispatch/members/2c3c0529-044c-450f-901f-201b8d17aa00/${route}`), true);
+      assert.equal(allowedEndpoint('GET', `dispatch/members/2c3c0529-044c-450f-901f-201b8d17aa00/${route}`), false);
+    }
+    assert.equal(allowedEndpoint('POST', 'dispatch/members/not-an-id/names'), false);
+  });
+});
+
 describe('the Dispatchers list through the BFF', () => {
   it('reads the list with its filters, so the filter sheet can say how many match, and nothing else under it', () => {
     assert.equal(allowedEndpoint('GET', 'dispatch/members'), true);
