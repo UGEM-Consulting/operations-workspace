@@ -21,6 +21,8 @@ export function notificationView(item:Notifications['items'][number]){
  // Leave (section 35): IT suspended or restored the accounts of someone on leave.
  if(item.kind==='IT_SUSPEND_COMPLETED')return {title:'Access suspended',text:name?`IT suspended ${name}’s accounts while they’re away.`:'IT suspended their accounts while they’re away.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  if(item.kind==='IT_RESTORE_COMPLETED')return {title:'Access restored',text:name?`IT restored ${name}’s accounts.`:'IT restored their accounts.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
+ // Company accounts (section 33): IT closed an account, or set up their accounts after a move.
+ if(item.kind==='IT_ACCOUNT_COMPLETED')return {title:'Company accounts updated',text:name?`IT finished what you asked about ${name}’s company accounts.`:'IT finished what you asked about their company accounts.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  if(item.kind==='IT_REMOVAL_COMPLETED')return {title:'IT access removed',text:`IT removed ${name??'the dispatcher'}’s accounts.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View dispatcher'};
  if(!item.applicationId)return {title:'IT setup completed',text:`IT finished what you asked for ${name??'them'}.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  return {title:'IT setup completed',text:`${name??'Dispatcher'} is ready to work.`,href:`/onboarding/applications/${item.applicationId}`,link:'View application'};

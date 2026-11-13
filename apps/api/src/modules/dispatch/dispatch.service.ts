@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { askForMoveAccounts } from '../company-accounts/account-requests';
 import { memberCompanyAccounts } from '../company-accounts/accounts';
 import { memberSeats } from '../load-boards/seats';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
@@ -259,7 +260,9 @@ export class DispatchService {
   // Other names (section 33), each with the MC where it was used when known.
   const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt", lower(o.name), o.id`, [id]);
   const [laterRecord] = await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "joinedAt", status FROM dispatch_members WHERE "previousMemberId" = $1`, [id]);
-  return { companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  // IT requests about their company accounts that are still open (section 33): closing one, or a move's new accounts.
+  const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
+  return { accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.
@@ -328,8 +331,14 @@ export class DispatchService {
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
    const leadCleared = await this.clearLead(em, id, teamId);
    if (leadCleared) await syncSignIns(em, [id], user.id);
+   // New accounts at the new MC go to IT; nothing on the record changes until IT finishes.
+   const newAccounts = dto.accounts === 'NEW' && current?.mcId !== dto.mcId;
+   if (newAccounts) {
+    const mcs: { id: string; name: string }[] = await em.query(`SELECT id, name FROM mcs WHERE id = ANY($1)`, [[dto.mcId, current?.mcId].filter(Boolean)]);
+    await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept);
+   }
    member.version += 1; await em.save(member);
-   await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared });
+   await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared, ...(newAccounts ? { newAccounts: true } : {}) });
    return { id, version: member.version };
   });
  }

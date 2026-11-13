@@ -32,3 +32,16 @@ export class UpdateCompanyAccountDto {
  @IsOptional() @IsIn(['ACTIVE', 'KEPT_FOR_LOAD_BOARDS', 'CLOSED']) status?: 'ACTIVE' | 'KEPT_FOR_LOAD_BOARDS' | 'CLOSED';
  @ValidateIf((dto: UpdateCompanyAccountDto) => dto.status === 'CLOSED') @IsDateString({ strict: true }) @Matches(/^\d{4}-\d{2}-\d{2}$/) closedOn?: string;
 }
+/** Ask IT to close an account (CloseCompanyAccountScreen): what happens to new email, and a note (never passwords). */
+export class CloseCompanyAccountDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(['FORWARD', 'SUSPEND']) emailAfter!: 'FORWARD' | 'SUSPEND';
+ @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
+}
+/** A move's new accounts as IT records them; '' clears one. */
+export class AccountContactDto {
+ @IsInt() @Min(0) version!: number;
+ @IsOptional() @email() @ValidateIf(filled) @IsEmail({}, { message: 'Enter the company email.' }) @MaxLength(254) companyEmail?: string;
+ @IsOptional() @text() @ValidateIf(filled) @Matches(INTERNATIONAL_PHONE_PATTERN, { message: 'The RingCentral number should have 7 to 15 digits.' }) @MaxLength(40) ringCentralNumber?: string;
+ @IsOptional() @text() @ValidateIf(filled) @Matches(EXTENSION, { message: 'The extension should be digits, up to 6.' }) ringCentralExtension?: string;
+}
