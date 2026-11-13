@@ -15,9 +15,11 @@ export interface SortOption { value: string; label: string }
  * so the server renders the filtered list and links can be shared. Sort values are "field:direction"; without sortOptions
  * there is no sort menu.
  */
-export function FilterBar({ path, filters, statuses, statusKey = 'status', searchLabel, sortOptions, defaults }: {
+export function FilterBar({ path, filters, statuses, statusKey = 'status', searchLabel, sortOptions, defaults, wideSearch = false }: {
   path: string; filters: Record<string, string>; statuses: (TabItem & { key: string })[]; statusKey?: string; searchLabel: string;
   sortOptions?: SortOption[]; defaults: Record<string, string>;
+  /** A wider search box, for a longer hint such as "Search name, email or phone" (DispatchersFiltersScreen). */
+  wideSearch?: boolean;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState(filters.search ?? '');
@@ -30,7 +32,7 @@ export function FilterBar({ path, filters, statuses, statusKey = 'status', searc
   return <div className="flex flex-col gap-3 px-4 pb-3 pt-4 sm:px-5 2xl:flex-row 2xl:items-center 2xl:justify-between">
     <TabLinks className="min-w-0 self-start" variant="segmented" label="Status" value={filters[statusKey]} items={statuses.map(status => ({ ...status, href: queueHref(path, filters, { [statusKey]: status.key }) }))} />
     <div className="flex flex-wrap items-center gap-2 2xl:shrink-0 2xl:flex-nowrap">
-      <form role="search" className="relative min-w-0 basis-full sm:w-56 sm:basis-auto sm:flex-none" onSubmit={event => { event.preventDefault(); router.push(queueHref(path, filters, { search: query.trim() })); }}>
+      <form role="search" className={cn('relative min-w-0 basis-full sm:basis-auto sm:flex-none', wideSearch ? 'sm:w-72' : 'sm:w-56')} onSubmit={event => { event.preventDefault(); router.push(queueHref(path, filters, { search: query.trim() })); }}>
         <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <input type="search" aria-label={searchLabel} placeholder={searchLabel} value={query} maxLength={100} onChange={event => setQuery(event.target.value)} className={cn(inputClass, 'mt-0 w-full pl-8')} />
       </form>

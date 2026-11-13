@@ -97,7 +97,8 @@ const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, pos
   // Leave (section 35): the open leave, upcoming or started.
   leave: z.looseObject({ firstDay: text, backOn: text, started: z.boolean(), it: text }).nullable().optional().catch(undefined) });
 /** GET /dispatch/members */
-export const memberListSchema = z.looseObject({ items: z.array(memberRow) });
+export const memberListSchema = z.looseObject({ items: z.array(memberRow), total: z.number().optional().catch(undefined), page: z.number().optional().catch(undefined), pageSize: z.number().optional().catch(undefined),
+  options: z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text })), teams: z.array(z.looseObject({ id: text, name: text })), leads: z.array(z.looseObject({ id: text, name: text })), jobTitles: z.array(z.looseObject({ id: text, name: text })) }).optional().catch(undefined) });
 const assignment = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, mcId: nullableText, mc: nullableText, teamId: nullableText, team: nullableText });
 const supportLink = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, dispatcherId: nullableText, dispatcher: nullableText });
 /** GET /dispatch/existing/options */

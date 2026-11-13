@@ -26,6 +26,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && path === 'applicant/updates') ||
     (method === 'POST' && ['applicant/updates/telegram','applicant/updates/telegram/check','applicant/updates/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && ['applicant/application','onboarding/invitations','onboarding/applications','onboarding/review-queue','onboarding/summary'].includes(path)) ||
+    // The Dispatchers filters ask how many people the filters being chosen would show (DispatchersFilterSheetPhoneScreen).
+    (method === 'GET' && path === 'dispatch/members') ||
     (method === 'GET' && /^onboarding\/applications\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'POST' && /^onboarding\/applications\/[0-9a-f-]{36}\/reviews$/.test(path)) ||
     (method === 'POST' && /^onboarding\/invitations\/[0-9a-f-]{36}\/revoke$/.test(path)) ||
@@ -47,6 +49,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.
     (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
+    // Dispatchers table: export the view on screen (recorded, so a POST).
+    (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
     (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|on-leave|on-leave/(return|cancel|back-on|reason))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
@@ -91,6 +95,13 @@ export function allowedEndpoint(method: string, path: string): boolean {
     ((method === 'GET' || method === 'PATCH') && path === 'driver/application') || (method === 'PATCH' && match(`safety/drivers/${ID}`, path)) ||
     (method === 'POST' && (match(`applicant/photos/${PHOTO}`, path) || match(`applicant/documents/${ID}/(view|sign|acknowledge)`, path))) ||
     (method === 'GET' && isFileEndpoint(path));
+}
+const LIST_QUERY = ['page', 'pageSize', 'status', 'search', 'sort', 'direction'];
+/** The query fields passed on to the API for a list read through the BFF; anything else is dropped. */
+export function forwardedQuery(path: string): string[] {
+  if (path === 'onboarding/review-queue' || path === 'it/onboarding') return LIST_QUERY;
+  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers'];
+  return [];
 }
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */

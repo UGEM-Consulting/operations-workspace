@@ -2,9 +2,10 @@ import { Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Patch, Pos
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto } from './dispatch.dto';
+import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
+import { MemberListService } from './member-list';
 import { ExistingDispatchersService } from './existing.service';
 import { PromotionsService } from './promotions.service';
 import { UpdatesModule } from '../updates/updates.module';
@@ -17,12 +18,19 @@ import { StorageModule } from '../storage/storage.module';
 @Controller('dispatch')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class DispatchController {
- constructor(private readonly dispatch: DispatchService) {}
+ constructor(private readonly dispatch: DispatchService, private readonly list: MemberListService) {}
  @Get('teams') teams(@Query() query: StatusQueryDto) { return this.dispatch.teams(query.status === 'LEFT' || query.status === 'ONBOARDING' || query.status === 'ON_LEAVE' ? 'ALL' : query.status); }
  @Get('teams/:id') team(@Param('id', ParseUUIDPipe) id: string) { return this.dispatch.team(id); }
  @Post('teams') createTeam(@Req() req: AuthRequest, @Body() dto: CreateTeamDto) { return this.dispatch.createTeam(req.currentUser, dto); }
  @Patch('teams/:id') updateTeam(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateTeamDto) { return this.dispatch.updateTeam(req.currentUser, id, dto); }
- @Get('members') members(@Query() query: StatusQueryDto) { return this.dispatch.members(query.status === 'ARCHIVED' ? 'ALL' : query.status); }
+ // An older web asks for everything with at most a status; the Dispatchers page asks for a page with filters.
+ @Get('members') members(@Query() query: MemberListQueryDto) {
+  const paged = Object.entries(query).some(([key, value]) => key !== 'status' && value !== undefined);
+  if (paged || query.status === 'LEAVING' || query.status === 'MISSING') return this.list.list(query);
+  return this.dispatch.members(query.status === undefined ? 'ALL' : query.status === ('ARCHIVED' as string) ? 'ALL' : query.status);
+ }
+ // Export the view on screen: a POST, because it is recorded; rate-limited, work details only.
+ @Post('members/export') exportMembers(@Req() req: AuthRequest, @Body() dto: MemberExportDto) { return this.list.export(req.currentUser, dto); }
  @Get('members/:id') member(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.dispatch.member(req.currentUser, id); }
  @Post('members/:id/contacts') addContact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AddContactDto) { return this.dispatch.addContact(req.currentUser, id, dto); }
  @Post('members/:id/contacts/:contactId/remove') removeContact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('contactId', ParseUUIDPipe) contactId: string) { return this.dispatch.removeContact(req.currentUser, id, contactId); }
@@ -104,5 +112,5 @@ class TeamLeadController {
  @Post('promotions') async request(@Req() req: AuthRequest, @Body() dto: CreatePromotionDto) { await this.promotions.requireLead(req.currentUser); return this.promotions.request(req.currentUser, dto); }
  @Post('promotions/:id/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.promotions.cancel(req.currentUser, id); }
 }
-@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
+@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, MemberListService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
 export class DispatchModule {}

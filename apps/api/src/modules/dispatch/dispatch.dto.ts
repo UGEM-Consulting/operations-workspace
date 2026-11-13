@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, Equals, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, Equals, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { listName } from '../lists/lists.entity';
 import { EXTENSION } from './account-details';
@@ -58,6 +58,31 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) truckstopEmail?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
+}
+/** Dispatch › Dispatchers' filters (the Dispatchers table group in the Design System). teamId NONE means placed under an MC with no team (Independent). */
+export class MemberFilters {
+ @IsOptional() @text() @IsString() @MaxLength(100) search?: string;
+ @IsOptional() @IsUUID() mcId?: string;
+ @IsOptional() @ValidateIf((_, value) => value !== 'NONE') @IsUUID() teamId?: string;
+ @IsOptional() @IsUUID() leadId?: string;
+ @IsOptional() @IsUUID() jobTitleId?: string;
+ @IsOptional() @IsIn(['DISPATCHER', 'SUPPORT', 'UPDATER']) position?: 'DISPATCHER' | 'SUPPORT' | 'UPDATER';
+ @IsOptional() @IsIn(['ONBOARDED', 'ADDED']) source?: 'ONBOARDED' | 'ADDED';
+ @IsOptional() @IsIn(['WITH', 'WITHOUT']) drivers?: 'WITH' | 'WITHOUT';
+}
+/** A page of Dispatch › Dispatchers. A request with none of page, filters or sort gets the whole list as before, for an older web. */
+export class MemberListQueryDto extends MemberFilters {
+ @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL', 'ARCHIVED']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL';
+ @IsOptional() @IsIn(['name', 'mc', 'team', 'lead', 'drivers', 'since', 'status']) sort?: 'name' | 'mc' | 'team' | 'lead' | 'drivers' | 'since' | 'status';
+ @IsOptional() @IsIn(['asc', 'desc']) direction?: 'asc' | 'desc';
+ @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100000) page?: number;
+ @IsOptional() @Type(() => Number) @IsIn([20, 50, 100]) pageSize?: number;
+}
+/** Export takes the view on screen: the tab, filters and sort, never a page. */
+export class MemberExportDto extends MemberFilters {
+ @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL';
+ @IsOptional() @IsIn(['name', 'mc', 'team', 'lead', 'drivers', 'since', 'status']) sort?: 'name' | 'mc' | 'team' | 'lead' | 'drivers' | 'since' | 'status';
+ @IsOptional() @IsIn(['asc', 'desc']) direction?: 'asc' | 'desc';
 }
 export class StatusQueryDto {
  @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'ARCHIVED' | 'LEFT' | 'ALL';

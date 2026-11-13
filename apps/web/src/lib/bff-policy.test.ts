@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { allowedEndpoint, bodyLimit, isFileEndpoint } from './bff-policy.ts';
+import { allowedEndpoint, bodyLimit, forwardedQuery, isFileEndpoint } from './bff-policy.ts';
 import { deviceCookieName, usesDeviceCookie } from './session-cookie.ts';
 
 const ID = '3f2b8c1e-0a4d-4f6e-9b7a-1c2d3e4f5a6b';
@@ -174,5 +174,15 @@ describe('trusted devices and paper scans through the BFF (section 38)', () => {
     assert.equal(isFileEndpoint(`dispatch/members/${ID}/paper-scans/${ID}/file`), true);
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/paper-scans/${ID}/file`), true);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/paper-scans/${ID}/delete`), false);
+  });
+});
+
+describe('the Dispatchers list through the BFF', () => {
+  it('reads the list with its filters, so the filter sheet can say how many match, and nothing else under it', () => {
+    assert.equal(allowedEndpoint('GET', 'dispatch/members'), true);
+    assert.equal(allowedEndpoint('POST', 'dispatch/members'), false);
+    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers']);
+    assert.deepEqual(forwardedQuery('onboarding/review-queue'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction']);
+    assert.deepEqual(forwardedQuery('dispatch/teams'), []);
   });
 });
