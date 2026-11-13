@@ -74,7 +74,8 @@ export async function alreadyHere(db: Query, probes: Probe[]): Promise<Map<strin
    d.id AS "memberId", CASE WHEN d.id IS NULL THEN NULL ELSE d."firstName" || ' ' || d."lastName" END AS name, d.position, d."supportType",
    CASE WHEN d.id IS NULL THEN a.status WHEN d.status = 'LEFT' THEN 'LEFT'
     WHEN ${onLeaveSql('d')} THEN 'ON_LEAVE' ELSE d.status END AS status,
-   d."leftAt", x."applicationId", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS manager
+   -- Someone added as Left with no last day holds the day they were added there, which is never shown as a date.
+   CASE WHEN (SELECT e."leftDateKnown" FROM existing_member_records e WHERE e."memberId" = d.id) IS FALSE THEN NULL ELSE d."leftAt" END AS "leftAt", x."applicationId", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS manager
   FROM probes p JOIN points x ON x.value IS NOT NULL AND ((x.kind = 'EMAIL' AND x.value = p.email) OR (x.kind = 'PHONE' AND x.value = p.phone))
   LEFT JOIN dispatch_members d ON d.id = x."memberId" LEFT JOIN dispatcher_applications a ON a.id = x."applicationId" LEFT JOIN users u ON u.id = a."assignedManagerId"
   WHERE (x."applicationId" IS NULL OR x."applicationId" IS DISTINCT FROM p."applicationId")

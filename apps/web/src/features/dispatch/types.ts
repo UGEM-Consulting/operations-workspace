@@ -53,7 +53,9 @@ export interface PaperworkRow { id: string; firstName: string; lastName: string;
 export interface PaperworkList { items: PaperworkRow[]; counts: { toCreate: number; sent: number; waiting: number; finished: number } }
 /** Someone recorded by hand: what a manager recorded, and how far their paperwork has come. */
 export interface ExistingRecord { sourceName: string | null; companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; telegram?: string | null; personalEmail: string | null; personalPhone: string | null; createdAt: string; acceptedAt: string | null; addedBy: string;
-  startDateKnown?: boolean; periodDateKnown?: boolean; undatedPeriodId?: string | null; startDateChanges?: { id: string; startedOn: string; previousOn: string | null; reason: string | null; createdAt: string; changedBy: string }[];
+  startDateKnown?: boolean; periodDateKnown?: boolean; undatedPeriodId?: string | null;
+  // People who left and other names (section 33): added as Left from a file, whether their last day is known, and their legal name.
+  addedAsLeft?: boolean; leftDateKnown?: boolean; legalFirstName?: string | null; legalLastName?: string | null; startDateChanges?: { id: string; startedOn: string; previousOn: string | null; reason: string | null; createdAt: string; changedBy: string }[];
   paper: PaperCopy[]; published: string[]; paperScans?: boolean;
   catchUp: { expiresAt: string; opened: boolean; started: boolean; status: string; signed: { kind: string; signedAt: string }[]; applicationId: string | null; reference: string | null; canReview: boolean; timeEndedAt?: string | null; returnEmail?: string | null } | null }
 export interface SharedSignIns { dat: { id: string; name: string }[]; truckstop: { id: string; name: string }[] }
@@ -62,7 +64,8 @@ export interface SupportItSetup { open: { id: string; items: string[]; done: num
 /** An NDA or SOP signed on paper, with its current scan and the ones it replaced (section 38; an older API sends neither). */
 export interface PaperScan { id: string; pageCount: number; createdAt: string; uploadedBy: string }
 export interface PaperCopy { kind: 'NDA' | 'SOP'; signedOn: string; createdAt: string; recordedBy: string; scan?: PaperScan | null; earlierScans?: (PaperScan & { replacedAt: string })[] }
-export interface MemberProfile { itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface OtherName { id: string; name: string; mcId: string | null; mc: string | null }
+export interface MemberProfile { otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).

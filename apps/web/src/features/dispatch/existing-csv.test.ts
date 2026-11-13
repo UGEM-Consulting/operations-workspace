@@ -35,10 +35,13 @@ describe('reading the file', () => {
   });
   it('reads back its own template', () => {
     const rows = readExistingFile(TEMPLATE).rows ?? [];
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4);
     assert.equal(rows[1].supports, 'Riley Santos');
     assert.equal(rows[2].team, 'Avery team');
     assert.equal(rows[0].ndaSignedOn, '2024-03-04');
+    // Someone who left, with their last day, reason and legal name (section 33), and another name separated by ;.
+    assert.deepEqual([rows[3].status, rows[3].leftOn, rows[3].leftReason, rows[3].legalFirstName], ['Left', '2025-08-15', 'Moved to another company.', 'Andrew']);
+    assert.equal(rows[2].otherNames, 'Alex Moore');
     assert.ok(rows.every(row => !row.personalEmail || row.personalEmail.endsWith('@example.test')));
   });
 });

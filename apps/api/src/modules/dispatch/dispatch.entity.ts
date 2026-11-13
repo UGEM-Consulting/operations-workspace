@@ -10,7 +10,7 @@ export type SupportType = typeof SUPPORT_TYPES[number];
 /** What someone is called, for what IT reads. */
 export const positionLabel = (member: { position: Position; supportType: SupportType }) => member.position === 'DISPATCHER' ? 'Dispatcher' : member.supportType === 'UPDATER' ? 'Updater' : 'Support';
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED', 'PAPER_SCAN_ADDED', 'PAPER_SCAN_VIEWED', 'MEMBERS_EXPORTED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED', 'PAPER_SCAN_ADDED', 'PAPER_SCAN_VIEWED', 'MEMBERS_EXPORTED', 'NAMES_CHANGED', 'LEFT_DAY_RECORDED', 'CLOSE_ACCOUNTS_ASKED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -64,8 +64,27 @@ export class ExistingMemberRecord {
  // False while joinedAt is only the day they were added, and while their first MC and team (or dispatcher) period has no date of its own.
  @Column('boolean', { default: true }) startDateKnown!: boolean;
  @Column('boolean', { default: true }) periodDateKnown!: boolean;
+ // False for someone added as Left with no last day: leftAt then holds the day they were added and is never shown as a date.
+ @Column('boolean', { default: true }) leftDateKnown!: boolean;
+ // Someone added by hand has no application, so their legal name is recorded here when it's known.
+ @Column('varchar', { length: 100, nullable: true }) legalFirstName!: string | null;
+ @Column('varchar', { length: 100, nullable: true }) legalLastName!: string | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+/**
+ * Another name someone uses or used, with the MC where it was used when known. Some are current names at another of our
+ * companies, so they're "other names", not earlier ones. Search finds them.
+ */
+@Entity('member_other_names')
+export class MemberOtherName {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('varchar', { length: 100 }) name!: string;
+ @Column('uuid', { nullable: true }) mcId!: string | null;
+ @Column('uuid') addedBy!: string;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 
 /** A start date a manager added or corrected later, with the reason for a correction. */

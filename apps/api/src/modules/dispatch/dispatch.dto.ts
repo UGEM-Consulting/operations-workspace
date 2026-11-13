@@ -35,6 +35,17 @@ export class ExistingRowDto {
  @IsOptional() @IsString() @MaxLength(300) ndaSignedOn?: string;
  @IsOptional() @IsString() @MaxLength(300) sopSignedOn?: string;
  @IsOptional() @IsBoolean() differentPerson?: boolean;
+ // People who left and other names (section 33): Active or Left, the last day and why, legal names and other names separated by ;.
+ @IsOptional() @IsString() @MaxLength(300) status?: string;
+ @IsOptional() @IsString() @MaxLength(300) leftOn?: string;
+ @IsOptional() @IsString() @MaxLength(1000) leftReason?: string;
+ @IsOptional() @IsString() @MaxLength(300) legalFirstName?: string;
+ @IsOptional() @IsString() @MaxLength(300) legalLastName?: string;
+ @IsOptional() @IsString() @MaxLength(1500) otherNames?: string;
+ // Someone added as Left whose accounts may still be open: IT gets a removal checklist from what the row records.
+ @IsOptional() @IsBoolean() askIt?: boolean;
+ // A row that matches someone already recorded: fill only what their record is missing, or (for someone who left) add them again as the same person.
+ @IsOptional() @IsIn(['FILL', 'CAME_BACK']) alreadyAction?: 'FILL' | 'CAME_BACK';
 }
 export class ExistingRowsDto {
  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => ExistingRowDto) rows!: ExistingRowDto[];
@@ -252,4 +263,28 @@ export class PaperScanDto extends ScanUploadDto {
  @IsIn(['NDA', 'SOP']) kind!: 'NDA' | 'SOP';
  @IsOptional() @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(/^\d{4}-\d{2}-\d{2}$/) signedOn?: string;
  @Equals(true, { message: 'Confirm that this is their signed document, every page.' }) confirmed!: boolean;
+}
+/** One other name, with the MC where it was used when known (section 33). Latin letters, as names are everywhere in the workspace. */
+export class OtherNameDto {
+ @text() @IsString() @MinLength(1, { message: 'Enter the name.' }) @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) name!: string;
+ @IsOptional() @IsUUID() mcId?: string;
+}
+/** Edit names: the legal name of someone added by hand ('' clears it), and the whole list of other names. */
+export class MemberNamesDto {
+ @IsInt() @Min(1) version!: number;
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalFirstName?: string;
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalLastName?: string;
+ @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => OtherNameDto) otherNames!: OtherNameDto[];
+}
+/** The last day of someone added as Left without one. */
+export class LeftDayDto {
+ @IsInt() @Min(1) version!: number;
+ @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(/^\d{4}-\d{2}-\d{2}$/) leftOn!: string;
+ @IsOptional() @text() @IsString() @MaxLength(500) reason?: string;
+}
+/** Ask IT to close the accounts of someone added as Left. */
+export class CloseAccountsDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(['FORWARD', 'SUSPEND']) emailAfter!: 'FORWARD' | 'SUSPEND';
+ @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
 }

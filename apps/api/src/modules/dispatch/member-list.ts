@@ -54,7 +54,7 @@ const SORTS: Record<MemberListQueryDto['sort'] & string, string> = {
 };
 export const EXPORT_LIMIT = 2000;
 
-/** A person's contact details with what each one is, for search: company accounts, personal contacts and staff-added ones. */
+/** A person's contact details with what each one is, for search: company accounts, personal contacts, staff-added ones, and other and legal names (section 33). */
 const CONTACT_POINTS = `(
    SELECT 'Company email' AS label, r."companyEmail" AS value FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL
    UNION ALL SELECT 'RingCentral number', r."assignedRingCentralPhoneNumber" FROM it_onboarding_requests r WHERE (r."applicationId" = b."applicationId" OR r."memberId" = b.id) AND r."cancelledAt" IS NULL
@@ -65,6 +65,7 @@ const CONTACT_POINTS = `(
      LEFT JOIN LATERAL (SELECT s.fields FROM application_submissions s WHERE s."applicationId" = a.id ORDER BY s.version DESC LIMIT 1) s ON true
      CROSS JOIN LATERAL (VALUES ('Personal email', coalesce(dm."correctedDetails"->>'personalEmail', i.email)), ('Personal phone', coalesce(dm."correctedDetails"->>'personalPhoneNumber', s.fields->>'personalPhoneNumber')),
      ('Telegram', coalesce(dm."correctedDetails"->>'telegram', s.fields->>'telegram'))) x(label, value) WHERE a.id = b."applicationId"
+   UNION ALL SELECT 'Other name', o.name || coalesce(' at ' || om.name, '') FROM member_other_names o LEFT JOIN mcs om ON om.id = o."mcId" WHERE o."memberId" = b.id UNION ALL SELECT 'Legal name', concat_ws(' ', e."legalFirstName", e."legalLastName") FROM existing_member_records e WHERE e."memberId" = b.id AND (e."legalFirstName" IS NOT NULL OR e."legalLastName" IS NOT NULL)
    UNION ALL SELECT CASE WHEN c.kind = 'EMAIL' THEN 'Added email' ELSE 'Added phone' END, c.value FROM member_contacts c WHERE c."memberId" = b.id AND c."removedAt" IS NULL
   ) p WHERE p.value IS NOT NULL`;
 
