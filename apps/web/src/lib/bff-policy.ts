@@ -47,6 +47,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.
     (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
+    // Dispatchers table: export the view on screen (recorded, so a POST).
+    (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
     (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|on-leave|on-leave/(return|cancel|back-on|reason))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||

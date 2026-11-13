@@ -20,7 +20,10 @@ export const supportName = (row: { supportType?: string | null }) => row.support
 /** The same in a sentence: "this updater", "as a support". */
 export const supportWord = (row: { supportType?: string | null }) => supportName(row).toLowerCase();
 export const aSupport = (row: { supportType?: string | null }) => row.supportType === 'UPDATER' ? 'an updater' : 'a support';
-export interface MemberRow { addedByHand?: boolean; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface MemberRow {
+  // The Dispatchers table (from an API that filters on the server): where they work by id, their team lead, open drivers and what a search matched.
+  mcId?: string | null; leadId?: string | null; teamLead?: string | null; jobTitleId?: string | null; drivers?: number; matched?: { label: string; value: string } | null;
+  addedByHand?: boolean; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   jobTitle: string | null; since: string | null; mc: string | null; teamId: string | null; team: string | null; lead: boolean; dispatcherId?: string | null; dispatcher?: string | null; wholeTeam?: string | null;
   // On notice (from an API with notice periods): the last day, whether it has passed, who still needs reassigning, IT's removal.
   lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null;
@@ -36,7 +39,10 @@ export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' &&
 export const assists = (row: { dispatcher?: string | null; wholeTeam?: string | null }) => row.wholeTeam ?? row.dispatcher ?? 'a dispatcher';
 /** "3 drivers, 1 support", for someone on notice. */
 export const toReassign = (drivers: number, supports: number) => [drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', supports ? (supports === 1 ? '1 support or updater' : `${supports} supports or updaters`) : ''].filter(Boolean).join(drivers && supports ? ', ' : '') || 'Nobody';
-export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number } }
+export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number; leaving?: number; missing?: number; all?: number };
+  // A page of the Dispatchers table, with what its filters offer.
+  total?: number; page?: number; pageSize?: number; options?: MemberOptions }
+export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[] }
 export interface Assignment { id: string; startedAt: string; endedAt: string | null; reason: string | null; mcId: string | null; mc: string | null; mcNumber: string | null; teamId: string | null; team: string | null; movedBy: string | null }
 export interface MemberDetails { legalFirstName: string | null; legalLastName: string | null; preferredAmericanFirstName: string | null; preferredAmericanLastName: string | null;
   personalEmail: string | null; personalPhoneNumber: string | null; telegram: string | null; mcName: string | null; teamLead: string | null; jobTitle: string | null; submittedAt: string | null }

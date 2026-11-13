@@ -54,12 +54,12 @@ export function readExistingFile(text: string): { rows: ExistingRow[]; error?: u
   }) };
 }
 /** A spreadsheet would run a cell starting with these as a formula; a phone's leading + is left alone. */
-function cell(value: string) {
+export function csvCell(value: string) {
   const safe = /^[=@\t\r]/.test(value) ? `'${value}` : value;
   return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 export function existingCsv(rows: ExistingRow[]) {
-  return [COLUMNS.map(([name]) => name).join(','), ...rows.map(row => COLUMNS.map(([, field]) => cell(row[field] ?? '')).join(','))].join('\r\n') + '\r\n';
+  return [COLUMNS.map(([name]) => name).join(','), ...rows.map(row => COLUMNS.map(([, field]) => csvCell(row[field] ?? '')).join(','))].join('\r\n') + '\r\n';
 }
 export const TEMPLATE = existingCsv([
   { row: 2, firstName: 'Riley', lastName: 'Santos', position: 'Dispatcher', mc: 'Northwind Freight', team: 'Avery team', jobTitle: 'Dispatcher', startedOn: '2024-03-04', companyEmail: 'riley.santos@example.test', ringCentralNumber: '+1 469 555 0142', personalEmail: 'riley.home@example.test', personalPhone: '+1 202 555 0147', ndaSignedOn: '2024-03-04' },
