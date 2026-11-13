@@ -2,6 +2,7 @@ import { ConflictException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { NotificationsService } from '../updates/notifications.service';
 import { In, IsNull } from 'typeorm';
+import { removalSeats } from '../load-boards/seats';
 import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, REMOVAL_CHECKLIST } from './it.entity';
 
 /** Every setup of a dispatcher record: a new dispatcher's (by their application) and a support's (by the member), as two indexed lookups. */
@@ -90,6 +91,9 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
  mcName: string | null; teamName: string | null; suspendedOnLeave?: boolean;
 }) {
  const { setup } = input;
+ // Their load board seats (section 33): IT ends each, or changes its password when someone else shares the sign-in.
+ const seats = await removalSeats(em, input.memberId);
+ const taskKeys = input.taskKeys && seats.length && !input.taskKeys.includes('BUSINESS_SOFTWARE') ? [...input.taskKeys, 'BUSINESS_SOFTWARE'] : input.taskKeys;
  // Someone recorded by hand has no setup request: IT works from the accounts their manager recorded.
  const companyEmail = setup?.companyEmail ?? input.accounts?.companyEmail ?? null, ringCentralNumber = setup?.assignedRingCentralPhoneNumber ?? input.accounts?.ringCentralNumber ?? null;
  if (setup && !setup.completedAt) { setup.cancelledAt = new Date(); setup.version += 1; await em.save(setup); }
@@ -99,10 +103,10 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
   memberId: input.memberId, setupRequestId: setup?.id ?? null, managerId: input.actorId, createdBy: input.actorId,
   profile: { displayName: setup?.profile.proposedDisplayName ?? input.name, position: input.position, companyEmail, ringCentralNumber, noSetupRecord: !setup,
    ringCentralExtension: setup?.ringCentralExtension ?? input.accounts?.ringCentralExtension ?? null, datEmail: setup?.datEmail ?? input.accounts?.datEmail ?? null, truckstopEmail: setup?.truckstopEmail ?? input.accounts?.truckstopEmail ?? null,
-   mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null, ...(input.suspendedOnLeave ? { suspendedOnLeave: true } : {}) },
+   seats, mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null, ...(input.suspendedOnLeave ? { suspendedOnLeave: true } : {}) },
   emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? input.actorId : null,
   dueOn: input.dueOn, numberOutcome: null, version: 0, completedAt: null, dueAlertedAt: input.scheduled ? null : new Date() });
- await em.getRepository(ItRemovalTask).save(REMOVAL_CHECKLIST.filter(task => !input.taskKeys || input.taskKeys.includes(task.key)).map(task => ({ requestId: removal.id, key: task.key, status: 'PENDING' as const, notes: '' })));
+ await em.getRepository(ItRemovalTask).save(REMOVAL_CHECKLIST.filter(task => !taskKeys || taskKeys.includes(task.key)).map(task => ({ requestId: removal.id, key: task.key, status: 'PENDING' as const, notes: '' })));
  await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId: input.actorId, event: 'REMOVAL_REQUEST_CREATED', metadata: { setupCancelled: !!setup && !setup.completedAt, noSetupRecord: !setup } });
  return input.scheduled ? alerts.queueItRemoval(em, removal, 'IT_REMOVAL_SCHEDULED') : alerts.queueItRemoval(em, removal, 'IT_REMOVAL_WAITING');
 }

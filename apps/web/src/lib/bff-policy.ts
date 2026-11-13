@@ -48,7 +48,9 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && path === 'staff/signature') || (method === 'POST' && ['staff/signature', 'staff/signature/delete'].includes(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.
-    (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
+    (method === 'POST' && ['lists/mcs', 'lists/job-titles', 'lists/load-board-accounts'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles|load-board-accounts)/${ID}`, path)) ||
+    // Load board seats (section 33): IT and administrators add one, or suspend, resume, move, end it or change its sign-in.
+    (method === 'POST' && (path === 'load-board-seats' || match(`load-board-seats/${ID}`, path))) ||
     // Dispatchers table: export the view on screen (recorded, so a POST).
     (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
@@ -100,7 +102,7 @@ const LIST_QUERY = ['page', 'pageSize', 'status', 'search', 'sort', 'direction']
 /** The query fields passed on to the API for a list read through the BFF; anything else is dropped. */
 export function forwardedQuery(path: string): string[] {
   if (path === 'onboarding/review-queue' || path === 'it/onboarding') return LIST_QUERY;
-  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only'];
+  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId'];
   return [];
 }
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }

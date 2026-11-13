@@ -177,6 +177,17 @@ describe('trusted devices and paper scans through the BFF (section 38)', () => {
   });
 });
 
+describe('load board accounts and seats through the BFF', () => {
+  it('lets IT and administrators keep the accounts and seats, and nothing else under them', () => {
+    assert.equal(allowedEndpoint('POST', 'lists/load-board-accounts'), true);
+    assert.equal(allowedEndpoint('PATCH', 'lists/load-board-accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('POST', 'load-board-seats'), true);
+    assert.equal(allowedEndpoint('POST', 'load-board-seats/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('GET', 'load-board-seats/people'), false);
+    assert.equal(allowedEndpoint('POST', 'load-board-seats/people'), false);
+  });
+});
+
 describe('people who left and other names through the BFF', () => {
   it('lets the dispatcher page save a last day, ask IT to close accounts and edit names', () => {
     for (const route of ['left-day', 'close-accounts', 'names']) {
@@ -191,7 +202,7 @@ describe('the Dispatchers list through the BFF', () => {
   it('reads the list with its filters, so the filter sheet can say how many match, and nothing else under it', () => {
     assert.equal(allowedEndpoint('GET', 'dispatch/members'), true);
     assert.equal(allowedEndpoint('POST', 'dispatch/members'), false);
-    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only']);
+    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId']);
     assert.deepEqual(forwardedQuery('onboarding/review-queue'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction']);
     assert.deepEqual(forwardedQuery('dispatch/teams'), []);
   });

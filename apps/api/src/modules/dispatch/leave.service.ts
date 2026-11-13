@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { memberSeats } from '../load-boards/seats';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.entity';
@@ -209,7 +210,8 @@ export class LeaveService {
   const datEmail = fromSetups?.datEmail ?? record?.datEmail ?? null, truckstopEmail = fromSetups?.truckstopEmail ?? record?.truckstopEmail ?? null;
   const asked: string[] = setups.length ? (await em.query(`SELECT DISTINCT key FROM it_onboarding_tasks WHERE "requestId" = ANY($1)`, [setups.map(setup => setup.id)])).map((row: { key: string }) => row.key) : [];
   const keys = [...(companyEmail ? ['GOOGLE_WORKSPACE'] : []), ...(ringCentralNumber ? ['RINGCENTRAL'] : []),
-   ...(member.position === 'DISPATCHER' || datEmail || truckstopEmail || asked.includes('BUSINESS_SOFTWARE') ? ['BUSINESS_SOFTWARE'] : [])];
+   // A load board seat (section 33) is business software too.
+   ...(member.position === 'DISPATCHER' || datEmail || truckstopEmail || asked.includes('BUSINESS_SOFTWARE') || (await memberSeats(em, member.id)).length ? ['BUSINESS_SOFTWARE'] : [])];
   return { companyEmail, ringCentralNumber, datEmail, truckstopEmail, keys };
  }
  private async profile(em: EntityManager, member: DispatchMember, leave: MemberLeave, accounts: Awaited<ReturnType<LeaveService['accounts']>>, recorder: User): Promise<LeaveProfile> {

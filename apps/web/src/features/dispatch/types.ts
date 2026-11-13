@@ -1,4 +1,5 @@
 import { statusLabel } from '@/components/ui/status-badge';
+import type { Seat } from '@/features/load-boards/seats';
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number; wholeTeam?: number;
   // Everyone assisting its dispatchers or the whole team (from an API with team pages).
@@ -42,7 +43,9 @@ export const toReassign = (drivers: number, supports: number) => [drivers ? `${d
 export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number; leaving?: number; missing?: number; all?: number; paperwork?: number };
   // A page of the Dispatchers table, with what its filters offer.
   total?: number; page?: number; pageSize?: number; options?: MemberOptions }
-export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[] }
+export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[];
+  /** The load board accounts anyone holds a seat on, for the Load board account filter (section 33); an older API sends none. */
+  loadBoardAccounts?: { id: string; name: string; provider: string; archived: boolean }[] }
 export interface Assignment { id: string; startedAt: string; endedAt: string | null; reason: string | null; mcId: string | null; mc: string | null; mcNumber: string | null; teamId: string | null; team: string | null; movedBy: string | null }
 export interface MemberDetails { legalFirstName: string | null; legalLastName: string | null; preferredAmericanFirstName: string | null; preferredAmericanLastName: string | null;
   personalEmail: string | null; personalPhoneNumber: string | null; telegram: string | null; mcName: string | null; teamLead: string | null; jobTitle: string | null; submittedAt: string | null }
@@ -65,7 +68,7 @@ export interface SupportItSetup { open: { id: string; items: string[]; done: num
 export interface PaperScan { id: string; pageCount: number; createdAt: string; uploadedBy: string }
 export interface PaperCopy { kind: 'NDA' | 'SOP'; signedOn: string; createdAt: string; recordedBy: string; scan?: PaperScan | null; earlierScans?: (PaperScan & { replacedAt: string })[] }
 export interface OtherName { id: string; name: string; mcId: string | null; mc: string | null }
-export interface MemberProfile { otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface MemberProfile { loadBoardSeats?: Seat[]; otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).

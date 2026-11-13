@@ -44,7 +44,10 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[outcome,setOutcome]=useState<NumberOutcome|''>(''),[taskError,setTaskError]=useState('');
  const {request,tasks}=data,profile=request.profile,cancelled=!!request.cancelledAt,closed=!!request.completedAt||cancelled,scheduled=request.scheduled&&!cancelled,busy=!!pending;
- const shared=data.sharedSignIns??{dat:[],truckstop:[]},sharedPeople=[...new Set([...shared.dat,...shared.truckstop].map(person=>person.name))],sharedBoards=[...(shared.dat.length?['DAT']:[]),...(shared.truckstop.length?['Truckstop']:[])].join(' and ');
+ const shared=data.sharedSignIns??{dat:[],truckstop:[]},seats=data.seats;
+ // With seats, who shares a sign-in comes from them, by account (ItRemovalSeveralAccountsScreen).
+ const sharedPeople=seats?[...new Set(seats.flatMap(seat=>seat.sharedWith))]:[...new Set([...shared.dat,...shared.truckstop].map(person=>person.name))];
+ const sharedBoards=seats?[...new Set(seats.filter(seat=>seat.sharedWith.length).map(seat=>seat.account))].join(' and '):[...(shared.dat.length?['DAT']:[]),...(shared.truckstop.length?['Truckstop']:[])].join(' and ');
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
  const needsOutcome=editing?.key==='RINGCENTRAL'&&!!profile.ringCentralNumber;
@@ -86,7 +89,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
   <div className="min-w-0 space-y-6">
    {forwardingMoved&&<Alert tone="warning" title="Email forwarding changed"><p>The manager’s records were handed over, so new email now goes to {request.forwardToName??'the new manager'}. If you’ve already set up forwarding, change it.</p></Alert>}
    {!closed&&!cancelled&&data.activity.some(event=>event.event==='ACCOUNTS_CORRECTED'&&event.metadata.reopened===true)&&<Alert tone="warning" title="A manager corrected the accounts"><p>A step you finished opened again because a company email, RingCentral number or load board sign-in changed. Check the accounts below.</p></Alert>}
-   {!closed&&!cancelled&&sharedPeople.length>0&&<Alert tone="warning" title="Someone else still uses a sign-in"><p>{sharedPeople.join(' and ')} also {sharedPeople.length===1?'uses':'use'} {profile.displayName}’s {sharedBoards} sign-in and {sharedPeople.length===1?'is':'are'} staying. Change its password and tell their manager, rather than closing it.</p></Alert>}
+   {!closed&&!cancelled&&sharedPeople.length>0&&<Alert tone="warning" title="Someone else still uses a sign-in"><p>{sharedPeople.join(' and ')} also {sharedPeople.length===1?'uses':'use'} {profile.displayName}’s {sharedBoards} sign-in{seats&&seats.filter(seat=>seat.sharedWith.length).length>1?'s':''} and {sharedPeople.length===1?'is':'are'} staying. Change its password and tell their manager, rather than closing it.</p></Alert>}
    {profile.suspendedOnLeave&&!closed&&!cancelled&&<Alert tone="info" title="Suspended during leave"><p>{profile.displayName} was on leave, so some accounts may already be suspended. Check them, then remove them.</p></Alert>}
    {request.note&&!closed&&!cancelled&&<Alert tone="info" title={`Note from ${request.managerName??'the manager'}`}><p className="whitespace-pre-wrap">{request.note}</p></Alert>}
    {profile.noSetupRecord&&!closed&&!cancelled&&<Alert tone="warning" title="No IT setup on record"><p>{profile.displayName} started before the workspace, so these accounts come from their manager and may be incomplete. Check the admin consoles as well.</p></Alert>}
@@ -116,10 +119,13 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
      {label:'Email afterwards',value:request.emailAfter==='FORWARD'?`Forward to ${request.forwardToName??'the manager'}, 30 days`:'Suspend only'},
      {label:'RingCentral number',value:profile.ringCentralNumber,mono:true,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
      ...(profile.ringCentralExtension?[{label:'Extension',value:profile.ringCentralExtension,mono:true}]:[]),
-     ...(profile.datEmail?[{label:'DAT sign-in',value:<SignIn email={profile.datEmail} others={shared.dat}/>}]:[]),...(profile.truckstopEmail?[{label:'Truckstop sign-in',value:<SignIn email={profile.truckstopEmail} others={shared.truckstop}/>}]:[]),
+     ...(!seats&&profile.datEmail?[{label:'DAT sign-in',value:<SignIn email={profile.datEmail} others={shared.dat}/>}]:[]),...(!seats&&profile.truckstopEmail?[{label:'Truckstop sign-in',value:<SignIn email={profile.truckstopEmail} others={shared.truckstop}/>}]:[]),
      ...(profile.ringCentralNumber?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),
      {label:'Set up',value:profile.setUpAt&&<LocalTime iso={profile.setUpAt} format="date"/>,emptyLabel:profile.noSetupRecord?'Before the workspace':'Setup wasn’t finished'}]}/>
    </CardBody></Card>
+   {seats&&seats.length>0&&<Card><CardHeader title="Load board seats" description="End each, or change its password when someone else shares the sign-in."/><CardBody>
+    <DescriptionList layout="rows" items={seats.map(seat=>({label:seat.account,value:<><span className="block break-all">{seat.signInEmail}</span>{seat.sharedWith.length>0&&<span className="block text-[13px] text-muted-foreground">Also used by {seat.sharedWith.join(', ')}</span>}{seat.status==='SUSPENDED'&&<span className="block text-[13px] text-muted-foreground">Suspended</span>}</>}))}/>
+   </CardBody></Card>}
    <p className="text-xs leading-5 text-muted-foreground">Checklist updates are manual records; they don’t remove accounts for you. Don’t put passwords in notes.</p>
   </div>
  </div>

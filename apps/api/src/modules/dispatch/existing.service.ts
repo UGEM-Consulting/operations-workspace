@@ -15,6 +15,8 @@ import { createRemoval, memberSetups, removalTaskKeys, setupAccounts } from '../
 import { alreadyHere, type HereMatch } from '../onboarding/already-here';
 import { NotificationsService } from '../updates/notifications.service';
 import { EXTENSION, signInsInUse, telegramUsername } from './account-details';
+import { refreshRemovalSeats, removalSeats, syncRecordedSeats } from '../load-boards/seats';
+import { LoadBoardSeat, type Provider } from '../load-boards/load-boards.entity';
 import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberOtherName, MemberPaperDocument, MemberSupportLink, NO_MC, Position, positionLabel, SupportType, Team } from './dispatch.entity';
 import { CloseAccountsDto, ExistingRowDto, LeftDayDto, MemberNamesDto, UpdateExistingDto } from './dispatch.dto';
@@ -83,9 +85,11 @@ export type AlreadyOption = 'FILL' | 'CAME_BACK' | 'DIFFERENT';
 export interface AlreadyMatch { id: string; name: string; status: string; why: string; options: AlreadyOption[]; fills: string[] }
 export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; supportType: SupportType; status: RowStatus; problems: string[]; sameName: boolean;
  mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean; sharesSignIn: boolean;
- left: boolean; leftOn: string | null; hasAccounts: boolean; askIt: boolean; otherNames: string[]; match: AlreadyMatch | null; fill: boolean; previousMemberId: string | null }
+ left: boolean; leftOn: string | null; hasAccounts: boolean; askIt: boolean; otherNames: string[]; match: AlreadyMatch | null; fill: boolean; previousMemberId: string | null;
+ // The load board account each sign-in is on (section 33); null puts it on "account not recorded".
+ seatAccounts: Record<Provider, string | null> }
 // forSupports: the same team text on support and updater rows is its own choice, because they need a real team.
-export interface Choice { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; forSupports?: boolean; rows: number[] }
+export interface Choice { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }
 
 /** A member as the check sees them: current or left, added by hand or not, and whether a later record already came back from them. */
 interface KnownMember { id: string; name: string; position: string; status: string; mc: string | null; placed: boolean; leaving: boolean; handAdded: boolean; returned: boolean; leftOn: string | null }
@@ -101,6 +105,8 @@ interface Known {
  members: KnownMember[]; byId: Map<string, KnownMember>; records: Map<string, KnownRecord>;
  // Each contact detail with the people it belongs to, current or left.
  companyEmails: Map<string, string[]>; personalEmails: Map<string, string[]>; phones: Map<string, string[]>;
+ // The load board accounts a file's dat_account and truckstop_account columns name.
+ loadBoards: { id: string; name: string; provider: Provider; placeholder: boolean }[];
 }
 const NAME = /^[A-Za-z][A-Za-z .'-]*$/;
 /** The status column: Active (or blank) or Left. Suspended means on leave, which isn't a status: they're added as Active and put on leave from their page. */
@@ -134,11 +140,12 @@ export class ExistingDispatchersService {
    this.db.query(`SELECT t.id, t.name, t."mcId", CASE WHEN l.id IS NULL THEN NULL ELSE l."firstName" || ' ' || l."lastName" END AS lead
     FROM teams t LEFT JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE t."archivedAt" IS NULL ORDER BY t."nameKey"`),
    this.db.query(`SELECT id, name FROM job_titles WHERE "archivedAt" IS NULL ORDER BY "nameKey"`)]);
+  const loadBoardAccounts = await this.db.query(`SELECT id, name, provider, placeholder FROM load_board_accounts WHERE "archivedAt" IS NULL ORDER BY placeholder, "nameKey"`);
   const dispatchers = await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN a."mcId" IS NULL THEN '${NO_MC}' ELSE m.name END AS mc FROM dispatch_members d
    LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId"
    WHERE d.position = 'DISPATCHER' AND d.status <> 'LEFT' AND NOT EXISTS (SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
    ORDER BY lower(d."firstName"), lower(d."lastName")`);
-  return { mcs, teams, jobTitles, dispatchers };
+  return { mcs, teams, jobTitles, dispatchers, loadBoardAccounts };
  }
  private async known(em: EntityManager): Promise<Known> {
   const mcs: { id: string; name: string; archived: boolean }[] = await em.query(`SELECT id, name, "archivedAt" IS NOT NULL AS archived FROM mcs`);
@@ -171,8 +178,9 @@ export class ExistingDispatchersService {
      (SELECT to_char(max(p."startedAt") AT TIME ZONE 'UTC', 'YYYY-MM-DD') FROM member_assignments p WHERE p."memberId" = r."memberId" AND r."periodDateKnown")) AS "earliestLeftOn",
     EXISTS (SELECT 1 FROM it_removal_requests x WHERE x."memberId" = r."memberId" AND x."cancelledAt" IS NULL AND x."completedAt" IS NOT NULL) AS "removalDone"
    FROM existing_member_records r JOIN dispatch_members d ON d.id = r."memberId"`);
+  const loadBoards = await em.query(`SELECT id, name, provider, placeholder FROM load_board_accounts`);
   const active = <T extends { archived: boolean }>(items: T[]) => items.filter(item => !item.archived);
-  return { mcs: new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
+  return { loadBoards, mcs: new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
    allMcs: new Map([...mcs].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item])), allTeams: teams, allTitles: new Map([...titles].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item.id])),
    members, byId: new Map(members.map(item => [item.id, item])), records: new Map(records.map(item => [item.memberId, item])),
    companyEmails: owners(row => row.company, value => value.toLowerCase()), personalEmails: owners(row => row.personal, value => value.toLowerCase()), phones: owners(row => row.phone, digits) };
@@ -240,6 +248,15 @@ export class ExistingDispatchersService {
     if (!value) continue;
     if (!EMAIL.test(value) || value.length > 254) problems.push(`The ${label} sign-in isn’t an email address. This column takes the sign-in email only, never a password.`);
     else if (this.fictionalOnly && !value.endsWith('@example.test')) problems.push(`Outside production, the ${label} sign-in must be a fictional example.test address.`);
+   }
+   // Which load board account each sign-in is on (section 33). A name the list doesn't know is a choice; none is "account not recorded".
+   const seatAccounts: Record<Provider, string | null> = { DAT: null, TRUCKSTOP: null };
+   for (const [provider, label, email, named] of [['DAT', 'DAT', text(row.datEmail), text(row.datAccount)], ['TRUCKSTOP', 'Truckstop', text(row.truckstopEmail), text(row.truckstopAccount)]] as const) {
+    if (!named) continue;
+    if (!email) { problems.push(`A ${label} account needs the ${label} sign-in email in the same row.`); continue; }
+    const found = known.loadBoards.find(item => item.provider === provider && listNameKey(item.name) === listNameKey(named));
+    if (found) seatAccounts[provider] = found.placeholder ? null : found.id;
+    else choice({ field: provider === 'DAT' ? 'datAccount' : 'truckstopAccount', text: named }, row.row);
    }
    // Someone already recorded, by a contact detail: here now first, then someone who left.
    const contactMatches: { id: string; label: string }[] = [];
@@ -376,7 +393,7 @@ export class ExistingDispatchersService {
    if (already) { state = 'ALREADY'; problems.unshift(already); }
    const hasAccounts = left && !!(company || number || text(row.datEmail) || text(row.truckstopEmail));
    return { row: row.row, name, position, supportType, status: state, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsTeamId, supportsRow: null, startedOn, noMc, mcFromTeam, sharesSignIn: false,
-    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, match, fill, previousMemberId };
+    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, match, fill, previousMemberId, seatAccounts };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
@@ -460,6 +477,9 @@ export class ExistingDispatchersService {
      telegram: telegramUsername(text(row.telegram)), ringCentralExtension: text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null,
      startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod, leftDateKnown: !result.left || !!result.leftOn,
      legalFirstName: text(row.legalFirstName) || null, legalLastName: text(row.legalLastName) || null });
+    // Load board sign-ins become seats (section 33), on the account the row names, before IT is asked to close anything.
+    await this.fileSeats(em, user, member, row, result);
+    await syncRecordedSeats(em, member.id, user.id);
     await saveOtherNames(em, member.id, result.otherNames.filter(item => listNameKey(item) !== listNameKey(result.name)).map(name => ({ name, mcId: null })), user.id);
     let paper = 0;
     for (const [kind, value] of [['NDA', text(row.ndaSignedOn)], ['SOP', text(row.sopSignedOn)]] as const) {
@@ -505,10 +525,22 @@ export class ExistingDispatchersService {
   if (newNames.length) fields.push('otherNames');
   if (!fields.length) return [];
   member.version += 1; await em.save(member); await em.save(record);
+  if (fields.includes('datEmail') || fields.includes('truckstopEmail')) { await this.fileSeats(em, user, member, row, result, fields); await syncRecordedSeats(em, member.id, user.id); }
   const accounts = fields.filter(field => REMOVAL_FIELDS.includes(field));
   const alerts = accounts.length ? await this.correctRemoval(em, user, member, record, accounts) : [];
   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file' } });
   return alerts;
+ }
+ /** A seat for each sign-in the row puts on a named account; one already open there keeps it. Only fields filled in, when given. */
+ private async fileSeats(em: EntityManager, user: User, member: DispatchMember, row: ExistingRowDto, result: RowResult, fields?: string[]) {
+  for (const [provider, field] of [['DAT', 'datEmail'], ['TRUCKSTOP', 'truckstopEmail']] as const) {
+   const accountId = result.seatAccounts[provider], email = text(row[field]).toLowerCase();
+   if (!accountId || !email || (fields && !fields.includes(field))) continue;
+   if (await em.getRepository(LoadBoardSeat).existsBy({ memberId: member.id, accountId, status: Not('ENDED') })) continue;
+   const left = member.status === 'LEFT';
+   await em.getRepository(LoadBoardSeat).save({ memberId: member.id, accountId, signInEmail: email, startedAt: left ? member.leftAt ?? new Date() : new Date(), createdBy: user.id,
+    status: left ? 'ENDED' : 'ACTIVE', endedAt: left ? member.leftAt ?? new Date() : null, endedHow: left ? 'LEFT' : null, endedBy: left ? user.id : null });
+  }
  }
  /**
   * IT closes the accounts recorded for someone added as Left: a removal checklist due today from what the manager recorded,
@@ -668,6 +700,7 @@ export class ExistingDispatchersService {
    if (!changed.length) return { id, version: member.version };
    member.version += 1; await em.save(member); await em.save(record);
    if (changed.includes('personalEmail')) await this.moveUnusedLink(em, user, id, record.personalEmail);
+   if (changed.includes('datEmail') || changed.includes('truckstopEmail')) { await syncRecordedSeats(em, id, user.id); await refreshRemovalSeats(em, id, user.id); }
    const accounts = changed.filter(field => ['companyEmail', 'ringCentralNumber', 'ringCentralExtension', 'datEmail', 'truckstopEmail'].includes(field));
    if (accounts.length) alerts = await this.correctRemoval(em, user, member, record, accounts);
    await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields: changed } });
@@ -756,7 +789,7 @@ export class ExistingDispatchersService {
    const { member, record } = await this.lockRecord(em, id, dto.version);
    if (member.status !== 'LEFT' || !record) throw new ConflictException('Only someone added by hand as Left is asked for here. For someone leaving now, use Mark as leaving.');
    if (await em.getRepository(ItRemovalRequest).existsBy({ memberId: id, cancelledAt: IsNull() })) throw new ConflictException('IT has already been asked to close their accounts.');
-   if (!record.companyEmail && !record.ringCentralNumber && !record.datEmail && !record.truckstopEmail) throw new BadRequestException('No accounts are recorded for them, so there is nothing for IT to close.');
+   if (!record.companyEmail && !record.ringCentralNumber && !record.datEmail && !record.truckstopEmail && !(await removalSeats(em, id)).length) throw new BadRequestException('No accounts are recorded for them, so there is nothing for IT to close.');
    alerts.push(...await this.askItToClose(em, user, member, record, dto.emailAfter, dto.note || null));
    member.version += 1; await em.save(member);
    await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'CLOSE_ACCOUNTS_ASKED', actorId: user.id, metadata: { forward: dto.emailAfter === 'FORWARD' && !!record.companyEmail, note: !!dto.note } });

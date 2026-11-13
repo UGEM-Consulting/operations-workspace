@@ -38,7 +38,7 @@ export function MemberFilters({ filters, options, total, view }: { filters: Reco
   const [dialog, setDialog] = useState<'all' | 'more' | null>(null);
   const go = (changes: Record<string, string>) => router.push(membersHref(filters, changes));
   const chosen = FILTER_KEYS.filter(key => filters[key]);
-  const more = (['source', 'drivers'] as const).filter(key => filters[key]).length;
+  const more = (['source', 'drivers', 'loadBoardAccountId'] as const).filter(key => filters[key]).length;
   return <>
     <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2 px-4 pb-3 sm:px-5">
       <div className="contents max-md:hidden">
@@ -109,7 +109,9 @@ function FiltersDialog({ all, filters, options, onClose, onApply }: { all: boole
       </>}
       <RadioGroup name="member-source" label="Source" value={draft.source} onChange={source => set({ source })} options={SOURCES} />
       <RadioGroup name="member-drivers" label="Drivers" value={draft.drivers} onChange={drivers => set({ drivers })} options={DRIVERS} />
-      <div><Button variant="ghost" size="sm" onClick={() => setDraft(Object.fromEntries(FILTER_KEYS.map(key => [key, all || key === 'source' || key === 'drivers' ? '' : draft[key]])) as Record<FilterKey, string>)}>Clear all filters</Button></div>
+      {/* Everyone on one DAT or Truckstop account (DispatchersLoadBoardFilterScreen). */}
+      {!!options.loadBoardAccounts?.length && <Select label="Load board account" value={draft.loadBoardAccountId} onChange={event => set({ loadBoardAccountId: event.target.value })} options={[{ value: '', label: 'All accounts' }, ...options.loadBoardAccounts.map(account => ({ value: account.id, label: archived(account) }))]} />}
+      <div><Button variant="ghost" size="sm" onClick={() => setDraft(Object.fromEntries(FILTER_KEYS.map(key => [key, all || key === 'source' || key === 'drivers' || key === 'loadBoardAccountId' ? '' : draft[key]])) as Record<FilterKey, string>)}>Clear all filters</Button></div>
     </div>
   </Dialog>;
 }

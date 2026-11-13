@@ -3,15 +3,18 @@ export interface ExistingRow {
   row: number; firstName?: string; lastName?: string; position?: string; mc?: string; team?: string; jobTitle?: string; startedOn?: string; companyEmail?: string; ringCentralNumber?: string;
   personalEmail?: string; personalPhone?: string; supports?: string; supportsMemberId?: string; supportsTeamId?: string; ndaSignedOn?: string; sopSignedOn?: string; differentPerson?: boolean;
   telegram?: string; ringCentralExtension?: string; datEmail?: string; truckstopEmail?: string;
+  // The load board account each sign-in is on, by its name in Admin › Lists (section 33).
+  datAccount?: string; truckstopAccount?: string;
   // People who left and other names (section 33). askIt and alreadyAction are choices made on the check step, never columns.
   status?: string; leftOn?: string; leftReason?: string; legalFirstName?: string; legalLastName?: string; otherNames?: string; askIt?: boolean; alreadyAction?: 'FILL' | 'CAME_BACK';
 }
 type Field = Exclude<keyof ExistingRow, 'row' | 'differentPerson' | 'supportsMemberId' | 'supportsTeamId' | 'askIt' | 'alreadyAction'>;
 export const COLUMNS: readonly [string, Field][] = [['first_name', 'firstName'], ['last_name', 'lastName'], ['position', 'position'], ['mc', 'mc'], ['team', 'team'], ['job_title', 'jobTitle'], ['started_on', 'startedOn'],
   ['company_email', 'companyEmail'], ['ringcentral_number', 'ringCentralNumber'], ['personal_email', 'personalEmail'], ['personal_phone', 'personalPhone'], ['supports', 'supports'], ['nda_signed_on', 'ndaSignedOn'], ['sop_signed_on', 'sopSignedOn'], ['telegram', 'telegram'], ['ringcentral_ext', 'ringCentralExtension'], ['dat_email', 'datEmail'], ['truckstop_email', 'truckstopEmail'],
+  ['dat_account', 'datAccount'], ['truckstop_account', 'truckstopAccount'],
   ['status', 'status'], ['left_on', 'leftOn'], ['left_reason', 'leftReason'], ['legal_first_name', 'legalFirstName'], ['legal_last_name', 'legalLastName'], ['other_names', 'otherNames']];
 // Added later, so an older file without them still works.
-const OPTIONAL_COLUMNS = ['telegram', 'ringcentral_ext', 'dat_email', 'truckstop_email', 'status', 'left_on', 'left_reason', 'legal_first_name', 'legal_last_name', 'other_names'];
+const OPTIONAL_COLUMNS = ['telegram', 'ringcentral_ext', 'dat_email', 'truckstop_email', 'dat_account', 'truckstop_account', 'status', 'left_on', 'left_reason', 'legal_first_name', 'legal_last_name', 'other_names'];
 export const MAX_ROWS = 500;
 
 /** Reads CSV text: quoted fields, doubled quotes, commas and line breaks inside quotes, and CRLF line endings. */
