@@ -45,6 +45,8 @@ function points(emails: boolean, phones: boolean) {
   `SELECT e."memberId", NULL, 'EMAIL', lower(e."personalEmail") FROM existing_member_records e WHERE ${email('lower(e."personalEmail")')}`,
   `SELECT e."memberId", NULL, 'EMAIL', lower(e."companyEmail") FROM existing_member_records e WHERE ${email('lower(e."companyEmail")')}`,
   `SELECT c."memberId", NULL, 'EMAIL', lower(c.value) FROM member_contacts c WHERE c."removedAt" IS NULL AND c.kind = 'EMAIL' AND ${email('lower(c.value)')}`,
+  // An account at another of our companies (section 33) that isn't closed.
+  `SELECT x."memberId", NULL, 'EMAIL', lower(x."companyEmail") FROM member_company_accounts x WHERE x.status <> 'CLOSED' AND ${email('lower(x."companyEmail")')}`,
   `SELECT coalesce(r."memberId", d.id), NULL, 'EMAIL', lower(r."companyEmail") FROM it_onboarding_requests r LEFT JOIN dispatch_members d ON d."applicationId" = r."applicationId"
    WHERE r."cancelledAt" IS NULL AND ${email('lower(r."companyEmail")')}`,
   `SELECT NULL, a.id, 'EMAIL', lower(i.email) FROM dispatcher_applications a JOIN invitations i ON i.id = a."invitationId" WHERE ${OPEN_APPLICATION} AND ${email('lower(i.email)')}`);
@@ -79,7 +81,7 @@ export async function alreadyHere(db: Query, probes: Probe[]): Promise<Map<strin
   FROM probes p JOIN points x ON x.value IS NOT NULL AND ((x.kind = 'EMAIL' AND x.value = p.email) OR (x.kind = 'PHONE' AND x.value = p.phone))
   LEFT JOIN dispatch_members d ON d.id = x."memberId" LEFT JOIN dispatcher_applications a ON a.id = x."applicationId" LEFT JOIN users u ON u.id = a."assignedManagerId"
   WHERE (x."applicationId" IS NULL OR x."applicationId" IS DISTINCT FROM p."applicationId")
-   AND (d.id IS NULL OR (d.id IS DISTINCT FROM p."skipMemberId" AND d."applicationId" IS DISTINCT FROM p."applicationId"))
+   AND (d.id IS NULL OR (d.id IS DISTINCT FROM p."skipMemberId" AND (p."applicationId" IS NULL OR d."applicationId" IS DISTINCT FROM p."applicationId")))
   ORDER BY p.key, coalesce(x."memberId", x."applicationId"), x.kind`, [JSON.stringify(wanted), emails, phones]);
  const rank = (match: HereMatch) => match.kind === 'APPLICATION' ? 3 : match.status === 'LEFT' ? 2 : 1;
  for (const { key, ...match } of rows) result.get(key)!.push({ ...match, leftAt: match.leftAt ? new Date(match.leftAt).toISOString() : null });

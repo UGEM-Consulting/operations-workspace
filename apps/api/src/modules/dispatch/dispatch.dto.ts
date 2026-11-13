@@ -48,7 +48,7 @@ export class ExistingRowDto {
  // Someone added as Left whose accounts may still be open: IT gets a removal checklist from what the row records.
  @IsOptional() @IsBoolean() askIt?: boolean;
  // A row that matches someone already recorded: fill only what their record is missing, or (for someone who left) add them again as the same person.
- @IsOptional() @IsIn(['FILL', 'CAME_BACK']) alreadyAction?: 'FILL' | 'CAME_BACK';
+ @IsOptional() @IsIn(['FILL', 'CAME_BACK', 'ACCOUNT']) alreadyAction?: 'FILL' | 'CAME_BACK' | 'ACCOUNT';
 }
 export class ExistingRowsDto {
  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => ExistingRowDto) rows!: ExistingRowDto[];
