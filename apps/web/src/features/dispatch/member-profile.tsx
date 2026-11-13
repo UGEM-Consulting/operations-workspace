@@ -34,6 +34,7 @@ import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard,
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
 import { itNotAsked, lastWorked } from './left-record';
+import { LoadBoardsCard, type LoadBoardAccount } from '@/features/load-boards/seats';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
 
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
@@ -60,7 +61,7 @@ function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; 
  * every way to reach them (company accounts, application contacts and ones staff added), signed documents, IT setup
  * progress, and where they work now and before. Moves and departures add history; nothing is overwritten.
  */
-export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers = [], dispatchersFailed = false, admin = false }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[];
+export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers = [], dispatchersFailed = false, admin = false, loadBoardAccounts = [] }: { member: MemberProfile; mcs: Choice[]; teams: TeamRow[]; jobTitles: Choice[]; loadBoardAccounts?: LoadBoardAccount[];
   dispatchers?: { id: string; name: string; mc: string | null; team: string | null }[]; dispatchersFailed?: boolean; admin?: boolean }) {
   const router = useRouter();
   const toast = useToast();
@@ -133,7 +134,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const startAction = { label: startKnown ? 'Correct start date' : 'Add start date', icon: Calendar, onSelect: () => start('startDate') };
   // Added by hand: a dispatcher always gets a checklist, a support only when accounts were recorded for them.
   const recordedAccounts = existing && (!support || existing.companyEmail || existing.ringCentralNumber || existing.datEmail || existing.truckstopEmail) ? { companyEmail: existing.companyEmail, ringCentralNumber: existing.ringCentralNumber } : null;
-  const signIns = { dat: accounts?.datEmail ?? existing?.datEmail ?? null, truckstop: accounts?.truckstopEmail ?? existing?.truckstopEmail ?? null }, telegram = details?.telegram ? null : existing?.telegram ?? null;
+  // With seats (section 33) the Load boards card shows the sign-ins, so the IT setup card doesn't repeat them.
+  const signIns = member.loadBoardSeats ? { dat: null, truckstop: null } : { dat: accounts?.datEmail ?? existing?.datEmail ?? null, truckstop: accounts?.truckstopEmail ?? existing?.truckstopEmail ?? null }, telegram = details?.telegram ? null : existing?.telegram ?? null;
   const removesAccess = !!accounts || !!recordedAccounts, removal = member.removal ?? null;
   // A support's or updater's IT setup (section 32): offered once the API knows it (itSetup), never while one is open or they're leaving.
   const itSetup = member.itSetup ?? null, itOpen = itSetup?.open ?? null;
@@ -226,6 +228,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               <CardBody className="space-y-1"><p className="whitespace-pre-wrap text-sm">{member.leftReason}</p>
                 {existing?.addedAsLeft ? <p className="text-[13px] text-muted-foreground">From {existing.sourceName ? 'the file' : 'their record'}, added by {existing.addedBy} on <LocalTime iso={existing.createdAt} format="date" />.</p>
                   : (member.leftBy || member.leftAt) && <p className="text-[13px] text-muted-foreground">Marked as left{member.leftBy ? ` by ${member.leftBy}` : ''}{member.leftAt ? <> on <LocalTime iso={member.leftAt} format="date" /></> : null}.</p>}</CardBody></Card>}
+            {/* Load boards (section 33): an administrator adds and changes seats here; IT does it from each account's page. */}
+            {member.loadBoardSeats && <LoadBoardsCard memberId={member.id} name={name} seats={member.loadBoardSeats} accounts={loadBoardAccounts} canChange={admin && !gone}
+              companyEmails={[...new Set([accounts?.companyEmail, existing?.companyEmail].filter((email): email is string => !!email))]} />}
             <NamesCard member={member} onEdit={() => setLeftDialog('names')} />
             {gone && mcHistory}
             {/* Someone added as Left never had paperwork to do here. */}

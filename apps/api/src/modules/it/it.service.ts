@@ -1,4 +1,5 @@
 import { sharedSignIns } from '../dispatch/account-details';
+import { endSeatsOnLeaving, removalSeats, syncRecordedSeats } from '../load-boards/seats';
 import { companyEmailSql } from '../dispatch/lead-sign-in';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -145,6 +146,8 @@ export class ItService {
    if(input.datEmail!==undefined)request.datEmail=input.datEmail||null;
    if(input.truckstopEmail!==undefined)request.truckstopEmail=input.truckstopEmail||null;
    request.version+=1;await em.save(request);
+   // A load board sign-in IT records becomes a seat until IT moves it to its real account (section 33).
+   if(input.datEmail!==undefined||input.truckstopEmail!==undefined){const [member]=await em.query(`SELECT id FROM dispatch_members WHERE id = $1 OR "applicationId" = $2 LIMIT 1`,[request.memberId,request.applicationId]);if(member)await syncRecordedSeats(em,member.id,user.id);}
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail}});
    return this.detail(em,request);
   });
@@ -211,7 +214,9 @@ export class ItService {
     (SELECT d."leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $3 AND coalesce(e."leftDateKnown", true)) AS "leftAt", (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $4) AS "recordedBy"`,[removal.managerId,removal.forwardTo,removal.memberId,removal.createdBy]);
   // Anyone else using these sign-ins: IT changes the password rather than closing an account someone still needs.
   const shared=await sharedSignIns(em,removal.memberId,{dat:removal.profile.datEmail??null,truckstop:removal.profile.truckstopEmail??null});
-  return {sharedSignIns:shared,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
+  // Their load board seats: live while IT works on it (who shares each sign-in now), as they were once it's finished.
+  const seats=removal.completedAt?((removal.profile as unknown as {seats?:unknown[]}).seats??[]):await removalSeats(em,removal.memberId);
+  return {sharedSignIns:shared,seats,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
    tasks:REMOVAL_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
  }
  async getRemoval(user:User,id:string){
@@ -240,6 +245,8 @@ export class ItService {
    const tasks=await em.getRepository(ItRemovalTask).findBy({requestId:id});
    if(tasks.length>0&&tasks.every(removalTaskDone)){
     removal.completedAt=new Date();
+    // Their access is gone: their load board seats end, kept as history.
+    await endSeatsOnLeaving(em,removal.memberId,user.id);
     // The manager who marked them as left learns their access is gone.
     await em.getRepository(PortalNotification).save({recipientId:removal.managerId,requestId:null,removalId:id,kind:'IT_REMOVAL_COMPLETED'});
     await em.getRepository(ItRemovalActivity).save({requestId:id,actorId:user.id,event:'IT_REMOVAL_COMPLETED',metadata:{}});

@@ -33,5 +33,8 @@ export interface RemovalRequest {id:string;memberId:string;version:number;status
 export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;}
 export interface LeaveRequest {id:string;memberId:string;kind:'SUSPEND'|'RESTORE';version:number;status:TaskStatus;scheduled:boolean;dueOn:string;completedAt:string|null;cancelledAt:string|null;managerName:string|null;profile:LeaveProfile;suspended?:{by:string|null;at:string}|null;signInWaiting?:boolean;leaveEnded?:'RETURNED'|'CANCELLED'|'LEAVING'|null;}
 export interface LeaveDetail {request:LeaveRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};}
-export interface RemovalDetail {request:RemovalRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};}
+export interface RemovalDetail {request:RemovalRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};
+ /** Their load board seats (section 33): live while open, as they were once finished. An older API sends none. */
+ seats?:RemovalSeat[];}
+export interface RemovalSeat {id:string;account:string;provider:'DAT'|'TRUCKSTOP';signInEmail:string;status:string;sharedWith:string[];}
 

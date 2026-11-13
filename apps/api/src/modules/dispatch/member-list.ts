@@ -107,6 +107,8 @@ export class MemberListService {
   if (query.position === 'DISPATCHER') where.push(`b.position = 'DISPATCHER'`);
   else if (query.position) where.push(`b.position = 'SUPPORT' AND b."supportType" = ${add(query.position)}`);
   if (query.source) where.push(query.source === 'ADDED' ? 'b."addedByHand"' : 'NOT b."addedByHand"');
+  // Everyone holding an open seat on one load board account (section 33).
+  if (query.loadBoardAccountId) where.push(`EXISTS (SELECT 1 FROM member_load_board_seats s WHERE s."memberId" = b.id AND s.status <> 'ENDED' AND s."accountId" = ${add(query.loadBoardAccountId)})`);
   if (query.drivers) where.push(query.drivers === 'WITH' ? 'b.drivers > 0' : `b.position = 'DISPATCHER' AND b.drivers = 0`);
   let matched = 'NULL::json';
   if (query.search) {
@@ -147,7 +149,7 @@ export class MemberListService {
 
  /** What the filters offer: active MCs, teams, job titles and current team leads, plus archived ones someone still has. */
  private async options() {
-  const [mcs, teams, leads, jobTitles] = await Promise.all([
+  const [mcs, teams, leads, jobTitles, loadBoardAccounts] = await Promise.all([
    this.db.query(`SELECT m.id, m.name, m."archivedAt" IS NOT NULL AS archived FROM mcs m WHERE m."archivedAt" IS NULL
      OR EXISTS (SELECT 1 FROM member_assignments a WHERE a."mcId" = m.id) OR EXISTS (SELECT 1 FROM teams t WHERE t."mcId" = m.id AND t."archivedAt" IS NULL) ORDER BY lower(m.name)`),
    this.db.query(`SELECT t.id, t.name, t."mcId", t."archivedAt" IS NOT NULL AS archived FROM teams t WHERE t."archivedAt" IS NULL
@@ -155,8 +157,10 @@ export class MemberListService {
    this.db.query(`SELECT DISTINCT d.id, d."firstName" || ' ' || d."lastName" AS name, lower(d."firstName"), lower(d."lastName") FROM teams t JOIN dispatch_members d ON d.id = t."leadMemberId"
      WHERE t."archivedAt" IS NULL ORDER BY lower(d."firstName"), lower(d."lastName")`),
    this.db.query(`SELECT j.id, j.name, j."archivedAt" IS NOT NULL AS archived FROM job_titles j WHERE j."archivedAt" IS NULL OR EXISTS (SELECT 1 FROM dispatch_members d WHERE d."jobTitleId" = j.id) ORDER BY lower(j.name)`),
+   this.db.query(`SELECT a.id, a.name, a.provider, a."archivedAt" IS NOT NULL AS archived FROM load_board_accounts a WHERE a."archivedAt" IS NULL
+     OR EXISTS (SELECT 1 FROM member_load_board_seats s WHERE s."accountId" = a.id AND s.status <> 'ENDED') ORDER BY a.placeholder, a."nameKey"`),
   ]);
-  return { mcs, teams, leads: leads.map(({ id, name }: { id: string; name: string }) => ({ id, name })), jobTitles };
+  return { mcs, teams, leads: leads.map(({ id, name }: { id: string; name: string }) => ({ id, name })), jobTitles, loadBoardAccounts };
  }
 
  /**
@@ -177,7 +181,7 @@ export class MemberListService {
     (SELECT ${corrected('telegram', `coalesce(s.fields->>'telegram', e.telegram)`)} FROM dispatch_members dm LEFT JOIN existing_member_records e ON e."memberId" = dm.id
       LEFT JOIN LATERAL (SELECT x.fields FROM application_submissions x WHERE x."applicationId" = dm."applicationId" ORDER BY x.version DESC LIMIT 1) s ON true WHERE dm.id = b.id) AS telegram
    FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)}`, params);
-  const used = (['search', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers'] as const).filter(key => query[key]);
+  const used = (['search', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'loadBoardAccountId'] as const).filter(key => query[key]);
   await this.db.getRepository(DispatchEvent).save({ memberId: null, teamId: null, event: 'MEMBERS_EXPORTED', actorId: user.id, metadata: { count: rows.length, tab, filters: used } });
   return { items: rows, total };
  }

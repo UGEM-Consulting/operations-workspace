@@ -27,6 +27,13 @@ describe('reading the file', () => {
     assert.equal(result.rows?.[0].firstName, 'Riley');
     assert.equal(result.rows?.[0].lastName, 'Santos');
   });
+  it('reads the load board account each sign-in is on, and works without those columns', () => {
+    const named = readExistingFile('first_name,last_name,position,mc,team,job_title,started_on,company_email,ringcentral_number,personal_email,personal_phone,supports,nda_signed_on,sop_signed_on,dat_email,dat_account\nRiley,Santos,Dispatcher,Northwind,,Dispatcher,,,,,,,,,ryan@example.test,YouPro DAT\n');
+    assert.equal(named.error, undefined);
+    assert.deepEqual([named.rows[0].datEmail, named.rows[0].datAccount], ['ryan@example.test', 'YouPro DAT']);
+    const older = readExistingFile('first_name,last_name,position,mc,team,job_title,started_on,company_email,ringcentral_number,personal_email,personal_phone,supports,nda_signed_on,sop_signed_on\nRiley,Santos,Dispatcher,Northwind,,Dispatcher,,,,,,,,\n');
+    assert.equal(older.error, undefined);
+  });
   it('says what is wrong with an unusable file', () => {
     assert.match(readExistingFile('').error ?? '', /empty/);
     assert.match(readExistingFile('first_name,last_name\nA,B').error ?? '', /missing these columns: position/);

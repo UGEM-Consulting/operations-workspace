@@ -18,12 +18,12 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow } from './existing-csv';
 import { supportName } from './types';
 
-export interface ExistingOptions { mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
+export interface ExistingOptions { loadBoardAccounts?: { id: string; name: string; provider: 'DAT' | 'TRUCKSTOP'; placeholder: boolean }[]; mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
 type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 /** Someone already recorded that a row matches (section 33): what the file would add, and what can be done with the row. */
 interface Match { id: string; name: string; status: string; why: string; options: ('FILL' | 'CAME_BACK' | 'DIFFERENT')[]; fills: string[] }
 interface CheckedRow { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean; left?: boolean; leftOn?: string | null; hasAccounts?: boolean; match?: Match | null }
-interface Checked { rows: CheckedRow[]; choices: { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: string; forSupports?: boolean; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number; wholeTeam?: number; sharedSignIn?: number; left?: number; noLastDay?: number; fill?: number } }
+interface Checked { rows: CheckedRow[]; choices: { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number; wholeTeam?: number; sharedSignIn?: number; left?: number; noLastDay?: number; fill?: number } }
 interface Added { added: number; filled?: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
 const STEPS = ['Upload the file', 'Check the rows', 'Add dispatchers'];
 const key = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -72,7 +72,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
   /** One choice fixes every row with that text. */
   function choose(choice: Checked['choices'][number], value: string) {
     if (!value) return;
-    const field = choice.field === 'mc' ? 'mc' : choice.field === 'team' ? 'team' : 'jobTitle';
+    const field = choice.field === 'mc' ? 'mc' : choice.field === 'team' ? 'team' : choice.field === 'datAccount' || choice.field === 'truckstopAccount' ? choice.field : 'jobTitle';
     void check(rows.map(row => !choice.rows.includes(row.row) ? row : value === NO_MC ? { ...row, mc: NO_MC, team: '' } : { ...row, [field]: value }));
   }
   async function add() {
@@ -120,11 +120,12 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
         const choices = choice.field === 'mc' ? [{ value: NO_MC, label: NO_MC }, ...options.mcs.map(item => ({ value: item.name, label: item.name }))]
           : choice.field === 'team' && !choice.mc ? [...options.teams.filter(item => mcOf(item.mcId)).map(item => ({ value: item.name, label: `${item.name} · ${mcOf(item.mcId)}` })), ...(choice.forSupports ? [] : [{ value: NO_MC, label: NO_MC }])]
           : choice.field === 'team' ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...options.teams.filter(item => item.mcId === mc?.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))]
+          : choice.field === 'datAccount' || choice.field === 'truckstopAccount' ? (options.loadBoardAccounts ?? []).filter(item => item.provider === (choice.field === 'datAccount' ? 'DAT' : 'TRUCKSTOP')).map(item => ({ value: item.name, label: item.name }))
           : options.jobTitles.map(item => ({ value: item.name, label: item.name }));
-        const what = choice.field === 'mc' ? 'MC' : choice.field === 'team' ? 'Team' : 'Job title';
+        const what = choice.field === 'mc' ? 'MC' : choice.field === 'team' ? 'Team' : choice.field === 'datAccount' ? 'DAT account' : choice.field === 'truckstopAccount' ? 'Truckstop account' : 'Job title';
         return <li key={`${choice.field}-${choice.forSupports}-${choice.mc}-${choice.text}`} className="flex flex-wrap items-end justify-between gap-3 px-4 py-3 sm:px-5">
           <div className="min-w-0 flex-[1_1_240px]"><p className="text-sm font-medium">{what} “{choice.text}”{choice.mc ? ` at ${choice.mc}` : ''}</p><p className="text-[13px] text-muted-foreground">{choice.rows.length} {choice.rows.length === 1 ? 'row' : 'rows'}{choice.forSupports ? ', a support or updater for the whole team' : choice.field === 'team' && !choice.mc ? ', no MC in the file' : ''}</p></div>
-          <Select label={`Use this ${what === 'MC' ? 'MC' : what.toLowerCase()}`} value="" placeholder="Choose" options={choices} disabled={busy} width="sm" onChange={event => choose(choice, event.target.value)} />
+          <Select label={`Use this ${what === 'MC' ? 'MC' : what.endsWith('account') ? 'account' : what.toLowerCase()}`} value="" placeholder="Choose" options={choices} disabled={busy} width="sm" onChange={event => choose(choice, event.target.value)} />
         </li>;
       })}</ul></Card>}
     {leaving.length > 0 && <Card><CardHeader title="People who left" description="Tick anyone whose company email, number or load board access may still be open. IT gets a removal checklist from what’s recorded." />

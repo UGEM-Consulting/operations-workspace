@@ -28,6 +28,9 @@ export class ExistingRowDto {
  @IsOptional() @IsString() @MaxLength(300) ringCentralExtension?: string;
  @IsOptional() @IsString() @MaxLength(300) datEmail?: string;
  @IsOptional() @IsString() @MaxLength(300) truckstopEmail?: string;
+ // The load board account each sign-in is on, by its name in Admin › Lists (section 33).
+ @IsOptional() @IsString() @MaxLength(300) datAccount?: string;
+ @IsOptional() @IsString() @MaxLength(300) truckstopAccount?: string;
  @IsOptional() @IsString() @MaxLength(300) supports?: string;
  // The one-person form picks the dispatcher or team from a list, so two people with the same name stay apart.
  @IsOptional() @IsUUID() supportsMemberId?: string;
@@ -80,6 +83,7 @@ export class MemberFilters {
  @IsOptional() @IsIn(['DISPATCHER', 'SUPPORT', 'UPDATER']) position?: 'DISPATCHER' | 'SUPPORT' | 'UPDATER';
  @IsOptional() @IsIn(['ONBOARDED', 'ADDED']) source?: 'ONBOARDED' | 'ADDED';
  @IsOptional() @IsIn(['WITH', 'WITHOUT']) drivers?: 'WITH' | 'WITHOUT';
+ @IsOptional() @IsUUID() loadBoardAccountId?: string;
 }
 /** The view on screen: the tab, filters and sort. ARCHIVED is an older web's name for everyone, read as ALL. */
 export class MemberViewDto extends MemberFilters {

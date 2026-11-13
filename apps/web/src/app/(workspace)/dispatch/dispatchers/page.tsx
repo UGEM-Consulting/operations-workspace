@@ -29,7 +29,7 @@ function clean(query: Record<string, string | string[] | undefined>) {
   const filters = Object.fromEntries(Object.keys(MEMBER_DEFAULTS).map(key => [key, read(key)]));
   const id = /^[0-9a-f-]{36}$/i;
   if (!TABS.includes(filters.status)) filters.status = MEMBER_DEFAULTS.status;
-  for (const key of ['mcId', 'leadId', 'jobTitleId']) if (filters[key] && !id.test(filters[key])) filters[key] = '';
+  for (const key of ['mcId', 'leadId', 'jobTitleId', 'loadBoardAccountId']) if (filters[key] && !id.test(filters[key])) filters[key] = '';
   if (filters.teamId && filters.teamId !== 'NONE' && !id.test(filters.teamId)) filters.teamId = '';
   if (!['', 'DISPATCHER', 'SUPPORT', 'UPDATER'].includes(filters.position)) filters.position = '';
   if (!['', 'ONBOARDED', 'ADDED'].includes(filters.source)) filters.source = '';

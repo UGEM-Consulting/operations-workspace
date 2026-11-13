@@ -189,7 +189,8 @@ export function ExistingAccountsCard({ member, open, admin = false }: { member: 
     <CardBody className="space-y-3">
       <DescriptionList layout="rows" stacked items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
         ...(existing.ringCentralExtension ? [{ label: 'Extension', value: existing.ringCentralExtension, mono: true }] : []),
-        { label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }, ...signInItems(member)]} />
+        // Load board sign-ins show in the Load boards card once the API has seats (section 33).
+        ...(member.loadBoardSeats ? [] : [{ label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }]), ...signInItems(member)]} />
       {!addedLeft && <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>}
     </CardBody>
     {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description="What you know now. Nobody is messaged." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>

@@ -35,7 +35,7 @@ const navigation = [
   // The consent forms drivers sign; the Safety manager publishes them.
   { key: 'consents', href: '/safety/consents', label: 'Forms and letters', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   { key: 'it', href: '/it/tasks', label: 'IT tasks', section: 'IT', roles: [Role.SYSTEM_ADMIN, Role.IT_SPECIALIST] },
-  { key: 'lists', href: '/lists', label: 'Lists', section: 'Admin', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
+  { key: 'lists', href: '/lists', label: 'Lists', section: 'Admin', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER, Role.IT_SPECIALIST] },
   { key: 'users', href: '/staff-accounts', label: 'Staff accounts', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'settings', href: '/settings', label: 'Settings', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'security', href: '/account/security', label: 'Account security', section: 'Account', roles: STAFF },

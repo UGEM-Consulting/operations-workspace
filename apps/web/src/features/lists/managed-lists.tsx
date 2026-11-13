@@ -21,14 +21,16 @@ import { cn } from '@/lib/utils';
 
 export interface ListItem { id: string; name: string; mcNumber?: string | null; dotNumber?: string | null; archived: boolean; version: number; usage: number }
 export interface ListData { items: ListItem[]; counts: { active: number; archived: number } }
-export const LISTS = { mcs: { title: 'MCs', one: 'MC', numbers: true }, 'job-titles': { title: 'Job titles', one: 'job title', numbers: false } } as const;
+export const LISTS = { mcs: { title: 'MCs', one: 'MC', numbers: true }, 'job-titles': { title: 'Job titles', one: 'job title', numbers: false }, 'load-board-accounts': { title: 'Load board accounts', one: 'account', numbers: false } } as const;
 export type ListKey = keyof typeof LISTS;
 
 /**
  * Admin › Lists: the shared choices forms pick from instead of typing. Items are archived, never deleted, so the
  * records that use them keep working. Filters (status, search) live in the URL and apply here, since lists are short.
  */
-export function ManagedLists({ list, data, counts, filters }: { list: ListKey; data: ListData; counts: Record<ListKey, number>; filters: Record<string, string> }) {
+export function ManagedLists({ list, data, counts, filters, lists, content, canAdd = true }: { list: ListKey; data: ListData; counts: Partial<Record<ListKey, number>>; filters: Record<string, string>;
+  /** The lists this person can open (IT: load board accounts only, section 33), and a list with its own table. */
+  lists: ListKey[]; content?: React.ReactNode; canAdd?: boolean }) {
   const router = useRouter();
   const toast = useToast();
   const { title, one, numbers } = LISTS[list];
@@ -67,11 +69,11 @@ export function ManagedLists({ list, data, counts, filters }: { list: ListKey; d
   return <div className="space-y-6">
     <PageCrumb label={title} />
     <PageHeader title="Lists" description="Shared choices used across the workspace. Forms pick from these instead of typing, so filters and reports stay accurate."
-      action={<Button onClick={() => open('new')}><Plus aria-hidden="true" className="size-4" />Add {one}</Button>} />
+      action={canAdd && !content && <Button onClick={() => open('new')}><Plus aria-hidden="true" className="size-4" />Add {one}</Button>} />
     <div className="grid items-start gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
       <Card className="p-2">
         <nav aria-label="Lists" className="flex gap-1 overflow-x-auto lg:grid">
-          {(Object.keys(LISTS) as ListKey[]).map(key => <Link key={key} href={`/lists/${key}`} aria-current={key === list ? 'page' : undefined}
+          {lists.map(key => <Link key={key} href={`/lists/${key}`} aria-current={key === list ? 'page' : undefined}
             className={cn('flex h-9 shrink-0 items-center justify-between gap-3 rounded-sm px-3 text-sm', key === list ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground')}>
             {LISTS[key].title}<span className="text-xs tabular-nums text-muted-foreground">{counts[key]}</span></Link>)}
         </nav>
@@ -81,7 +83,7 @@ export function ManagedLists({ list, data, counts, filters }: { list: ListKey; d
           { key: 'ACTIVE', label: 'Active', count: searched.filter(item => !item.archived).length },
           { key: 'ARCHIVED', label: 'Archived', count: searched.filter(item => item.archived).length },
           { key: 'ALL', label: 'All', count: searched.length }]} />
-        <Table caption={title} className="border-t border-border" rows={visible} rowKey={item => item.id} columns={[
+        {content ?? <Table caption={title} className="border-t border-border" rows={visible} rowKey={item => item.id} columns={[
           { key: 'name', label: numbers ? 'MC' : 'Job title', primary: true, cell: item => <span className="font-medium">{item.name}</span> },
           ...(numbers ? [
             { key: 'mc', label: 'MC number', mono: true, nowrap: true, cell: (item: ListItem) => item.mcNumber ?? <span className="font-sans italic text-muted-foreground">Not set</span> },
@@ -93,7 +95,7 @@ export function ManagedLists({ list, data, counts, filters }: { list: ListKey; d
             <Button variant="ghost" size="sm" disabled={!!pending} onClick={() => void archive(item)}>{pending === item.id ? 'Saving…' : item.archived ? 'Restore' : 'Archive'}<span className="sr-only"> {item.name}</span></Button></span> },
         ]} empty={filtered ? <EmptyState compact title="Nothing matches these filters" description="Try another status or search." />
           : <EmptyState compact title={`No ${title.toLowerCase()} yet`} description={`Add the first ${one}; it appears in every picker straight away.`} action={<Button onClick={() => open('new')}><Plus aria-hidden="true" className="size-4" />Add {one}</Button>} />}
-          footer={<p className="text-[13px] text-muted-foreground">Archived {title === 'MCs' ? 'MCs' : 'job titles'} stay on existing records but can’t be picked.</p>} />
+          footer={<p className="text-[13px] text-muted-foreground">Archived {title === 'MCs' ? 'MCs' : 'job titles'} stay on existing records but can’t be picked.</p>} />}
       </Card>
     </div>
     {editing && <Dialog open onClose={() => setEditing(null)} busy={pending === 'save'} title={editItem ? `Edit ${editItem.name}` : `Add ${one}`}

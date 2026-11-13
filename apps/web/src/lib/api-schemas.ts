@@ -78,6 +78,17 @@ export const managedListSchema = z.looseObject({
   items: z.array(z.looseObject({ id: text, name: text, archived: z.boolean(), version: z.number(), usage: z.number().optional() })),
   counts: z.looseObject({ active: z.number(), archived: z.number() }),
 });
+/** GET /lists/load-board-accounts: the company's DAT and Truckstop accounts (section 33). */
+const provider = z.enum(['DAT', 'TRUCKSTOP']);
+export const loadBoardAccountsSchema = z.looseObject({
+  items: z.array(z.looseObject({ id: text, name: text, provider, placeholder: z.boolean(), archived: z.boolean(), version: z.number(), people: z.number(), mcId: nullableText, mc: nullableText, companyName: nullableText })),
+  counts: z.looseObject({ active: z.number(), archived: z.number() }), mcs: z.array(z.looseObject({ id: text, name: text, archived: z.boolean() })),
+});
+const accountSeat = z.looseObject({ id: text, memberId: text, name: text, signInEmail: nullableText, status: z.enum(['ACTIVE', 'SUSPENDED', 'ENDED']), startedAt: text, endedAt: nullableText, version: z.number(), sharedWith: z.array(z.string()) });
+/** GET /lists/load-board-accounts/:id: who uses one account now, and its earlier seats. */
+export const loadBoardAccountSchema = z.looseObject({ account: z.looseObject({ id: text, name: text, provider, placeholder: z.boolean(), archived: z.boolean() }), using: z.array(accountSeat), history: z.array(accountSeat) });
+/** GET /load-board-seats/people: who IT can give a seat. */
+export const seatPeopleSchema = z.array(z.looseObject({ id: text, name: text, companyEmail: nullableText }));
 /** GET /lists/... when only the choices are used (id, name, archived). */
 export const choiceListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, name: text, archived: z.boolean() })) });
 
@@ -102,7 +113,7 @@ export const memberListSchema = z.looseObject({ items: z.array(memberRow), total
 const assignment = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, mcId: nullableText, mc: nullableText, teamId: nullableText, team: nullableText });
 const supportLink = z.looseObject({ id: text, startedAt: text, endedAt: nullableText, dispatcherId: nullableText, dispatcher: nullableText });
 /** GET /dispatch/existing/options */
-export const existingOptionsSchema = z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text })), teams: z.array(z.looseObject({ id: text, name: text, mcId: text })), jobTitles: z.array(z.looseObject({ id: text, name: text })), dispatchers: z.array(z.looseObject({ id: text, name: text })) });
+export const existingOptionsSchema = z.looseObject({ loadBoardAccounts: z.array(z.looseObject({ id: text, name: text, provider: z.enum(['DAT', 'TRUCKSTOP']), placeholder: z.boolean() })).optional().catch(undefined), mcs: z.array(z.looseObject({ id: text, name: text })), teams: z.array(z.looseObject({ id: text, name: text, mcId: text })), jobTitles: z.array(z.looseObject({ id: text, name: text })), dispatchers: z.array(z.looseObject({ id: text, name: text })) });
 /** GET /dispatch/paperwork */
 export const paperworkSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, state: text, nda: z.looseObject({ state: text }), sop: z.looseObject({ state: text }) })), counts: z.looseObject({ toCreate: z.number(), sent: z.number(), waiting: z.number(), finished: z.number() }) });
 /** GET /dispatch/members/:id */
