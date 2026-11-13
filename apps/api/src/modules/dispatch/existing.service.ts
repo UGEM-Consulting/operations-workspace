@@ -12,6 +12,7 @@ import { usDay } from '../safety/screening-rules';
 import { Role, type User } from '../users/user.entity';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
 import { createRemoval, memberSetups, removalTaskKeys, setupAccounts } from '../it/removal';
+import { alreadyHere, type HereMatch } from '../onboarding/already-here';
 import { NotificationsService } from '../updates/notifications.service';
 import { EXTENSION, signInsInUse, telegramUsername } from './account-details';
 import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
@@ -55,6 +56,26 @@ async function lastPlace(em: EntityManager, id: string): Promise<{ mcName: strin
 }
 /** Stored at midday UTC, as dates picked in forms are, so it shows as the same day in every US time zone. */
 const midday = (date: string) => new Date(`${date}T12:00:00Z`);
+/** Other names in the order given: each a millisecond after the one before, since rows saved together would share a time. */
+async function saveOtherNames(em: EntityManager, memberId: string, names: { name: string; mcId: string | null }[], addedBy: string) {
+ const at = Date.now();
+ for (const [index, item] of names.entries()) await em.getRepository(MemberOtherName).save({ memberId, name: item.name, mcId: item.mcId, addedBy, createdAt: new Date(at + index) });
+}
+/**
+ * The last day of someone added as Left without one, for Add last day and for a file that fills it in. Their last MC and team
+ * period ends on it; a start or period that only held the day they were added moves back to it, and a recorded one can't come
+ * after it. Returns the problem, or null once it's set on the member, record and period (the caller saves member and record).
+ */
+async function placeLeftDay(em: EntityManager, member: DispatchMember, record: ExistingMemberRecord, leftOn: string): Promise<string | null> {
+ const leftAt = midday(leftOn);
+ if (leftAt < member.joinedAt && record.startDateKnown) return 'The last day can’t be before they started.';
+ const period = await em.getRepository(MemberAssignment).findOne({ where: { memberId: member.id }, order: { startedAt: 'DESC', createdAt: 'DESC' } });
+ if (period && period.startedAt > leftAt && record.periodDateKnown) return 'The last day can’t be before their last MC and team began.';
+ if (leftAt < member.joinedAt) member.joinedAt = leftAt;
+ if (period) { if (period.startedAt > leftAt) period.startedAt = leftAt; period.endedAt = leftAt; await em.save(period); }
+ member.leftAt = leftAt; record.leftDateKnown = true;
+ return null;
+}
 
 export type RowStatus = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 /** What can be done with a row that matches someone already recorded (section 33). Leaving it means the row is skipped. */
@@ -70,7 +91,9 @@ export interface Choice { field: 'mc' | 'team' | 'jobTitle'; text: string; mc?: 
 interface KnownMember { id: string; name: string; position: string; status: string; mc: string | null; placed: boolean; leaving: boolean; handAdded: boolean; returned: boolean; leftOn: string | null }
 /** What a manager recorded for someone added by hand, to fill only what's missing. */
 interface KnownRecord { memberId: string; companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension: string | null; personalEmail: string | null; personalPhone: string | null;
- telegram: string | null; datEmail: string | null; truckstopEmail: string | null; legalFirstName: string | null; legalLastName: string | null; leftDateKnown: boolean; otherNames: string[] }
+ telegram: string | null; datEmail: string | null; truckstopEmail: string | null; legalFirstName: string | null; legalLastName: string | null; leftDateKnown: boolean; otherNames: string[];
+ // The earliest a last day can be (a recorded start, or their last MC and team period's own date), and whether IT has finished their removal.
+ earliestLeftOn: string | null; removalDone: boolean }
 interface Known {
  mcs: Map<string, { id: string; name: string }>; teams: { id: string; name: string; mcId: string; lead: string | null }[]; titles: Map<string, string>;
  // Archived ones too, for people who left: where they last worked may no longer be on the lists.
@@ -91,6 +114,8 @@ function readStatus(value: string): { left: boolean; problem?: string } {
 /** Other names, separated by ; in the file. */
 const splitNames = (value?: string) => [...new Set(text(value).split(';').map(item => item.trim().replace(/\s+/g, ' ')).filter(Boolean))];
 const accountFields = ['companyEmail', 'ringCentralNumber', 'ringCentralExtension', 'personalEmail', 'personalPhone', 'telegram', 'datEmail', 'truckstopEmail'] as const;
+// The company accounts IT's removal lists, so filling one in reaches an open removal.
+const REMOVAL_FIELDS: string[] = ['companyEmail', 'ringCentralNumber', 'ringCentralExtension', 'datEmail', 'truckstopEmail'];
 const FIELD_LABELS: Record<string, string> = { companyEmail: 'company email', ringCentralNumber: 'RingCentral number', ringCentralExtension: 'extension', personalEmail: 'personal email', personalPhone: 'personal phone', telegram: 'Telegram', datEmail: 'DAT sign-in', truckstopEmail: 'Truckstop sign-in', legalName: 'legal name', lastDay: 'last day', leftReason: 'reason for leaving' };
 /**
  * People already working here (designed and approved 2026-11-02). Rows come from a CSV the browser reads, or from the
@@ -141,7 +166,11 @@ export class ExistingDispatchersService {
    return map;
   };
   const records: KnownRecord[] = await em.query(`SELECT r."memberId", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."personalEmail", r."personalPhone", r.telegram, r."datEmail", r."truckstopEmail",
-    r."legalFirstName", r."legalLastName", r."leftDateKnown", coalesce((SELECT array_agg(lower(o.name)) FROM member_other_names o WHERE o."memberId" = r."memberId"), '{}') AS "otherNames" FROM existing_member_records r`);
+    r."legalFirstName", r."legalLastName", r."leftDateKnown", coalesce((SELECT array_agg(lower(o.name)) FROM member_other_names o WHERE o."memberId" = r."memberId"), '{}') AS "otherNames",
+    greatest(CASE WHEN r."startDateKnown" THEN to_char(d."joinedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD') END,
+     (SELECT to_char(max(p."startedAt") AT TIME ZONE 'UTC', 'YYYY-MM-DD') FROM member_assignments p WHERE p."memberId" = r."memberId" AND r."periodDateKnown")) AS "earliestLeftOn",
+    EXISTS (SELECT 1 FROM it_removal_requests x WHERE x."memberId" = r."memberId" AND x."cancelledAt" IS NULL AND x."completedAt" IS NOT NULL) AS "removalDone"
+   FROM existing_member_records r JOIN dispatch_members d ON d.id = r."memberId"`);
   const active = <T extends { archived: boolean }>(items: T[]) => items.filter(item => !item.archived);
   return { mcs: new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
    allMcs: new Map([...mcs].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item])), allTeams: teams, allTitles: new Map([...titles].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item.id])),
@@ -162,6 +191,8 @@ export class ExistingDispatchersService {
    found.rows.push(row); choices.set(key, found);
   };
   const seenCompany = new Map<string, number>(), seenPersonal = new Map<string, number>(), seenPhone = new Map<string, number>(), seenName = new Map<string, number>(), seenAnyName = new Map<string, number>(), seenNoMc = new Map<string, number>();
+  // Each person who left comes back once: a second row saying so is a problem on that row.
+  const cameBack = new Map<string, number>();
   const results: RowResult[] = rows.map(row => {
    const first = text(row.firstName), last = text(row.lastName), problems: string[] = [], { position, supportType, known: positionKnown } = readPosition(text(row.position));
    const name = `${first} ${last}`.trim(), status = readStatus(text(row.status)), left = status.left;
@@ -225,7 +256,11 @@ export class ExistingDispatchersService {
     if (left) {
      already = `Already recorded as someone who left (same ${wentAway.label} as ${person.name}).`;
      match = { id: person.id, name: person.name, status: person.status, why: `same ${wentAway.label} as ${person.name}${since}`, options: ['FILL', 'DIFFERENT'], fills: [] };
-    } else if (row.alreadyAction === 'CAME_BACK' && !person.returned) previousMemberId = person.id;
+    } else if (row.alreadyAction === 'CAME_BACK' && !person.returned) {
+     const earlier = cameBack.get(person.id);
+     if (earlier !== undefined) problems.push(`Row ${earlier} already says ${person.name} came back.`);
+     else { cameBack.set(person.id, row.row); previousMemberId = person.id; }
+    }
     else {
      already = person.returned ? `Same ${wentAway.label} as ${person.name}, who left and has already come back. This row is left out.` : `Same ${wentAway.label} as ${person.name}${since}. Choose if they came back.`;
      match = { id: person.id, name: person.name, status: person.status, why: `same ${wentAway.label} as ${person.name}${since}`, options: person.returned ? [] : ['CAME_BACK', 'DIFFERENT'], fills: [] };
@@ -324,12 +359,17 @@ export class ExistingDispatchersService {
       telegram: telegramUsername(text(row.telegram)) ?? '', datEmail: text(row.datEmail).toLowerCase(), truckstopEmail: text(row.truckstopEmail).toLowerCase() };
      const usedElsewhere = (field: string, value: string) => (field === 'companyEmail' && ExistingDispatchersService.usedByCurrent(known, known.companyEmails, value, match!.id))
       || (field === 'personalEmail' && ExistingDispatchersService.usedByCurrent(known, known.personalEmails, value, match!.id)) || (field === 'personalPhone' && ExistingDispatchersService.usedByCurrent(known, known.phones, digits(value), match!.id));
-     for (const field of accountFields) if (values[field] && !record[field] && !usedElsewhere(field, values[field])) match.fills.push(field);
+     // A finished removal takes no new account: IT is told directly, as Edit recorded details says.
+     for (const field of accountFields) if (values[field] && !record[field] && !usedElsewhere(field, values[field]) && !(record.removalDone && REMOVAL_FIELDS.includes(field))) match.fills.push(field);
      if ((legalFirst || legalLast) && !record.legalFirstName && !record.legalLastName) match.fills.push('legalName');
      const newNames = otherNames.filter(item => !record.otherNames.includes(item.toLowerCase()) && listNameKey(item) !== listNameKey(person.name));
      if (newNames.length) match.fills.push(`otherNames:${newNames.length}`);
-     if (person.status === 'LEFT' && leftOn && !record.leftDateKnown) match.fills.push('lastDay');
-     if (!match.fills.length) match.options = match.options.filter(option => option !== 'FILL');
+     if (person.status === 'LEFT' && leftOn && !record.leftDateKnown) {
+      if (record.earliestLeftOn && leftOn < record.earliestLeftOn) problems.push(`The last day can’t be before ${person.name} started, or before their last MC and team began.`);
+      else match.fills.push('lastDay');
+     }
+     // A row with a problem fills in nothing, so a value the check refused never reaches the record.
+     if (!match.fills.length || problems.length) match.options = match.options.filter(option => option !== 'FILL');
     }
    }
    const fill = !!match && row.alreadyAction === 'FILL' && match.options.includes('FILL');
@@ -420,7 +460,7 @@ export class ExistingDispatchersService {
      telegram: telegramUsername(text(row.telegram)), ringCentralExtension: text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null,
      startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod, leftDateKnown: !result.left || !!result.leftOn,
      legalFirstName: text(row.legalFirstName) || null, legalLastName: text(row.legalLastName) || null });
-    for (const otherName of result.otherNames.filter(item => listNameKey(item) !== listNameKey(result.name))) await em.getRepository(MemberOtherName).save({ memberId: member.id, name: otherName, mcId: null, addedBy: user.id });
+    await saveOtherNames(em, member.id, result.otherNames.filter(item => listNameKey(item) !== listNameKey(result.name)).map(name => ({ name, mcId: null })), user.id);
     let paper = 0;
     for (const [kind, value] of [['NDA', text(row.ndaSignedOn)], ['SOP', text(row.sopSignedOn)]] as const) {
      if (!value) continue;
@@ -433,15 +473,18 @@ export class ExistingDispatchersService {
     added.set(result.row, member.id);
    }
    let filled = 0;
-   for (const result of results.filter(row => row.fill)) { await this.fillIn(em, user, byRow.get(result.row)!, result); filled += 1; }
+   for (const result of results.filter(row => row.fill)) { alerts.push(...await this.fillIn(em, user, byRow.get(result.row)!, result)); filled += 1; }
    return { added: added.size, filled, members: [...added.entries()].map(([row, id]) => ({ row, id })),
     left: results.filter(row => row.status !== 'READY' && !row.fill).map(({ row, name, status, problems, sameName }) => ({ row, name, status, problems, sameName })) };
   });
   this.alerts.dispatch(alerts);
   return result;
  }
- /** Fills only what a recorded person's record is missing, from a row that matched them. A value already recorded never changes here. */
- private async fillIn(em: EntityManager, user: User, row: ExistingRowDto, result: RowResult) {
+ /**
+  * Fills only what a recorded person's record is missing, from a row that matched them. A value already recorded never changes
+  * here. A last day follows Add last day's rules, and a new account reaches IT's open removal. Returns the alerts to send.
+  */
+ private async fillIn(em: EntityManager, user: User, row: ExistingRowDto, result: RowResult): Promise<string[]> {
   const match = result.match!;
   const member = await em.getRepository(DispatchMember).findOne({ where: { id: match.id }, lock: { mode: 'pessimistic_write' } });
   const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: match.id });
@@ -452,20 +495,20 @@ export class ExistingDispatchersService {
   for (const field of accountFields) if (match.fills.includes(field) && !record[field] && values[field]) { record[field] = values[field]; fields.push(field); }
   if (match.fills.includes('legalName') && !record.legalFirstName && !record.legalLastName) { record.legalFirstName = text(row.legalFirstName) || null; record.legalLastName = text(row.legalLastName) || null; fields.push('legalName'); }
   if (match.fills.includes('lastDay') && !record.leftDateKnown && result.leftOn && member.status === 'LEFT') {
-   const leftAt = midday(result.leftOn);
-   // The period that ended on the day they were added ends on their real last day, never before it began.
-   const period = await em.getRepository(MemberAssignment).findOne({ where: { memberId: member.id }, order: { startedAt: 'DESC', createdAt: 'DESC' } });
-   if (period && period.startedAt <= leftAt) { period.endedAt = leftAt; await em.save(period); }
-   member.leftAt = leftAt; record.leftDateKnown = true; fields.push('lastDay');
+   if (await placeLeftDay(em, member, record, result.leftOn)) throw new ConflictException('A record changed while this was being added. Check the rows again.');
+   fields.push('lastDay');
    if (!member.leftReason && text(row.leftReason)) { member.leftReason = text(row.leftReason); fields.push('leftReason'); }
   }
   const have = new Set((await em.getRepository(MemberOtherName).findBy({ memberId: member.id })).map(item => item.name.toLowerCase()));
   const newNames = result.otherNames.filter(item => !have.has(item.toLowerCase()) && listNameKey(item) !== listNameKey(`${member.firstName} ${member.lastName}`));
-  for (const otherName of newNames) await em.getRepository(MemberOtherName).save({ memberId: member.id, name: otherName, mcId: null, addedBy: user.id });
+  await saveOtherNames(em, member.id, newNames.map(name => ({ name, mcId: null })), user.id);
   if (newNames.length) fields.push('otherNames');
-  if (!fields.length) return;
+  if (!fields.length) return [];
   member.version += 1; await em.save(member); await em.save(record);
+  const accounts = fields.filter(field => REMOVAL_FIELDS.includes(field));
+  const alerts = accounts.length ? await this.correctRemoval(em, user, member, record, accounts) : [];
   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file' } });
+  return alerts;
  }
  /**
   * IT closes the accounts recorded for someone added as Left: a removal checklist due today from what the manager recorded,
@@ -582,15 +625,20 @@ export class ExistingDispatchersService {
    if (!member || !record) throw new NotFoundException('This dispatcher record no longer exists.');
    if (member.version !== dto.version) throw new ConflictException('Someone else changed this record. Reload and try again.');
    if (member.status === 'LEFT') throw new ConflictException('This dispatcher has left; their record is kept for history.');
-   const known = await this.known(em), changed: string[] = [];
+   const changed: string[] = [];
+   // Only the values being set are looked up, so an edit never reads everyone while it holds the import lock.
+   const probes = ([['companyEmail', dto.companyEmail, undefined], ['personalEmail', dto.personalEmail, undefined], ['personalPhone', undefined, dto.personalPhone]] as const)
+    .filter(([, email, phone]) => email || phone).map(([key, email, phone]) => ({ key, email: email || null, phone: phone || null, applicationId: null, skipMemberId: id }));
+   const matches = probes.length ? await alreadyHere(em, probes) : new Map<string, HereMatch[]>();
+   const usedByCurrent = (key: string) => (matches.get(key) ?? []).some(match => match.kind === 'MEMBER' && match.status !== 'LEFT');
    const set = (field: 'companyEmail' | 'ringCentralNumber' | 'personalEmail' | 'personalPhone' | 'telegram' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail', value: string | undefined) => { if (value !== undefined && value !== (record[field] ?? '')) { record[field] = value || null; changed.push(field); } };
-   for (const [field, used, label] of [['companyEmail', known.companyEmails, 'company email'], ['personalEmail', known.personalEmails, 'personal email']] as const) {
+   for (const [field, label] of [['companyEmail', 'company email'], ['personalEmail', 'personal email']] as const) {
     const value = dto[field]?.toLowerCase();
     if (value && this.fictionalOnly && !value.endsWith('@example.test')) throw new BadRequestException(`Outside production, the ${label} must be a fictional example.test address.`);
-    if (value && ExistingDispatchersService.usedByCurrent(known, used, value, id)) throw new ConflictException(`Someone in the workspace already has this ${label}.`);
+    if (value && usedByCurrent(field)) throw new ConflictException(`Someone in the workspace already has this ${label}.`);
     set(field, value);
    }
-   if (dto.personalPhone && ExistingDispatchersService.usedByCurrent(known, known.phones, digits(dto.personalPhone), id)) throw new ConflictException('Someone in the workspace already has this personal phone.');
+   if (dto.personalPhone && usedByCurrent('personalPhone')) throw new ConflictException('Someone in the workspace already has this personal phone.');
    set('ringCentralNumber', dto.ringCentralNumber); set('personalPhone', dto.personalPhone);
    if (dto.telegram && !telegramUsername(dto.telegram)) throw new BadRequestException('Telegram should be a username, like @alexmoreno.');
    set('telegram', dto.telegram && telegramUsername(dto.telegram)!); set('ringCentralExtension', dto.ringCentralExtension);
@@ -687,20 +735,12 @@ export class ExistingDispatchersService {
    const { member, record } = await this.lockRecord(em, id, dto.version);
    if (!record || member.status !== 'LEFT' || record.leftDateKnown) throw new ConflictException('Their last day is already recorded.');
    if (dto.leftOn > usDay('latest')) throw new BadRequestException('The last day can’t be in the future.');
-   const leftAt = midday(dto.leftOn);
-   if (leftAt < member.joinedAt) {
-    if (record.startDateKnown) throw new BadRequestException('The last day can’t be before they started.');
-    member.joinedAt = leftAt;
-   }
-   const period = await em.getRepository(MemberAssignment).findOne({ where: { memberId: id }, order: { startedAt: 'DESC', createdAt: 'DESC' } });
-   if (period) {
-    if (period.startedAt > leftAt && !record.periodDateKnown) period.startedAt = leftAt;
-    if (period.startedAt > leftAt) throw new BadRequestException('The last day can’t be before their last MC and team began.');
-    period.endedAt = leftAt; await em.save(period);
-   }
+   if (dto.leftOn < '1980-01-01') throw new BadRequestException('The last day is too long ago.');
+   const problem = await placeLeftDay(em, member, record, dto.leftOn);
+   if (problem) throw new BadRequestException(problem);
    const reasonChanged = !!dto.reason && dto.reason !== (member.leftReason ?? '');
-   member.leftAt = leftAt; if (reasonChanged) member.leftReason = dto.reason!;
-   member.version += 1; record.leftDateKnown = true;
+   if (reasonChanged) member.leftReason = dto.reason!;
+   member.version += 1;
    await em.save(member); await em.save(record);
    await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'LEFT_DAY_RECORDED', actorId: user.id, metadata: { reasonChanged } });
    return { id, version: member.version };
@@ -747,11 +787,13 @@ export class ExistingDispatchersService {
    }
    const mcIds = [...new Set(wanted.flatMap(item => item.mcId ?? []))];
    if (mcIds.length && (await em.query(`SELECT count(*)::integer AS n FROM mcs WHERE id = ANY($1)`, [mcIds]))[0].n !== mcIds.length) throw new BadRequestException('Choose an MC from the list.');
-   const current = await em.getRepository(MemberOtherName).find({ where: { memberId: id }, order: { createdAt: 'ASC' } });
-   const sameList = current.length === wanted.length && current.every((item, index) => item.name === wanted[index].name && item.mcId === wanted[index].mcId);
+   // Names saved together share a time, so their order isn't fixed: the same names in any order are the same list.
+   const listKey = (items: { name: string; mcId: string | null }[]) => items.map(item => `${item.name}|${item.mcId ?? ''}`).sort().join('\n');
+   const current = await em.getRepository(MemberOtherName).findBy({ memberId: id });
+   const sameList = listKey(current) === listKey(wanted);
    if (!sameList) {
     if (current.length) await em.getRepository(MemberOtherName).delete({ memberId: id });
-    for (const item of wanted) await em.getRepository(MemberOtherName).save({ memberId: id, name: item.name, mcId: item.mcId, addedBy: user.id });
+    await saveOtherNames(em, id, wanted, user.id);
     fields.push('otherNames');
    }
    if (!fields.length) return { id, version: member.version };

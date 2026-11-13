@@ -100,7 +100,7 @@ const LIST_QUERY = ['page', 'pageSize', 'status', 'search', 'sort', 'direction']
 /** The query fields passed on to the API for a list read through the BFF; anything else is dropped. */
 export function forwardedQuery(path: string): string[] {
   if (path === 'onboarding/review-queue' || path === 'it/onboarding') return LIST_QUERY;
-  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers'];
+  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only'];
   return [];
 }
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }

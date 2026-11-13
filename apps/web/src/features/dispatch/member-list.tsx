@@ -65,24 +65,31 @@ export function MemberFilters({ filters, options, total, view }: { filters: Reco
 }
 const FilterCount = ({ count }: { count: number }) => <span className="ml-0.5 inline-grid min-w-5 place-items-center rounded-full bg-muted px-1.5 text-xs font-semibold tabular-nums">{count}</span>;
 
+/** How many people on this tab a query would show, counts only (an older API without only=counts answers 400: null). */
+const matchTotal = (tab: string, query: Record<string, string>) => readApi<{ total?: unknown }>(`dispatch/members?${new URLSearchParams({ status: tab, only: 'counts', ...query })}`)
+  .then(body => typeof body.total === 'number' ? body.total : null);
 /**
  * How many people on this tab the filters being chosen would show, of everyone on it (DispatchersFilterSheetPhoneScreen:
- * "6 of 44 people match"), asked again a moment after each change. Null until known, or when the API can't say (an older one).
+ * "6 of 44 people match"). Everyone on the tab is asked once; the match a moment after each change. Null until known, or
+ * when the API can't say.
  */
 function useMatchCount(filters: Record<string, string>, draft: Record<FilterKey, string>) {
-  const [count, setCount] = useState<{ match: number; of: number } | null>(null);
+  const [match, setMatch] = useState<number | null>(null), [of, setOf] = useState<number | null>(null);
   const tab = filters.status || MEMBER_DEFAULTS.status, search = filters.search ?? '', draftKey = JSON.stringify(draft);
   useEffect(() => {
     let current = true;
+    matchTotal(tab, {}).then(total => { if (current) setOf(total); }, () => { if (current) setOf(null); });
+    return () => { current = false; };
+  }, [tab]);
+  useEffect(() => {
+    let current = true;
     const chosen = Object.fromEntries(Object.entries({ ...JSON.parse(draftKey) as Record<string, string>, search }).filter(([, value]) => value));
-    const total = (query: Record<string, string>) => readApi<{ total?: unknown }>(`dispatch/members?${new URLSearchParams({ status: tab, page: '1', pageSize: '20', ...query })}`)
-      .then(body => typeof body.total === 'number' ? body.total : null);
     const timer = setTimeout(() => {
-      Promise.all([total(chosen), total({})]).then(([match, of]) => { if (current) setCount(match === null || of === null ? null : { match, of }); }, () => { if (current) setCount(null); });
+      matchTotal(tab, chosen).then(total => { if (current) setMatch(total); }, () => { if (current) setMatch(null); });
     }, 250);
     return () => { current = false; clearTimeout(timer); };
   }, [draftKey, tab, search]);
-  return count;
+  return match === null || of === null ? null : { match, of };
 }
 
 /** Every filter on a phone, or Source and Drivers from More filters; nothing changes until Show. */
