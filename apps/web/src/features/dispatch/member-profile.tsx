@@ -35,7 +35,7 @@ import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-deta
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
 import { itNotAsked, lastWorked } from './left-record';
 import { LoadBoardsCard, type LoadBoardAccount } from '@/features/load-boards/seats';
-import { CompanyAccountsCard } from '@/features/company-accounts/card';
+import { CompanyAccountsCard, MoveAccounts } from '@/features/company-accounts/card';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
 
 const selfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/selfie`, idSelfieUrl = (id: string) => `/api/backend/dispatch/members/${id}/photos/id-selfie`;
@@ -72,6 +72,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [mcId, setMcId] = useState(member.current?.mcId ?? '');
+  // A move's company accounts (section 33): kept by default.
+  const [moveAccounts, setMoveAccounts] = useState<'KEEP' | 'NEW'>('KEEP');
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
   const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('FORWARD');
   const [lastDay, setLastDay] = useState(today());
@@ -97,7 +99,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       else if (action === 'supportType') await mutate(`dispatch/members/${member.id}/support-type`, 'POST', { version: member.version, supportType: otherType });
       else if (action === 'place') await mutate(`dispatch/members/${member.id}/place`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, ...(form.startedAt ? { startedAt: form.startedAt } : {}) });
       else if (action === 'startDate') await mutate(`dispatch/members/${member.id}/start-date`, 'POST', { version: member.version, startedOn: form.startedOn, ...(form.reason?.trim() ? { reason: form.reason } : {}) });
-      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason });
+      // Their company accounts (section 33): sent only when IT is asked for new ones, so an older API never sees the field otherwise.
+      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason,
+        ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on' } : {}) });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
       else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) ? { emailAfter } : {}) });
       else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
@@ -362,7 +366,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         {existing && (!accounts || support) && <ExistingAccountsCard member={member} open={open} admin={admin} />}
         {addedLeft && !removal && <Card><CardHeader title="IT access" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">{itNotAsked(canAskItToClose(member))}</p></CardBody></Card>}
         {/* Accounts at other companies (section 33): an administrator adds and changes them here. */}
-        {member.companyAccounts && <CompanyAccountsCard memberId={member.id} accounts={member.companyAccounts} mcs={mcs} canChange={admin} />}
+        {member.companyAccounts && <CompanyAccountsCard memberId={member.id} accounts={member.companyAccounts} mcs={mcs} canChange={admin} canAsk={!gone} closingIds={(member.accountRequests ?? []).flatMap(item => item.kind === 'CLOSE' && item.accountId ? [item.accountId] : [])} />}
+        {member.accountRequests?.some(item => item.kind === 'MOVE') && <Alert tone="info" title={`IT is setting up their accounts at ${member.accountRequests.find(item => item.kind === 'MOVE')?.toMc ?? 'their new MC'}`}><p>Their record keeps the current accounts until IT finishes. You get a notice then.</p></Alert>}
         {(!existing || accounts) && <Card>
           <CardHeader title={support ? 'Onboarding' : 'IT setup'} />
           <CardBody className="space-y-3 text-sm">
@@ -421,6 +426,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           {member.leadOf && <p className="rounded-md bg-warning-background px-3 py-2 text-sm text-warning">{name} leads {member.leadOf.name}. Moving to another team ends that.</p>}
           <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
           <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Lakeside needed more dispatchers." />
+          {mcId && mcId !== current?.mcId && <MoveAccounts value={moveAccounts} onChange={setMoveAccounts} toMc={mcs.find(mc => mc.id === mcId)?.name ?? 'the new MC'} fromMc={current?.mc ?? null}
+            email={accounts?.companyEmail ?? existing?.companyEmail ?? null} number={accounts?.workPhone ?? existing?.ringCentralNumber ?? null}
+            keptFor={[...new Set((member.loadBoardSeats ?? []).filter(seat => seat.status !== 'ENDED' && seat.signInEmail === (accounts?.companyEmail ?? existing?.companyEmail)).map(seat => seat.account))]} />}
         </>}
         {action === 'leave' && <>
           <Input label="Last day" name="leftAt" type="date" required value={lastDay} onChange={event => setLastDay(event.target.value)} max={support || !accounts || accounts.completedAt ? noticeLimit() : today()} width="sm"

@@ -38,14 +38,17 @@ const OPEN_SUPPORT_SETUPS = `FROM it_onboarding_requests r WHERE r.purpose = 'SU
  */
 const OPEN_LEAVE_REQUESTS = `FROM it_leave_requests r WHERE r."managerId" = $1 AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
 const OPEN_LEAVES = `FROM member_leaves l WHERE l."forwardTo" = $1 AND l."endedAt" IS NULL`;
+/** Requests about company accounts (section 33) whose notice or forwarded mail goes to them. */
+const OPEN_ACCOUNT_REQUESTS = `FROM it_account_requests r WHERE (r."managerId" = $1 OR r."forwardTo" = $1) AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
 export async function openRecords(em: EntityManager, userId: string) {
  const rows: { id: string; invitationId: string; bucket: 'invitations' | 'applications' | 'changes' | 'itSetup' }[] = await em.query(OPEN_RECORDS, [userId]);
  const [{ removals }]: { removals: number }[] = await em.query(`SELECT count(*)::integer AS removals ${OPEN_REMOVALS}`, [userId]);
  const [{ supportSetups }]: { supportSetups: number }[] = await em.query(`SELECT count(*)::integer AS "supportSetups" ${OPEN_SUPPORT_SETUPS}`, [userId]);
+ const [{ accountRequests }]: { accountRequests: number }[] = await em.query(`SELECT count(*)::integer AS "accountRequests" ${OPEN_ACCOUNT_REQUESTS}`, [userId]);
  // One person away counts once, whether it's their leave, its checklist or both.
  const [{ leave }]: { leave: number }[] = await em.query(`SELECT count(DISTINCT x."leaveId")::integer AS leave FROM (SELECT r."leaveId" ${OPEN_LEAVE_REQUESTS} UNION ALL SELECT l.id ${OPEN_LEAVES}) x`, [userId]);
  const count = (bucket: string) => rows.filter(row => row.bucket === bucket).length;
- return { rows, counts: { invitations: count('invitations'), applications: count('applications'), changes: count('changes'), itSetup: count('itSetup') + supportSetups, removals, leave, total: rows.length + removals + supportSetups + leave } };
+ return { rows, counts: { invitations: count('invitations'), applications: count('applications'), changes: count('changes'), itSetup: count('itSetup') + supportSetups + accountRequests, removals, leave, total: rows.length + removals + supportSetups + accountRequests + leave } };
 }
 
 /**
@@ -73,7 +76,16 @@ export async function handOver(em: EntityManager, fromId: string, toId: string, 
  // Re-read under the locks: only records still owned and open move.
  const open = (await openRecords(em, fromId)).rows;
  for (const row of open) await moveApplication(em, { applicationId: row.id, invitationId: row.invitationId, fromId, toId, actorId, reason: 'HANDED_OVER', note: null });
- return open.length + await moveRemovals(em, fromId, toId, actorId) + await moveSupportSetups(em, fromId, toId, actorId, 'MANAGER_HANDED_OVER') + await moveLeaves(em, fromId, toId, actorId);
+ return open.length + await moveRemovals(em, fromId, toId, actorId) + await moveSupportSetups(em, fromId, toId, actorId, 'MANAGER_HANDED_OVER') + await moveLeaves(em, fromId, toId, actorId) + await moveAccountRequests(em, fromId, toId, actorId);
+}
+/** Requests about company accounts follow too: the notice and any forwarded mail go to the new manager. */
+async function moveAccountRequests(em: EntityManager, fromId: string, toId: string, actorId: string) {
+ const requests: { id: string }[] = await em.query(`SELECT r.id ${OPEN_ACCOUNT_REQUESTS} ORDER BY r.id FOR UPDATE OF r`, [fromId]);
+ for (const request of requests) {
+  await em.query(`UPDATE it_account_requests SET "managerId" = CASE WHEN "managerId" = $2 THEN $3::uuid ELSE "managerId" END, "forwardTo" = CASE WHEN "forwardTo" = $2 THEN $3::uuid ELSE "forwardTo" END, version = version + 1, "updatedAt" = now() WHERE id = $1`, [request.id, fromId, toId]);
+  await em.query(`INSERT INTO it_account_activity ("requestId","actorId",event,metadata) VALUES ($1,$2,'MANAGER_HANDED_OVER','{}')`, [request.id, actorId]);
+ }
+ return requests.length;
 }
 
 /**

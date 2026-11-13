@@ -125,6 +125,10 @@ export class MoveMemberDto {
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher is moving.' }) @MaxLength(500) reason!: string;
+ // Their company accounts (section 33): keep them (the default; an older page sends nothing) or ask IT for new ones at the new MC.
+ @IsOptional() @IsIn(['KEEP', 'NEW']) accounts?: 'KEEP' | 'NEW';
+ // With NEW: close an email that still signs in to a load board seat anyway.
+ @IsOptional() @IsBoolean() closeKept?: boolean;
 }
 /** Their first MC and team, for someone added with none. startedAt is optional: left out, the period follows their start date. */
 export class PlaceMemberDto {

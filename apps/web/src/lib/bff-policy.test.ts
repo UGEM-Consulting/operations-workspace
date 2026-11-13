@@ -188,6 +188,11 @@ describe('load board accounts and seats through the BFF', () => {
     assert.equal(allowedEndpoint('POST', 'company-accounts'), true);
     assert.equal(allowedEndpoint('PATCH', 'company-accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
     assert.equal(allowedEndpoint('GET', 'company-accounts'), false);
+    assert.equal(allowedEndpoint('POST', 'company-accounts/2c3c0529-044c-450f-901f-201b8d17aa00/close'), true);
+    assert.equal(allowedEndpoint('GET', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('PATCH', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00/tasks/NEW_EMAIL'), true);
+    assert.equal(allowedEndpoint('PATCH', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00/contact'), true);
+    assert.equal(allowedEndpoint('POST', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00/contact'), false);
   });
 });
 

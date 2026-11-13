@@ -8,7 +8,7 @@ import { Dialog } from '@/components/ui/dialog';
 import { DescriptionList } from '@/components/ui/description-list';
 import { DropdownMenu, type MenuEntry } from '@/components/ui/dropdown-menu';
 import { Notice } from '@/components/ui/alert';
-import { Input, RadioGroup, Select } from '@/components/ui/field';
+import { Checkbox, Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
@@ -27,10 +27,12 @@ export const companyOf = (account: Pick<CompanyAccount, 'mc' | 'mcArchived' | 'c
  * besides their main accounts. An email kept open for a load board says which seat keeps it. Administrators add and change
  * them here (CompanyAccountsAdminScreen); everyone else reads.
  */
-export function CompanyAccountsCard({ memberId, accounts, mcs, canChange }: { memberId: string; accounts: CompanyAccount[]; mcs: { id: string; name: string; archived?: boolean }[]; canChange: boolean }) {
-  const [editing, setEditing] = useState<CompanyAccount | 'new' | null>(null), [closing, setClosing] = useState<CompanyAccount | null>(null);
+export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk = false, closingIds = [] }: { memberId: string; accounts: CompanyAccount[]; mcs: { id: string; name: string; archived?: boolean }[]; canChange: boolean;
+  /** Dispatch managers and administrators ask IT to close one; closingIds are the accounts IT is closing now. */ canAsk?: boolean; closingIds?: string[] }) {
+  const [editing, setEditing] = useState<CompanyAccount | 'new' | null>(null), [closing, setClosing] = useState<CompanyAccount | null>(null), [asking, setAsking] = useState<CompanyAccount | null>(null);
   const router = useRouter(), toast = useToast(), [busy, setBusy] = useState(false);
   if (!accounts.length && !canChange) return null;
+  const askable = (account: CompanyAccount) => canAsk && account.status !== 'CLOSED' && !closingIds.includes(account.id);
   async function setStatus(account: CompanyAccount, status: AccountStatus) {
     if (busy) return; setBusy(true);
     try { await mutate(`company-accounts/${account.id}`, 'PATCH', { version: account.version, status }); toast({ title: 'Account updated' }); router.refresh(); }
@@ -40,11 +42,13 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange }: { me
   const menu = (account: CompanyAccount): MenuEntry[] => [{ label: 'Edit', icon: Pencil, onSelect: () => setEditing(account) },
     ...(account.status === 'ACTIVE' ? [{ label: 'Kept for load boards', onSelect: () => void setStatus(account, 'KEPT_FOR_LOAD_BOARDS') }] : [{ label: account.status === 'CLOSED' ? 'Open again' : 'Active', onSelect: () => void setStatus(account, 'ACTIVE') }]),
     ...(account.status === 'CLOSED' ? [] : [{ separator: true as const }, { label: 'Record as closed', onSelect: () => setClosing(account) }])];
+  // A manager can't change accounts, but can ask IT to close one.
+  const askMenu = (account: CompanyAccount): MenuEntry[] => askable(account) ? [{ label: account.keptFor.length ? 'Ask IT to close it (a seat still uses it)' : 'Ask IT to close it', disabled: account.keptFor.length > 0, onSelect: () => setAsking(account) }] : [];
   return <Card>
     <CardHeader title="Company accounts" description="Accounts at other companies they work for or worked for." actions={canChange && <Button size="sm" variant="ghost" onClick={() => setEditing('new')}><Plus aria-hidden="true" className="size-4" />Add account</Button>} />
     <CardBody>{accounts.length ? <ul className="divide-y divide-border">{accounts.map(account => <li key={account.id} className="grid gap-1 py-3 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{companyOf(account)}</span>
-        <span className="flex items-center gap-1"><Badge label={STATUS[account.status].label} tone={STATUS[account.status].tone} />{canChange && <DropdownMenu label={`Actions for the account at ${companyOf(account)}`} triggerIcon={Ellipsis} triggerVariant="ghost" align="end" items={menu(account)} />}</span></div>
+        <span className="flex items-center gap-1">{closingIds.includes(account.id) ? <Badge label="IT is closing it" tone="info" /> : <Badge label={STATUS[account.status].label} tone={STATUS[account.status].tone} />}{(canChange || askable(account)) && <DropdownMenu label={`Actions for the account at ${companyOf(account)}`} triggerIcon={Ellipsis} triggerVariant="ghost" align="end" items={[...askMenu(account), ...(canChange ? [...(askable(account) ? [{ separator: true as const }] : []), ...menu(account)] : [])]} />}</span></div>
       {account.nameUsed && <p className="text-[13px] text-muted-foreground">As {account.nameUsed}</p>}
       <DescriptionList layout="rows" stacked items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber, mono: true }] : []),
         ...(account.ringCentralExtension ? [{ label: 'Extension', value: account.ringCentralExtension, mono: true }] : []), ...(account.closedAt ? [{ label: 'Closed', value: <LocalTime iso={account.closedAt} format="date" /> }] : [])]} />
@@ -53,6 +57,7 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange }: { me
     </li>)}</ul> : <p className="text-sm text-muted-foreground">None recorded.</p>}</CardBody>
     {editing && <AccountDialog memberId={memberId} account={editing === 'new' ? null : editing} mcs={mcs} onClose={() => setEditing(null)} />}
     {closing && <ClosedDialog account={closing} onClose={() => setClosing(null)} />}
+    {asking && <AskToCloseDialog account={asking} onClose={() => setAsking(null)} />}
   </Card>;
 }
 
@@ -92,6 +97,28 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
   </Dialog>;
 }
 
+/** Ask IT to close an account (CloseCompanyAccountScreen): IT gets a one-account checklist; whoever asks gets a notice when it's done. */
+function AskToCloseDialog({ account, onClose }: { account: CompanyAccount; onClose: () => void }) {
+  const router = useRouter(), toast = useToast();
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [emailAfter, setEmailAfter] = useState('SUSPEND');
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (busy) return;
+    const note = String(new FormData(event.currentTarget).get('note') ?? '').trim();
+    setBusy(true); setError('');
+    try { await mutate(`company-accounts/${account.id}/close`, 'POST', { version: account.version, emailAfter: account.companyEmail ? emailAfter : 'SUSPEND', ...(note ? { note } : {}) }); toast({ title: 'Sent to IT', description: 'You get a notice when it’s done.' }); onClose(); router.refresh(); }
+    catch (failure) { setError(errorMessage(failure, 'Unable to send. Your entries have been kept.')); }
+    finally { setBusy(false); }
+  }
+  return <Dialog open onClose={onClose} busy={busy} tone="danger" title={`Close the account at ${companyOf(account)}`} description={account.companyEmail ? `${account.companyEmail}. IT gets a task to close it.` : 'IT gets a task to close it.'}
+    actions={<Button type="submit" form="ask-close" variant="destructive" disabled={busy}>{busy ? 'Sending…' : 'Ask IT to close it'}</Button>}>
+    <form id="ask-close" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
+      <DescriptionList layout="rows" items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber, mono: true }] : []), { label: 'Load board seats using it', value: 'None active' }]} />
+      {account.companyEmail && <RadioGroup name="emailAfter" label="New email to this address" value={emailAfter} onChange={setEmailAfter} options={[{ value: 'SUSPEND', label: 'Nothing forwarded', description: 'The account is suspended.' }, { value: 'FORWARD', label: 'Forward new email to me for 30 days' }]} />}
+      <Textarea label="Note for IT" name="note" optional rows={2} maxLength={500} hint="Never passwords." />
+      <Notice message={error} error />
+    </fieldset></form>
+  </Dialog>;
+}
 /** Records that an account is already closed. Asking IT to close one is its own request. */
 function ClosedDialog({ account, onClose }: { account: CompanyAccount; onClose: () => void }) {
   const router = useRouter(), toast = useToast();
@@ -113,3 +140,25 @@ function ClosedDialog({ account, onClose }: { account: CompanyAccount; onClose: 
     </fieldset></form>
   </Dialog>;
 }
+
+/**
+ * In the move dialog (KeptForLoadBoardsMoveScreen): whether their company accounts change. Keeping them is the default, since
+ * MCs often share one company's email and phone. New ones go to IT, which closes the old ones except an email a load board
+ * seat still uses.
+ */
+export function MoveAccounts({ value, onChange, toMc, fromMc, email, number, keptFor }: { value: 'KEEP' | 'NEW'; onChange: (value: 'KEEP' | 'NEW') => void; toMc: string; fromMc: string | null; email: string | null; number: string | null; keptFor: string[] }) {
+  const [closeAnyway, setCloseAnyway] = useState(false);
+  const keep = !!email && keptFor.length > 0 && !closeAnyway, at = fromMc ? ` at ${fromMc}` : '';
+  return <div className="space-y-4">
+    <RadioGroup name="accounts" label="Their company accounts" value={value} onChange={choice => onChange(choice as 'KEEP' | 'NEW')} options={[
+      { value: 'KEEP', label: 'Keep the same accounts', description: 'Their email and number stay as they are. IT isn’t asked to do anything.' },
+      { value: 'NEW', label: `Ask IT for accounts at ${toMc}`, description: 'For a move to a company with its own email and phone.' }]} />
+    {value === 'NEW' && <Card><CardHeader title="What IT is asked to do" description="A checklist goes to IT. You get a notice when it’s done." />
+      <CardBody><DescriptionList layout="rows" items={[{ label: `New at ${toMc}`, value: 'Company email and RingCentral number' },
+        ...(number || (email && !keep) ? [{ label: `Close${at}`, value: [number && `RingCentral number ${number}`, email && !keep && email].filter(Boolean).join(', ') }] : []),
+        ...(keep ? [{ label: `Keep${at}`, value: <div><div>{email}</div><div className="text-[13px] text-muted-foreground">Signs in to {keptFor.join(' and ')}. Kept for load boards until that seat ends.</div></div> }] : [])]} /></CardBody></Card>}
+    {value === 'NEW' && email && keptFor.length > 0 && <Checkbox name="closeKept" label={`Close ${email} anyway`} checked={closeAnyway} onChange={event => setCloseAnyway(event.target.checked)}
+      description={`Their ${keptFor.join(' and ')} seat would stop working. Move the seat first if they still need it.`} />}
+  </div>;
+}
+

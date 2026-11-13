@@ -101,6 +101,8 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
  // Someone recorded by hand has no setup request: IT works from the accounts their manager recorded.
  const companyEmail = setup?.companyEmail ?? input.accounts?.companyEmail ?? null, ringCentralNumber = setup?.assignedRingCentralPhoneNumber ?? input.accounts?.ringCentralNumber ?? null;
  if (setup && !setup.completedAt) { setup.cancelledAt = new Date(); setup.version += 1; await em.save(setup); }
+ // An unfinished request about their company accounts (section 33) ends: the removal lists what to close now.
+ await em.query(`UPDATE it_account_requests SET "cancelledAt" = now(), version = version + 1, "updatedAt" = now() WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL`, [input.memberId]);
  // Forwarding needs a mailbox: without a company email there is nothing to forward.
  const forward = input.emailAfter === 'FORWARD' && !!companyEmail;
  const removal = await em.getRepository(ItRemovalRequest).save({

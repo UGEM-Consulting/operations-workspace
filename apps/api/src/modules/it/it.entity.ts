@@ -88,6 +88,8 @@ export class PortalNotification {
  @Column('uuid',{nullable:true}) removalId!:string|null;
  // A leave's suspend or restore checklist (IT_SUSPEND_COMPLETED, IT_RESTORE_COMPLETED).
  @Column('uuid',{nullable:true}) leaveRequestId!:string|null;
+ // An IT request about company accounts (IT_ACCOUNT_COMPLETED, section 33).
+ @Column('uuid',{nullable:true}) accountRequestId!:string|null;
  @Column('varchar') kind!:string;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) readAt!:Date|null;
