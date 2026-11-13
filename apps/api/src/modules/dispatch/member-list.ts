@@ -74,7 +74,7 @@ export function searchTerms(search: string): { text: string; digits: string | nu
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${match}`);
 
 /**
- * Dispatch › Dispatchers on the server (docs/plans/dispatchers-table.md, designed as the Dispatchers table group and approved
+ * Dispatch › Dispatchers on the server (designed as the Dispatchers table group and approved
  * 2026-11-13): filters, search by name or contact detail, sorting, pages and export. Every dispatch manager and administrator
  * reads every record, as on the dispatcher page.
  */

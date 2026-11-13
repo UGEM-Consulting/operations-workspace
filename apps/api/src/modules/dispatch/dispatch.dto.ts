@@ -59,7 +59,7 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
 }
-/** Dispatch › Dispatchers' filters (docs/plans/dispatchers-table.md). teamId NONE means placed under an MC with no team (Independent). */
+/** Dispatch › Dispatchers' filters (the Dispatchers table group in the Design System). teamId NONE means placed under an MC with no team (Independent). */
 export class MemberFilters {
  @IsOptional() @text() @IsString() @MaxLength(100) search?: string;
  @IsOptional() @IsUUID() mcId?: string;

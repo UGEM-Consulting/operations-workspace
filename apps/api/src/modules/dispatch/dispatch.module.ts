@@ -23,7 +23,7 @@ class DispatchController {
  @Get('teams/:id') team(@Param('id', ParseUUIDPipe) id: string) { return this.dispatch.team(id); }
  @Post('teams') createTeam(@Req() req: AuthRequest, @Body() dto: CreateTeamDto) { return this.dispatch.createTeam(req.currentUser, dto); }
  @Patch('teams/:id') updateTeam(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateTeamDto) { return this.dispatch.updateTeam(req.currentUser, id, dto); }
- // An older web asks for everything with at most a status; the Dispatchers page asks for a page with filters (docs/plans/dispatchers-table.md).
+ // An older web asks for everything with at most a status; the Dispatchers page asks for a page with filters.
  @Get('members') members(@Query() query: MemberListQueryDto) {
   const paged = Object.entries(query).some(([key, value]) => key !== 'status' && value !== undefined);
   if (paged || query.status === 'LEAVING' || query.status === 'MISSING') return this.list.list(query);
