@@ -9,7 +9,8 @@ const dark = (pixels: Uint8ClampedArray, index: number) => pixels[index + 3] > 1
 
 /**
  * Thin dark horizontal lines in RGBA pixels: runs at least 4% of the page wide (and 30 pixels), at most 4 pixels thick. A line
- * with something printed on it (an underlined heading, a pre-filled date) isn't empty, so it isn't returned.
+ * with something printed on it (an underlined heading, a pre-filled date) isn't empty, so it isn't returned, and neither is the
+ * flat top of a word, which has letters right under it where a line has blank paper.
  */
 export function findLines(pixels: Uint8ClampedArray, width: number, height: number): FormLine[] {
  const minimum = Math.max(30, Math.round(width * 0.04));
@@ -41,6 +42,10 @@ export function findLines(pixels: Uint8ClampedArray, width: number, height: numb
   let printed = 0, checked = 0;
   for (let above = Math.max(0, y - 10); above < Math.max(0, y - 2); above += 1) for (let x = left; x < right; x += 2) { checked += 1; if (dark(pixels, (above * width + x) * 4)) printed += 1; }
   if (checked && printed / checked > 0.04) return;
+  // Letters straight below it: the top edge of a word set in small letters, not a line.
+  let under = 0, below = 0;
+  for (let next = bottom + 1; next <= Math.min(height - 1, bottom + 3); next += 1) for (let x = left; x < right; x += 1) { below += 1; if (dark(pixels, (next * width + x) * 4)) under += 1; }
+  if (below && under / below > 0.1) return;
   lines.push({ x: left / width, y: (y + bottom + 1) / 2 / height, width: (right - left) / width });
  });
  return lines.sort((a, b) => a.y - b.y || a.x - b.x);

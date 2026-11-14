@@ -22,6 +22,11 @@ describe('snap to lines', () => {
     assert.equal(lines.length, 2);
     assert.deepEqual(lines.map(line => [Math.round(line.x * 500), Math.round(line.y * 400), Math.round(line.width * 500)]), [[50, 101, 200], [320, 351, 120]]);
   });
+  it('leaves out the flat top of a word, which has letters right under it', () => {
+    // A word in small letters: its top edge is one solid row, with letter strokes in the rows under it.
+    const word: [number, number, number, number][] = [[100, 50, 80, 1], ...Array.from({ length: 10 }, (_, at): [number, number, number, number] => [100 + at * 8, 51, 3, 8])];
+    assert.equal(findLines(page(400, 100, word), 400, 100).length, 0);
+  });
   it('joins a line drawn with small gaps, as scans often are', () => {
     const lines = findLines(page(400, 100, [[20, 50, 100, 1], [122, 50, 100, 1]]), 400, 100);
     assert.equal(lines.length, 1);
