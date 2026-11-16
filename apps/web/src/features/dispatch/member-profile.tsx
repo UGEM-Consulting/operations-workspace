@@ -34,7 +34,7 @@ import { SignIn } from './sign-in';
 import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard, LeaveDialog, LeaveHistory, LeaveItCard, leaveBadge, shortDay, WorkingWithCard, type LeaveAction } from './leave';
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
-import { itNotAsked, lastWorked } from './left-record';
+import { itNotAsked, lastWorked, recordChangeItems } from './left-record';
 import { LoadBoardsCard, type LoadBoardAccount } from '@/features/load-boards/seats';
 import { CompanyAccountsCard, MoveAccounts } from '@/features/company-accounts/card';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
@@ -83,7 +83,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // Leave (section 35) and an administrator's corrections (section 36) have their own dialogs.
   const [leaveAction, setLeaveAction] = useState<LeaveAction | null>(null), [correcting, setCorrecting] = useState(false);
   // People who left and other names (section 33) have their own dialogs.
-  const [leftDialog, setLeftDialog] = useState<'names' | 'lastDay' | 'close' | null>(null);
+  const [leftDialog, setLeftDialog] = useState<'names' | 'lastDay' | 'close' | 'record' | null>(null);
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts, photos = memberPhotos(member.id, !!member.photo, !!member.idPhoto, name);
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
@@ -165,7 +165,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // Someone who left shows what was: their MC and team history on Overview, ending with the day they left, and no Now card.
   const gone = member.status === 'LEFT', addedLeft = gone && !!existing?.addedAsLeft;
   // Someone who left: the record can't be moved, but a missing last day, their names and (once) closing their accounts still can.
-  const leftMenu: MenuEntry[] = [{ label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }, ...(canAskItToClose(member) ? [{ separator: true as const }, { label: 'Ask IT to close their accounts', icon: Monitor, onSelect: () => setLeftDialog('close') }] : [])];
+  const leftMenu: MenuEntry[] = [...(existing ? [{ label: 'Edit recorded details', icon: FilePenLine, onSelect: () => setLeftDialog('record') }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }, ...(canAskItToClose(member) ? [{ separator: true as const }, { label: 'Ask IT to close their accounts', icon: Monitor, onSelect: () => setLeftDialog('close') }] : [])];
   const leftActions = <div className="flex flex-wrap items-center gap-2 max-sm:w-full">{lastDayMissing(member) && <Button className="max-sm:flex-1" onClick={() => setLeftDialog('lastDay')}><Calendar aria-hidden="true" className="size-4" />Add last day</Button>}<DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={leftMenu} /></div>;
   const ending = onNotice ? [{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') }, ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]
     : [{ label: 'Mark as leaving', icon: UserMinus, danger: true, onSelect: () => start('leave') }];
@@ -300,8 +300,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             {!gone && mcHistory}
                   {/* One timeline, newest first: onboarding from the invitation to IT setup, each correction (CorrectionHistoryScreen)
                       and, for someone added by hand, their paper scans and when they were added (PaperScanProfileScreen). */}
-                  {(!!member.activity?.length || !!member.corrections?.length || !!existing) && <Card><CardHeader title="History" description={member.corrections?.length ? 'Onboarding and corrections. The application keeps what was sent.' : member.activity?.length && !existing ? 'From the invitation to IT setup.' : undefined} />
-                <CardBody><Timeline items={[...correctionItems(member.corrections ?? []), ...(existing ? paperScanItems(existing) : []), ...(member.activity ?? []).map(item => ({ id: item.id, at: item.createdAt, title: statusLabel(item.event), meta: <LocalTime iso={item.createdAt} /> }))]
+                  {(!!member.activity?.length || !!member.corrections?.length || !!existing || !!member.recordChanges?.length) && <Card><CardHeader title="History" description={member.corrections?.length ? 'Onboarding and corrections. The application keeps what was sent.' : member.activity?.length && !existing ? 'From the invitation to IT setup.' : undefined} />
+                <CardBody><Timeline items={[...correctionItems(member.corrections ?? []), ...(existing ? paperScanItems(existing) : []),
+                  ...recordChangeItems(member.recordChanges ?? []).map(({ by, ...item }) => ({ ...item, meta: <>{by ? `${by} · ` : ''}<LocalTime iso={item.at} format="date" /></> })), ...(member.activity ?? []).map(item => ({ id: item.id, at: item.createdAt, title: statusLabel(item.event), meta: <LocalTime iso={item.createdAt} /> }))]
                   .sort((a, b) => b.at.localeCompare(a.at))} /></CardBody></Card>}
             </div>,
           }} />
@@ -356,7 +357,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         </Card>}
         {removalOpen && !removal?.scheduled && <Card><CardHeader title="When it’s done" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">You get a notification here when IT finishes. The workspace never messages the person who left.</p></CardBody></Card>}
         {/* A support added by hand keeps the accounts a manager recorded beside anything IT set up for them. */}
-        {existing && (!accounts || support) && <ExistingAccountsCard member={member} open={open} admin={admin} />}
+        {existing && (!accounts || support) && <ExistingAccountsCard member={member} open={open} admin={admin} editing={leftDialog === 'record'} onEditing={value => setLeftDialog(value ? 'record' : null)} />}
         {addedLeft && !removal && <Card><CardHeader title="IT access" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">{itNotAsked(canAskItToClose(member))}</p></CardBody></Card>}
         {/* Accounts at other companies (section 33): an administrator adds and changes them here. */}
         {member.companyAccounts && <CompanyAccountsCard memberId={member.id} accounts={member.companyAccounts} mcs={mcs} canChange={admin} canAsk={!gone} closingIds={(member.accountRequests ?? []).flatMap(item => item.kind === 'CLOSE' && item.accountId ? [item.accountId] : [])} />}
