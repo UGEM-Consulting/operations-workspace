@@ -25,7 +25,8 @@ export interface DispatchDriverRow { id: string; firstName: string; lastName: st
   // Safety put them on hold (never why): they keep their assignment for the record but can't be assigned or changed.
   onHold?: boolean;
   gettingReady?: boolean;
-  assignment: { mcId: string; mc: string; memberId: string; dispatcher: string; teamId: string | null; team: string | null; truck: string | null; startedAt: string; unitId?: string | null; trailerId?: string | null; trailer?: string | null } | null }
+  assignment: { mcId: string; mc: string; memberId: string; dispatcher: string; teamId: string | null; team: string | null; truck: string | null; startedAt: string; unitId?: string | null; trailerId?: string | null; trailer?: string | null;
+    /** Covering for someone on leave (section 34): who they go back to, and when. */ covering?: { for: string; until: string } | null } | null }
 export interface DispatchDriverOptions { mcs: { id: string; name: string; mcNumber: string | null; archived?: boolean; dispatchers: { id: string; name: string; teamId: string | null; team: string | null }[] }[];
   // From an API with Units (section 34): trucks and trailers in service; an owner-operator's truck names its driver.
   units?: { id: string; number: string; kind: 'SEMI' | 'PICKUP' | 'TRAILER'; trailerType: string | null; driverId: string | null; withDrivers: string[] }[] }
@@ -100,7 +101,7 @@ export function DispatchDrivers({ items, filters, options, teamLead }: { items: 
       <Table caption={filters.status === 'READY' ? 'Drivers ready to assign' : 'Drivers'} className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
         { key: 'driver', label: 'Driver', primary: true, cell: row => <Person name={name(row)} secondary={row.phone} /> },
         { key: 'type', label: 'Type', hideBelow: 'lg', cell: row => `${driverTypes[row.driverType] ?? row.driverType}${row.licenseType ? ` · ${licenseTypes[row.licenseType] ?? row.licenseType}` : ''}` },
-        { key: 'work', label: 'MC and dispatcher', hideBelow: 'md', cell: row => row.assignment ? <>{row.assignment.dispatcher}<span className="block text-[13px] text-muted-foreground">{row.assignment.mc}{row.assignment.team ? ` · ${row.assignment.team}` : ''}</span></>
+        { key: 'work', label: 'MC and dispatcher', hideBelow: 'md', cell: row => row.assignment ? <>{row.assignment.dispatcher}{row.assignment.covering && <span className="block text-[13px] text-muted-foreground">Covering for {row.assignment.covering.for} until {new Date(`${row.assignment.covering.until}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</span>}<span className="block text-[13px] text-muted-foreground">{row.assignment.mc}{row.assignment.team ? ` · ${row.assignment.team}` : ''}</span></>
           : <span className="text-muted-foreground">Not assigned</span> },
         { key: 'truck', label: 'Truck', hideBelow: 'xl', muted: true, cell: row => row.assignment?.truck ? `${row.assignment.truck}${row.assignment.trailer ? ` · ${row.assignment.trailer}` : ''}` : '—' },
         { key: 'cleared', label: 'Cleared', muted: true, nowrap: true, hideBelow: 'lg', cell: row => <><LocalTime iso={row.clearedAt} format="date" />{row.clearedBy ? ` by ${row.clearedBy}` : ''}</> },

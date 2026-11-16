@@ -101,7 +101,10 @@ export class DispatchService {
      WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND x.status <> 'LEFT')) ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
   ]);
   if (!team) throw new NotFoundException('This team no longer exists.');
-  return { ...team, dispatchers, helpers };
+  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name and who linked it; nothing is sent there yet but tests.
+  const [telegramGroup] = await this.db.query(`SELECT g.title, g."linkedAt", u."firstName" || ' ' || u."lastName" AS "linkedBy", g."lostAt" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
+   WHERE g."teamId" = $1 AND g."unlinkedAt" IS NULL`, [id]);
+  return { ...team, dispatchers, helpers, telegramGroup: telegramGroup ?? null };
  }
 
  async createTeam(user: User, dto: CreateTeamDto) {
@@ -217,7 +220,9 @@ export class DispatchService {
     count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total, coalesce(json_agg(json_build_object('key', t.key, 'status', t.status)) FILTER (WHERE t.id IS NOT NULL), '[]') AS tasks
    FROM it_leave_requests q LEFT JOIN it_leave_tasks t ON t."requestId" = q.id WHERE q."memberId" = $1 GROUP BY q.id ORDER BY q."createdAt" DESC`, [id]) : [];
   const openLeave = leaves.find(row => !row.endedAt) ?? null, lastLeave = leaves[0] ?? null;
-  const leave = openLeave ? { ...openLeave, started: !!openLeave.startedAt, suspend: leaveIt.find(row => row.leaveId === openLeave.id && row.kind === 'SUSPEND' && !row.cancelledAt) ?? null } : null;
+  // A dispatcher's drivers while they're away (section 34): who covers each, and any given to them since that nobody covers.
+  const covers = openLeave && member.position === 'DISPATCHER' ? await this.leaves.covers(openLeave.id, id) : null;
+  const leave = openLeave ? { ...openLeave, started: !!openLeave.startedAt, suspend: leaveIt.find(row => row.leaveId === openLeave.id && row.kind === 'SUSPEND' && !row.cancelledAt) ?? null, ...covers } : null;
   const restore = !openLeave && lastLeave ? leaveIt.find(row => row.leaveId === lastLeave.id && row.kind === 'RESTORE') ?? null : null;
   const openNotice = notices.find(row => !row.cancelledAt && !row.finishedAt);
   const notice = openNotice ? { id: openNotice.id, lastDay: openNotice.lastDay, reason: openNotice.reason, createdAt: openNotice.createdAt, recordedBy: openNotice.recorder, passed: openNotice.lastDay < usDay('earliest') } : null;

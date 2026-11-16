@@ -27,7 +27,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && ['applicant/updates/telegram','applicant/updates/telegram/check','applicant/updates/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && ['applicant/application','onboarding/invitations','onboarding/applications','onboarding/review-queue','onboarding/summary'].includes(path)) ||
     // The Dispatchers filters ask how many people the filters being chosen would show (DispatchersFilterSheetPhoneScreen).
-    (method === 'GET' && path === 'dispatch/members') ||
+    (method === 'GET' && path === 'dispatch/members') || (method === 'GET' && match(`dispatch/members/${ID}/cover-options`, path)) ||
     (method === 'GET' && /^onboarding\/applications\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'POST' && /^onboarding\/applications\/[0-9a-f-]{36}\/reviews$/.test(path)) ||
     (method === 'POST' && /^onboarding\/invitations\/[0-9a-f-]{36}\/revoke$/.test(path)) ||
@@ -44,7 +44,12 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     // The approver's own saved countersigning signature.
     // Own Telegram connection for workspace alerts.
-    (method === 'GET' && path === 'staff/telegram') || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
+    (method === 'GET' && path === 'staff/telegram') ||
+    // Admin › Keeping records (section 34): the hold dialog searches by name; holds and the switch are changes.
+    (method === 'GET' && path === 'retention/people') || (method === 'POST' && (path === 'retention/settings' || path === 'retention/holds' || match(`retention/holds/${ID}/(extend|end)`, path))) ||
+    // Admin › Telegram (section 34): groups, their one-time codes and where each alert goes.
+    (method === 'POST' && (path === 'telegram/groups/codes' || match(`telegram/groups/codes/${ID}/check`, path) || match(`telegram/groups/${ID}/(unlink|test)`, path))) ||
+    (method === 'PATCH' && /^telegram\/routes\/[A-Z_]{1,32}$/.test(path)) || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && path === 'staff/signature') || (method === 'POST' && ['staff/signature', 'staff/signature/delete'].includes(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.
@@ -58,7 +63,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Dispatchers table: export the view on screen (recorded, so a POST).
     (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
-    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|left-day|close-accounts|names|on-leave|on-leave/(return|cancel|back-on|reason))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|left-day|close-accounts|names|on-leave|on-leave/(return|cancel|back-on|reason|covers))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     // People already working here: check and add them, their paperwork and catch-up links, what a manager recorded.
     (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||
@@ -108,6 +113,8 @@ const LIST_QUERY = ['page', 'pageSize', 'status', 'search', 'sort', 'direction']
 /** The query fields passed on to the API for a list read through the BFF; anything else is dropped. */
 export function forwardedQuery(path: string): string[] {
   if (path === 'onboarding/review-queue' || path === 'it/onboarding') return LIST_QUERY;
+  // Keeping records: the hold dialog's name search (section 34).
+  if (path === 'retention/people') return ['q'];
   if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId'];
   return [];
 }

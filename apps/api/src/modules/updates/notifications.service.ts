@@ -8,6 +8,7 @@ import { DispatcherApplication, Invitation } from '../onboarding/entities';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { setupCompleteMessage, staffAlertMessage, type StaffAlertKind } from './notification-messages';
+import { alertTargets, queueGroupAlert } from './groups';
 import { TelegramClient, TelegramError } from './telegram.client';
 import { ApplicantUpdateSettings, NotificationDelivery, type NotificationKind, StaffTelegramLink, StaffTelegramLinkToken, type UpdateChannel } from './updates.entity';
 import { DELIVERY_RETRY, UpdatesService } from './updates.service';
@@ -54,22 +55,22 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
   /** In the submission transaction: the application's assigned manager. */
   async queueReviewWaiting(em: EntityManager, application: Pick<DispatcherApplication, 'id' | 'assignedManagerId'>) {
     if (!application.assignedManagerId) return [];
-    return this.insert(em, await this.staffRows(em, 'REVIEW_WAITING', [application.assignedManagerId], application.id));
+    return this.routed(em, 'REVIEW_WAITING', [application.assignedManagerId], application.id);
   }
   /** In the approval transaction: every active IT specialist. */
   async queueItSetupWaiting(em: EntityManager, request: { id: string }) {
     const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
-    return this.insert(em, await this.staffRows(em, 'IT_SETUP_WAITING', specialists.map(user => user.id), request.id));
+    return this.routed(em, 'IT_SETUP_WAITING', specialists.map(user => user.id), request.id);
   }
   /** With a removal's change (authorized 2026-11-02): every active IT specialist. Up to three for a notice: scheduled, due and, if asked, now. */
   async queueItRemoval(em: EntityManager, removal: { id: string }, kind: 'IT_REMOVAL_WAITING' | 'IT_REMOVAL_SCHEDULED' | 'IT_REMOVAL_DUE' | 'IT_REMOVAL_NOW') {
     const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
-    return this.insert(em, await this.staffRows(em, kind, specialists.map(user => user.id), removal.id));
+    return this.routed(em, kind, specialists.map(user => user.id), removal.id);
   }
   /** With a leave's suspend or restore checklist (section 35): every active IT specialist. */
   async queueItLeave(em: EntityManager, request: { id: string }, kind: 'IT_LEAVE_SUSPEND' | 'IT_LEAVE_RESTORE') {
     const specialists = await em.getRepository(User).findBy({ role: Role.IT_SPECIALIST, status: UserStatus.ACTIVE });
-    return this.insert(em, await this.staffRows(em, kind, specialists.map(user => user.id), request.id));
+    return this.routed(em, kind, specialists.map(user => user.id), request.id);
   }
   /** After the causing transaction commits. Never throws into the request. */
   dispatch(ids: string[]) { if (ids.length) this.email.runInBackground(() => this.deliver(ids)); }
@@ -104,6 +105,12 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
 
   private row(kind: NotificationKind, recipient: { applicationId?: string; recipientId?: string }, referenceId: string, channel: UpdateChannel, skipped: string | null): Row {
     return { kind, applicationId: recipient.applicationId ?? null, recipientId: recipient.recipientId ?? null, referenceId, channel, status: skipped ? 'SKIPPED' : 'PENDING', failureCode: skipped };
+  }
+  /** People, the department's group or both, as Admin › Telegram says (section 34). Returns the person rows to send now. */
+  private async routed(em: EntityManager, kind: StaffAlertKind, userIds: string[], referenceId: string) {
+    const targets = await alertTargets(em, kind);
+    if (targets.groupId) await queueGroupAlert(em, targets.groupId, kind, referenceId);
+    return targets.people ? this.insert(em, await this.staffRows(em, kind, userIds, referenceId)) : [];
   }
   /** Staff alerts are Telegram only; someone who has not connected Telegram gets a SKIPPED record instead. */
   private async staffRows(em: EntityManager, kind: StaffAlertKind, userIds: string[], referenceId: string) {
@@ -156,7 +163,7 @@ export class NotificationsService implements OnApplicationBootstrap, BeforeAppli
     if (!user || user.status !== UserStatus.ACTIVE) return 'INACTIVE';
     const link = await this.db.getRepository(StaffTelegramLink).findOneBy({ userId: user.id });
     if (!link) return 'NOT_CONNECTED';
-    const path = delivery.kind === 'REVIEW_WAITING' ? `/onboarding/applications/${delivery.referenceId}` : delivery.kind.startsWith('IT_REMOVAL') ? `/it/tasks/removals/${delivery.referenceId}` : delivery.kind.startsWith('IT_LEAVE') ? `/it/tasks/leave/${delivery.referenceId}` : `/it/tasks/${delivery.referenceId}`;
+    const path = delivery.kind === 'TRUCK_GROUP_CHANGE' ? `/safety/drivers/${delivery.referenceId}` : delivery.kind === 'REVIEW_WAITING' ? `/onboarding/applications/${delivery.referenceId}` : delivery.kind.startsWith('IT_REMOVAL') ? `/it/tasks/removals/${delivery.referenceId}` : delivery.kind.startsWith('IT_LEAVE') ? `/it/tasks/leave/${delivery.referenceId}` : `/it/tasks/${delivery.referenceId}`;
     return telegram(link.chatId, staffAlertMessage(delivery.kind, `${this.origin()}${path}`));
   }
 }

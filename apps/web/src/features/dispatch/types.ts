@@ -11,7 +11,8 @@ export interface TeamPerson { id: string; firstName: string; lastName: string; s
 /** GET dispatch/teams/:id: the team, its dispatchers and everyone assisting them or the whole team. */
 export interface TeamDetail { id: string; name: string; version: number; archived: boolean; leadId: string | null; mc: { id: string; name: string; archived: boolean };
   dispatchers: (TeamPerson & { jobTitle: string | null; drivers: number; companyEmail: string | null; accountStatus: 'ACTIVE' | 'INACTIVE' | null })[];
-  helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[] }
+  helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[];
+  /** Its linked Telegram group (section 34); an older API sends none. */ telegramGroup?: { title: string | null; linkedAt: string; linkedBy: string; lostAt: string | null } | null }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
 export type SupportType = 'SUPPORT' | 'UPDATER';
 /** What the API sends as the MC of someone who has none yet (never a list entry). */
@@ -94,7 +95,11 @@ export interface MemberProfile { recordChanges?: RecordChange[]; handPhotos?: { 
 export interface LeaveIt { id: string; kind: 'SUSPEND' | 'RESTORE'; dueOn: string; completedAt: string | null; cancelledAt: string | null; done: number; total: number; tasks: { key: string; status: string }[] }
 export interface MemberLeave { id: string; firstDay: string; backOn: string; reason: string; emailWhileAway: 'FORWARD' | 'AUTO_REPLY' | null; callsWhileAway: 'FORWARD' | 'VOICEMAIL' | null;
   changes: { kind: 'BACK_ON' | 'REASON'; from: string | null; to: string | null; reason: string | null; byName: string; at: string }[]; startedAt: string | null; endedAt: string | null; endedHow: 'RETURNED' | 'CANCELLED' | 'LEAVING' | null;
-  createdAt: string; recordedBy: string; forwardTo: string | null; started?: boolean; suspend?: LeaveIt | null }
+  createdAt: string; recordedBy: string; forwardTo: string | null; started?: boolean; suspend?: LeaveIt | null;
+  // A dispatcher's drivers while they're away (section 34): who covers each, and any given to them since that nobody covers.
+  covers?: LeaveCover[]; uncovered?: { driverId: string; driver: string; truck: string | null }[] }
+/** One driver covered while their dispatcher is away; stays: reassigned for good meanwhile, so they won't come back. */
+export interface LeaveCover { driverId: string; driver: string; truck: string | null; cover: string; coverTeam: string | null; started: boolean; with: string | null; stays: boolean }
 /** An administrator's correction (section 36): each field's earlier and new value, why, who and when. */
 export interface MemberCorrection { id: string; changes: { field: string; from: string | null; to: string | null }[]; reason: string; createdAt: string; correctedBy: string }
 export interface SupportLink { id: string; startedAt: string; endedAt: string | null; reason: string | null; dispatcherId: string | null; dispatcher: string | null; dispatcherStatus: MemberStatus | null; wholeTeam?: string | null; mc: string | null; team: string | null; changedBy: string | null }

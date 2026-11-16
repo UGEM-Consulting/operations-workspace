@@ -186,6 +186,90 @@ integration('Leave, corrections and the already-here check (disposable PostgreSQ
     });
   });
 
+  describe('drivers while their dispatcher is away (section 34)', () => {
+    const today = () => usDay('latest');
+    let phone = 5550170000;
+    /** A cleared driver working with this dispatcher since ten days ago. */
+    async function driver(first: string, memberId: string) {
+      phone += 1;
+      const [row] = await db.query(`INSERT INTO drivers ("firstName", "lastName", phone, "phoneKey", "driverType", "licenseType", status, "clearedAt") VALUES ($1, 'Driver', $2, $2, 'COMPANY', 'CDL_A', 'CLEARED', now() - interval '20 days') RETURNING id`, [first, String(phone)]);
+      await db.query(`INSERT INTO driver_assignments ("driverId", "mcId", "memberId", truck, "startedAt") VALUES ($1, $2, $3, '214', now() - interval '10 days')`, [row.id, await mcId(), memberId]);
+      return row.id as string;
+    }
+    const withDriver = async (driverId: string) => (await db.query(`SELECT "memberId" FROM driver_assignments WHERE "driverId" = $1 AND "endedAt" IS NULL`, [driverId]))[0]?.memberId;
+    const options = async (memberId: string) => (await agents.manager.get(`/api/dispatch/members/${memberId}/cover-options`).set(headers).expect(200)).body;
+    beforeEach(async () => { await db.query('TRUNCATE drivers CASCADE'); });
+
+    it('covers their drivers from the first day away and brings them back, except one reassigned for good', async () => {
+      const riley = await dispatcher('Riley'), casey = await dispatcher('Casey'), jordan = await dispatcher('Jordan');
+      const marcus = await driver('Marcus', riley.memberId), lena = await driver('Lena', riley.memberId), tomas = await driver('Tomas', riley.memberId);
+      const offered = await options(riley.memberId);
+      expect(offered.drivers.map((row: { name: string }) => row.name)).toEqual(['Lena Driver', 'Marcus Driver', 'Tomas Driver']);
+      expect(offered.dispatchers.map((row: { id: string }) => row.id).sort()).toEqual([casey.memberId, jordan.memberId].sort());
+      const leave = { firstDay: today(), backOn: addDays(today(), 14), reason: 'Personal leave.' };
+      // Every driver needs someone, under their MC, who isn't the person going away.
+      await act(agents.manager, riley.memberId, 'on-leave', { ...leave, covers: [{ driverId: marcus, memberId: casey.memberId }] }, 400);
+      await act(agents.manager, riley.memberId, 'on-leave', { ...leave, covers: [marcus, lena, tomas].map(driverId => ({ driverId, memberId: riley.memberId })) }, 400);
+      await act(agents.manager, riley.memberId, 'on-leave', { ...leave, covers: [{ driverId: marcus, memberId: casey.memberId }, { driverId: lena, memberId: jordan.memberId }, { driverId: tomas, memberId: casey.memberId }] });
+      expect([await withDriver(marcus), await withDriver(lena), await withDriver(tomas)]).toEqual([casey.memberId, jordan.memberId, casey.memberId]);
+      const page = (await agents.manager.get(`/api/dispatch/members/${riley.memberId}`).set(headers).expect(200)).body;
+      expect(page.leave.covers.map((row: { driver: string; cover: string; started: boolean }) => [row.driver, row.cover, row.started])).toEqual([['Lena Driver', 'Jordan Fictional', true], ['Marcus Driver', 'Casey Fictional', true], ['Tomas Driver', 'Casey Fictional', true]]);
+      expect(page.driversToReassign).toEqual([]);
+      // Dispatch sees who covers and who they go back to.
+      const listed = (await agents.manager.get('/api/dispatch/drivers').set(headers).expect(200)).body.items;
+      expect(listed.find((row: { id: string }) => row.id === marcus).assignment).toMatchObject({ dispatcher: 'Casey Fictional', covering: { for: 'Riley Fictional', until: leave.backOn } });
+      // Tomas is reassigned for good meanwhile, so he stays.
+      const [{ version }] = await db.query(`SELECT version FROM drivers WHERE id = $1`, [tomas]);
+      await agents.manager.post(`/api/dispatch/drivers/${tomas}/assign`).set(headers).send({ version, mcId: await mcId(), memberId: jordan.memberId, startsOn: today(), reason: 'Better fit.' }).expect(201);
+      await act(agents.manager, riley.memberId, 'on-leave/return', {});
+      expect([await withDriver(marcus), await withDriver(lena), await withDriver(tomas)]).toEqual([riley.memberId, riley.memberId, jordan.memberId]);
+      expect((await db.query(`SELECT "endedHow" FROM driver_leave_covers ORDER BY "endedHow"`)).map((row: { endedHow: string }) => row.endedHow)).toEqual(['REASSIGNED', 'RETURNED', 'RETURNED']);
+      // Each move is in the driver's history, with the truck kept.
+      expect(await db.query(`SELECT "memberId", truck FROM driver_assignments WHERE "driverId" = $1 ORDER BY "startedAt", "createdAt"`, [marcus])).toEqual([
+        { memberId: riley.memberId, truck: '214' }, { memberId: casey.memberId, truck: '214' }, { memberId: riley.memberId, truck: '214' }]);
+      expect((await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'LEAVE_RECORDED'`))[0].metadata).toMatchObject({ covered: 3 });
+    });
+    it('plans a future leave, changes who covers before it starts, and keeps the drivers with who covers them if they leave', async () => {
+      const riley = await dispatcher('Riley'), casey = await dispatcher('Casey'), jordan = await dispatcher('Jordan');
+      const marcus = await driver('Marcus', riley.memberId);
+      await act(agents.manager, riley.memberId, 'on-leave', { firstDay: addDays(today(), 3), backOn: addDays(today(), 20), reason: 'Vacation.', covers: [{ driverId: marcus, memberId: casey.memberId }] });
+      // Nothing moves before the first day away.
+      expect(await withDriver(marcus)).toBe(riley.memberId);
+      await act(agents.manager, riley.memberId, 'on-leave/covers', { covers: [{ driverId: marcus, memberId: jordan.memberId }] });
+      await act(agents.manager, riley.memberId, 'on-leave/covers', { covers: [{ driverId: marcus, memberId: jordan.memberId }] }, 400);
+      await db.query(`UPDATE member_leaves SET "firstDay" = $1 WHERE "memberId" = $2`, [today(), riley.memberId]);
+      expect(await app.get(LeaveService).sweep()).toMatchObject({ started: 1, failed: 0 });
+      expect(await withDriver(marcus)).toBe(jordan.memberId);
+      // Riley won't come back: Marcus stays with Jordan for good, and Riley has nobody to reassign.
+      await act(agents.manager, riley.memberId, 'leave', { leftAt: today(), reason: 'Decided not to return.' });
+      expect(await withDriver(marcus)).toBe(jordan.memberId);
+      expect(await db.query(`SELECT "endedHow" FROM driver_leave_covers`)).toEqual([{ endedHow: 'KEPT' }]);
+      expect((await db.query(`SELECT status FROM dispatch_members WHERE id = $1`, [riley.memberId]))[0].status).toBe('LEFT');
+    });
+    it('moves a covered driver to someone else while away, and refuses a dispatcher who is away themselves', async () => {
+      const riley = await dispatcher('Riley'), casey = await dispatcher('Casey'), jordan = await dispatcher('Jordan');
+      const marcus = await driver('Marcus', riley.memberId);
+      await act(agents.manager, jordan.memberId, 'on-leave', { firstDay: today(), backOn: addDays(today(), 5), reason: 'Away.' });
+      expect((await options(riley.memberId)).dispatchers.map((row: { id: string }) => row.id)).toEqual([casey.memberId]);
+      await act(agents.manager, riley.memberId, 'on-leave', { firstDay: today(), backOn: addDays(today(), 9), reason: 'Personal leave.', covers: [{ driverId: marcus, memberId: jordan.memberId }] }, 400);
+      await act(agents.manager, riley.memberId, 'on-leave', { firstDay: today(), backOn: addDays(today(), 9), reason: 'Personal leave.', covers: [{ driverId: marcus, memberId: casey.memberId }] });
+      await act(agents.manager, jordan.memberId, 'on-leave/return', {});
+      await act(agents.manager, riley.memberId, 'on-leave/covers', { covers: [{ driverId: marcus, memberId: jordan.memberId }] });
+      expect(await withDriver(marcus)).toBe(jordan.memberId);
+      await act(agents.manager, riley.memberId, 'on-leave/return', {});
+      expect(await withDriver(marcus)).toBe(riley.memberId);
+      expect((await db.query(`SELECT count(*)::integer AS n FROM driver_assignments WHERE "driverId" = $1`, [marcus]))[0].n).toBe(4);
+    });
+    it('refuses a rollback while covers are recorded', async () => {
+      const riley = await dispatcher('Riley'), casey = await dispatcher('Casey');
+      const marcus = await driver('Marcus', riley.memberId);
+      await act(agents.manager, riley.memberId, 'on-leave', { firstDay: today(), backOn: addDays(today(), 9), reason: 'Personal leave.', covers: [{ driverId: marcus, memberId: casey.memberId }] });
+      const runner = db.createQueryRunner();
+      const { LeaveCovers1793280000000: Migration } = await import('../src/database/migrations/1793280000000-LeaveCovers');
+      await expect(new Migration().down(runner)).rejects.toThrow('Refusing to roll back while drivers covered');
+      await runner.release();
+    });
+  });
   describe('on leave (section 35)', () => {
     const today = () => usDay('latest');
     it('suspends access from today, restores it on return, and pauses a team lead’s sign-in', async () => {

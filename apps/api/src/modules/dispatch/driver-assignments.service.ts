@@ -32,7 +32,10 @@ export class DriverAssignmentsService {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT d.id, d."firstName", d."lastName", d.phone, d."driverType", d."licenseType", d.version, d."clearedAt", ${onHoldSql()} AS "onHold",
     CASE WHEN k.id IS NULL THEN NULL ELSE ${name('k')} END AS "clearedBy",
     CASE WHEN a.id IS NULL THEN NULL ELSE json_build_object('mcId', m.id, 'mc', m.name, 'memberId', x.id, 'dispatcher', ${name('x')}, 'teamId', t.id, 'team', t.name, 'truck', a.truck, 'startedAt', a."startedAt",
-     'unitId', a."unitId", 'trailerId', a."trailerId", 'trailer', (SELECT tr.unit FROM driver_trucks tr WHERE tr.id = a."trailerId")) END AS assignment
+     'unitId', a."unitId", 'trailerId', a."trailerId", 'trailer', (SELECT tr.unit FROM driver_trucks tr WHERE tr.id = a."trailerId"),
+     -- Covering for someone on leave (section 34): who they go back to, and when.
+     'covering', (SELECT json_build_object('for', o."firstName" || ' ' || o."lastName", 'until', l."backOn"::text) FROM driver_leave_covers c JOIN member_leaves l ON l.id = c."leaveId" JOIN dispatch_members o ON o.id = l."memberId"
+      WHERE c."coverAssignmentId" = a.id AND c."endedAt" IS NULL)) END AS assignment
    FROM drivers d LEFT JOIN users k ON k.id = d."clearedBy"
    LEFT JOIN driver_assignments a ON a."driverId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN dispatch_members x ON x.id = a."memberId"
    LEFT JOIN member_assignments ma ON ma."memberId" = x.id AND ma."endedAt" IS NULL LEFT JOIN teams t ON t.id = ma."teamId"

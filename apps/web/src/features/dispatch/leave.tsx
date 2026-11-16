@@ -15,6 +15,8 @@ import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { middayIso } from '@/lib/navigation';
 import { fullName, type LeaveIt, type MemberLeave, type MemberProfile } from './types';
+import { CoverChoices, coverList, coversChosen, ReturningDrivers, useCoverOptions } from './leave-covers';
+import { startingChoices } from './cover-rules';
 
 /**
  * On leave (section 35, designed as PutOnLeaveScreen, OnLeaveProfileScreen, OnLeaveProfilePhoneScreen, OnLeaveUpdaterScreen,
@@ -22,7 +24,7 @@ import { fullName, type LeaveIt, type MemberLeave, type MemberProfile } from './
  * away for a while keeps their job, their place and who they work with. IT suspends the accounts they have and restores
  * them on the return day. Reasons are staff text, never health, family or other private details.
  */
-export type LeaveAction = 'putOnLeave' | 'return' | 'backOn' | 'leaveReason' | 'cancelLeave';
+export type LeaveAction = 'putOnLeave' | 'return' | 'backOn' | 'leaveReason' | 'cancelLeave' | 'covers';
 const today = (at = Date.now()) => new Date(at).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 const plusDays = (day: string, days: number) => new Date(Date.parse(`${day}T12:00:00Z`) + days * 86400_000).toISOString().slice(0, 10);
 const START_MAX_DAYS = 30, LEAVE_MAX_DAYS = 183;
@@ -51,13 +53,14 @@ const listed = (items: string[]) => items.length > 1 ? `${items.slice(0, -1).joi
 
 /** The alert at the top of the page while someone is on leave, or about to be (OnLeaveProfileScreen). */
 export function LeaveAlert({ member, leave }: { member: MemberProfile; leave: MemberLeave }) {
- const drivers = member.driversToReassign?.length ?? 0, helpers = member.supports ?? [];
+ const covered = (leave.covers ?? []).length, drivers = covered ? 0 : member.driversToReassign?.length ?? 0, helpers = member.supports ?? [];
  // What stays put, named only when they have it: “Their MC, team, drivers and updater stay as they are.”
  const kept = member.position === 'SUPPORT' ? [] : [member.current?.mc ? 'MC' : '', member.current?.team ? 'team' : '', drivers ? (drivers === 1 ? 'driver' : 'drivers') : '', helpers.length ? helperWords(helpers) : ''].filter(Boolean);
+ const coveredLine = covered ? ` Their ${covered === 1 ? 'driver is' : `${covered} drivers are`} covered while they’re away and come back to ${member.firstName} on the return day.` : '';
  const stays = member.position === 'SUPPORT' && member.supportOf ? `They keep assisting ${member.supportOf.wholeTeam ? `the whole ${member.supportOf.wholeTeam} team` : member.supportOf.dispatcher ?? 'their dispatcher'}.` : kept.length ? `Their ${listed(kept)} ${kept.length === 1 && !kept[0].endsWith('s') ? 'stays as it is' : 'stay as they are'}.` : '';
  return leave.started
-  ? <Alert tone="info" title={<>{member.firstName} is away until <Day day={leave.backOn}/></>}><p>{stays}{leave.suspend ? leave.suspend.completedAt ? <> IT has suspended their accounts and restores them on <Day day={leave.backOn}/>.</> : ' IT is suspending their accounts.' : ''}{member.leadOf ? ` They stay ${member.leadOf.name}’s lead, with their sign-in off while they’re away.` : ''}</p></Alert>
-  : <Alert tone="info" title={<>On leave from <Day day={leave.firstDay}/></>}><p>{member.firstName} works as usual until then.{leave.suspend ? ' IT plans now and suspends their accounts from that day.' : ''}</p></Alert>;
+  ? <Alert tone="info" title={<>{member.firstName} is away until <Day day={leave.backOn}/></>}><p>{stays}{coveredLine}{leave.suspend ? leave.suspend.completedAt ? <> IT has suspended their accounts and restores them on <Day day={leave.backOn}/>.</> : ' IT is suspending their accounts.' : ''}{member.leadOf ? ` They stay ${member.leadOf.name}’s lead, with their sign-in off while they’re away.` : ''}</p></Alert>
+  : <Alert tone="info" title={<>On leave from <Day day={leave.firstDay}/></>}><p>{member.firstName} works as usual until then.{covered ? ' Their drivers are covered from that day.' : ''}{leave.suspend ? ' IT plans now and suspends their accounts from that day.' : ''}</p></Alert>;
 }
 
 /** The Leave card: dates, why, who recorded it, and each change. */
@@ -73,10 +76,11 @@ export function LeaveCard({ leave }: { leave: MemberLeave }) {
 
 /** A dispatcher's drivers, supports and team while they're away: nothing moves (OnLeaveProfileScreen). */
 export function WorkingWithCard({ member }: { member: MemberProfile }) {
- const drivers = member.driversToReassign ?? [], helpers = member.supports ?? [], first = member.firstName;
+ const covers = !!member.leave?.covers?.length || !!member.leave?.uncovered?.length;
+ const drivers = covers ? [] : member.driversToReassign ?? [], helpers = member.supports ?? [], first = member.firstName;
  if (member.position !== 'DISPATCHER' || (!drivers.length && !helpers.length && !member.leadOf)) return null;
  const word = helperWords(helpers);
- return <Card><CardHeader title={`Working with ${first}`} description="Nothing moves while they’re away. Reassign someone only if they shouldn’t wait."/><CardBody><DescriptionList layout="rows" items={[
+ return <Card><CardHeader title={`Working with ${first}`} description={covers ? 'Their supports and team stay as they are while they’re away.' : 'Nothing moves while they’re away. Reassign someone only if they shouldn’t wait.'}/><CardBody><DescriptionList layout="rows" items={[
   ...(drivers.length ? [{ label: 'Drivers', value: `${drivers.length}, still assigned to ${first}` }] : []),
   ...(helpers.length ? [{ label: word.charAt(0).toUpperCase() + word.slice(1), value: `${listed(helpers.map(row => row.name))}, still assisting ${first}` }] : []),
   ...(member.leadOf ? [{ label: 'Team', value: `${member.leadOf.name}, ${first} stays lead` }] : [])]}/></CardBody></Card>;
@@ -121,13 +125,18 @@ export function LeaveDialog({ action, member, onClose }: { action: LeaveAction; 
  const [emailWhileAway, setEmail] = useState<'FORWARD' | 'AUTO_REPLY'>('FORWARD'), [callsWhileAway, setCalls] = useState<'FORWARD' | 'VOICEMAIL'>('FORWARD');
  const companyEmail = member.accounts?.companyEmail ?? member.existing?.companyEmail ?? null, number = member.accounts?.workPhone ?? member.existing?.ringCentralNumber ?? null;
  const drivers = member.driversToReassign?.length ?? 0, helpers = member.supports?.length ?? 0;
+ const { options, failed } = useCoverOptions(member.id, action === 'putOnLeave' && member.position === 'DISPATCHER' && drivers > 0);
+ const [picked, setChoices] = useState<Record<string, string> | null>(null);
+ const choices = picked ?? (options ? startingChoices(options) : {});
+ // An older API without covers: the drivers stay with them, as before.
+ const covering = !!options && !failed && options.drivers.length > 0 && options.dispatchers.length > 0;
  async function submit(event: React.FormEvent<HTMLFormElement>) {
   event.preventDefault(); if (busy) return;
   const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
   setBusy(true); setError('');
   const path = `dispatch/members/${member.id}/on-leave`;
   try {
-   if (action === 'putOnLeave') await mutate(path, 'POST', { version: member.version, firstDay: form.firstDay, backOn: form.backOn, reason: form.reason, ...(companyEmail ? { emailWhileAway } : {}), ...(number ? { callsWhileAway } : {}) });
+   if (action === 'putOnLeave') await mutate(path, 'POST', { version: member.version, firstDay: form.firstDay, backOn: form.backOn, reason: form.reason, ...(companyEmail ? { emailWhileAway } : {}), ...(number ? { callsWhileAway } : {}), ...(covering ? { covers: coverList(choices) } : {}) });
    else if (action === 'return' && when === 'today') await mutate(`${path}/return`, 'POST', { version: member.version });
    else if (action === 'return' || action === 'backOn') await mutate(`${path}/back-on`, 'POST', { version: member.version, backOn: form.backOn, reason: form.reason });
    else if (action === 'leaveReason') await mutate(`${path}/reason`, 'POST', { version: member.version, reason: form.reason });
@@ -145,7 +154,7 @@ export function LeaveDialog({ action, member, onClose }: { action: LeaveAction; 
  // After today and after their first day away, the API's rule, also for a leave that hasn't started.
  const minBack = action === 'putOnLeave' ? plusDays(firstDay, 1) : plusDays(leave && leave.firstDay > today() ? leave.firstDay : today(), 1), maxBack = plusDays(action === 'putOnLeave' ? firstDay : leave?.firstDay ?? today(), LEAVE_MAX_DAYS);
  return <Dialog open onClose={onClose} busy={busy} size={action === 'putOnLeave' ? 'lg' : undefined} title={title} description={description} closeLabel={action === 'cancelLeave' ? 'Keep leave' : undefined}
-  actions={<Button type="submit" form="leave-action">{busy ? 'Saving…' : action === 'putOnLeave' ? 'Put on leave' : action === 'return' ? (when === 'today' ? 'Record return' : 'Change return date') : action === 'backOn' ? 'Change return date' : action === 'leaveReason' ? 'Save reason' : 'Cancel leave'}</Button>}>
+  actions={<Button type="submit" form="leave-action" disabled={action === 'putOnLeave' && drivers > 0 && member.position === 'DISPATCHER' && (!options || (covering && !coversChosen(options, choices)))}>{busy ? 'Saving…' : action === 'putOnLeave' ? 'Put on leave' : action === 'return' ? (when === 'today' ? 'Record return' : 'Change return date') : action === 'backOn' ? 'Change return date' : action === 'leaveReason' ? 'Save reason' : 'Cancel leave'}</Button>}>
   <form id="leave-action" onSubmit={submit} className="space-y-4">
    {action === 'putOnLeave' && <>
     <div className="grid gap-4 sm:grid-cols-2">
@@ -165,13 +174,16 @@ export function LeaveDialog({ action, member, onClose }: { action: LeaveAction; 
        { value: 'VOICEMAIL', label: 'Voicemail', description: 'Calls go to voicemail until they return.' }]}/>}
      </CardBody></Card>
      : <p className="text-[13px] leading-5 text-muted-foreground">{member.firstName} has no company email or number of their own recorded, so IT gets no checklist unless they use business software alone.</p>}
-    {(drivers > 0 || helpers > 0) && <Alert tone="info" title={`Their ${[drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', helpers ? helperWords(member.supports ?? []) : ''].filter(Boolean).join(' and ')} stay with ${member.firstName}`}><p>Reassign any of them from their own page if they shouldn’t wait.{member.leadOf ? ` ${member.firstName} stays ${member.leadOf.name}’s lead.` : ''}</p></Alert>}
+    {covering && options && <CoverChoices firstName={member.firstName} options={options} choices={choices} onChange={setChoices} mcName={member.current?.mc} />}
+    {covering && <Alert tone="info" title="Every move is kept in each driver’s history"><p>Dispatch and the team lead see who covers. If a truck has a Telegram group, its Safety Manager is asked to add the covering dispatcher and, on the return day, to switch back.</p></Alert>}
+    {((drivers > 0 && !covering && !!options) || helpers > 0) && <Alert tone="info" title={`Their ${[drivers && !covering ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', helpers ? helperWords(member.supports ?? []) : ''].filter(Boolean).join(' and ')} stay with ${member.firstName}`}><p>Reassign any of them from their own page if they shouldn’t wait.{member.leadOf ? ` ${member.firstName} stays ${member.leadOf.name}’s lead.` : ''}</p></Alert>}
    </>}
    {action === 'return' && <>
     <RadioGroup name="when" label="When" cards value={when} onChange={value => setWhen(value as 'today' | 'later')} options={[
      { value: 'today', label: 'Back today', description: `${member.firstName} is Active again now. IT gets an alert to restore their access today.` },
-     { value: 'later', label: 'Back on another day', description: 'Moves the return date. IT’s restore moves with it.' }]}/>
+     { value: 'later', label: 'Back on another day', description: leave?.covers?.length ? 'Moves the return date. The drivers stay covered until then, and IT’s restore moves with it.' : 'Moves the return date. IT’s restore moves with it.' }]}/>
     {when === 'later' && <><Input label="Back on" name="backOn" type="date" required min={minBack} max={maxBack} width="sm"/><Textarea label="Why it changed" name="reason" required maxLength={1000} rows={2} hint={HINT}/></>}
+    {when === 'today' && leave && <ReturningDrivers member={member} leave={leave}/>}
     {when === 'today' && <Alert tone="info"><p>{member.leadOf ? 'Their team lead sign-in comes back once IT turns it on again. ' : ''}Change return date in More actions does the same as Back on another day.</p></Alert>}
    </>}
    {action === 'backOn' && leave && <>
