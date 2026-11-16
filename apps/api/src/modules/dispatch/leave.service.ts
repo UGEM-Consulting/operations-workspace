@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { memberSeats } from '../load-boards/seats';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { UserStatus } from '../users/user.entity';
@@ -7,7 +8,8 @@ import { NotificationsService } from '../updates/notifications.service';
 import { lockSetupRequests, memberSetups, sameSetups, setupAccounts } from '../it/removal';
 import { ItLeaveActivity, ItLeaveRequest, type LeaveProfile } from '../it/it.entity';
 import { cancelLeaveRequest, createLeaveRequest, lockSuspend } from '../it/leave';
-import { BackOnDto, LeaveDto, LeaveReasonDto, LeaveVersionDto } from './dispatch.dto';
+import { BackOnDto, CoversDto, LeaveDto, LeaveReasonDto, LeaveVersionDto } from './dispatch.dto';
+import { changeCovers, coverOptions, endCovers, leaveCovers, lockLeaveDrivers, planCovers, sameLeaveDrivers, startCovers } from './leave-covers';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord, type LeaveEnd, MemberLeave, positionLabel, Team } from './dispatch.entity';
 import { memberPlace, onNotice } from './create-member';
 export { onLeave, onLeaveSql } from './create-member';
@@ -37,8 +39,11 @@ export class LeaveService {
    // IT setups before the member row, the order leaving and promotions use: a setup still under way would add an account the
    // suspend checklist doesn't list, so leave waits for it.
    const setups = await lockSetupRequests(em, id);
+   // Their drivers before the member row, the order Assign takes them in.
+   const drivers = await lockLeaveDrivers(em, id);
    const member = await this.lockMember(em, id, dto.version);
    await sameSetups(em, id, setups);
+   await sameLeaveDrivers(em, id, drivers);
    if (setups.some(setup => !setup.completedAt)) throw new ConflictException('IT is still setting something up for them. Put them on leave once it’s finished.');
    if (member.status !== 'ACTIVE') throw new ConflictException('Only someone who is working now can go on leave. Finish their IT setup first.');
    if (await onNotice(em, id)) throw new ConflictException('This person is leaving. Change their last day instead.');
@@ -49,10 +54,11 @@ export class LeaveService {
    const forwards = emailWhileAway === 'FORWARD' || callsWhileAway === 'FORWARD';
    const leave = await em.getRepository(MemberLeave).save({ memberId: id, firstDay: dto.firstDay, backOn: dto.backOn, reason: dto.reason,
     emailWhileAway, callsWhileAway, forwardTo: forwards ? user.id : null, recordedBy: user.id, changes: [], startedAt: null, endedAt: null, endedHow: null, endedBy: null });
+   const covered = await planCovers(em, leave, member, dto.covers, user.id);
    const alerts = await createLeaveRequest(em, this.alerts, { leaveId: leave.id, memberId: id, kind: 'SUSPEND', keys: accounts.keys, profile: await this.profile(em, member, leave, accounts, user), dueOn: leave.firstDay, managerId: user.id, actorId: user.id });
    if (leave.firstDay <= today) await this.start(em, member, leave, user.id);
    member.version += 1; await em.save(member);
-   await this.event(em, user.id, 'LEAVE_RECORDED', id, { itSuspend: accounts.keys.length > 0, startsToday: leave.firstDay <= today });
+   await this.event(em, user.id, 'LEAVE_RECORDED', id, { itSuspend: accounts.keys.length > 0, startsToday: leave.firstDay <= today, covered });
    return { result: { id, version: member.version }, alerts };
   });
  }
@@ -60,7 +66,9 @@ export class LeaveService {
  /** Back today, early or on the day: Active now, and IT restores what it suspended. */
  async recordReturn(user: User, id: string, dto: LeaveVersionDto) {
   return this.withAlerts(async em => {
+   const drivers = await lockLeaveDrivers(em, id);
    const member = await this.lockMember(em, id, dto.version);
+   await sameLeaveDrivers(em, id, drivers);
    const leave = await this.requireLeave(em, id);
    if (!leave.startedAt) throw new ConflictException('Their leave hasn’t started. Cancel it instead.');
    const alerts = await this.end(em, member, leave, 'RETURNED', user.id);
@@ -72,7 +80,9 @@ export class LeaveService {
  /** They're not going after all, or IT hasn't suspended anything yet. The leave stays in their history. */
  async cancel(user: User, id: string, dto: LeaveVersionDto) {
   return this.withAlerts(async em => {
+   const drivers = await lockLeaveDrivers(em, id);
    const member = await this.lockMember(em, id, dto.version);
+   await sameLeaveDrivers(em, id, drivers);
    const leave = await this.requireLeave(em, id);
    const suspend = await lockSuspend(em, leave.id);
    if (suspend.request?.completedAt || suspend.completed.length) throw new ConflictException('IT has already suspended some of their access. Record their return instead.');
@@ -104,6 +114,27 @@ export class LeaveService {
    return { result: { id, version: member.version }, alerts: [] };
   });
  }
+
+ /** Change who covers (section 34): the plan before the first day, or the drivers themselves once it started. */
+ async changeCovers(user: User, id: string, dto: CoversDto) {
+  return this.withAlerts(async em => {
+   const drivers = await lockLeaveDrivers(em, id);
+   const member = await this.lockMember(em, id, dto.version);
+   await sameLeaveDrivers(em, id, drivers);
+   const leave = await this.requireLeave(em, id);
+   if (dto.covers.some(cover => !drivers.includes(cover.driverId))) throw new BadRequestException('This driver isn’t covered for this leave any more. Reload the page.');
+   const changed = await changeCovers(em, leave, member, dto.covers, user.id);
+   if (!changed) throw new BadRequestException('Nothing changed.');
+   leave.version += 1; await em.getRepository(MemberLeave).save(leave);
+   member.version += 1; await em.save(member);
+   await this.event(em, user.id, 'LEAVE_CHANGED', id, { fields: ['covers'], count: changed });
+   return { result: { id, version: member.version }, alerts: [] };
+  });
+ }
+ /** Their drivers and who may cover each, for the leave dialog and Change who covers. */
+ coverOptions(id: string) { return coverOptions(this.db, id); }
+ /** The open leave's covers, for their page. */
+ covers(leaveId: string, memberId: string) { return leaveCovers(this.db, leaveId, memberId); }
 
  async changeReason(user: User, id: string, dto: LeaveReasonDto) {
   return this.withAlerts(async em => {
@@ -157,7 +188,10 @@ export class LeaveService {
   for (const { memberId } of due) {
    try {
     const outcome = await this.withAlerts(async em => {
+     const drivers = await lockLeaveDrivers(em, memberId);
      const member = await em.getRepository(DispatchMember).findOne({ where: { id: memberId }, lock: { mode: 'pessimistic_write' } });
+     // A driver given to them meanwhile: this run stops, and the next one starts again.
+     if (member) await sameLeaveDrivers(em, memberId, drivers);
      const leave = member ? await this.openLeave(em, memberId, true) : null;
      if (!member || !leave || member.status === 'LEFT') return { result: null, alerts: [] };
      let alerts: string[] = [], result: 'started' | 'returned' | null = null;
@@ -182,6 +216,7 @@ export class LeaveService {
    if (account && account.status === UserStatus.ACTIVE) await turnOffAccount(em, account, actorId, 'member-on-leave');
   }
   await syncSignIns(em, [member.id], actorId);
+  await startCovers(em, leave, member, actorId);
  }
  /** Ends the leave; a caller that already locked the suspend checklist passes it, so it isn't locked and read again. */
  private async end(em: EntityManager, member: DispatchMember, leave: MemberLeave, how: LeaveEnd, actorId: string | null, locked?: Awaited<ReturnType<typeof lockSuspend>>) {
@@ -196,6 +231,8 @@ export class LeaveService {
    if (restoring) alerts = await createLeaveRequest(em, this.alerts, { leaveId: leave.id, memberId: member.id, kind: 'RESTORE', keys: restore,
     profile: { ...suspend.request.profile, backOn: usDay('latest') }, dueOn: usDay('latest'), managerId: suspend.request.managerId, actorId });
   }
+  // Their drivers come back, stay where they were reassigned, or (leaving) stay with who covers them.
+  await endCovers(em, leave, member, how, actorId);
   // Leaving records its own notice and sign-in change; otherwise someone back who still leads a team needs their sign-in again.
   if (how !== 'LEAVING') await syncSignIns(em, [member.id], actorId);
   await this.event(em, actorId, 'LEAVE_ENDED', member.id, { how, itRestore: restoring });
@@ -209,7 +246,8 @@ export class LeaveService {
   const datEmail = fromSetups?.datEmail ?? record?.datEmail ?? null, truckstopEmail = fromSetups?.truckstopEmail ?? record?.truckstopEmail ?? null;
   const asked: string[] = setups.length ? (await em.query(`SELECT DISTINCT key FROM it_onboarding_tasks WHERE "requestId" = ANY($1)`, [setups.map(setup => setup.id)])).map((row: { key: string }) => row.key) : [];
   const keys = [...(companyEmail ? ['GOOGLE_WORKSPACE'] : []), ...(ringCentralNumber ? ['RINGCENTRAL'] : []),
-   ...(member.position === 'DISPATCHER' || datEmail || truckstopEmail || asked.includes('BUSINESS_SOFTWARE') ? ['BUSINESS_SOFTWARE'] : [])];
+   // A load board seat (section 33) is business software too.
+   ...(member.position === 'DISPATCHER' || datEmail || truckstopEmail || asked.includes('BUSINESS_SOFTWARE') || (await memberSeats(em, member.id)).length ? ['BUSINESS_SOFTWARE'] : [])];
   return { companyEmail, ringCentralNumber, datEmail, truckstopEmail, keys };
  }
  private async profile(em: EntityManager, member: DispatchMember, leave: MemberLeave, accounts: Awaited<ReturnType<LeaveService['accounts']>>, recorder: User): Promise<LeaveProfile> {

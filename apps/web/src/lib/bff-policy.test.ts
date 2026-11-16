@@ -134,6 +134,19 @@ describe('offboarding and manager hand-over through the BFF', () => {
     // Leave (section 35) and an administrator's corrections (section 36); IT's suspend and restore checklists.
     for (const action of ['on-leave', 'on-leave/return', 'on-leave/cancel', 'on-leave/back-on', 'on-leave/reason', 'correct']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/delete`), false);
+    // Keeping records (section 34): searching people to hold, holds and the switch; the lists are read on the server.
+    assert.equal(allowedEndpoint('GET', 'retention/people'), true);
+    for (const path of ['retention/settings', 'retention/holds', `retention/holds/${ID}/extend`, `retention/holds/${ID}/end`]) assert.equal(allowedEndpoint('POST', path), true, path);
+    assert.equal(allowedEndpoint('GET', 'retention/due'), false);
+    // Telegram groups (section 34): the page links groups and changes routes through the BFF; it reads them on the server.
+    for (const path of ['telegram/groups/codes', `telegram/groups/codes/${ID}/check`, `telegram/groups/${ID}/unlink`, `telegram/groups/${ID}/test`]) assert.equal(allowedEndpoint('POST', path), true, path);
+    assert.equal(allowedEndpoint('PATCH', 'telegram/routes/IT_SETUP'), true);
+    assert.equal(allowedEndpoint('PATCH', 'telegram/routes/it-setup'), false);
+    assert.equal(allowedEndpoint('DELETE', `telegram/groups/${ID}`), false);
+    // Drivers while their dispatcher is away (section 34): the dialog reads who may cover, and Change who covers.
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/cover-options`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/cover-options`), false);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/covers`), true);
     assert.equal(allowedEndpoint('GET', `it/leave/${ID}`), true);
     assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/GOOGLE_WORKSPACE`), true);
     assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/google`), false);
@@ -177,11 +190,50 @@ describe('trusted devices and paper scans through the BFF (section 38)', () => {
   });
 });
 
+describe('photos of people added by hand through the BFF', () => {
+  it('lets an administrator add one and staff open them, and nothing else', () => {
+    const id = '2c3c0529-044c-450f-901f-201b8d17aa00';
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${id}/hand-photos/profile`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${id}/hand-photos/passport`), false);
+    assert.equal(isFileEndpoint(`member-photos/${id}/id`), true);
+    assert.ok(bodyLimit(`dispatch/members/${id}/hand-photos/id`) > 1_000_000);
+  });
+});
+
+describe('load board accounts and seats through the BFF', () => {
+  it('lets IT and administrators keep the accounts and seats, and nothing else under them', () => {
+    assert.equal(allowedEndpoint('POST', 'lists/load-board-accounts'), true);
+    assert.equal(allowedEndpoint('PATCH', 'lists/load-board-accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('POST', 'load-board-seats'), true);
+    assert.equal(allowedEndpoint('POST', 'load-board-seats/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('GET', 'load-board-seats/people'), false);
+    assert.equal(allowedEndpoint('POST', 'load-board-seats/people'), false);
+    assert.equal(allowedEndpoint('POST', 'company-accounts'), true);
+    assert.equal(allowedEndpoint('PATCH', 'company-accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('GET', 'company-accounts'), false);
+    assert.equal(allowedEndpoint('POST', 'company-accounts/2c3c0529-044c-450f-901f-201b8d17aa00/close'), true);
+    assert.equal(allowedEndpoint('GET', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00'), true);
+    assert.equal(allowedEndpoint('PATCH', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00/tasks/NEW_EMAIL'), true);
+    assert.equal(allowedEndpoint('PATCH', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00/contact'), true);
+    assert.equal(allowedEndpoint('POST', 'it/accounts/2c3c0529-044c-450f-901f-201b8d17aa00/contact'), false);
+  });
+});
+
+describe('people who left and other names through the BFF', () => {
+  it('lets the dispatcher page save a last day, ask IT to close accounts and edit names', () => {
+    for (const route of ['left-day', 'close-accounts', 'names']) {
+      assert.equal(allowedEndpoint('POST', `dispatch/members/2c3c0529-044c-450f-901f-201b8d17aa00/${route}`), true);
+      assert.equal(allowedEndpoint('GET', `dispatch/members/2c3c0529-044c-450f-901f-201b8d17aa00/${route}`), false);
+    }
+    assert.equal(allowedEndpoint('POST', 'dispatch/members/not-an-id/names'), false);
+  });
+});
+
 describe('the Dispatchers list through the BFF', () => {
   it('reads the list with its filters, so the filter sheet can say how many match, and nothing else under it', () => {
     assert.equal(allowedEndpoint('GET', 'dispatch/members'), true);
     assert.equal(allowedEndpoint('POST', 'dispatch/members'), false);
-    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers']);
+    assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId']);
     assert.deepEqual(forwardedQuery('onboarding/review-queue'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction']);
     assert.deepEqual(forwardedQuery('dispatch/teams'), []);
   });

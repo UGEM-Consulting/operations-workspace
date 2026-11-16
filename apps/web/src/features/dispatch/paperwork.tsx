@@ -161,9 +161,12 @@ export function ExistingPaperworkCard({ member }: { member: MemberProfile }) {
 }
 
 /** Accounts recorded by a manager, shown in the rail, with the way to correct everything they recorded. Once their application has a Telegram answer, that's the one shown, so it isn't offered here. */
-export function ExistingAccountsCard({ member, open, admin = false }: { member: MemberProfile; open: boolean; admin?: boolean }) {
+export function ExistingAccountsCard({ member, open, admin = false, editing: shown, onEditing }: { member: MemberProfile; open: boolean; admin?: boolean;
+  /** Opened from More actions on the page of someone who left (LeftRecordMenuScreen). */ editing?: boolean; onEditing?: (open: boolean) => void }) {
   const router = useRouter(), toast = useToast(), existing = member.existing!;
-  const [editing, setEditing] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [own, setOwn] = useState(false), editing = shown ?? own, setEditing = onEditing ?? setOwn, [busy, setBusy] = useState(false), [error, setError] = useState('');
+  // Someone who left (LeftEditRecordedScreen): accounts and contact only. IT isn't asked by this, and their paperwork is closed.
+  const gone = member.status === 'LEFT';
   // An administrator may correct the name of someone with no application (CorrectNameByHandScreen); a reason is needed when it changes.
   const nameEditable = admin && !member.details, [names, setNames] = useState({ firstName: member.firstName, lastName: member.lastName });
   const renamed = nameEditable && (names.firstName.trim() !== member.firstName || names.lastName.trim() !== member.lastName);
@@ -183,38 +186,42 @@ export function ExistingAccountsCard({ member, open, admin = false }: { member: 
     finally { setBusy(false); }
   }
   const paperOn = (kind: string) => existing.paper.find(item => item.kind === kind)?.signedOn ?? '';
-  return <Card><CardHeader title="Accounts" actions={open && <Button size="sm" variant="ghost" onClick={() => { setEditing(true); setError(''); }}><Pencil aria-hidden="true" className="size-3.5" />Edit</Button>} />
+  // Someone added as Left (LeftRecordScreen): the accounts they had, as recorded.
+  const addedLeft = member.status === 'LEFT' && !!existing.addedAsLeft;
+  return <Card><CardHeader title={addedLeft ? 'Accounts they had' : 'Accounts'} description={addedLeft ? (existing.sourceName ? 'Recorded from the file.' : 'Recorded by a manager.') : undefined} actions={open && <Button size="sm" variant="ghost" onClick={() => { setEditing(true); setError(''); }}><Pencil aria-hidden="true" className="size-3.5" />Edit</Button>} />
     <CardBody className="space-y-3">
       <DescriptionList layout="rows" stacked items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
         ...(existing.ringCentralExtension ? [{ label: 'Extension', value: existing.ringCentralExtension, mono: true }] : []),
-        { label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }, ...signInItems(member)]} />
-      <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>
+        // Load board sign-ins show in the Load boards card once the API has seats (section 33).
+        ...(member.loadBoardSeats ? [] : [{ label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }]), ...signInItems(member)]} />
+      {!addedLeft && <p className="text-[13px] leading-5 text-muted-foreground">Recorded by a manager, not from IT setup. IT sees these when {member.firstName} leaves.</p>}
     </CardBody>
-    {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description="What you know now. Nobody is messaged." actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
+    {editing && <Dialog open onClose={() => setEditing(false)} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s recorded details`} description={gone ? `${member.firstName} has left. What you record is kept for the future; nobody is messaged.` : 'What you know now. Nobody is messaged.'} actions={<Button form="edit-existing" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save details'}</Button>}>
       <form id="edit-existing" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
-        {nameEditable && <Card><CardHeader title="Name" description={`Administrators only.${existing.sourceName ? ` Recorded from ${existing.sourceName}.` : ''}`} /><CardBody className="space-y-4">
+        {nameEditable && !gone && <Card><CardHeader title="Name" description={`Administrators only.${existing.sourceName ? ` Recorded from ${existing.sourceName}.` : ''}`} /><CardBody className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <Input name="firstName" label="First name" required maxLength={100} width="full" value={names.firstName} onChange={event => setNames(current => ({ ...current, firstName: event.target.value }))} />
             <Input name="lastName" label="Last name" required maxLength={100} width="full" value={names.lastName} onChange={event => setNames(current => ({ ...current, lastName: event.target.value }))} hint={names.lastName.trim() !== member.lastName ? `Was: ${member.lastName}` : undefined} />
           </div>
           {renamed && <Textarea name="nameReason" label="Why the name changed" required maxLength={500} rows={2} hint="Kept in their history." />}
         </CardBody></Card>}
-        <Card><CardHeader title="Accounts" description="IT uses these when they leave, so add them if you can." /><CardBody className="grid gap-4 sm:grid-cols-2">
+        <Card><CardHeader title={gone ? 'Accounts they had' : 'Accounts'} description={gone ? undefined : 'IT uses these when they leave, so add them if you can.'} /><CardBody className="grid gap-4 sm:grid-cols-2">
           <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" defaultValue={existing.companyEmail ?? ''} />
           <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" defaultValue={existing.ringCentralNumber ?? ''} />
-          <Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" defaultValue={existing.ringCentralExtension ?? ''} hint="Digits only." /><span className="max-sm:hidden" />
+          {!gone && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" defaultValue={existing.ringCentralExtension ?? ''} hint="Digits only." /><span className="max-sm:hidden" /></>}
           <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.datEmail ?? ''} hint="The email only. Never a password." />
           <Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.truckstopEmail ?? ''} hint="The email only. Never a password." />
         </CardBody></Card>
-        <Card><CardHeader title="Contact" description="The catch-up link is checked against the personal email." /><CardBody className="grid gap-4 sm:grid-cols-2">
+        <Card><CardHeader title="Contact" description={gone ? undefined : 'The catch-up link is checked against the personal email.'} /><CardBody className="grid gap-4 sm:grid-cols-2">
           <Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" defaultValue={existing.personalEmail ?? ''} />
           <Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" defaultValue={existing.personalPhone ?? ''} />
-          {!member.details?.telegram && <Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" defaultValue={existing.telegram ? `@${existing.telegram}` : ''} />}
+          {!member.details?.telegram && !gone && <Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" defaultValue={existing.telegram ? `@${existing.telegram}` : ''} />}
         </CardBody></Card>
-        <Card><CardHeader title="Signed on paper" description="A signed copy is on file with the company." /><CardBody className="grid gap-4 sm:grid-cols-2">
+        {gone ? <Alert tone="info" title="IT isn’t asked by this"><p>If their accounts might still be open, use Ask IT to close their accounts. While IT is working on it, a new account here is added to IT’s checklist; once IT has finished, tell IT directly.</p></Alert>
+          : <Card><CardHeader title="Signed on paper" description="A signed copy is on file with the company." /><CardBody className="grid gap-4 sm:grid-cols-2">
           <Input name="ndaSignedOn" label="NDA signed on paper" optional type="date" width="full" defaultValue={paperOn('NDA')} />
           <Input name="sopSignedOn" label="SOP signed on paper" optional type="date" width="full" defaultValue={paperOn('SOP')} />
-        </CardBody></Card>
+        </CardBody></Card>}
       </fieldset><Notice message={error} error /><PendingHint pending={busy} /></form>
     </Dialog>}
   </Card>;

@@ -38,7 +38,7 @@ export function MemberFilters({ filters, options, total, view }: { filters: Reco
   const [dialog, setDialog] = useState<'all' | 'more' | null>(null);
   const go = (changes: Record<string, string>) => router.push(membersHref(filters, changes));
   const chosen = FILTER_KEYS.filter(key => filters[key]);
-  const more = (['source', 'drivers'] as const).filter(key => filters[key]).length;
+  const more = (['source', 'drivers', 'loadBoardAccountId'] as const).filter(key => filters[key]).length;
   return <>
     <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2 px-4 pb-3 sm:px-5">
       <div className="contents max-md:hidden">
@@ -65,24 +65,31 @@ export function MemberFilters({ filters, options, total, view }: { filters: Reco
 }
 const FilterCount = ({ count }: { count: number }) => <span className="ml-0.5 inline-grid min-w-5 place-items-center rounded-full bg-muted px-1.5 text-xs font-semibold tabular-nums">{count}</span>;
 
+/** How many people on this tab a query would show, counts only (an older API without only=counts answers 400: null). */
+const matchTotal = (tab: string, query: Record<string, string>) => readApi<{ total?: unknown }>(`dispatch/members?${new URLSearchParams({ status: tab, only: 'counts', ...query })}`)
+  .then(body => typeof body.total === 'number' ? body.total : null);
 /**
  * How many people on this tab the filters being chosen would show, of everyone on it (DispatchersFilterSheetPhoneScreen:
- * "6 of 44 people match"), asked again a moment after each change. Null until known, or when the API can't say (an older one).
+ * "6 of 44 people match"). Everyone on the tab is asked once; the match a moment after each change. Null until known, or
+ * when the API can't say.
  */
 function useMatchCount(filters: Record<string, string>, draft: Record<FilterKey, string>) {
-  const [count, setCount] = useState<{ match: number; of: number } | null>(null);
+  const [match, setMatch] = useState<number | null>(null), [of, setOf] = useState<number | null>(null);
   const tab = filters.status || MEMBER_DEFAULTS.status, search = filters.search ?? '', draftKey = JSON.stringify(draft);
   useEffect(() => {
     let current = true;
+    matchTotal(tab, {}).then(total => { if (current) setOf(total); }, () => { if (current) setOf(null); });
+    return () => { current = false; };
+  }, [tab]);
+  useEffect(() => {
+    let current = true;
     const chosen = Object.fromEntries(Object.entries({ ...JSON.parse(draftKey) as Record<string, string>, search }).filter(([, value]) => value));
-    const total = (query: Record<string, string>) => readApi<{ total?: unknown }>(`dispatch/members?${new URLSearchParams({ status: tab, page: '1', pageSize: '20', ...query })}`)
-      .then(body => typeof body.total === 'number' ? body.total : null);
     const timer = setTimeout(() => {
-      Promise.all([total(chosen), total({})]).then(([match, of]) => { if (current) setCount(match === null || of === null ? null : { match, of }); }, () => { if (current) setCount(null); });
+      matchTotal(tab, chosen).then(total => { if (current) setMatch(total); }, () => { if (current) setMatch(null); });
     }, 250);
     return () => { current = false; clearTimeout(timer); };
   }, [draftKey, tab, search]);
-  return count;
+  return match === null || of === null ? null : { match, of };
 }
 
 /** Every filter on a phone, or Source and Drivers from More filters; nothing changes until Show. */
@@ -102,7 +109,9 @@ function FiltersDialog({ all, filters, options, onClose, onApply }: { all: boole
       </>}
       <RadioGroup name="member-source" label="Source" value={draft.source} onChange={source => set({ source })} options={SOURCES} />
       <RadioGroup name="member-drivers" label="Drivers" value={draft.drivers} onChange={drivers => set({ drivers })} options={DRIVERS} />
-      <div><Button variant="ghost" size="sm" onClick={() => setDraft(Object.fromEntries(FILTER_KEYS.map(key => [key, all || key === 'source' || key === 'drivers' ? '' : draft[key]])) as Record<FilterKey, string>)}>Clear all filters</Button></div>
+      {/* Everyone on one DAT or Truckstop account (DispatchersLoadBoardFilterScreen). */}
+      {!!options.loadBoardAccounts?.length && <Select label="Load board account" value={draft.loadBoardAccountId} onChange={event => set({ loadBoardAccountId: event.target.value })} options={[{ value: '', label: 'All accounts' }, ...options.loadBoardAccounts.map(account => ({ value: account.id, label: archived(account) }))]} />}
+      <div><Button variant="ghost" size="sm" onClick={() => setDraft(Object.fromEntries(FILTER_KEYS.map(key => [key, all || key === 'source' || key === 'drivers' || key === 'loadBoardAccountId' ? '' : draft[key]])) as Record<FilterKey, string>)}>Clear all filters</Button></div>
     </div>
   </Dialog>;
 }

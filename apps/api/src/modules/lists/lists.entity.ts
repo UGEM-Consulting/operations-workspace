@@ -4,6 +4,8 @@ export const LISTS = ['MC', 'JOB_TITLE'] as const;
 export type ListKind = typeof LISTS[number];
 export const LIST_EVENTS = ['CREATED', 'UPDATED', 'ARCHIVED', 'RESTORED'] as const;
 export type ListEventType = typeof LIST_EVENTS[number];
+/** Load board accounts (section 33) keep their events here too. */
+export type ListEventList = ListKind | 'LOAD_BOARD_ACCOUNT';
 
 /** Names compare ignoring case and repeated spaces, so "Northwind  freight" and "Northwind Freight" are one entry. */
 export function listName(value: string) { return value.trim().replace(/\s+/g, ' '); }
@@ -41,7 +43,7 @@ export class JobTitle {
 @Entity('list_events')
 export class ListEvent {
  @PrimaryGeneratedColumn('uuid') id!: string;
- @Column('varchar') list!: ListKind;
+ @Column('varchar') list!: ListEventList;
  @Column('uuid') itemId!: string;
  @Column('uuid', { nullable: true }) actorId!: string | null;
  @Column('varchar') event!: ListEventType;

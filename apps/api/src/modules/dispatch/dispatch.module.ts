@@ -2,7 +2,7 @@ import { Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Patch, Pos
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, ExistingRowsDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto } from './dispatch.dto';
+import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
 import { MemberListService } from './member-list';
@@ -27,7 +27,7 @@ class DispatchController {
  @Get('members') members(@Query() query: MemberListQueryDto) {
   const paged = Object.entries(query).some(([key, value]) => key !== 'status' && value !== undefined);
   if (paged || query.status === 'LEAVING' || query.status === 'MISSING') return this.list.list(query);
-  return this.dispatch.members(query.status === undefined ? 'ALL' : query.status === ('ARCHIVED' as string) ? 'ALL' : query.status);
+  return this.dispatch.members(query.status === undefined || query.status === 'ARCHIVED' ? 'ALL' : query.status);
  }
  // Export the view on screen: a POST, because it is recorded; rate-limited, work details only.
  @Post('members/export') exportMembers(@Req() req: AuthRequest, @Body() dto: MemberExportDto) { return this.list.export(req.currentUser, dto); }
@@ -55,6 +55,8 @@ class LeaveController {
  @Post(':id/on-leave/return') back(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveVersionDto) { return this.leaves.recordReturn(req.currentUser, id, dto); }
  @Post(':id/on-leave/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveVersionDto) { return this.leaves.cancel(req.currentUser, id, dto); }
  @Post(':id/on-leave/back-on') backOn(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: BackOnDto) { return this.leaves.changeBackOn(req.currentUser, id, dto); }
+ @Get(':id/cover-options') coverOptions(@Param('id', ParseUUIDPipe) id: string) { return this.leaves.coverOptions(id); }
+ @Post(':id/on-leave/covers') covers(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CoversDto) { return this.leaves.changeCovers(req.currentUser, id, dto); }
  @Post(':id/on-leave/reason') reason(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveReasonDto) { return this.leaves.changeReason(req.currentUser, id, dto); }
  @Post(':id/correct') correct(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CorrectDetailsDto) { return this.details.correct(req.currentUser, id, dto); }
 }
@@ -70,6 +72,10 @@ class ExistingDispatchersController {
  @Post('paperwork/links') links(@Req() req: AuthRequest, @Body() dto: CatchUpLinksDto) { return this.existing.links(req.currentUser, dto.memberIds); }
  @Post('members/:id/more-time') moreTime(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.existing.moreTime(req.currentUser, id); }
  @Patch('members/:id/existing') update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateExistingDto) { return this.existing.update(req.currentUser, id, dto); }
+ // People who left and other names (section 33).
+ @Post('members/:id/left-day') leftDay(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeftDayDto) { return this.existing.recordLeftDay(req.currentUser, id, dto); }
+ @Post('members/:id/close-accounts') closeAccounts(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CloseAccountsDto) { return this.existing.closeAccounts(req.currentUser, id, dto); }
+ @Post('members/:id/names') names(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: MemberNamesDto) { return this.existing.setNames(req.currentUser, id, dto); }
 }
 // Scans of an NDA or SOP signed on paper (section 38): added by any dispatch manager or administrator, opened as private files.
 @Controller('dispatch/members')

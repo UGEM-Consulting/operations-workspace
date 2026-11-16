@@ -11,7 +11,10 @@ import { HealthModule } from './modules/health/health.module';
 import { WorkspaceModule } from './modules/workspace/workspace.module';
 import { ListsModule } from './modules/lists/lists.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
+import { LoadBoardsModule } from './modules/load-boards/load-boards.module';
+import { CompanyAccountsModule } from './modules/company-accounts/company-accounts.module';
 import { SafetyModule } from './modules/safety/safety.module';
+import { RetentionModule } from './modules/retention/retention.module';
 @Module({ imports: [
   ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
   TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: (config: ConfigService) => ({
@@ -19,6 +22,6 @@ import { SafetyModule } from './modules/safety/safety.module';
       DATABASE_URL: config.get('DATABASE_URL'), DATABASE_SSL: config.get('DATABASE_SSL'),
       CORS_ORIGINS: config.get('CORS_ORIGINS'), SESSION_SECRET: config.get('SESSION_SECRET'), BFF_SHARED_SECRET: config.get('BFF_SHARED_SECRET'), WEB_ORIGIN: config.get('WEB_ORIGIN'), SESSION_TTL_SECONDS: config.get('SESSION_TTL_SECONDS'),
       DEPLOYMENT_PURPOSE: config.get('DEPLOYMENT_PURPOSE') })), retryAttempts: 3,
-  }) }), HealthModule, AuthModule, OnboardingModule, ItModule, DocumentsModule, WorkspaceModule, ListsModule, DispatchModule, SafetyModule,
+  }) }), HealthModule, AuthModule, OnboardingModule, ItModule, DocumentsModule, WorkspaceModule, ListsModule, LoadBoardsModule, CompanyAccountsModule, DispatchModule, SafetyModule, RetentionModule,
 ] })
 export class AppModule {}

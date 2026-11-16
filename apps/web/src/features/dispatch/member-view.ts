@@ -2,12 +2,12 @@ import type { MemberOptions } from './types.ts';
 
 // The filters' names and the search mark, without framework imports so the server page, the client filters and node tests share them.
 /** The filters under the tabs; search, tab, sort and page live beside them in the URL. */
-export const FILTER_KEYS = ['mcId', 'teamId', 'leadId', 'position', 'jobTitleId', 'source', 'drivers'] as const;
+export const FILTER_KEYS = ['mcId', 'teamId', 'leadId', 'position', 'jobTitleId', 'source', 'drivers', 'loadBoardAccountId'] as const;
 export type FilterKey = typeof FILTER_KEYS[number];
 export const POSITIONS = [{ value: 'DISPATCHER', label: 'Dispatcher' }, { value: 'SUPPORT', label: 'Support' }, { value: 'UPDATER', label: 'Updater' }];
 export const SOURCES = [{ value: '', label: 'Everyone' }, { value: 'ONBOARDED', label: 'Came through onboarding' }, { value: 'ADDED', label: 'Added by hand' }];
 export const DRIVERS = [{ value: '', label: 'Everyone' }, { value: 'WITH', label: 'With drivers' }, { value: 'WITHOUT', label: 'Without drivers' }];
-export const FILTER_LABELS: Record<FilterKey, string> = { mcId: 'MC', teamId: 'Team', leadId: 'Team lead', position: 'Position', jobTitleId: 'Job title', source: 'Source', drivers: 'Drivers' };
+export const FILTER_LABELS: Record<FilterKey, string> = { mcId: 'MC', teamId: 'Team', leadId: 'Team lead', position: 'Position', jobTitleId: 'Job title', source: 'Source', drivers: 'Drivers', loadBoardAccountId: 'Load board account' };
 export const archived = (item: { name: string; archived?: boolean }) => item.archived ? `${item.name} (archived)` : item.name;
 
 /** What a chosen filter says on its chip and in the export's description. */
@@ -21,6 +21,7 @@ export function chipValue(key: FilterKey, value: string, options: MemberOptions)
     case 'position': return POSITIONS.find(item => item.value === value)?.label ?? value;
     case 'source': return SOURCES.find(item => item.value === value)?.label ?? value;
     case 'drivers': return DRIVERS.find(item => item.value === value)?.label ?? value;
+    case 'loadBoardAccountId': return named(options.loadBoardAccounts ?? []);
   }
 }
 

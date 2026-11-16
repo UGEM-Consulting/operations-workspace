@@ -1,4 +1,7 @@
 import { sharedSignIns } from '../dispatch/account-details';
+import { ItAccountRequest } from '../company-accounts/account-requests.entity';
+import { photoPresence } from '../documents/member-photos';
+import { endSeatsOnLeaving, removalSeats, syncRecordedSeats } from '../load-boards/seats';
 import { companyEmailSql } from '../dispatch/lead-sign-in';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -40,11 +43,17 @@ const LEAVE_ROWS=`SELECT q.kind, q.id, q.profile->>'displayName', q.profile->>'c
   (SELECT count(*) FROM it_leave_tasks t WHERE t."requestId" = q.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer,
   (SELECT count(*) FROM it_leave_tasks t WHERE t."requestId" = q.id)::integer, q."dueOn"::text, NULL::timestamptz, q."createdAt", q."updatedAt", q."completedAt", NULL, q."memberId", q.profile->>'teamName', NULL
  FROM it_leave_requests q WHERE q."cancelledAt" IS NULL`;
-const taskRows=(signIns:boolean,leave:boolean)=>[SETUP_AND_REMOVAL_ROWS,...(signIns?[SIGN_IN_ROWS]:[]),...(leave?[LEAVE_ROWS]:[])].join(' UNION ALL ');
+// Company accounts (section 33): CLOSE_ACCOUNT for one account, MOVE_ACCOUNTS for a move's new accounts.
+const ACCOUNT_ROWS=`SELECT CASE WHEN q.kind = 'CLOSE' THEN 'CLOSE_ACCOUNT' ELSE 'MOVE_ACCOUNTS' END, q.id, q.profile->>'displayName', NULL, coalesce(q.profile->>'toMc', q.profile->>'fromMc'),
+  CASE WHEN q."completedAt" IS NOT NULL THEN 'COMPLETED' WHEN EXISTS (SELECT 1 FROM it_account_tasks t WHERE t."requestId" = q.id AND t.status = 'BLOCKED') THEN 'BLOCKED' WHEN EXISTS (SELECT 1 FROM it_account_tasks t WHERE t."requestId" = q.id AND t.status IN ('IN_PROGRESS','COMPLETED')) THEN 'IN_PROGRESS' ELSE 'PENDING' END,
+  (SELECT count(*) FROM it_account_tasks t WHERE t."requestId" = q.id AND t.status = 'COMPLETED')::integer,
+  (SELECT count(*) FROM it_account_tasks t WHERE t."requestId" = q.id)::integer, NULL, NULL::timestamptz, q."createdAt", q."updatedAt", q."completedAt", NULL, q."memberId", NULL, NULL
+ FROM it_account_requests q WHERE q."cancelledAt" IS NULL`;
+const taskRows=(signIns:boolean,leave:boolean,accounts=false)=>[SETUP_AND_REMOVAL_ROWS,...(signIns?[SIGN_IN_ROWS]:[]),...(leave?[LEAVE_ROWS]:[]),...(accounts?[ACCOUNT_ROWS]:[])].join(' UNION ALL ');
 // Not due yet: the Eastern date (the given parameter) hasn't reached the last day and nobody asked to remove access now.
 const scheduledSql=(today:string)=>`(kind = 'REMOVAL' AND "completedAt" IS NULL AND "removeNowAt" IS NULL AND "dueOn"::date > ${today}::date)`;
 const SCHEDULED=scheduledSql('$2');
-const VIEW_SQL:Record<ItTasksDto['view'],string>={open:`status <> 'COMPLETED'`,setup:`kind = 'SETUP' AND status <> 'COMPLETED'`,signin:`kind = 'SIGN_IN' AND status <> 'COMPLETED'`,leave:`kind IN ('SUSPEND','RESTORE') AND status <> 'COMPLETED'`,removal:`kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${SCHEDULED}`,scheduled:SCHEDULED,finished:`status = 'COMPLETED'`,all:'true'};
+const VIEW_SQL:Record<ItTasksDto['view'],string>={open:`status <> 'COMPLETED'`,setup:`kind = 'SETUP' AND status <> 'COMPLETED'`,signin:`kind = 'SIGN_IN' AND status <> 'COMPLETED'`,leave:`kind IN ('SUSPEND','RESTORE') AND status <> 'COMPLETED'`,accounts:`kind IN ('CLOSE_ACCOUNT','MOVE_ACCOUNTS') AND status <> 'COMPLETED'`,removal:`kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${SCHEDULED}`,scheduled:SCHEDULED,finished:`status = 'COMPLETED'`,all:'true'};
 /**
  * IT access requires the approved application and the APPROVE review a new dispatcher's request was created from. A
  * support's setup needs their dispatcher record, and returns their approved application when they came through onboarding
@@ -100,7 +109,7 @@ export class ItService {
   this.allowIt(user);
   const search=input.search?'%'+input.search.replace(/[\\%_]/g,'\\$&')+'%':'';
   const today=usDay('latest');
-  const taskSql=taskRows(input.signIns==='1',input.leave==='1');
+  const taskSql=taskRows(input.signIns==='1',input.leave==='1',input.accounts==='1');
   const where=`(${VIEW_SQL[input.view]}) AND ($1 = '' OR concat(name,' ',email,' ',mc) ILIKE $1)`;
   const [rows,[count],[stats]]=await Promise.all([
    this.db.query(`WITH rows AS (${taskSql}) SELECT *, ${SCHEDULED} AS scheduled FROM rows WHERE ${where}
@@ -111,7 +120,7 @@ export class ItService {
      count(*) FILTER (WHERE kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${scheduledSql('$1')})::integer AS removal, count(*) FILTER (WHERE ${scheduledSql('$1')})::integer AS scheduled, min("dueOn") FILTER (WHERE ${scheduledSql('$1')}) AS "nextScheduled",
      count(*) FILTER (WHERE status = 'COMPLETED')::integer AS finished, count(*)::integer AS "all",
      count(*) FILTER (WHERE kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${scheduledSql('$1')})::integer AS "removalsDue",
-     count(*) FILTER (WHERE kind = 'SETUP' AND status = 'PENDING')::integer AS "setupsWaiting", count(*) FILTER (WHERE status = 'BLOCKED')::integer AS blocked, count(*) FILTER (WHERE kind = 'SIGN_IN' AND status <> 'COMPLETED')::integer AS "signIns", count(*) FILTER (WHERE kind IN ('SUSPEND','RESTORE') AND status <> 'COMPLETED')::integer AS leave,
+     count(*) FILTER (WHERE kind = 'SETUP' AND status = 'PENDING')::integer AS "setupsWaiting", count(*) FILTER (WHERE status = 'BLOCKED')::integer AS blocked, count(*) FILTER (WHERE kind = 'SIGN_IN' AND status <> 'COMPLETED')::integer AS "signIns", count(*) FILTER (WHERE kind IN ('SUSPEND','RESTORE') AND status <> 'COMPLETED')::integer AS leave, count(*) FILTER (WHERE kind IN ('CLOSE_ACCOUNT','MOVE_ACCOUNTS') AND status <> 'COMPLETED')::integer AS accounts,
      count(*) FILTER (WHERE status = 'COMPLETED' AND "completedAt" >= date_trunc('month', now()))::integer AS "finishedThisMonth" FROM rows`,[today]),
   ]);
   return {items:rows,total:count.total,page:input.page,pageSize:input.pageSize,pageCount:Math.ceil(count.total/input.pageSize),stats};
@@ -145,6 +154,8 @@ export class ItService {
    if(input.datEmail!==undefined)request.datEmail=input.datEmail||null;
    if(input.truckstopEmail!==undefined)request.truckstopEmail=input.truckstopEmail||null;
    request.version+=1;await em.save(request);
+   // A load board sign-in IT records becomes a seat until IT moves it to its real account (section 33).
+   if(input.datEmail!==undefined||input.truckstopEmail!==undefined){const [member]=await em.query(`SELECT id FROM dispatch_members WHERE id = $1 OR "applicationId" = $2 LIMIT 1`,[request.memberId,request.applicationId]);if(member)await syncRecordedSeats(em,member.id,user.id);}
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail}});
    return this.detail(em,request);
   });
@@ -200,7 +211,8 @@ export class ItService {
    .where("r.completedAt IS NULL AND r.cancelledAt IS NULL AND (r.purpose = 'SUPPORT' OR (a.id IS NOT NULL AND v.id IS NOT NULL))").getCount();
   const [{signIns}]=await this.db.query(`SELECT count(*)::integer AS "signIns" FROM team_lead_sign_ins WHERE "doneAt" IS NULL AND "cancelledAt" IS NULL`);
   const leave=await this.db.getRepository(ItLeaveRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
-  return setups+signIns+leave+await this.db.getRepository(ItRemovalRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
+  const accounts=await this.db.getRepository(ItAccountRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
+  return setups+signIns+leave+accounts+await this.db.getRepository(ItRemovalRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
  }
 
  // ── Removal: the reverse of setup, opened when a dispatcher who had IT setup is marked as left ──
@@ -208,10 +220,14 @@ export class ItService {
   const tasks=await em.getRepository(ItRemovalTask).findBy({requestId:removal.id});
   const activity=await em.getRepository(ItRemovalActivity).find({where:{requestId:removal.id},order:{createdAt:'ASC'}});
   const [names]=await em.query(`SELECT (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $1) AS manager, (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $2) AS "forwardTo",
-    (SELECT "leftAt" FROM dispatch_members WHERE id = $3) AS "leftAt", (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $4) AS "recordedBy"`,[removal.managerId,removal.forwardTo,removal.memberId,removal.createdBy]);
+    (SELECT d."leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $3 AND coalesce(e."leftDateKnown", true)) AS "leftAt", (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $4) AS "recordedBy"`,[removal.managerId,removal.forwardTo,removal.memberId,removal.createdBy]);
   // Anyone else using these sign-ins: IT changes the password rather than closing an account someone still needs.
   const shared=await sharedSignIns(em,removal.memberId,{dat:removal.profile.datEmail??null,truckstop:removal.profile.truckstopEmail??null});
-  return {sharedSignIns:shared,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
+  // Their load board seats: live while IT works on it (who shares each sign-in now), as they were once it's finished.
+  const seats=removal.completedAt?((removal.profile as unknown as {seats?:unknown[]}).seats??[]):await removalSeats(em,removal.memberId);
+  // Who this is (HandPhotosItScreen): which photos IT can open, through member-photos.
+  const photos=await photoPresence(em,removal.memberId);
+  return {photos,sharedSignIns:shared,seats,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
    tasks:REMOVAL_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
  }
  async getRemoval(user:User,id:string){
@@ -240,6 +256,8 @@ export class ItService {
    const tasks=await em.getRepository(ItRemovalTask).findBy({requestId:id});
    if(tasks.length>0&&tasks.every(removalTaskDone)){
     removal.completedAt=new Date();
+    // Their access is gone: their load board seats end, kept as history.
+    await endSeatsOnLeaving(em,removal.memberId,user.id);
     // The manager who marked them as left learns their access is gone.
     await em.getRepository(PortalNotification).save({recipientId:removal.managerId,requestId:null,removalId:id,kind:'IT_REMOVAL_COMPLETED'});
     await em.getRepository(ItRemovalActivity).save({requestId:id,actorId:user.id,event:'IT_REMOVAL_COMPLETED',metadata:{}});
@@ -258,7 +276,8 @@ export class ItService {
   const [suspended]=request.kind==='RESTORE'?await em.query(`SELECT u."firstName" || ' ' || u."lastName" AS by, t."updatedAt" AS at FROM it_leave_tasks t JOIN it_leave_requests r ON r.id = t."requestId" AND r.kind = 'SUSPEND' AND r."leaveId" = $1
     LEFT JOIN users u ON u.id = t."updatedBy" WHERE t.status = 'COMPLETED' ORDER BY t."updatedAt" DESC LIMIT 1`,[request.leaveId]):[];
   const [signIn]=request.kind==='RESTORE'&&request.profile.teamLead?await em.query(`SELECT kind FROM team_lead_sign_ins WHERE "memberId" = $1 AND "doneAt" IS NULL AND "cancelledAt" IS NULL LIMIT 1`,[request.memberId]):[];
-  return {sharedSignIns:shared,request:{...request,status:itStatus(request,tasks),scheduled:this.leaveScheduled(request),managerName:names.manager as string|null,suspended:suspended?{by:suspended.by as string|null,at:new Date(suspended.at).toISOString()}:null,signInWaiting:!!signIn,leaveEnded:names.leaveEnded as string|null},
+  const photos=await photoPresence(em,request.memberId);
+  return {photos,sharedSignIns:shared,request:{...request,status:itStatus(request,tasks),scheduled:this.leaveScheduled(request),managerName:names.manager as string|null,suspended:suspended?{by:suspended.by as string|null,at:new Date(suspended.at).toISOString()}:null,signInWaiting:!!signIn,leaveEnded:names.leaveEnded as string|null},
    tasks:LEAVE_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:request.kind==='SUSPEND'?template.suspend:template.restore,optional:!!template.optional}]:[];}),activity};
  }
  /** Suspending waits for the first day away: IT plans before then, but nothing is suspended while they're still working. */
@@ -300,9 +319,9 @@ export class ItService {
   if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER].includes(user.role))throw new ForbiddenException();
   // A setup notice belongs to the request's current manager; a removal notice to whoever marked the dispatcher as left.
   const result=await this.db.getRepository(PortalNotification).createQueryBuilder('n')
-   .leftJoin(ItOnboardingRequest,'r','r.id=n.requestId').leftJoin(ItRemovalRequest,'m','m.id=n.removalId').leftJoin(ItLeaveRequest,'l','l.id=n.leaveRequestId')
-   .where('n.recipientId = :owner AND (r.managerId = :owner OR m.id IS NOT NULL OR l.id IS NOT NULL)',{owner:user.id})
-   .addSelect('r.applicationId','applicationId').addSelect('coalesce(m.memberId, r.memberId, l.memberId)','memberId').addSelect("coalesce(r.profile->>'proposedDisplayName', m.profile->>'displayName', l.profile->>'displayName')",'displayName')
+   .leftJoin(ItOnboardingRequest,'r','r.id=n.requestId').leftJoin(ItRemovalRequest,'m','m.id=n.removalId').leftJoin(ItLeaveRequest,'l','l.id=n.leaveRequestId').leftJoin(ItAccountRequest,'q','q.id=n.accountRequestId')
+   .where('n.recipientId = :owner AND (r.managerId = :owner OR m.id IS NOT NULL OR l.id IS NOT NULL OR q.id IS NOT NULL)',{owner:user.id})
+   .addSelect('r.applicationId','applicationId').addSelect('coalesce(m.memberId, r.memberId, l.memberId, q.memberId)','memberId').addSelect("coalesce(r.profile->>'proposedDisplayName', m.profile->>'displayName', l.profile->>'displayName', q.profile->>'displayName')",'displayName')
    .orderBy('n.createdAt','DESC').addOrderBy('n.id','ASC').limit(50).getRawAndEntities();
   const unread=await this.db.getRepository(PortalNotification).countBy({recipientId:user.id,readAt:IsNull()});
   return {items:result.entities.map((notification,index)=>({...notification,applicationId:result.raw[index].applicationId as string|null,memberId:result.raw[index].memberId as string|null,displayName:result.raw[index].displayName as string|null})),unread};

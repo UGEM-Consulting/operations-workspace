@@ -1,13 +1,14 @@
-import { applyDecorators, Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Post, Req, StreamableFile } from '@nestjs/common';
+import { applyDecorators, Body, Controller, Get, Header, Module, NotFoundException, Param, ParseUUIDPipe, Post, Req, StreamableFile } from '@nestjs/common';
+import { MemberPhotosService, type MemberPhotoKind } from './member-photos';
 import { Request } from 'express';
-import { Public, Roles } from '../auth/policy';
+import { Public, Roles, STAFF } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { OnboardingModule } from '../onboarding/onboarding.module';
 import { StorageModule } from '../storage/storage.module';
 import { Role } from '../users/user.entity';
 import { clientContext } from './client-context';
 import { DataSource } from 'typeorm';
-import { ApplicantSignatureDto, PhotoDto, PublishDocumentDto, SaveSignatureDto } from './documents.dto';
+import { ApplicantSignatureDto, HandPhotoDto, PhotoDto, PublishDocumentDto, SaveSignatureDto } from './documents.dto';
 import { deleteSignature, savedSignature, saveSignature } from './saved-signature';
 import { DocumentsService, FileResult, photoKindParam } from './documents.service';
 import { ApplicantSignedCopies } from './signed-copies';
@@ -43,10 +44,20 @@ class ApplicationFilesController {
 @Controller('dispatch/members')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class MemberFilesController {
- constructor(private readonly service: DocumentsService) {}
- @Get(':id/photos/:kind') @FileResponse() async photo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.service.memberPhoto(req.currentUser, id, photoKindParam(kind))); }
+ constructor(private readonly service: DocumentsService, private readonly photos: MemberPhotosService) {}
+ // Their application's photos, or what an administrator added for someone added by hand; each ID photo view is recorded.
+ @Get(':id/photos/:kind') @FileResponse() async photo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.photos.photo(req.currentUser, id, photoKindParam(kind) === 'SELFIE' ? 'PROFILE' : 'ID')); }
+ @Post(':id/hand-photos/:kind') @Roles(Role.SYSTEM_ADMIN) addPhoto(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string, @Body() dto: HandPhotoDto) { return this.photos.add(req.currentUser, id, handKind(kind), dto.image); }
  @Get(':id/documents/:documentId/signed') @FileResponse() async signed(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('documentId', ParseUUIDPipe) documentId: string) { return send(await this.service.memberSignedCopy(req.currentUser, id, documentId)); }
 }
+// Every staff role opens the photos of people it already sees (section 33); MemberPhotosService checks which.
+@Controller('member-photos')
+@Roles(...STAFF)
+class MemberPhotosController {
+ constructor(private readonly photos: MemberPhotosService) {}
+ @Get(':id/:kind') @FileResponse() async photo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('kind') kind: string) { return send(await this.photos.photo(req.currentUser, id, handKind(kind))); }
+}
+const handKind = (kind: string): MemberPhotoKind => { if (kind === 'profile') return 'PROFILE'; if (kind === 'id') return 'ID'; throw new NotFoundException(); };
 @Controller('it/onboarding')
 @Roles(Role.SYSTEM_ADMIN, Role.IT_SPECIALIST)
 class ItPhotoController {
@@ -66,5 +77,5 @@ class ApplicantDocumentsController {
  @Post('documents/:id/acknowledge') acknowledge(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return this.service.acknowledge(req, id, clientContext(req)); }
  @Get('documents/:id/signed') @FileResponse() async signed(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return send(await this.service.applicantSignedCopy(req, id)); }
 }
-@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService, ApplicantSignedCopies] })
+@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, MemberPhotosController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService, ApplicantSignedCopies, MemberPhotosService], exports: [MemberPhotosService] })
 export class DocumentsModule {}

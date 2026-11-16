@@ -10,7 +10,7 @@ export type SupportType = typeof SUPPORT_TYPES[number];
 /** What someone is called, for what IT reads. */
 export const positionLabel = (member: { position: Position; supportType: SupportType }) => member.position === 'DISPATCHER' ? 'Dispatcher' : member.supportType === 'UPDATER' ? 'Updater' : 'Support';
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED', 'PAPER_SCAN_ADDED', 'PAPER_SCAN_VIEWED', 'MEMBERS_EXPORTED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED', 'PAPER_SCAN_ADDED', 'PAPER_SCAN_VIEWED', 'MEMBERS_EXPORTED', 'NAMES_CHANGED', 'LEFT_DAY_RECORDED', 'CLOSE_ACCOUNTS_ASKED', 'SEAT_ADDED', 'SEAT_CHANGED', 'COMPANY_ACCOUNT_ADDED', 'COMPANY_ACCOUNT_CHANGED', 'PHOTO_ADDED', 'ID_PHOTO_VIEWED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -64,8 +64,27 @@ export class ExistingMemberRecord {
  // False while joinedAt is only the day they were added, and while their first MC and team (or dispatcher) period has no date of its own.
  @Column('boolean', { default: true }) startDateKnown!: boolean;
  @Column('boolean', { default: true }) periodDateKnown!: boolean;
+ // False for someone added as Left with no last day: leftAt then holds the day they were added and is never shown as a date.
+ @Column('boolean', { default: true }) leftDateKnown!: boolean;
+ // Someone added by hand has no application, so their legal name is recorded here when it's known.
+ @Column('varchar', { length: 100, nullable: true }) legalFirstName!: string | null;
+ @Column('varchar', { length: 100, nullable: true }) legalLastName!: string | null;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+/**
+ * Another name someone uses or used, with the MC where it was used when known. Some are current names at another of our
+ * companies, so they're "other names", not earlier ones. Search finds them.
+ */
+@Entity('member_other_names')
+export class MemberOtherName {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('varchar', { length: 100 }) name!: string;
+ @Column('uuid', { nullable: true }) mcId!: string | null;
+ @Column('uuid') addedBy!: string;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
 
 /** A start date a manager added or corrected later, with the reason for a correction. */
@@ -218,6 +237,24 @@ export class MemberLeave {
  @Column('varchar', { nullable: true }) endedHow!: LeaveEnd | null;
  @Column('uuid', { nullable: true }) endedBy!: string | null;
  @Column('integer', { default: 1 }) version!: number;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
+export type CoverEnd = 'RETURNED' | 'REASSIGNED' | 'KEPT' | 'CANCELLED' | 'SKIPPED';
+/** Who covers one of their drivers while a dispatcher is away (section 34); the moves themselves are driver_assignments rows. */
+@Entity('driver_leave_covers')
+export class DriverLeaveCover {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') leaveId!: string;
+ @Column('uuid') driverId!: string;
+ @Column('uuid') coverMemberId!: string;
+ // The covering dispatcher's assignment, once the leave started: while it is still the driver's open one, the return moves them back.
+ @Column('uuid', { nullable: true }) coverAssignmentId!: string | null;
+ @Column('timestamptz', { nullable: true }) startedAt!: Date | null;
+ @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
+ @Column('varchar', { nullable: true }) endedHow!: CoverEnd | null;
+ @Column('uuid') createdBy!: string;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }

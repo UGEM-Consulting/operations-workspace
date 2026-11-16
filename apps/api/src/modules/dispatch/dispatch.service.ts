@@ -1,4 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { photoSummary } from '../documents/member-photos';
+import { askForMoveAccounts } from '../company-accounts/account-requests';
+import { memberCompanyAccounts } from '../company-accounts/accounts';
+import { memberSeats } from '../load-boards/seats';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
@@ -79,7 +83,8 @@ export class DispatchService {
   */
  async team(id: string) {
   const person = `d.id, d."firstName", d."lastName", d.status, d.position, d."supportType", d.version,
-   EXISTS(SELECT 1 FROM dispatcher_applications a JOIN applicant_photos p ON p."applicationId" = a.id AND p.kind = 'SELFIE' AND p."createdAt" <= a."submittedAt" WHERE a.id = d."applicationId" AND a.status = 'APPROVED') AS photo,
+   (EXISTS(SELECT 1 FROM dispatcher_applications a JOIN applicant_photos p ON p."applicationId" = a.id AND p.kind = 'SELFIE' AND p."createdAt" <= a."submittedAt" WHERE a.id = d."applicationId" AND a.status = 'APPROVED')
+    OR (d."applicationId" IS NULL AND EXISTS(SELECT 1 FROM member_photos mp WHERE mp."memberId" = d.id AND mp.kind = 'PROFILE' AND mp."replacedAt" IS NULL))) AS photo,
    ${lastDaySql('d')}, ${onLeaveUntilSql('d')} AS "onLeaveUntil"`;
   // The three reads don't depend on each other, so they run at once.
   const [[team], dispatchers, helpers] = await Promise.all([
@@ -96,7 +101,10 @@ export class DispatchService {
      WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND x.status <> 'LEFT')) ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
   ]);
   if (!team) throw new NotFoundException('This team no longer exists.');
-  return { ...team, dispatchers, helpers };
+  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name and who linked it; nothing is sent there yet but tests.
+  const [telegramGroup] = await this.db.query(`SELECT g.title, g."linkedAt", u."firstName" || ' ' || u."lastName" AS "linkedBy", g."lostAt" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
+   WHERE g."teamId" = $1 AND g."unlinkedAt" IS NULL`, [id]);
+  return { ...team, dispatchers, helpers, telegramGroup: telegramGroup ?? null };
  }
 
  async createTeam(user: User, dto: CreateTeamDto) {
@@ -183,7 +191,10 @@ export class DispatchService {
    application ? this.db.query(`SELECT DISTINCT ON (d.id) d.id, d.kind, d.title, d.version, s."signedAt" FROM document_signatures s JOIN company_documents d ON d.id = s."documentId"
     WHERE s."applicationId" = $1 AND s."signerRole" = 'APPLICANT' ORDER BY d.id, s."signedAt"`, [application.id]) : [],
    application ? this.db.query(`SELECT EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'SELFIE' AND p."createdAt" <= $2) AS present,
-     EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'ID_SELFIE' AND p."createdAt" <= $2) AS "idPresent"`, [application.id, application.submittedAt]) : [{ present: false, idPresent: false }],
+     EXISTS(SELECT 1 FROM applicant_photos p WHERE p."applicationId" = $1 AND p.kind = 'ID_SELFIE' AND p."createdAt" <= $2) AS "idPresent"`, [application.id, application.submittedAt])
+    // Someone added by hand: the photos an administrator added (section 33).
+    : this.db.query(`SELECT EXISTS(SELECT 1 FROM member_photos p WHERE p."memberId" = $1 AND p.kind = 'PROFILE' AND p."replacedAt" IS NULL) AS present,
+     EXISTS(SELECT 1 FROM member_photos p WHERE p."memberId" = $1 AND p.kind = 'ID' AND p."replacedAt" IS NULL) AS "idPresent"`, [id]),
    this.db.query(`SELECT c.id, c.kind, c.value, c.label, c."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "addedBy"
     FROM member_contacts c LEFT JOIN users u ON u.id = c."addedBy" WHERE c."memberId" = $1 AND c."removedAt" IS NULL ORDER BY c."createdAt"`, [id]),
    application ? this.db.query(`SELECT id, event, "createdAt" FROM application_activity WHERE "invitationId" = $1 ORDER BY "createdAt"`, [application.invitationId]) : [],
@@ -209,7 +220,9 @@ export class DispatchService {
     count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total, coalesce(json_agg(json_build_object('key', t.key, 'status', t.status)) FILTER (WHERE t.id IS NOT NULL), '[]') AS tasks
    FROM it_leave_requests q LEFT JOIN it_leave_tasks t ON t."requestId" = q.id WHERE q."memberId" = $1 GROUP BY q.id ORDER BY q."createdAt" DESC`, [id]) : [];
   const openLeave = leaves.find(row => !row.endedAt) ?? null, lastLeave = leaves[0] ?? null;
-  const leave = openLeave ? { ...openLeave, started: !!openLeave.startedAt, suspend: leaveIt.find(row => row.leaveId === openLeave.id && row.kind === 'SUSPEND' && !row.cancelledAt) ?? null } : null;
+  // A dispatcher's drivers while they're away (section 34): who covers each, and any given to them since that nobody covers.
+  const covers = openLeave && member.position === 'DISPATCHER' ? await this.leaves.covers(openLeave.id, id) : null;
+  const leave = openLeave ? { ...openLeave, started: !!openLeave.startedAt, suspend: leaveIt.find(row => row.leaveId === openLeave.id && row.kind === 'SUSPEND' && !row.cancelledAt) ?? null, ...covers } : null;
   const restore = !openLeave && lastLeave ? leaveIt.find(row => row.leaveId === lastLeave.id && row.kind === 'RESTORE') ?? null : null;
   const openNotice = notices.find(row => !row.cancelledAt && !row.finishedAt);
   const notice = openNotice ? { id: openNotice.id, lastDay: openNotice.lastDay, reason: openNotice.reason, createdAt: openNotice.createdAt, recordedBy: openNotice.recorder, passed: openNotice.lastDay < usDay('earliest') } : null;
@@ -253,9 +266,16 @@ export class DispatchService {
   const signIns = { dat: it[0]?.datEmail ?? existing?.datEmail ?? null, truckstop: it[0]?.truckstopEmail ?? existing?.truckstopEmail ?? null };
   // Corrections with their values (staff only), and the record they left before coming back, or the one they came back as (section 37).
   const corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string }[] = await this.details.history(this.db, id);
-  const [previousRecord] = member.previousMemberId ? await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "leftAt" FROM dispatch_members WHERE id = $1`, [member.previousMemberId]) : [];
+  const [previousRecord] = member.previousMemberId ? await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN e."leftDateKnown" IS FALSE THEN NULL ELSE d."leftAt" END AS "leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $1`, [member.previousMemberId]) : [];
+  // Other names (section 33), each with the MC where it was used when known.
+  const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt", lower(o.name), o.id`, [id]);
   const [laterRecord] = await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "joinedAt", status FROM dispatch_members WHERE "previousMemberId" = $1`, [id]);
-  return { sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  // Changes to the record itself (HistoryFromFileScreen): which details, names or accounts changed, from a file or by hand; never the values.
+  const recordChanges = await this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "by"
+   FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event IN ('EXISTING_UPDATED','NAMES_CHANGED','LEFT_DAY_RECORDED','CLOSE_ACCOUNTS_ASKED') ORDER BY e."createdAt" DESC LIMIT 100`, [id]);
+  // IT requests about their company accounts that are still open (section 33): closing one, or a move's new accounts.
+  const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
+  return { recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.
@@ -265,7 +285,7 @@ export class DispatchService {
     mcName: fields.mcName ?? null, teamLead: fields.teamLead ?? null, jobTitle: fields.jobTitle ?? null, submittedAt: application.submittedAt } : null,
    corrections, correctedFields: correctedFields(corrections), previousRecord: previousRecord ?? null, laterRecord: laterRecord ?? null,
    leave, restore, leaveHistory: leaves.filter(row => row.endedAt),
-   existing, documents, photo: !!photo[0]?.present, idPhoto: canOpenApplication && !!photo[0]?.idPresent, contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
+   otherNames, existing, documents, photo: !!photo[0]?.present, idPhoto: !!photo[0]?.idPresent, handPhotos: application ? null : await photoSummary(this.db, id), contacts, removal, leftReason: member.leftReason, leftBy: left?.by ?? null, notice, driversToReassign, signInOff: account?.status === UserStatus.INACTIVE, signIn,
    noticeHistory: notices.filter(row => row.cancelledAt || row.changes.length).map(row => ({ id: row.id, lastDay: row.lastDay, reason: row.reason, recordedBy: row.recorder, createdAt: row.createdAt, cancelledAt: row.cancelledAt, cancelledBy: row.canceller, cancelReason: row.cancelReason, changes: row.changes.map(({ from, to, reason, at }) => ({ from, to, reason, at })) })) };
  }
 
@@ -324,8 +344,14 @@ export class DispatchService {
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
    const leadCleared = await this.clearLead(em, id, teamId);
    if (leadCleared) await syncSignIns(em, [id], user.id);
+   // New accounts at the new MC go to IT; nothing on the record changes until IT finishes.
+   const newAccounts = dto.accounts === 'NEW' && current?.mcId !== dto.mcId;
+   if (newAccounts) {
+    const mcs: { id: string; name: string }[] = await em.query(`SELECT id, name FROM mcs WHERE id = ANY($1)`, [[dto.mcId, current?.mcId].filter(Boolean)]);
+    await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept);
+   }
    member.version += 1; await em.save(member);
-   await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared });
+   await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared, ...(newAccounts ? { newAccounts: true } : {}) });
    return { id, version: member.version };
   });
  }
@@ -696,7 +722,8 @@ export class DispatchService {
 
  /** Someone recorded by hand: what a manager recorded, the paper copies, and how far their paperwork has come. */
  private async existingRecord(user: User, id: string) {
-  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r.telegram, r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", u."firstName" || ' ' || u."lastName" AS "addedBy"
+  const [record] = await this.db.query(`SELECT r."sourceName", r."companyEmail", r."ringCentralNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r.telegram, r."personalEmail", r."personalPhone", r."createdAt", r."acceptedAt", r."startDateKnown", r."periodDateKnown", r."leftDateKnown", r."legalFirstName", r."legalLastName",
+    EXISTS (SELECT 1 FROM dispatch_events e WHERE e."memberId" = r."memberId" AND e.event = 'EXISTING_ADDED' AND (e.metadata->>'left')::boolean) AS "addedAsLeft", u."firstName" || ' ' || u."lastName" AS "addedBy"
    FROM existing_member_records r JOIN users u ON u.id = r."addedBy" WHERE r."memberId" = $1`, [id]);
   if (!record) return null;
   // Each paper copy with its current scan and the earlier ones it replaced (section 38), reading its scans once.

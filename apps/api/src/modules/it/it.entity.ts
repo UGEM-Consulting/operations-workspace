@@ -88,6 +88,8 @@ export class PortalNotification {
  @Column('uuid',{nullable:true}) removalId!:string|null;
  // A leave's suspend or restore checklist (IT_SUSPEND_COMPLETED, IT_RESTORE_COMPLETED).
  @Column('uuid',{nullable:true}) leaveRequestId!:string|null;
+ // An IT request about company accounts (IT_ACCOUNT_COMPLETED, section 33).
+ @Column('uuid',{nullable:true}) accountRequestId!:string|null;
  @Column('varchar') kind!:string;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
  @Column('timestamptz',{nullable:true}) readAt!:Date|null;
@@ -123,7 +125,11 @@ export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return 
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];companyAccounts?:RemovalCompanyAccount[];}
+/** An account at another of our companies, as IT's removal lists it (section 33). */
+export interface RemovalCompanyAccount {id:string;company:string;nameUsed:string|null;companyEmail:string|null;ringCentralNumber:string|null;ringCentralExtension:string|null;status:string;keptFor:string[];}
+/** A load board seat as IT's removal lists it (section 33). */
+export interface RemovalSeat {id:string;account:string;provider:string;signInEmail:string;status:string;sharedWith:string[];}
 @Entity('it_removal_requests')
 export class ItRemovalRequest {
  @PrimaryGeneratedColumn('uuid') id!:string;
@@ -146,6 +152,8 @@ export class ItRemovalRequest {
  // A manager asked to remove access before the last day: due today, tasks can be completed at once.
  @Column('timestamptz',{nullable:true}) removeNowAt!:Date|null;
  @Column('text',{nullable:true}) removeNowReason!:string|null;
+ // A short note for IT from whoever asked to close the accounts of someone added as Left (never passwords).
+ @Column('varchar',{length:500,nullable:true}) note!:string|null;
  // When IT got the alert that the removal is due; empty while it is scheduled.
  @Column('timestamptz',{nullable:true}) dueAlertedAt!:Date|null;
  // The notice was cancelled before IT started. Kept for the history; out of every list.

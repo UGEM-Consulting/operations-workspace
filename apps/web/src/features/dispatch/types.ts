@@ -1,4 +1,7 @@
+import type { RecordChange } from './left-record';
 import { statusLabel } from '@/components/ui/status-badge';
+import type { Seat } from '@/features/load-boards/seats';
+import type { CompanyAccount } from '@/features/company-accounts/card';
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export interface TeamRow { id: string; name: string; version: number; archived: boolean; mc: { id: string; name: string }; lead: { id: string; name: string } | null; members: number; onboarding?: number; wholeTeam?: number;
   // Everyone assisting its dispatchers or the whole team (from an API with team pages).
@@ -8,7 +11,8 @@ export interface TeamPerson { id: string; firstName: string; lastName: string; s
 /** GET dispatch/teams/:id: the team, its dispatchers and everyone assisting them or the whole team. */
 export interface TeamDetail { id: string; name: string; version: number; archived: boolean; leadId: string | null; mc: { id: string; name: string; archived: boolean };
   dispatchers: (TeamPerson & { jobTitle: string | null; drivers: number; companyEmail: string | null; accountStatus: 'ACTIVE' | 'INACTIVE' | null })[];
-  helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[] }
+  helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[];
+  /** Its linked Telegram group (section 34); an older API sends none. */ telegramGroup?: { title: string | null; linkedAt: string; linkedBy: string; lostAt: string | null } | null }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
 export type SupportType = 'SUPPORT' | 'UPDATER';
 /** What the API sends as the MC of someone who has none yet (never a list entry). */
@@ -42,7 +46,9 @@ export const toReassign = (drivers: number, supports: number) => [drivers ? `${d
 export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number; leaving?: number; missing?: number; all?: number; paperwork?: number };
   // A page of the Dispatchers table, with what its filters offer.
   total?: number; page?: number; pageSize?: number; options?: MemberOptions }
-export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[] }
+export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[];
+  /** The load board accounts anyone holds a seat on, for the Load board account filter (section 33); an older API sends none. */
+  loadBoardAccounts?: { id: string; name: string; provider: string; archived: boolean }[] }
 export interface Assignment { id: string; startedAt: string; endedAt: string | null; reason: string | null; mcId: string | null; mc: string | null; mcNumber: string | null; teamId: string | null; team: string | null; movedBy: string | null }
 export interface MemberDetails { legalFirstName: string | null; legalLastName: string | null; preferredAmericanFirstName: string | null; preferredAmericanLastName: string | null;
   personalEmail: string | null; personalPhoneNumber: string | null; telegram: string | null; mcName: string | null; teamLead: string | null; jobTitle: string | null; submittedAt: string | null }
@@ -53,7 +59,9 @@ export interface PaperworkRow { id: string; firstName: string; lastName: string;
 export interface PaperworkList { items: PaperworkRow[]; counts: { toCreate: number; sent: number; waiting: number; finished: number } }
 /** Someone recorded by hand: what a manager recorded, and how far their paperwork has come. */
 export interface ExistingRecord { sourceName: string | null; companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; telegram?: string | null; personalEmail: string | null; personalPhone: string | null; createdAt: string; acceptedAt: string | null; addedBy: string;
-  startDateKnown?: boolean; periodDateKnown?: boolean; undatedPeriodId?: string | null; startDateChanges?: { id: string; startedOn: string; previousOn: string | null; reason: string | null; createdAt: string; changedBy: string }[];
+  startDateKnown?: boolean; periodDateKnown?: boolean; undatedPeriodId?: string | null;
+  // People who left and other names (section 33): added as Left from a file, whether their last day is known, and their legal name.
+  addedAsLeft?: boolean; leftDateKnown?: boolean; legalFirstName?: string | null; legalLastName?: string | null; startDateChanges?: { id: string; startedOn: string; previousOn: string | null; reason: string | null; createdAt: string; changedBy: string }[];
   paper: PaperCopy[]; published: string[]; paperScans?: boolean;
   catchUp: { expiresAt: string; opened: boolean; started: boolean; status: string; signed: { kind: string; signedAt: string }[]; applicationId: string | null; reference: string | null; canReview: boolean; timeEndedAt?: string | null; returnEmail?: string | null } | null }
 export interface SharedSignIns { dat: { id: string; name: string }[]; truckstop: { id: string; name: string }[] }
@@ -62,7 +70,8 @@ export interface SupportItSetup { open: { id: string; items: string[]; done: num
 /** An NDA or SOP signed on paper, with its current scan and the ones it replaced (section 38; an older API sends neither). */
 export interface PaperScan { id: string; pageCount: number; createdAt: string; uploadedBy: string }
 export interface PaperCopy { kind: 'NDA' | 'SOP'; signedOn: string; createdAt: string; recordedBy: string; scan?: PaperScan | null; earlierScans?: (PaperScan & { replacedAt: string })[] }
-export interface MemberProfile { itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface OtherName { id: string; name: string; mcId: string | null; mc: string | null }
+export interface MemberProfile { recordChanges?: RecordChange[]; handPhotos?: { profile: { createdAt: string; uploadedBy: string | null } | null; id: { createdAt: string; uploadedBy: string | null } | null; idViews: { createdAt: string; viewedBy: string | null; role: string }[] } | null; accountRequests?: { id: string; kind: 'CLOSE' | 'MOVE'; accountId: string | null; toMc: string | null; createdAt: string }[]; companyAccounts?: CompanyAccount[]; loadBoardSeats?: Seat[]; otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).
@@ -86,7 +95,11 @@ export interface MemberProfile { itSetup?: SupportItSetup | null; sharedSignIns?
 export interface LeaveIt { id: string; kind: 'SUSPEND' | 'RESTORE'; dueOn: string; completedAt: string | null; cancelledAt: string | null; done: number; total: number; tasks: { key: string; status: string }[] }
 export interface MemberLeave { id: string; firstDay: string; backOn: string; reason: string; emailWhileAway: 'FORWARD' | 'AUTO_REPLY' | null; callsWhileAway: 'FORWARD' | 'VOICEMAIL' | null;
   changes: { kind: 'BACK_ON' | 'REASON'; from: string | null; to: string | null; reason: string | null; byName: string; at: string }[]; startedAt: string | null; endedAt: string | null; endedHow: 'RETURNED' | 'CANCELLED' | 'LEAVING' | null;
-  createdAt: string; recordedBy: string; forwardTo: string | null; started?: boolean; suspend?: LeaveIt | null }
+  createdAt: string; recordedBy: string; forwardTo: string | null; started?: boolean; suspend?: LeaveIt | null;
+  // A dispatcher's drivers while they're away (section 34): who covers each, and any given to them since that nobody covers.
+  covers?: LeaveCover[]; uncovered?: { driverId: string; driver: string; truck: string | null }[] }
+/** One driver covered while their dispatcher is away; stays: reassigned for good meanwhile, so they won't come back. */
+export interface LeaveCover { driverId: string; driver: string; truck: string | null; cover: string; coverTeam: string | null; started: boolean; with: string | null; stays: boolean }
 /** An administrator's correction (section 36): each field's earlier and new value, why, who and when. */
 export interface MemberCorrection { id: string; changes: { field: string; from: string | null; to: string | null }[]; reason: string; createdAt: string; correctedBy: string }
 export interface SupportLink { id: string; startedAt: string; endedAt: string | null; reason: string | null; dispatcherId: string | null; dispatcher: string | null; dispatcherStatus: MemberStatus | null; wholeTeam?: string | null; mc: string | null; team: string | null; changedBy: string | null }

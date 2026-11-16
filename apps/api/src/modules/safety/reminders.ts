@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { alertTargets, queueGroupAlert } from '../updates/groups';
+import { TelegramGroupsService } from '../updates/groups.service';
 import { BadRequestException, BeforeApplicationShutdown, ConflictException, ForbiddenException, Injectable, Logger, OnApplicationBootstrap, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express';
@@ -60,8 +62,10 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
  private timers: NodeJS.Timeout[] = [];
  private running = false;
  constructor(private readonly db: DataSource, private readonly config: ConfigService, private readonly email: EmailService, private readonly telegram: TelegramClient,
-  private readonly updates: UpdatesService, private readonly safety: SafetyService, private readonly annual: AnnualReviewService) {}
+  private readonly updates: UpdatesService, private readonly safety: SafetyService, private readonly annual: AnnualReviewService, private readonly groups: TelegramGroupsService) {}
  onApplicationBootstrap() {
+  // Safety's group gets the week's counts only, built when it's sent (section 34); daily reminders naming drivers stay with people.
+  this.groups.registerMessage('SAFETY_WEEKLY', async () => weeklySummaryMessage(await this.weeklyCounts(usDay('latest')), '').telegram.trim());
   const first = setTimeout(() => void this.tick(), FIRST_AFTER_MS); first.unref();
   const every = setInterval(() => void this.tick(), EVERY_MS); every.unref();
   this.timers = [first, every];
@@ -176,6 +180,10 @@ export class ReminderService implements OnApplicationBootstrap, BeforeApplicatio
  /** Mondays: every active Safety manager gets the week's counts. */
  private async queueWeekly(em: EntityManager, today: string) {
   const ids: string[] = [], linked = await this.staffOnTelegram(em);
+  // People, Safety's group or both, as Admin › Telegram says; the run day is recorded once, so the group gets it once.
+  const targets = await alertTargets(em, 'SAFETY_WEEKLY');
+  if (targets.groupId) await queueGroupAlert(em, targets.groupId, 'SAFETY_WEEKLY', null);
+  if (!targets.people) return ids;
   for (const manager of await em.getRepository(User).findBy({ role: Role.SAFETY_MANAGER, status: UserStatus.ACTIVE })) {
    const [batch]: { id: string }[] = await em.query(`INSERT INTO safety_reminder_batches ("recipientId", kind, day) VALUES ($1, 'WEEKLY', $2) ON CONFLICT DO NOTHING RETURNING id`, [manager.id, today]);
    if (batch) ids.push(...await this.delivery(em, { batchId: batch.id }, this.staffChannel(linked.has(manager.id))));

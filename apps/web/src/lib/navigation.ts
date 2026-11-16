@@ -38,7 +38,7 @@ export const USER_DEFAULTS: Record<string, string> = { status: 'ALL', search: ''
 export const LIST_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
 export const TEAM_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '' };
 // Dispatch › Dispatchers: the tab, search, filters, column sort and page, all in the URL.
-export const MEMBER_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '', mcId: '', teamId: '', leadId: '', position: '', jobTitleId: '', source: '', drivers: '', sort: '', direction: '', page: '1', pageSize: '20' };
+export const MEMBER_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '', mcId: '', teamId: '', leadId: '', position: '', jobTitleId: '', source: '', drivers: '', loadBoardAccountId: '', sort: '', direction: '', page: '1', pageSize: '20' };
 /** A date picked in a form as a moment that shows as the same calendar day everywhere. */
 export const middayIso = (day: string) => `${day}T12:00:00Z`;
 export const IT_TASK_DEFAULTS: Record<string, string> = { view: 'open', search: '' };

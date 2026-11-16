@@ -1,5 +1,6 @@
 'use client';
 import { useRouter } from 'next/navigation';
+import { WhoThisIs } from './who';
 import { useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { PageCrumb } from '@/components/shell-context';
@@ -97,6 +98,7 @@ export function ItLeave({ initial }: { initial: LeaveDetail }) {
     <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(event => ({ id: event.id, tone: event.event.startsWith('IT_') || event.metadata.newStatus === 'COMPLETED' ? 'success' as const : event.metadata.newStatus === 'BLOCKED' ? 'warning' as const : 'neutral' as const, title: activityTitle(event), meta: <LocalTime iso={event.createdAt}/> }))}/></CardBody></Card>
    </div>
    <div className="min-w-0 space-y-6 xl:sticky xl:top-20">
+    <WhoThisIs memberId={request.memberId} name={request.profile.displayName} photos={data.photos} />
     {!suspend ? <Card><CardHeader title="Accounts"/><CardBody><DescriptionList layout="rows" items={[
      ...(profile.companyEmail ? [{ label: 'Company email', value: copyable(profile.companyEmail, 'Copy email') }] : []),
      ...(profile.ringCentralNumber ? [{ label: 'RingCentral number', value: copyable(profile.ringCentralNumber, 'Copy number', true) }] : []),

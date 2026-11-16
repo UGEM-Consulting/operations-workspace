@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Archive, ArchiveRestore, Ellipsis, PenLine, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Card as Panel, CardBody, CardHeader } from '@/components/ui/card';
+import { DescriptionList } from '@/components/ui/description-list';
 import { initials } from '@/components/ui/avatar';
 import { DropdownMenu } from '@/components/ui/dropdown-menu';
 import { EmptyState } from '@/components/ui/feedback';
@@ -96,6 +98,9 @@ export function TeamPage({ team, mcs }: { team: TeamDetail; mcs: Choice[] }) {
         {others.map(person => <div key={person.id} role="listitem" className="grid gap-2"><Card person={person} /><Helpers people={helpersOf(person.id)} /></div>)}
       </div></Section>}
     </div>
+    {team.telegramGroup && <Panel className="max-w-md"><CardHeader title="Telegram group" /><CardBody><DescriptionList layout="rows" items={[
+      { label: 'Group', value: team.telegramGroup.title ?? 'Telegram group' }, { label: 'Linked', value: <><LocalTime iso={team.telegramGroup.linkedAt} format="date" /> by {team.telegramGroup.linkedBy}</> },
+      { label: 'Gets', value: team.telegramGroup.lostAt ? 'Nothing: the bot was removed from the group' : 'Nothing automatic yet' }]} /></CardBody></Panel>}
     {!team.dispatchers.length && <EmptyState compact title="No dispatchers in this team yet" description="Move a dispatcher here from their page: More actions › Move to another MC or team." />}
     {editing && <TeamEditor team={{ id: team.id, name: team.name, version: team.version, mcId: team.mc.id, leadId: team.leadId, occupied }} mcs={mcs} candidates={candidates} onClose={() => setEditing(false)} />}
   </div>;

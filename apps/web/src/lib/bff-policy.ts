@@ -4,7 +4,7 @@ const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test
 // Private files served as-is (JPEG photos and PDFs) instead of JSON.
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
   `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
-  `dispatch/members/${ID}/photos/${PHOTO}`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `driver/catch-up/documents/${ID}/file`, 'driver/contract/file', 'driver/contract/signed', `safety/drivers/${ID}/contracts/${ID}/signed`, `safety/owners/${ID}/contracts/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
+  `dispatch/members/${ID}/photos/${PHOTO}`, `member-photos/${ID}/(profile|id)`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `driver/catch-up/documents/${ID}/file`, 'driver/contract/file', 'driver/contract/signed', `safety/drivers/${ID}/contracts/${ID}/signed`, `safety/owners/${ID}/contracts/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
   `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/units/${ID}/files/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
 const SCAN = '(license|medical-card|work-authorization|return-to-duty)';
 export function allowedEndpoint(method: string, path: string): boolean {
@@ -27,7 +27,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && ['applicant/updates/telegram','applicant/updates/telegram/check','applicant/updates/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && ['applicant/application','onboarding/invitations','onboarding/applications','onboarding/review-queue','onboarding/summary'].includes(path)) ||
     // The Dispatchers filters ask how many people the filters being chosen would show (DispatchersFilterSheetPhoneScreen).
-    (method === 'GET' && path === 'dispatch/members') ||
+    (method === 'GET' && path === 'dispatch/members') || (method === 'GET' && match(`dispatch/members/${ID}/cover-options`, path)) ||
     (method === 'GET' && /^onboarding\/applications\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'POST' && /^onboarding\/applications\/[0-9a-f-]{36}\/reviews$/.test(path)) ||
     (method === 'POST' && /^onboarding\/invitations\/[0-9a-f-]{36}\/revoke$/.test(path)) ||
@@ -44,20 +44,33 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     // The approver's own saved countersigning signature.
     // Own Telegram connection for workspace alerts.
-    (method === 'GET' && path === 'staff/telegram') || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
+    (method === 'GET' && path === 'staff/telegram') ||
+    // Admin › Keeping records (section 34): the hold dialog searches by name; holds and the switch are changes.
+    (method === 'GET' && path === 'retention/people') || (method === 'POST' && (path === 'retention/settings' || path === 'retention/holds' || match(`retention/holds/${ID}/(extend|end)`, path))) ||
+    // Admin › Telegram (section 34): groups, their one-time codes and where each alert goes.
+    (method === 'POST' && (path === 'telegram/groups/codes' || match(`telegram/groups/codes/${ID}/check`, path) || match(`telegram/groups/${ID}/(unlink|test)`, path))) ||
+    (method === 'PATCH' && /^telegram\/routes\/[A-Z_]{1,32}$/.test(path)) || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && path === 'staff/signature') || (method === 'POST' && ['staff/signature', 'staff/signature/delete'].includes(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.
-    (method === 'POST' && ['lists/mcs', 'lists/job-titles'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles)/${ID}`, path)) ||
+    (method === 'POST' && ['lists/mcs', 'lists/job-titles', 'lists/load-board-accounts'].includes(path)) || (method === 'PATCH' && match(`lists/(mcs|job-titles|load-board-accounts)/${ID}`, path)) ||
+    // Load board seats (section 33): IT and administrators add one, or suspend, resume, move, end it or change its sign-in.
+    (method === 'POST' && (path === 'load-board-seats' || match(`load-board-seats/${ID}`, path))) ||
+    // Accounts at other companies (section 33): IT and administrators add and change them.
+    (method === 'POST' && path === 'company-accounts') || (method === 'PATCH' && match(`company-accounts/${ID}`, path)) ||
+    // Asking IT to close one, and IT's checklist for it or for a move's new accounts.
+    (method === 'POST' && match(`company-accounts/${ID}/close`, path)) || (method === 'GET' && match(`it/accounts/${ID}`, path)) || (method === 'PATCH' && match(`it/accounts/${ID}/(contact|tasks/[A-Z_]+)`, path)) ||
     // Dispatchers table: export the view on screen (recorded, so a POST).
     (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
-    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|on-leave|on-leave/(return|cancel|back-on|reason))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|left-day|close-accounts|names|on-leave|on-leave/(return|cancel|back-on|reason|covers))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     // People already working here: check and add them, their paperwork and catch-up links, what a manager recorded.
     (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||
     // A scan of an NDA or SOP signed on paper (section 38).
     (method === 'POST' && match(`dispatch/members/${ID}/paper-scans`, path)) ||
+    // A photo an administrator adds for someone added by hand (section 33).
+    (method === 'POST' && match(`dispatch/members/${ID}/hand-photos/(profile|id)`, path)) ||
     // Cleared drivers: a dispatch manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
     (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||
     // Promotions: a team lead's request or cancellation, and a manager's decision.
@@ -100,13 +113,15 @@ const LIST_QUERY = ['page', 'pageSize', 'status', 'search', 'sort', 'direction']
 /** The query fields passed on to the API for a list read through the BFF; anything else is dropped. */
 export function forwardedQuery(path: string): string[] {
   if (path === 'onboarding/review-queue' || path === 'it/onboarding') return LIST_QUERY;
-  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers'];
+  // Keeping records: the hold dialog's name search (section 34).
+  if (path === 'retention/people') return ['q'];
+  if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId'];
   return [];
 }
 export function isFileEndpoint(path: string): boolean { return FILE_ROUTES.some(pattern => match(pattern, path)); }
 /** Request body limits in bytes. Photo and PDF uploads stay under Vercel's 4.5 MB function payload limit. */
 export function bodyLimit(path: string): number {
-  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`driver/documents/${SCAN}`, path) || match(`driver/catch-up/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/owners/${ID}/contracts`, path) || match(`safety/drivers/${ID}/(mvr|psp|road-test|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`safety/units/${ID}/files`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
+  if (path === 'documents' || match(`applicant/photos/${PHOTO}`, path) || match(`dispatch/members/${ID}/hand-photos/(profile|id)`, path) || match(`driver/documents/${SCAN}`, path) || match(`driver/catch-up/documents/${SCAN}`, path) || path === 'driver/renewal' || match(`safety/owners/${ID}/contracts`, path) || match(`safety/drivers/${ID}/(mvr|psp|road-test|annual-reviews|documents/renew)`, path) || match(`safety/drivers/${ID}/trucks/${ID}/documents`, path) || match(`safety/units/${ID}/files`, path) || match(`dispatch/members/${ID}/paper-scans`, path) || path === 'safety/consents' || path === 'safety/letters') return 4_400_000;
   // A list of existing dispatchers, units or drivers, up to 500 rows of text.
   if (['dispatch/existing/check', 'dispatch/existing/add', 'safety/units/check', 'safety/units/add', 'safety/drivers/existing/check', 'safety/drivers/existing/add'].includes(path)) return 1_000_000;
   // Signature images (applicant signing, NDA countersignature during approval, a saved staff signature).

@@ -16,11 +16,13 @@ import { PageHeader, StatCard } from '@/components/workspace-ui';
 import type { ItTasks } from '@/features/it/types';
 import { SignInTaskButton } from '@/features/it/sign-in-task';
 export const metadata={title:'IT tasks'};
-const VIEWS=['open','setup','signin','leave','removal','scheduled','finished','all'];
+const VIEWS=['open','setup','signin','leave','accounts','removal','scheduled','finished','all'];
+// Company accounts (section 33): closing one at another company, or a move's new accounts.
+const ACCOUNT_KINDS:readonly string[]=['CLOSE_ACCOUNT','MOVE_ACCOUNTS'];
 // Leave (section 35): suspending accounts while someone is away, and restoring them.
 const LEAVE_KINDS:readonly string[]=['SUSPEND','RESTORE'];
-const taskName=(kind:string)=>({REMOVAL:'Removal',SIGN_IN:'Sign-in',SUSPEND:'Suspend',RESTORE:'Restore'} as Record<string,string>)[kind]??'Setup';
-const taskHref=(task:{kind:string;id:string})=>task.kind==='REMOVAL'?`/it/tasks/removals/${task.id}`:LEAVE_KINDS.includes(task.kind)?`/it/tasks/leave/${task.id}`:`/it/tasks/${task.id}`;
+const taskName=(kind:string)=>({REMOVAL:'Removal',SIGN_IN:'Sign-in',SUSPEND:'Suspend',RESTORE:'Restore',CLOSE_ACCOUNT:'Close account',MOVE_ACCOUNTS:'New accounts'} as Record<string,string>)[kind]??'Setup';
+const taskHref=(task:{kind:string;id:string})=>task.kind==='REMOVAL'?`/it/tasks/removals/${task.id}`:LEAVE_KINDS.includes(task.kind)?`/it/tasks/leave/${task.id}`:ACCOUNT_KINDS.includes(task.kind)?`/it/tasks/accounts/${task.id}`:`/it/tasks/${task.id}`;
 // What a team lead sign-in's dialog needs from its row.
 const signInTask=(task:ItTasks['items'][number])=>({id:task.id,signIn:task.signIn??'CREATE',name:task.name??'Dispatcher',email:task.email,team:task.team??null,mc:task.mc});
 /**
@@ -31,9 +33,9 @@ export default async function Page({searchParams}:{searchParams:Promise<Record<s
  await requirePage('it');const params=await searchParams;
  const filters=Object.fromEntries(Object.entries({...IT_TASK_DEFAULTS,page:'1'}).map(([key,value])=>[key,typeof params[key]==='string'?params[key].slice(0,100):value]));
  if(!VIEWS.includes(filters.view))filters.view=IT_TASK_DEFAULTS.view;
- const query=new URLSearchParams({...filters,pageSize:'20',signIns:'1',leave:'1'});let response=await apiRequest(`it/tasks?${query}`);
+ const query=new URLSearchParams({...filters,pageSize:'20',signIns:'1',leave:'1',accounts:'1'});let response=await apiRequest(`it/tasks?${query}`);
  // An older API refuses signIns or leave, so the page asks again without them (no Sign-ins or Leave rows) until the API is updated.
- if(response.status===400){query.delete('signIns');query.delete('leave');if(filters.view==='signin'||filters.view==='leave')query.set('view',IT_TASK_DEFAULTS.view);const older=await apiRequest(`it/tasks?${query}`);if(older.ok){response=older;filters.view=query.get('view')??IT_TASK_DEFAULTS.view;}}
+ if(response.status===400){query.delete('signIns');query.delete('leave');query.delete('accounts');if(['signin','leave','accounts'].includes(filters.view))query.set('view',IT_TASK_DEFAULTS.view);const older=await apiRequest(`it/tasks?${query}`);if(older.ok){response=older;filters.view=query.get('view')??IT_TASK_DEFAULTS.view;}}
  const header=<PageHeader title="IT tasks" description="Accounts to set up, suspend, restore and remove. This checklist tracks your work; it doesn’t change accounts for you." />;
  if(response.status===400)return <div className="space-y-6">{header}<Alert tone="warning" title="These filters cannot be used" action={<Button asChild variant="outline" size="sm"><Link href="/it/tasks">Reset filters</Link></Button>}><p>Check the search length and page number.</p></Alert></div>;
  if(!response.ok)throw new Error('Unable to load IT tasks');const data=await readResponse<ItTasks>(response,'IT tasks',itTasksSchema);
@@ -48,13 +50,13 @@ export default async function Page({searchParams}:{searchParams:Promise<Record<s
  </div>
  <Card>
   <FilterBar path="/it/tasks" filters={filters} defaults={IT_TASK_DEFAULTS} statusKey="view" searchLabel="Search name, email or MC" statuses={[
-   {key:'open',label:'Open',count:stats.open},{key:'setup',label:'Setup',count:stats.setup},{key:'signin',label:'Sign-ins',count:stats.signIns??0},...(stats.leave!==undefined?[{key:'leave',label:'Leave',count:stats.leave}]:[]),{key:'removal',label:'Removal',count:stats.removal},{key:'scheduled',label:'Scheduled',count:stats.scheduled},
+   {key:'open',label:'Open',count:stats.open},{key:'setup',label:'Setup',count:stats.setup},{key:'signin',label:'Sign-ins',count:stats.signIns??0},...(stats.leave!==undefined?[{key:'leave',label:'Leave',count:stats.leave}]:[]),...(stats.accounts!==undefined?[{key:'accounts',label:'Accounts',count:stats.accounts as number}]:[]),{key:'removal',label:'Removal',count:stats.removal},{key:'scheduled',label:'Scheduled',count:stats.scheduled},
    {key:'finished',label:'Finished',count:stats.finished},{key:'all',label:'All',count:stats.all}]}/>
   <Table caption="IT tasks" className="border-t border-border" rows={data.items} rowKey={task=>`${task.kind}-${task.id}`} columns={[
    {key:'person',label:'Person',primary:true,cell:task=>task.kind==='SIGN_IN'?<div className="space-y-2"><Person name={task.name??'Dispatcher'} secondary={task.signIn==='TURN_OFF'?'No longer a team lead':task.signIn==='TURN_ON'?`Team lead again${task.team?`, ${task.team}`:''}`:`New team lead${task.team?`, ${task.team}`:''}`}/>
     {/* Phones hide the Progress column, so the step's button sits under the name there. */}
     {!task.completedAt&&<div className="md:hidden"><SignInTaskButton task={signInTask(task)}/></div>}</div>:<Link href={taskHref(task)} className="block rounded-sm hover:underline focus-visible:outline-2"><Person name={task.name??'Dispatcher'} secondary={task.assists??task.email??undefined}/></Link>},
-   {key:'kind',label:'Task',cell:task=><Badge label={taskName(task.kind)} tone={task.kind==='REMOVAL'||task.signIn==='TURN_OFF'?'danger':task.kind==='SUSPEND'?'warning':task.kind==='RESTORE'?'success':'info'}/>},
+   {key:'kind',label:'Task',cell:task=><Badge label={taskName(task.kind)} tone={task.kind==='REMOVAL'||task.signIn==='TURN_OFF'?'danger':task.kind==='SUSPEND'||task.kind==='CLOSE_ACCOUNT'?'warning':task.kind==='RESTORE'?'success':'info'}/>},
    // Snapshots keep what they said: a removal recorded before 2026-11-09 left the MC empty for Independent; later ones say No MC yet.
    {key:'mc',label:'MC',hideBelow:'lg',cell:task=>task.mc??<span className="text-muted-foreground">Independent</span>},
    {key:'progress',label:'Progress',hideBelow:'md',cell:task=>task.kind==='SIGN_IN'?(task.completedAt?<span className="text-muted-foreground">Done</span>:<SignInTaskButton task={signInTask(task)}/>):<Progress compact className="w-40" label={`${taskName(task.kind)} for ${task.name??'dispatcher'}`} value={task.done} max={task.total}/>},

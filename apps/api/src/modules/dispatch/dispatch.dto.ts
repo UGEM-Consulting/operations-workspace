@@ -28,6 +28,9 @@ export class ExistingRowDto {
  @IsOptional() @IsString() @MaxLength(300) ringCentralExtension?: string;
  @IsOptional() @IsString() @MaxLength(300) datEmail?: string;
  @IsOptional() @IsString() @MaxLength(300) truckstopEmail?: string;
+ // The load board account each sign-in is on, by its name in Admin › Lists (section 33).
+ @IsOptional() @IsString() @MaxLength(300) datAccount?: string;
+ @IsOptional() @IsString() @MaxLength(300) truckstopAccount?: string;
  @IsOptional() @IsString() @MaxLength(300) supports?: string;
  // The one-person form picks the dispatcher or team from a list, so two people with the same name stay apart.
  @IsOptional() @IsUUID() supportsMemberId?: string;
@@ -35,6 +38,19 @@ export class ExistingRowDto {
  @IsOptional() @IsString() @MaxLength(300) ndaSignedOn?: string;
  @IsOptional() @IsString() @MaxLength(300) sopSignedOn?: string;
  @IsOptional() @IsBoolean() differentPerson?: boolean;
+ // People who left and other names (section 33): Active or Left, the last day and why, legal names and other names separated by ;.
+ @IsOptional() @IsString() @MaxLength(300) status?: string;
+ @IsOptional() @IsString() @MaxLength(300) leftOn?: string;
+ @IsOptional() @IsString() @MaxLength(1000) leftReason?: string;
+ @IsOptional() @IsString() @MaxLength(300) legalFirstName?: string;
+ @IsOptional() @IsString() @MaxLength(300) legalLastName?: string;
+ @IsOptional() @IsString() @MaxLength(1500) otherNames?: string;
+ // The one-person form (AddOneNamesScreen): other names, each with where they used it. Takes the place of otherNames.
+ @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => OtherNameDto) otherNameList?: OtherNameDto[];
+ // Someone added as Left whose accounts may still be open: IT gets a removal checklist from what the row records.
+ @IsOptional() @IsBoolean() askIt?: boolean;
+ // A row that matches someone already recorded: fill only what their record is missing, or (for someone who left) add them again as the same person.
+ @IsOptional() @IsIn(['FILL', 'CAME_BACK', 'ACCOUNT']) alreadyAction?: 'FILL' | 'CAME_BACK' | 'ACCOUNT';
 }
 export class ExistingRowsDto {
  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => ExistingRowDto) rows!: ExistingRowDto[];
@@ -69,21 +85,25 @@ export class MemberFilters {
  @IsOptional() @IsIn(['DISPATCHER', 'SUPPORT', 'UPDATER']) position?: 'DISPATCHER' | 'SUPPORT' | 'UPDATER';
  @IsOptional() @IsIn(['ONBOARDED', 'ADDED']) source?: 'ONBOARDED' | 'ADDED';
  @IsOptional() @IsIn(['WITH', 'WITHOUT']) drivers?: 'WITH' | 'WITHOUT';
+ @IsOptional() @IsUUID() loadBoardAccountId?: string;
 }
-/** A page of Dispatch › Dispatchers. A request with none of page, filters or sort gets the whole list as before, for an older web. */
-export class MemberListQueryDto extends MemberFilters {
- @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL', 'ARCHIVED']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL';
+/** The view on screen: the tab, filters and sort. ARCHIVED is an older web's name for everyone, read as ALL. */
+export class MemberViewDto extends MemberFilters {
+ @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL', 'ARCHIVED']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL' | 'ARCHIVED';
  @IsOptional() @IsIn(['name', 'mc', 'team', 'lead', 'drivers', 'since', 'status']) sort?: 'name' | 'mc' | 'team' | 'lead' | 'drivers' | 'since' | 'status';
  @IsOptional() @IsIn(['asc', 'desc']) direction?: 'asc' | 'desc';
+}
+/**
+ * A page of Dispatch › Dispatchers. A request with none of page, filters or sort gets the whole list as before, for an older web.
+ * only=counts answers just the counts and total, for the filters dialog's "6 of 44 people match".
+ */
+export class MemberListQueryDto extends MemberViewDto {
  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100000) page?: number;
  @IsOptional() @Type(() => Number) @IsIn([20, 50, 100]) pageSize?: number;
+ @IsOptional() @IsIn(['counts']) only?: 'counts';
 }
-/** Export takes the view on screen: the tab, filters and sort, never a page. */
-export class MemberExportDto extends MemberFilters {
- @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'MISSING', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'LEAVING' | 'LEFT' | 'MISSING' | 'ALL';
- @IsOptional() @IsIn(['name', 'mc', 'team', 'lead', 'drivers', 'since', 'status']) sort?: 'name' | 'mc' | 'team' | 'lead' | 'drivers' | 'since' | 'status';
- @IsOptional() @IsIn(['asc', 'desc']) direction?: 'asc' | 'desc';
-}
+/** Export takes the view on screen, never a page. */
+export class MemberExportDto extends MemberViewDto {}
 export class StatusQueryDto {
  @IsOptional() @IsIn(['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'ARCHIVED', 'LEFT', 'ALL']) status?: 'ONBOARDING' | 'ACTIVE' | 'ON_LEAVE' | 'ARCHIVED' | 'LEFT' | 'ALL';
 }
@@ -107,6 +127,10 @@ export class MoveMemberDto {
  @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher is moving.' }) @MaxLength(500) reason!: string;
+ // Their company accounts (section 33): keep them (the default; an older page sends nothing) or ask IT for new ones at the new MC.
+ @IsOptional() @IsIn(['KEEP', 'NEW']) accounts?: 'KEEP' | 'NEW';
+ // With NEW: close an email that still signs in to a load board seat anyway.
+ @IsOptional() @IsBoolean() closeKept?: boolean;
 }
 /** Their first MC and team, for someone added with none. startedAt is optional: left out, the period follows their start date. */
 export class PlaceMemberDto {
@@ -223,8 +247,19 @@ export class CorrectDetailsDto {
  @text() @ValidateIf(present) @IsString() @MinLength(1, { message: 'Enter their last name.' }) @MaxLength(100) lastName?: string;
 }
 /** Leave (section 35): the first day away, the day they work again and why; what happens to their email and calls when they have them. */
+/** Who covers one of their drivers while they're away (section 34). */
+export class CoverDto {
+ @IsUUID() driverId!: string;
+ @IsUUID() memberId!: string;
+}
+export class CoversDto {
+ @IsInt() @Min(1) version!: number;
+ @IsArray() @ArrayMinSize(1) @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => CoverDto) covers!: CoverDto[];
+}
 export class LeaveDto {
  @IsInt() @Min(1) version!: number;
+ // Every driver they have, each with who covers them; an older page sends none and the drivers stay with them.
+ @IsOptional() @IsArray() @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => CoverDto) covers?: CoverDto[];
  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) firstDay!: string;
  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why they’re away.' }) @MaxLength(1000) reason!: string;
@@ -252,4 +287,28 @@ export class PaperScanDto extends ScanUploadDto {
  @IsIn(['NDA', 'SOP']) kind!: 'NDA' | 'SOP';
  @IsOptional() @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(/^\d{4}-\d{2}-\d{2}$/) signedOn?: string;
  @Equals(true, { message: 'Confirm that this is their signed document, every page.' }) confirmed!: boolean;
+}
+/** One other name, with the MC where it was used when known (section 33). Latin letters, as names are everywhere in the workspace. */
+export class OtherNameDto {
+ @text() @IsString() @MinLength(1, { message: 'Enter the name.' }) @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) name!: string;
+ @IsOptional() @IsUUID() mcId?: string;
+}
+/** Edit names: the legal name of someone added by hand ('' clears it), and the whole list of other names. */
+export class MemberNamesDto {
+ @IsInt() @Min(1) version!: number;
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalFirstName?: string;
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalLastName?: string;
+ @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => OtherNameDto) otherNames!: OtherNameDto[];
+}
+/** The last day of someone added as Left without one. */
+export class LeftDayDto {
+ @IsInt() @Min(1) version!: number;
+ @IsDateString({ strict: true }, { message: 'Enter a real date.' }) @Matches(/^\d{4}-\d{2}-\d{2}$/) leftOn!: string;
+ @IsOptional() @text() @IsString() @MaxLength(500) reason?: string;
+}
+/** Ask IT to close the accounts of someone added as Left. */
+export class CloseAccountsDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(['FORWARD', 'SUSPEND']) emailAfter!: 'FORWARD' | 'SUSPEND';
+ @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
 }
