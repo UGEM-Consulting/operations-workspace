@@ -241,6 +241,24 @@ export class MemberLeave {
  @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
 }
 
+export type CoverEnd = 'RETURNED' | 'REASSIGNED' | 'KEPT' | 'CANCELLED' | 'SKIPPED';
+/** Who covers one of their drivers while a dispatcher is away (section 34); the moves themselves are driver_assignments rows. */
+@Entity('driver_leave_covers')
+export class DriverLeaveCover {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') leaveId!: string;
+ @Column('uuid') driverId!: string;
+ @Column('uuid') coverMemberId!: string;
+ // The covering dispatcher's assignment, once the leave started: while it is still the driver's open one, the return moves them back.
+ @Column('uuid', { nullable: true }) coverAssignmentId!: string | null;
+ @Column('timestamptz', { nullable: true }) startedAt!: Date | null;
+ @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
+ @Column('varchar', { nullable: true }) endedHow!: CoverEnd | null;
+ @Column('uuid') createdBy!: string;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @UpdateDateColumn({ type: 'timestamptz' }) updatedAt!: Date;
+}
+
 /** An administrator's correction of a dispatcher's details (section 36): each field's earlier and new value, why, who and when. Staff only. */
 @Entity('member_detail_corrections')
 export class MemberDetailCorrection {

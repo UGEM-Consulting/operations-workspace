@@ -2318,6 +2318,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('HandPhotos1793270000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('LeaveCovers1793280000000');
   });
 });

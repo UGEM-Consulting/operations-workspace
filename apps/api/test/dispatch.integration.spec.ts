@@ -111,7 +111,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const long = 'X'.repeat(120);
     await approved(['Zed', 'North'], { mcName: 'Northwind Freight', teamLead: long, jobTitle: 'Dispatcher' });
     await approved(['Zed', 'Lake'], { mcName: 'Lakeside Carriers', teamLead: long, jobTitle: 'Dispatcher' });
-    await db.runMigrations(); expect(await latest()).toBe('HandPhotos1793270000000');
+    await db.runMigrations(); expect(await latest()).toBe('LeaveCovers1793280000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -129,7 +129,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('HandPhotos1793270000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('LeaveCovers1793280000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');

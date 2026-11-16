@@ -31,6 +31,7 @@ import { ExistingAccountsCard, ExistingPaperworkCard, useCatchUpLink } from './p
 import { askedFor, SupportItChoices, type SupportItItem } from './support-it';
 import { signInItems } from './sign-in-status';
 import { SignIn } from './sign-in';
+import { ChangeCoversDialog, CoveredDriversCard, LeavingCoveredAlert } from './leave-covers';
 import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard, LeaveDialog, LeaveHistory, LeaveItCard, leaveBadge, shortDay, WorkingWithCard, type LeaveAction } from './leave';
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
@@ -158,7 +159,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // Someone away has one next step: their return. A dispatcher on leave isn't moved until then.
   const mainKey = onNotice ? 'lastDay' : away ? 'return' : support ? 'reassign' : noMc ? 'place' : needsLink ? 'link' : 'move', main = actions[mainKey];
   const others = [...(needsLink ? ['link' as const] : []), ...(support ? ['reassign' as const] : noMc ? ['place' as const] : !onNotice && !away ? ['move' as const] : [])].filter(key => key !== mainKey);
-  const leaveItems: MenuEntry[] = leave ? [{ label: 'Change return date', icon: Calendar, onSelect: () => setLeaveAction('backOn') }, { label: 'Edit leave reason', icon: Pencil, onSelect: () => setLeaveAction('leaveReason') },
+  const leaveItems: MenuEntry[] = leave ? [{ label: 'Change return date', icon: Calendar, onSelect: () => setLeaveAction('backOn') },
+    ...(leave.covers?.length || leave.uncovered?.length ? [{ label: 'Change who covers', icon: Route, onSelect: () => setLeaveAction('covers') }] : []), { label: 'Edit leave reason', icon: Pencil, onSelect: () => setLeaveAction('leaveReason') },
     ...(canCancelLeave(leave) ? [{ label: 'Cancel leave', icon: RotateCcw, onSelect: () => setLeaveAction('cancelLeave') }] : [])] : canPutOnLeave(member) ? [{ label: 'Put on leave', icon: CalendarClock, onSelect: () => setLeaveAction('putOnLeave') }] : [];
   const correctItem: MenuEntry[] = [...(admin && open && details ? [{ label: 'Correct details', icon: FilePenLine, onSelect: () => setCorrecting(true) }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }];
   const leftMeta = lastDayMissing(member) ? 'Left, last day not recorded' : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : null;
@@ -219,6 +221,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           panels={{
             overview: <div className="space-y-6">
             {leave && <LeaveCard leave={leave} />}
+            {leave && <CoveredDriversCard member={member} leave={leave} />}
             {leave && <WorkingWithCard member={member} />}
             {notice && anyoneLeft && <Card><CardHeader title="Still to reassign" description="Move each one to another dispatcher before the last day." />
               <ul className="mt-3 divide-y divide-border border-t border-border">
@@ -428,6 +431,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           <Input label="Last day" name="leftAt" type="date" required value={lastDay} onChange={event => setLastDay(event.target.value)} max={support || !accounts || accounts.completedAt ? noticeLimit() : today()} width="sm"
             hint={support || !accounts || accounts.completedAt ? (leave ? `Today, or up to ${NOTICE_MAX_DAYS} days ahead.` : `Up to ${NOTICE_MAX_DAYS} days ahead.`) : 'Today or earlier: their IT setup isn’t finished.'} />
           <Textarea label={noticeDay ? 'Why they’re leaving' : 'Why they left'} name="reason" required maxLength={500} rows={2} hint="Staff only. Never health or other private details." />
+          {leave && <LeavingCoveredAlert leave={leave} />}
           {leave && <Alert tone="info" title={leave.suspend ? 'IT’s suspend checklist becomes a removal' : 'Their leave ends'}><p>{leave.suspend ? 'Restoring is cancelled. The removal shows what is already suspended, so IT only finishes the rest.' : 'Nothing was suspended, so IT has nothing to restore.'}{anyoneLeft ? ` Their ${[drivers.length ? `${drivers.length} driver${drivers.length === 1 ? '' : 's'}` : '', supportsLeft.length ? helperWords(supportsLeft) : ''].filter(Boolean).join(' and ')} still need reassigning by the last day.` : ''}</p></Alert>}
           {noticeDay && <Alert tone="info" title={<>{member.firstName} stays {badge.label} until <LastDay day={lastDay} /></>}><p>They keep working, with their drivers and accounts, until the end of that day. Then the workspace marks them as left.</p></Alert>}
           {noticeDay && anyoneLeft && <Alert tone="warning" title={<>{reassign} to reassign by <LastDay day={lastDay} /></>}><p>You can do this during the notice. They can’t be marked as left until it’s done.</p></Alert>}
@@ -472,7 +476,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         <Notice message={error} error />
       </form>
     </Dialog>}
-    {leaveAction && <LeaveDialog action={leaveAction} member={member} onClose={() => setLeaveAction(null)} />}
+    {leaveAction === 'covers' && leave ? <ChangeCoversDialog member={member} leave={leave} onClose={() => setLeaveAction(null)} />
+      : leaveAction && leaveAction !== 'covers' && <LeaveDialog action={leaveAction} member={member} onClose={() => setLeaveAction(null)} />}
     {correcting && <CorrectDetailsDialog member={member} onClose={() => setCorrecting(false)} />}
     {removing && <Dialog open size="sm" tone="danger" onClose={() => setRemoving(null)} busy={pending === removing.id} protectChanges={false} title="Remove this contact?"
       description="It no longer shows on this record. Who added and removed it, and when, are kept."

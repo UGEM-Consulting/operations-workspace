@@ -134,6 +134,10 @@ describe('offboarding and manager hand-over through the BFF', () => {
     // Leave (section 35) and an administrator's corrections (section 36); IT's suspend and restore checklists.
     for (const action of ['on-leave', 'on-leave/return', 'on-leave/cancel', 'on-leave/back-on', 'on-leave/reason', 'correct']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/delete`), false);
+    // Drivers while their dispatcher is away (section 34): the dialog reads who may cover, and Change who covers.
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/cover-options`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/cover-options`), false);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/covers`), true);
     assert.equal(allowedEndpoint('GET', `it/leave/${ID}`), true);
     assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/GOOGLE_WORKSPACE`), true);
     assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/google`), false);

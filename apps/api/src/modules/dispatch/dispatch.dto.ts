@@ -247,8 +247,19 @@ export class CorrectDetailsDto {
  @text() @ValidateIf(present) @IsString() @MinLength(1, { message: 'Enter their last name.' }) @MaxLength(100) lastName?: string;
 }
 /** Leave (section 35): the first day away, the day they work again and why; what happens to their email and calls when they have them. */
+/** Who covers one of their drivers while they're away (section 34). */
+export class CoverDto {
+ @IsUUID() driverId!: string;
+ @IsUUID() memberId!: string;
+}
+export class CoversDto {
+ @IsInt() @Min(1) version!: number;
+ @IsArray() @ArrayMinSize(1) @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => CoverDto) covers!: CoverDto[];
+}
 export class LeaveDto {
  @IsInt() @Min(1) version!: number;
+ // Every driver they have, each with who covers them; an older page sends none and the drivers stay with them.
+ @IsOptional() @IsArray() @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => CoverDto) covers?: CoverDto[];
  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) firstDay!: string;
  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why they’re away.' }) @MaxLength(1000) reason!: string;
