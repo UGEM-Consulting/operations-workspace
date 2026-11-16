@@ -2,14 +2,14 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
-import { ArrowLeft, Download, Plus, Upload } from 'lucide-react';
+import { ArrowLeft, Download, Plus, Upload, X } from 'lucide-react';
 import { Alert, Notice } from '@/components/ui/alert';
 import { Person } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Dialog } from '@/components/ui/dialog';
-import { Checkbox, Input, RadioGroup, Select } from '@/components/ui/field';
+import { Checkbox, Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { PendingHint } from '@/components/ui/pending-hint';
 import { Badge } from '@/components/ui/status-badge';
 import { Table } from '@/components/ui/table';
@@ -18,7 +18,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow } from './existing-csv';
 import { supportName } from './types';
 
-export interface ExistingOptions { loadBoardAccounts?: { id: string; name: string; provider: 'DAT' | 'TRUCKSTOP'; placeholder: boolean }[]; mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
+export interface ExistingOptions { archivedMcs?: { id: string; name: string }[]; archivedTeams?: { id: string; name: string; mcId: string }[]; loadBoardAccounts?: { id: string; name: string; provider: 'DAT' | 'TRUCKSTOP'; placeholder: boolean }[]; mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
 type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 /** Someone already recorded that a row matches (section 33): what the file would add, and what can be done with the row. */
 interface Match { id: string; name: string; status: string; why: string; options: ('FILL' | 'CAME_BACK' | 'DIFFERENT' | 'ACCOUNT')[]; fills: string[]; account?: { mcId: string; mc: string; adds: string[] } }
@@ -181,49 +181,84 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
           { label: 'NDA and SOP', value: 'The date signed on paper. Leave it empty and they sign in the workspace' }]} />
         <p className="text-[13px] text-muted-foreground">No SSNs, ID numbers, birth dates or pay.</p></CardBody></Card>
     </div>
-    {one && <AddOne options={options} onClose={() => setOne(false)} onAdded={id => { toast({ title: 'Dispatcher added', description: 'They’re Active now. Nobody was messaged.' }); router.push(`/dispatch/dispatchers/${id}`); }} />}
+    {one && <AddOne options={options} onClose={() => setOne(false)} onAdded={(id, left) => { toast({ title: 'Dispatcher added', description: left ? 'Added as Left. Nobody was messaged.' : 'They’re Active now. Nobody was messaged.' }); router.push(`/dispatch/dispatchers/${id}`); }} />}
   </div>;
 }
 
-/** One person at a time, with the same rules as the file. */
-function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClose: () => void; onAdded: (id: string) => void }) {
-  const [position, setPosition] = useState('Dispatcher'), [assisting, setAssisting] = useState('DISPATCHER'), [mc, setMc] = useState(''), [nda, setNda] = useState('SIGN'), [sop, setSop] = useState('SIGN'), [busy, setBusy] = useState(false), [error, setError] = useState(''), [sameName, setSameName] = useState(false);
-  const chosenMc = options.mcs.find(item => item.name === mc), support = position !== 'Dispatcher';
+/**
+ * One person at a time, with the same rules as the file (AddOneNamesScreen, AddOneLeftScreen): someone working here now, or
+ * someone who already left, with their legal and other names. Nobody is messaged and IT isn't asked to do anything.
+ */
+function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClose: () => void; onAdded: (id: string, left: boolean) => void }) {
+  const [here, setHere] = useState('here'), [position, setPosition] = useState('Dispatcher'), [assisting, setAssisting] = useState('DISPATCHER'), [mc, setMc] = useState(''), [nda, setNda] = useState('SIGN'), [sop, setSop] = useState('SIGN');
+  const [names, setNames] = useState<{ name: string; mcId: string }[]>([{ name: '', mcId: '' }]);
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [sameName, setSameName] = useState(false);
+  const left = here === 'left', support = position !== 'Dispatcher';
+  // Someone who left may have last worked at an MC or team archived since.
+  const allMcs = [...options.mcs.map(item => ({ ...item, archived: false })), ...(options.archivedMcs ?? []).map(item => ({ ...item, archived: true }))];
+  const mcList = left ? allMcs : allMcs.filter(item => !item.archived), chosenMc = mcList.find(item => item.name === mc);
+  const teams = [...options.teams.map(item => ({ ...item, archived: false })), ...(left ? (options.archivedTeams ?? []).map(item => ({ ...item, lead: null, archived: true })) : [])].filter(item => item.mcId === chosenMc?.id);
+  const mcLabel = (item: { name: string; archived: boolean }) => item.archived ? `${item.name} (archived)` : item.name;
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
     const differentPerson = (event.nativeEvent as SubmitEvent).submitter?.getAttribute('name') === 'differentPerson';
     setBusy(true); setError(''); setSameName(false);
     try {
+      const where = support ? (left ? {} : assisting === 'TEAM' ? { supportsTeamId: data.supportsTeam } : { supportsMemberId: data.supports }) : { mc: mc === NO_MC ? '' : mc, team: data.team ?? '', jobTitle: data.jobTitle ?? '' };
       const row: ExistingRow = { row: 1, firstName: data.firstName, lastName: data.lastName, position, startedOn: data.startedOn, companyEmail: data.companyEmail, ringCentralNumber: data.ringCentralNumber, personalEmail: data.personalEmail, personalPhone: data.personalPhone,
-        ringCentralExtension: data.ringCentralExtension, datEmail: data.datEmail, truckstopEmail: data.truckstopEmail, telegram: data.telegram,
-        ...(support ? (assisting === 'TEAM' ? { supportsTeamId: data.supportsTeam } : { supportsMemberId: data.supports }) : { mc, team: data.team, jobTitle: data.jobTitle }), ...(nda === 'PAPER' ? { ndaSignedOn: data.ndaSignedOn } : {}), ...(sop === 'PAPER' ? { sopSignedOn: data.sopSignedOn } : {}), ...(differentPerson ? { differentPerson } : {}) };
+        ringCentralExtension: data.ringCentralExtension, datEmail: data.datEmail, truckstopEmail: data.truckstopEmail, telegram: data.telegram, legalFirstName: data.legalFirstName, legalLastName: data.legalLastName,
+        otherNameList: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId ? { mcId: item.mcId } : {}) })), ...where,
+        ...(left ? { status: 'Left', leftOn: data.leftOn, leftReason: data.leftReason } : { ...(nda === 'PAPER' ? { ndaSignedOn: data.ndaSignedOn } : {}), ...(sop === 'PAPER' ? { sopSignedOn: data.sopSignedOn } : {}) }), ...(differentPerson ? { differentPerson } : {}) };
       const result = await mutate<Added>('dispatch/existing/add', 'POST', { rows: [row] });
-      if (result.members[0]) onAdded(result.members[0].id);
+      if (result.members[0]) onAdded(result.members[0].id, left);
       else { setError(result.left[0]?.problems.join(' ') || 'Check the MC, team and job title against the lists.'); setSameName(!!result.left[0]?.sameName); }
     } catch (failure) { setError(errorMessage(failure, 'Unable to add them. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
   const paper = [{ value: 'PAPER', label: 'Signed on paper' }, { value: 'SIGN', label: 'Sign in the workspace' }];
-  return <Dialog open onClose={onClose} busy={busy} size="lg" title="Add one existing dispatcher" description="They become Active straight away. Nobody is messaged, and IT isn’t asked to set anything up."
-    actions={<Button form="add-existing" type="submit" disabled={busy}><Plus aria-hidden="true" className="size-4" />{busy ? 'Adding…' : 'Add dispatcher'}</Button>}>
+  const usedAt = [{ value: '', label: 'Not known' }, ...allMcs.map(item => ({ value: item.id, label: mcLabel(item) }))];
+  const change = (index: number, value: Partial<{ name: string; mcId: string }>) => setNames(list => list.map((item, at) => at === index ? { ...item, ...value } : item));
+  return <Dialog open onClose={onClose} busy={busy} size="lg" title="Add one existing dispatcher" description={left ? 'Added as Left: nobody is messaged, they get no sign-in, and IT isn’t asked to do anything.' : 'They become Active straight away. Nobody is messaged, and IT isn’t asked to set anything up.'}
+    actions={<Button form="add-existing" type="submit" disabled={busy}><Plus aria-hidden="true" className="size-4" />{busy ? 'Adding…' : left ? 'Add as Left' : 'Add dispatcher'}</Button>}>
     <form id="add-existing" onSubmit={submit} className="space-y-5"><fieldset disabled={busy} className="min-w-0 space-y-5">
       <div className="grid gap-4 sm:grid-cols-2"><Input name="firstName" label="First name" hint="As they use it at work." required maxLength={100} width="full" /><Input name="lastName" label="Last name" hint="As they use it at work." required maxLength={100} width="full" /></div>
-      <div className="grid gap-4 sm:grid-cols-2"><Select name="position" label="Position" value={position} onChange={event => setPosition(event.target.value)} options={['Dispatcher', 'Support', 'Updater']} width="full" /><Input name="startedOn" label="Started on" optional type="date" width="full" hint="If you don’t know it, add it on their page later." /></div>
-      {support ? <><RadioGroup name="assisting" label="They assist" value={assisting} onChange={setAssisting} options={[{ value: 'DISPATCHER', label: 'One dispatcher' }, { value: 'TEAM', label: 'A whole team', description: 'Everyone on the team, with no one dispatcher.' }]} />
-        {assisting === 'TEAM' ? <Select name="supportsTeam" label="Team" required placeholder="Choose a team" width="full" options={options.teams.map(item => ({ value: item.id, label: [item.name, options.mcs.find(mcItem => mcItem.id === item.mcId)?.name].filter(Boolean).join(' · ') }))} hint="They work where the team works." />
-          : <Select name="supports" label="Dispatcher they assist" required placeholder="Choose a dispatcher" width="full" options={options.dispatchers.map(item => ({ value: item.id, label: item.mc ? `${item.name} · ${item.mc}` : item.name }))} hint="They work where their dispatcher works." />}</>
-        : <><div className="grid gap-4 sm:grid-cols-2"><Select name="mc" label="MC" required value={mc} placeholder="Choose an MC" width="full" onChange={event => setMc(event.target.value)} options={[...options.mcs.map(item => ({ value: item.name, label: item.name })), { value: NO_MC, label: NO_MC }]} />
-          <Select name="team" label="Team" width="full" required={!!chosenMc} placeholder={mc === NO_MC ? 'Set with their MC later' : mc ? 'Choose a team' : 'Choose an MC first'} disabled={!chosenMc}
-            hint={chosenMc ? 'Independent: works for this MC, not in a team.' : undefined}
-            options={chosenMc ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...options.teams.filter(item => item.mcId === chosenMc.id).map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))] : []} /></div>
-          <Select name="jobTitle" label="Job title" required placeholder="Choose a job title" options={options.jobTitles.map(item => ({ value: item.name, label: item.name }))} /></>}
-      <Card><CardHeader title="Accounts" description="What you know now. IT uses these when they leave, so add them if you can." /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" /><Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" /><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" hint="Digits only." /><span className="max-sm:hidden" />
-        <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /><Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /></CardBody></Card>
-      <Card><CardHeader title="Contact" description="The catch-up link is checked against the personal email." /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" /><Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" /><Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" /></CardBody></Card>
-      <Card><CardHeader title="Signed documents" description="A date confirms that a signed paper copy is on file with the company." /><CardBody className="grid gap-4 sm:grid-cols-2">
+      <RadioGroup name="here" label="Do they work here now?" cards value={here} onChange={value => { setHere(value); setMc(''); }} options={[{ value: 'here', label: 'Yes, they work here', description: 'Added as Active.' }, { value: 'left', label: 'No, they already left', description: 'Added as Left, kept for the future: for example to know them if they come back.' }]} />
+      {left ? <>
+        <div className="grid gap-4 sm:grid-cols-2"><Input name="leftOn" label="Last day" optional type="date" width="full" hint="Leave empty if you don’t know. Add it later from their page." /><Input name="startedOn" label="Started on" optional type="date" width="full" /></div>
+        <Textarea name="leftReason" label="Why they left" optional maxLength={500} rows={2} hint="Staff only. Never health, family or other private details." />
+        <Select name="position" label="Position" value={position} onChange={event => setPosition(event.target.value)} options={['Dispatcher', 'Support', 'Updater']} width="sm" />
+        {!support && <><div className="grid gap-4 sm:grid-cols-2"><Select name="mc" label="Last MC" optional value={mc} width="full" onChange={event => setMc(event.target.value)} options={[{ value: '', label: 'Not known' }, ...mcList.map(item => ({ value: item.name, label: mcLabel(item) }))]} />
+          <Select name="team" label="Last team" optional width="full" disabled={!chosenMc} options={[{ value: '', label: 'Not known' }, ...teams.map(item => ({ value: item.name, label: mcLabel(item) }))]} /></div>
+          <Select name="jobTitle" label="Job title" optional options={[{ value: '', label: 'Not known' }, ...options.jobTitles.map(item => ({ value: item.name, label: item.name }))]} /></>}
+      </> : <>
+        <div className="grid gap-4 sm:grid-cols-2"><Select name="position" label="Position" value={position} onChange={event => setPosition(event.target.value)} options={['Dispatcher', 'Support', 'Updater']} width="full" /><Input name="startedOn" label="Started on" optional type="date" width="full" hint="If you don’t know it, add it on their page later." /></div>
+        {support ? <><RadioGroup name="assisting" label="They assist" value={assisting} onChange={setAssisting} options={[{ value: 'DISPATCHER', label: 'One dispatcher' }, { value: 'TEAM', label: 'A whole team', description: 'Everyone on the team, with no one dispatcher.' }]} />
+          {assisting === 'TEAM' ? <Select name="supportsTeam" label="Team" required placeholder="Choose a team" width="full" options={options.teams.map(item => ({ value: item.id, label: [item.name, options.mcs.find(mcItem => mcItem.id === item.mcId)?.name].filter(Boolean).join(' · ') }))} hint="They work where the team works." />
+            : <Select name="supports" label="Dispatcher they assist" required placeholder="Choose a dispatcher" width="full" options={options.dispatchers.map(item => ({ value: item.id, label: item.mc ? `${item.name} · ${item.mc}` : item.name }))} hint="They work where their dispatcher works." />}</>
+          : <><div className="grid gap-4 sm:grid-cols-2"><Select name="mc" label="MC" required value={mc} placeholder="Choose an MC" width="full" onChange={event => setMc(event.target.value)} options={[...options.mcs.map(item => ({ value: item.name, label: item.name })), { value: NO_MC, label: NO_MC }]} />
+            <Select name="team" label="Team" width="full" required={!!chosenMc} placeholder={mc === NO_MC ? 'Set with their MC later' : mc ? 'Choose a team' : 'Choose an MC first'} disabled={!chosenMc}
+              hint={chosenMc ? 'Independent: works for this MC, not in a team.' : undefined}
+              options={chosenMc ? [{ value: INDEPENDENT, label: 'Independent (no team)' }, ...teams.map(item => ({ value: item.name, label: item.lead ? `${item.name} · ${item.lead}` : item.name }))] : []} /></div>
+            <Select name="jobTitle" label="Job title" required placeholder="Choose a job title" options={options.jobTitles.map(item => ({ value: item.name, label: item.name }))} /></>}
+      </>}
+      <Card><CardHeader title="Names" description="So search finds them by any name they used." /><CardBody className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2"><Input name="legalFirstName" label="Legal first name" optional maxLength={100} width="full" /><Input name="legalLastName" label="Legal last name" optional maxLength={100} width="full" /></div>
+        {names.map((item, index) => <div key={index} className="flex flex-wrap items-end gap-3">
+          <Input label="Other name" optional value={item.name} maxLength={100} hint={index ? undefined : 'Another American name they use or used.'} onChange={event => change(index, { name: event.target.value })} width="full" className="min-w-0 flex-[2_1_200px]" />
+          <Select label="Used at" optional value={item.mcId} onChange={event => change(index, { mcId: event.target.value })} options={usedAt} width="full" className="min-w-0 flex-[1_1_160px]" />
+          {names.length > 1 && <Button type="button" size="sm" variant="ghost" onClick={() => setNames(list => list.filter((_, at) => at !== index))}><X aria-hidden="true" className="size-4" />Remove<span className="sr-only"> {item.name}</span></Button>}
+        </div>)}
+        <Button type="button" size="sm" variant="outline" disabled={names.length >= 10} onClick={() => setNames(list => [...list, { name: '', mcId: '' }])}><Plus aria-hidden="true" className="size-4" />Add another name</Button>
+        <p className="text-[13px] text-muted-foreground">Latin letters only.</p>
+      </CardBody></Card>
+      <Card><CardHeader title="Accounts" description={left ? 'What they had, if you know it. Nothing is closed unless you ask IT later from their page.' : 'What you know now. IT uses these when they leave, so add them if you can.'} /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" /><Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" />
+        {!left && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" hint="Digits only." /><span className="max-sm:hidden" />
+          <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /><Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /></>}</CardBody></Card>
+      <Card><CardHeader title="Contact" description={left ? undefined : 'The catch-up link is checked against the personal email.'} /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" /><Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" />{!left && <Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" />}</CardBody></Card>
+      {!left && <Card><CardHeader title="Signed documents" description="A date confirms that a signed paper copy is on file with the company." /><CardBody className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-3"><Select label="NDA" value={nda} onChange={event => setNda(event.target.value)} options={paper} width="full" />{nda === 'PAPER' && <Input name="ndaSignedOn" label="NDA signed on" type="date" required width="full" />}</div>
-        <div className="space-y-3"><Select label="SOP" value={sop} onChange={event => setSop(event.target.value)} options={paper} width="full" />{sop === 'PAPER' && <Input name="sopSignedOn" label="SOP signed on" type="date" required width="full" />}</div></CardBody></Card>
+        <div className="space-y-3"><Select label="SOP" value={sop} onChange={event => setSop(event.target.value)} options={paper} width="full" />{sop === 'PAPER' && <Input name="sopSignedOn" label="SOP signed on" type="date" required width="full" />}</div></CardBody></Card>}
       <Notice message={error} error />{sameName && <Button type="submit" name="differentPerson" variant="outline" size="sm">They’re different people, add them</Button>}<PendingHint pending={busy} />
     </fieldset></form>
   </Dialog>;

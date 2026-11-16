@@ -1481,6 +1481,61 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await runner.release();
     });
   });
+  describe('Finishing the record (section 34)', () => {
+    const profile = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    it('adds one person who already left, with other names and where they used them, archived MCs included', async () => {
+      await db.query(`UPDATE mcs SET "archivedAt" = now() WHERE name = 'Lakeside Carriers'`);
+      const [lakeside] = await db.query(`SELECT id FROM mcs WHERE name = 'Lakeside Carriers'`);
+      const row = { row: 1, firstName: 'Drew', lastName: 'Calloway', position: 'Dispatcher', status: 'Left', leftOn: '', leftReason: 'Moved to another company.', mc: 'Lakeside Carriers', team: '', jobTitle: '',
+        legalFirstName: 'Andrii', legalLastName: 'Kalinenko', otherNameList: [{ name: 'Andy Calloway', mcId: lakeside.id }, { name: 'Drew Collins' }], companyEmail: 'drew.calloway@example.test' };
+      const { body } = await add([row]);
+      expect(body.left).toEqual([]);
+      const page = await profile(body.members[0].id);
+      expect(page).toMatchObject({ status: 'LEFT', leftReason: 'Moved to another company.', removal: null, existing: { leftDateKnown: false, addedAsLeft: true, sourceName: null, legalFirstName: 'Andrii' } });
+      expect(page.otherNames).toEqual([expect.objectContaining({ name: 'Andy Calloway', mc: 'Lakeside Carriers' }), expect.objectContaining({ name: 'Drew Collins', mc: null })]);
+      expect(page.history[0]).toMatchObject({ mc: 'Lakeside Carriers' });
+      // Nothing is sent to IT or anyone else.
+      expect((await db.query(`SELECT count(*)::integer AS n FROM notification_deliveries`))[0].n).toBe(0);
+      // An MC that doesn't exist is a problem on the row, not a lost name.
+      const bad = (await check([{ ...row, firstName: 'Kai', otherNameList: [{ name: 'Kai Moon', mcId: '00000000-0000-4000-8000-000000000000' }] }])).body.rows[0];
+      expect(bad.problems.join(' ')).toMatch(/no longer exists/);
+    });
+    it('lets Edit recorded details record accounts found later for someone who left, never their paperwork, and tells IT only while it works', async () => {
+      const id = (await add([base(2, 'Drew', { status: 'Left', leftOn: '2025-06-30', companyEmail: 'drew@example.test' })])).body.members[0].id as string;
+      let page = await profile(id);
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: page.version, ndaSignedOn: '2024-01-02' }).expect(409);
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: page.version, ringCentralNumber: '+1 469 555 0118', personalEmail: 'drew.home@example.test' }).expect(200);
+      page = await profile(id);
+      expect(page.existing).toMatchObject({ ringCentralNumber: '+1 469 555 0118', personalEmail: 'drew.home@example.test' });
+      expect(page.recordChanges[0]).toMatchObject({ event: 'EXISTING_UPDATED', by: expect.any(String), metadata: { fields: expect.arrayContaining(['ringCentralNumber', 'personalEmail']) } });
+      // While IT works on closing their accounts, a new account joins its checklist.
+      await agents.manager.post(`/api/dispatch/members/${id}/close-accounts`).set(headers).send({ version: page.version, emailAfter: 'SUSPEND' }).expect(201);
+      page = await profile(id);
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: page.version, datEmail: 'drew.dat@example.test' }).expect(200);
+      const [removal] = await db.query(`SELECT id, profile FROM it_removal_requests WHERE "memberId" = $1`, [id]);
+      expect(removal.profile).toMatchObject({ datEmail: 'drew.dat@example.test' });
+      // Once IT has finished, the record still takes an account and IT is told directly.
+      await db.query(`UPDATE it_removal_requests SET "completedAt" = now(), "numberOutcome" = 'RELEASED' WHERE id = $1`, [removal.id]);
+      page = await profile(id);
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: page.version, truckstopEmail: 'drew.ts@example.test' }).expect(200);
+      const [after] = await db.query(`SELECT profile FROM it_removal_requests WHERE id = $1`, [removal.id]);
+      expect(after.profile.truckstopEmail ?? null).toBeNull();
+      // An email of someone here now is still refused.
+      const riley = await addOne('Riley', { companyEmail: 'riley@example.test' });
+      expect(riley).toBeTruthy();
+      page = await profile(id);
+      await agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: page.version, companyEmail: 'riley@example.test' }).expect(409);
+    });
+    it('names the file details were filled in from in History, with how many other names it added', async () => {
+      const id = (await add([base(2, 'Drew', { status: 'Left', leftOn: '', personalEmail: 'drew.home@example.test' })], 'lakeside-history.csv')).body.members[0].id as string;
+      const again = base(2, 'Drew', { status: 'Left', leftOn: '2025-05-15', leftReason: 'Moved on.', personalEmail: 'drew.home@example.test', ringCentralNumber: '+1 469 555 0118', otherNames: 'Drew Collins', alreadyAction: 'FILL' });
+      expect((await add([again], 'lakeside-history-2.csv')).body).toMatchObject({ filled: 1 });
+      const page = await profile(id);
+      expect(page.recordChanges[0]).toMatchObject({ event: 'EXISTING_UPDATED', metadata: { from: 'file', source: 'lakeside-history-2.csv', otherNames: 1, fields: expect.arrayContaining(['ringCentralNumber', 'lastDay', 'leftReason', 'otherNames']) } });
+      // Values never go into the history.
+      expect(JSON.stringify(page.recordChanges)).not.toMatch(/555|Collins|Moved on/);
+    });
+  });
   it('refuses a rollback while existing records are kept', async () => {
     await addOne('Riley');
     const runner = db.createQueryRunner();

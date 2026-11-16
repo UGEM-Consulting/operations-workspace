@@ -265,9 +265,12 @@ export class DispatchService {
   // Other names (section 33), each with the MC where it was used when known.
   const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt", lower(o.name), o.id`, [id]);
   const [laterRecord] = await this.db.query(`SELECT id, "firstName" || ' ' || "lastName" AS name, "joinedAt", status FROM dispatch_members WHERE "previousMemberId" = $1`, [id]);
+  // Changes to the record itself (HistoryFromFileScreen): which details, names or accounts changed, from a file or by hand; never the values.
+  const recordChanges = await this.db.query(`SELECT e.id, e.event, e.metadata, e."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "by"
+   FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event IN ('EXISTING_UPDATED','NAMES_CHANGED','LEFT_DAY_RECORDED','CLOSE_ACCOUNTS_ASKED') ORDER BY e."createdAt" DESC LIMIT 100`, [id]);
   // IT requests about their company accounts that are still open (section 33): closing one, or a move's new accounts.
   const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
-  return { accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  return { recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.

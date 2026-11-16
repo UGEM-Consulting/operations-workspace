@@ -89,7 +89,7 @@ export interface AlreadyMatch { id: string; name: string; status: string; why: s
  account?: { mcId: string; mc: string; adds: string[] } }
 export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; supportType: SupportType; status: RowStatus; problems: string[]; sameName: boolean;
  mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean; sharesSignIn: boolean;
- left: boolean; leftOn: string | null; hasAccounts: boolean; askIt: boolean; otherNames: string[]; match: AlreadyMatch | null; fill: boolean; previousMemberId: string | null;
+ left: boolean; leftOn: string | null; hasAccounts: boolean; askIt: boolean; otherNames: string[]; otherNameMcs: (string | null)[]; match: AlreadyMatch | null; fill: boolean; previousMemberId: string | null;
  // The load board account each sign-in is on (section 33); null puts it on "account not recorded".
  seatAccounts: Record<Provider, string | null>;
  // Recorded as their account at another company instead of a second record.
@@ -143,8 +143,10 @@ export class ExistingDispatchersService {
  private get fictionalOnly() { return !(this.config.get('NODE_ENV') === 'production' || this.config.get('DEPLOYMENT_PURPOSE') === 'production'); }
 
  async options() {
-  const [mcs, teams, jobTitles] = await Promise.all([
+  const [mcs, archivedMcs, archivedTeams, teams, jobTitles] = await Promise.all([
    this.db.query(`SELECT id, name FROM mcs WHERE "archivedAt" IS NULL ORDER BY "nameKey"`),
+   this.db.query(`SELECT id, name FROM mcs WHERE "archivedAt" IS NOT NULL ORDER BY "nameKey"`),
+   this.db.query(`SELECT t.id, t.name, t."mcId" FROM teams t WHERE t."archivedAt" IS NOT NULL ORDER BY t."nameKey"`),
    this.db.query(`SELECT t.id, t.name, t."mcId", CASE WHEN l.id IS NULL THEN NULL ELSE l."firstName" || ' ' || l."lastName" END AS lead
     FROM teams t LEFT JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE t."archivedAt" IS NULL ORDER BY t."nameKey"`),
    this.db.query(`SELECT id, name FROM job_titles WHERE "archivedAt" IS NULL ORDER BY "nameKey"`)]);
@@ -153,7 +155,7 @@ export class ExistingDispatchersService {
    LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN mcs m ON m.id = a."mcId"
    WHERE d.position = 'DISPATCHER' AND d.status <> 'LEFT' AND NOT EXISTS (SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
    ORDER BY lower(d."firstName"), lower(d."lastName")`);
-  return { mcs, teams, jobTitles, dispatchers, loadBoardAccounts };
+  return { mcs, teams, jobTitles, dispatchers, loadBoardAccounts, archivedMcs, archivedTeams };
  }
  private async known(em: EntityManager): Promise<Known> {
   const mcs: { id: string; name: string; archived: boolean }[] = await em.query(`SELECT id, name, "archivedAt" IS NOT NULL AS archived FROM mcs`);
@@ -241,7 +243,11 @@ export class ExistingDispatchersService {
     else if (date > today) problems.push(`${label} signed on can’t be in the future.`);
    }
    // Legal and other names, in Latin letters like every name in the workspace.
-   const legalFirst = text(row.legalFirstName), legalLast = text(row.legalLastName), otherNames = splitNames(row.otherNames);
+   const legalFirst = text(row.legalFirstName), legalLast = text(row.legalLastName);
+   // The form's list keeps each name's MC (any MC, archived too, since it may be where they used to work).
+   const listed = row.otherNameList?.map(item => ({ name: text(item.name).replace(/\s+/g, ' '), mcId: item.mcId ?? null })).filter((item, index, all) => item.name && all.findIndex(other => other.name.toLowerCase() === item.name.toLowerCase()) === index);
+   const otherNames = listed ? listed.map(item => item.name) : splitNames(row.otherNames), otherNameMcs = listed ? listed.map(item => item.mcId) : otherNames.map(() => null);
+   if (otherNameMcs.some(id => id && ![...known.allMcs.values()].some(mc => mc.id === id))) problems.push('An MC chosen for another name no longer exists.');
    if ([legalFirst, legalLast].some(value => value && (value.length > 100 || !NAME.test(value)))) problems.push('The legal name uses Latin letters, up to 100 each.');
    if (otherNames.length > 10) problems.push('Up to 10 other names.');
    if (otherNames.some(value => value.length > 100 || !NAME.test(value))) problems.push('Other names use Latin letters, separated by ;.');
@@ -412,7 +418,7 @@ export class ExistingDispatchersService {
    if (already) { state = 'ALREADY'; problems.unshift(already); }
    const hasAccounts = left && !!(company || number || text(row.datEmail) || text(row.truckstopEmail));
    return { row: row.row, name, position, supportType, status: state, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsTeamId, supportsRow: null, startedOn, noMc, mcFromTeam, sharesSignIn: false,
-    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, match, fill, previousMemberId, seatAccounts, account };
+    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, otherNameMcs, match, fill, previousMemberId, seatAccounts, account };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
@@ -499,7 +505,7 @@ export class ExistingDispatchersService {
     // Load board sign-ins become seats (section 33), on the account the row names, before IT is asked to close anything.
     await this.fileSeats(em, user, member, row, result);
     await syncRecordedSeats(em, member.id, user.id);
-    await saveOtherNames(em, member.id, result.otherNames.filter(item => listNameKey(item) !== listNameKey(result.name)).map(name => ({ name, mcId: null })), user.id);
+    await saveOtherNames(em, member.id, result.otherNames.map((name, index) => ({ name, mcId: result.otherNameMcs[index] ?? null })).filter(item => listNameKey(item.name) !== listNameKey(result.name)), user.id);
     let paper = 0;
     for (const [kind, value] of [['NDA', text(row.ndaSignedOn)], ['SOP', text(row.sopSignedOn)]] as const) {
      if (!value) continue;
@@ -512,7 +518,7 @@ export class ExistingDispatchersService {
     added.set(result.row, member.id);
    }
    let filled = 0;
-   for (const result of results.filter(row => row.fill)) { alerts.push(...await this.fillIn(em, user, byRow.get(result.row)!, result)); filled += 1; }
+   for (const result of results.filter(row => row.fill)) { alerts.push(...await this.fillIn(em, user, byRow.get(result.row)!, result, sourceName)); filled += 1; }
    let accounts = 0;
    for (const result of results.filter(row => row.account)) { await this.addAccount(em, user, byRow.get(result.row)!, result, sourceName); accounts += 1; }
    return { added: added.size, filled, accounts, members: [...added.entries()].map(([row, id]) => ({ row, id })),
@@ -525,7 +531,7 @@ export class ExistingDispatchersService {
   * Fills only what a recorded person's record is missing, from a row that matched them. A value already recorded never changes
   * here. A last day follows Add last day's rules, and a new account reaches IT's open removal. Returns the alerts to send.
   */
- private async fillIn(em: EntityManager, user: User, row: ExistingRowDto, result: RowResult): Promise<string[]> {
+ private async fillIn(em: EntityManager, user: User, row: ExistingRowDto, result: RowResult, sourceName?: string): Promise<string[]> {
   const match = result.match!;
   const member = await em.getRepository(DispatchMember).findOne({ where: { id: match.id }, lock: { mode: 'pessimistic_write' } });
   const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: match.id });
@@ -549,7 +555,7 @@ export class ExistingDispatchersService {
   if (fields.includes('datEmail') || fields.includes('truckstopEmail')) { await this.fileSeats(em, user, member, row, result, fields); await syncRecordedSeats(em, member.id, user.id); }
   const accounts = fields.filter(field => REMOVAL_FIELDS.includes(field));
   const alerts = accounts.length ? await this.correctRemoval(em, user, member, record, accounts) : [];
-  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file' } });
+  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file', ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}), ...(newNames.length ? { otherNames: newNames.length } : {}) } });
   return alerts;
  }
  /** A seat for each sign-in the row puts on a named account; one already open there keeps it. Only fields filled in, when given. */
@@ -571,7 +577,7 @@ export class ExistingDispatchersService {
   if (used && !(await em.getRepository(MemberOtherName).existsBy({ memberId: member.id, name: used }))) { await saveOtherNames(em, member.id, [{ name: used, mcId: at.mcId }], user.id); fields.push('otherNames'); }
   if (text(row.datEmail) || text(row.truckstopEmail)) { await this.fileSeats(em, user, member, row, result, undefined, true); fields.push('seats'); }
   member.version += 1; await em.save(member);
-  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file' } });
+  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file', ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}) } });
   await refreshRemovalAccounts(em, member.id, user.id); await refreshRemovalSeats(em, member.id, user.id);
  }
  private async fileSeats(em: EntityManager, user: User, member: DispatchMember, row: ExistingRowDto, result: RowResult, fields?: string[], unnamed = false) {
@@ -700,7 +706,8 @@ export class ExistingDispatchersService {
    const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
    if (!member || !record) throw new NotFoundException('This dispatcher record no longer exists.');
    if (member.version !== dto.version) throw new ConflictException('Someone else changed this record. Reload and try again.');
-   if (member.status === 'LEFT') throw new ConflictException('This dispatcher has left; their record is kept for history.');
+   // Someone who left: accounts and contact found later can still be recorded; their paperwork is closed.
+   if (member.status === 'LEFT' && (dto.ndaSignedOn !== undefined || dto.sopSignedOn !== undefined)) throw new ConflictException('They have left, so their paperwork is closed.');
    const changed: string[] = [];
    // Only the values being set are looked up, so an edit never reads everyone while it holds the import lock.
    const probes = ([['companyEmail', dto.companyEmail, undefined], ['personalEmail', dto.personalEmail, undefined], ['personalPhone', undefined, dto.personalPhone]] as const)
@@ -778,7 +785,8 @@ export class ExistingDispatchersService {
   const next: Record<string, string | null> = { companyEmail: fromIt.companyEmail ?? companyEmail, ringCentralNumber: fromIt.ringCentralNumber ?? ringCentralNumber, ringCentralExtension: fromIt.ringCentralExtension ?? ringCentralExtension, datEmail: fromIt.datEmail ?? datEmail, truckstopEmail: fromIt.truckstopEmail ?? truckstopEmail };
   const profile = removal.profile as unknown as Record<string, string | null | undefined>, changed = fields.filter(field => (profile[field] ?? null) !== next[field]);
   if (!changed.length) return [];
-  if (removal.completedAt) throw new ConflictException('IT has already finished removing their access. Tell IT about this account directly.');
+  // Someone who left: once IT finished, the record still takes the account and IT is told directly, as the dialog says.
+  if (removal.completedAt) { if (member.status === 'LEFT') return []; throw new ConflictException('IT has already finished removing their access. Tell IT about this account directly.'); }
   removal.profile = { ...removal.profile, ...next };
   // Forwarding needs a mailbox, and what happens to a number is decided for that number.
   if (!next.companyEmail) { removal.emailAfter = 'SUSPEND'; removal.forwardTo = null; }

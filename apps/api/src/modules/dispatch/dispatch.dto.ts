@@ -45,6 +45,8 @@ export class ExistingRowDto {
  @IsOptional() @IsString() @MaxLength(300) legalFirstName?: string;
  @IsOptional() @IsString() @MaxLength(300) legalLastName?: string;
  @IsOptional() @IsString() @MaxLength(1500) otherNames?: string;
+ // The one-person form (AddOneNamesScreen): other names, each with where they used it. Takes the place of otherNames.
+ @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => OtherNameDto) otherNameList?: OtherNameDto[];
  // Someone added as Left whose accounts may still be open: IT gets a removal checklist from what the row records.
  @IsOptional() @IsBoolean() askIt?: boolean;
  // A row that matches someone already recorded: fill only what their record is missing, or (for someone who left) add them again as the same person.
