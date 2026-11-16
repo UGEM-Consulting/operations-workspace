@@ -8,6 +8,7 @@ import { ApplicationActivity, ApplicationReview, DispatcherApplication, Invitati
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { DECISION_STATUSES, type DecisionStatus, statusMessage } from './status-messages';
 import { TelegramClient, TelegramError, type TelegramUpdate } from './telegram.client';
+import { linkGroup } from './groups';
 import { ApplicantUpdateDelivery, ApplicantUpdateSettings, StaffTelegramLink, StaffTelegramLinkToken, TelegramLinkToken, TelegramPollState, type UpdateChannel } from './updates.entity';
 
 const LINK_TTL_MS = 30 * 60000;
@@ -118,8 +119,12 @@ export class UpdatesService implements OnApplicationBootstrap, BeforeApplication
  }
  /** Applies one bot message inside the caller's transaction and returns the reply to send afterwards, if any. */
  private async handle(em: EntityManager, message: TelegramUpdate['message']): Promise<[string, string] | null> {
-  if (!message || message.chat.type !== 'private') return null;
+  if (!message) return null;
   const text = (message.text ?? '').trim(), chatId = String(message.chat.id);
+  // A group (section 34): only an administrator's one-time /link code does anything there.
+  if (message.chat.type === 'group' || message.chat.type === 'supergroup') { const reply = await linkGroup(em, this.db, message.chat, text); return reply ? [chatId, reply] : null; }
+  if (message.chat.type !== 'private') return null;
+  if (/^\/link\b/.test(text)) return [chatId, 'Send this code in the group you want to link, not here. Add the bot to the group first.'];
   if (text === '/stop') {
    await em.getRepository(ApplicantUpdateSettings).update({ telegramChatId: chatId }, { telegramChatId: null, telegramUsername: null, telegramLinkedAt: null, telegram: false, email: true });
    await em.getRepository(StaffTelegramLink).delete({ chatId });

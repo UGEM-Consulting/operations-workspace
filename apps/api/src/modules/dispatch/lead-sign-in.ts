@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from 'typeorm';
+import { queueGroupOnly } from '../updates/groups';
 import type { EntityManager } from 'typeorm';
 import { revokeUserSessions } from '../auth/revoke';
 import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
@@ -65,7 +66,10 @@ export async function syncSignIns(em: EntityManager, memberIds: (string | null |
   const wanted = await wantedSignIn(em, memberId);
   if (open?.kind === wanted) continue;
   if (open) await em.query(`UPDATE team_lead_sign_ins SET "cancelledAt" = now() WHERE id = $1 AND "doneAt" IS NULL AND "cancelledAt" IS NULL`, [open.id]);
-  if (wanted && ask) await em.getRepository(TeamLeadSignIn).insert({ memberId, kind: wanted, createdBy: actorId });
+  if (wanted && ask) {
+   const added = await em.getRepository(TeamLeadSignIn).insert({ memberId, kind: wanted, createdBy: actorId });
+   await queueGroupOnly(em, 'IT_SIGN_IN_WAITING', added.identifiers[0]?.id ?? null);
+  }
  }
 }
 

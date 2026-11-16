@@ -24,6 +24,8 @@ const STAFF_ALERTS = {
   // Leave (section 35, approved 2026-11-11): like the others, they name no one.
   IT_LEAVE_SUSPEND: 'Someone is going on leave. Suspend their accounts from their first day away in UGEM Workspace.',
   IT_LEAVE_RESTORE: 'Someone is back from leave. Restore their accounts in UGEM Workspace.',
+  // Telegram groups (section 34, approved 2026-11-16): to the driver's Safety Manager; names no one.
+  TRUCK_GROUP_CHANGE: 'A truck’s Telegram group needs a change in UGEM Workspace.',
 };
 export type StaffAlertKind = keyof typeof STAFF_ALERTS;
 export function staffAlertMessage(kind: StaffAlertKind, url: string) { return `${STAFF_ALERTS[kind]}\n\n${url}`; }

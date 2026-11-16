@@ -2201,6 +2201,8 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
     // Ready for the road (or an acknowledgement, an owner's contract, a group change or their events) keeps RoadReady.
     await db.query(`INSERT INTO driver_road_ready ("driverId") VALUES ($1)`, [id]);
+    await db.undoLastMigration(); // TelegramGroups, with none here
+    await db.undoLastMigration(); // LeaveCovers, with none here
     await db.undoLastMigration(); // HandPhotos, with none here
     await db.undoLastMigration(); // AccountRequests, with none here
     await db.undoLastMigration(); // CompanyAccounts, with none here
@@ -2318,6 +2320,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('LeaveCovers1793280000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('TelegramGroups1793290000000');
   });
 });

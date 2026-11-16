@@ -44,7 +44,10 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'PATCH' && /^users\/[0-9a-f-]{36}$/.test(path)) ||
     // The approver's own saved countersigning signature.
     // Own Telegram connection for workspace alerts.
-    (method === 'GET' && path === 'staff/telegram') || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
+    (method === 'GET' && path === 'staff/telegram') ||
+    // Admin › Telegram (section 34): groups, their one-time codes and where each alert goes.
+    (method === 'POST' && (path === 'telegram/groups/codes' || match(`telegram/groups/codes/${ID}/check`, path) || match(`telegram/groups/${ID}/(unlink|test)`, path))) ||
+    (method === 'PATCH' && /^telegram\/routes\/[A-Z_]{1,32}$/.test(path)) || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && path === 'staff/signature') || (method === 'POST' && ['staff/signature', 'staff/signature/delete'].includes(path)) ||
     (method === 'GET' && path === 'documents') || (method === 'POST' && path === 'documents') ||
     // Managed lists: add, edit, archive and restore MCs and job titles.

@@ -1,3 +1,4 @@
+import { alertTargets, queueGroupAlert } from '../updates/groups';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
@@ -99,6 +100,21 @@ export async function askGroupChange(em: EntityManager, driverId: string, change
  if (!made) return;
  await em.query(`INSERT INTO telegram_group_changes ("driverId", "unitId", reason, "removeMemberId", "addMemberId", "newUnitId") VALUES ($1, $2, $3, $4, $5, $6)`,
   [driverId, change.unitId, change.reason, change.removeMemberId ?? null, change.addMemberId ?? null, change.newUnitId ?? null]);
+ await askGroupChangeAlert(em, driverId);
+}
+/**
+ * The alert for it (section 34): to the driver's Safety Manager (every Safety Director when they have none) and/or Safety's
+ * group. Written straight into the outboxes; the sweepers send them, since this runs inside other services' transactions.
+ */
+async function askGroupChangeAlert(em: EntityManager, driverId: string) {
+ const targets = await alertTargets(em, 'TRUCK_GROUP_CHANGE');
+ if (targets.groupId) await queueGroupAlert(em, targets.groupId, 'TRUCK_GROUP_CHANGE', driverId);
+ if (!targets.people) return;
+ const people: { id: string; linked: boolean }[] = await em.query(`WITH contact AS (SELECT u.id FROM driver_owners o JOIN users u ON u.id = o."ownerId" WHERE o."driverId" = $1 AND o."endedAt" IS NULL AND u.status = 'ACTIVE' AND u.role = 'SAFETY_STAFF')
+  SELECT u.id, EXISTS(SELECT 1 FROM staff_telegram_links l WHERE l."userId" = u.id) AS linked FROM users u
+  WHERE u.id IN (SELECT id FROM contact) OR (NOT EXISTS(SELECT 1 FROM contact) AND u.role = 'SAFETY_MANAGER' AND u.status = 'ACTIVE')`, [driverId]);
+ for (const person of people) await em.query(`INSERT INTO notification_deliveries (kind, "recipientId", "referenceId", channel, status, "failureCode") VALUES ('TRUCK_GROUP_CHANGE', $1, $2, 'TELEGRAM', $3, $4)`,
+  [person.id, driverId, person.linked ? 'PENDING' : 'SKIPPED', person.linked ? null : 'NOT_CONNECTED']);
 }
 /** The truck the group was made for before Dispatch assigns one: Safety's pick on Ready for the road, if any. */
 export async function pickedUnitId(em: EntityManager, driverId: string): Promise<string | null> {

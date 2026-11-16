@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 export interface TelegramUpdate {
  update_id: number;
- message?: { text?: string; chat: { id: number; type: string }; from?: { username?: string } };
+ message?: { text?: string; chat: { id: number; type: string; title?: string }; from?: { username?: string } };
 }
 /** A failure reduced to a safe code. Bot tokens appear in request URLs, so raw errors are never logged or returned. */
 export class TelegramError extends Error {

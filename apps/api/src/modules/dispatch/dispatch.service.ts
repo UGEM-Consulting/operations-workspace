@@ -101,7 +101,10 @@ export class DispatchService {
      WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND x.status <> 'LEFT')) ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
   ]);
   if (!team) throw new NotFoundException('This team no longer exists.');
-  return { ...team, dispatchers, helpers };
+  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name and who linked it; nothing is sent there yet but tests.
+  const [telegramGroup] = await this.db.query(`SELECT g.title, g."linkedAt", u."firstName" || ' ' || u."lastName" AS "linkedBy", g."lostAt" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
+   WHERE g."teamId" = $1 AND g."unlinkedAt" IS NULL`, [id]);
+  return { ...team, dispatchers, helpers, telegramGroup: telegramGroup ?? null };
  }
 
  async createTeam(user: User, dto: CreateTeamDto) {
