@@ -39,6 +39,8 @@ const navigation = [
   { key: 'users', href: '/staff-accounts', label: 'Staff accounts', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   // Telegram groups and where each alert goes (section 34).
   { key: 'telegram', href: '/telegram', label: 'Telegram', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
+  // How long records are kept, what is due and the log (section 34).
+  { key: 'retention', href: '/retention', label: 'Keeping records', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'settings', href: '/settings', label: 'Settings', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'security', href: '/account/security', label: 'Account security', section: 'Account', roles: STAFF },
 ];

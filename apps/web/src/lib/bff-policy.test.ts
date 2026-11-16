@@ -134,6 +134,10 @@ describe('offboarding and manager hand-over through the BFF', () => {
     // Leave (section 35) and an administrator's corrections (section 36); IT's suspend and restore checklists.
     for (const action of ['on-leave', 'on-leave/return', 'on-leave/cancel', 'on-leave/back-on', 'on-leave/reason', 'correct']) assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/${action}`), true, action);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/delete`), false);
+    // Keeping records (section 34): searching people to hold, holds and the switch; the lists are read on the server.
+    assert.equal(allowedEndpoint('GET', 'retention/people'), true);
+    for (const path of ['retention/settings', 'retention/holds', `retention/holds/${ID}/extend`, `retention/holds/${ID}/end`]) assert.equal(allowedEndpoint('POST', path), true, path);
+    assert.equal(allowedEndpoint('GET', 'retention/due'), false);
     // Telegram groups (section 34): the page links groups and changes routes through the BFF; it reads them on the server.
     for (const path of ['telegram/groups/codes', `telegram/groups/codes/${ID}/check`, `telegram/groups/${ID}/unlink`, `telegram/groups/${ID}/test`]) assert.equal(allowedEndpoint('POST', path), true, path);
     assert.equal(allowedEndpoint('PATCH', 'telegram/routes/IT_SETUP'), true);

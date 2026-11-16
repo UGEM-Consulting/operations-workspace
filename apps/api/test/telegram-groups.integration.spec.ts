@@ -74,7 +74,7 @@ integration('Telegram groups (disposable PostgreSQL)', () => {
   }, 30000);
   beforeEach(async () => {
     await settle(); messages.length = 0; blocked.clear();
-    await db.query('TRUNCATE users, staff_sessions, login_attempts, invitations, telegram_groups, telegram_group_link_codes, telegram_alert_routes, telegram_group_deliveries, notification_deliveries CASCADE');
+    await db.query('TRUNCATE users, staff_sessions, login_attempts, invitations, mcs, teams, telegram_groups, telegram_group_link_codes, telegram_alert_routes, telegram_group_deliveries, notification_deliveries CASCADE');
     await db.query(`UPDATE telegram_poll_state SET "updateOffset" = $1`, [nextUpdate]);
     const passwordHash = await hashPassword(password);
     for (const [key, role] of [['admin', Role.SYSTEM_ADMIN], ['manager', Role.DISPATCHER_MANAGER], ['it', Role.IT_SPECIALIST]] as const) {

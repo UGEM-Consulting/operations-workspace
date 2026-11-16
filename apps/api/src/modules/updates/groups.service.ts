@@ -63,8 +63,9 @@ export class TelegramGroupsService implements OnApplicationBootstrap, BeforeAppl
     return { linked: group ?? null, expired: !code.consumedAt && code.expiresAt < new Date() };
   }
   async unlink(user: User, id: string) {
-    const [row]: { id: string }[] = await this.db.query(`UPDATE telegram_groups SET "unlinkedAt" = now(), "unlinkedBy" = $2 WHERE id = $1 AND "unlinkedAt" IS NULL RETURNING id`, [id, user.id]);
-    if (!row) throw new NotFoundException('This group is no longer linked.');
+    // An UPDATE answers [rows, count].
+    const [rows]: [{ id: string }[], number] = await this.db.query(`UPDATE telegram_groups SET "unlinkedAt" = now(), "unlinkedBy" = $2 WHERE id = $1 AND "unlinkedAt" IS NULL RETURNING id`, [id, user.id]);
+    if (!rows.length) throw new NotFoundException('This group is no longer linked.');
     // What was waiting for it isn't sent anywhere else: people get their own alerts as their routes say.
     await this.db.query(`UPDATE telegram_group_deliveries SET status = 'SKIPPED', "failureCode" = 'UNLINKED' WHERE "groupId" = $1 AND status = 'PENDING'`, [id]);
     return this.view();
@@ -107,7 +108,7 @@ export class TelegramGroupsService implements OnApplicationBootstrap, BeforeAppl
         const result = !group || group.unlinkedAt || group.lostAt ? 'UNLINKED' : await this.deliver(groupId, group.chatId, await this.text(mine), mine[0].kind);
         if (result !== true) this.logger.warn(`Telegram group alert failed: ${result}`);
         const final = result === true || ['UNLINKED', 'FORBIDDEN', 'REJECTED'].includes(result);
-        for (const row of mine) await this.db.query(`UPDATE telegram_group_deliveries SET status = $2, "failureCode" = $3, "sentAt" = CASE WHEN $2 = 'SENT' THEN now() ELSE NULL END WHERE id = $1 AND status = 'SENDING' AND attempts = $4`,
+        for (const row of mine) await this.db.query(`UPDATE telegram_group_deliveries SET status = $2::varchar, "failureCode" = $3, "sentAt" = CASE WHEN $2::varchar = 'SENT' THEN now() ELSE NULL END WHERE id = $1 AND status = 'SENDING' AND attempts = $4`,
           [row.id, result === true ? 'SENT' : final || row.attempts >= DELIVERY_RETRY.maxAttempts ? 'FAILED' : 'PENDING', result === true ? null : result.slice(0, 32), row.attempts]);
       }
     } catch { this.logger.warn('Telegram group alerts: the run failed'); }

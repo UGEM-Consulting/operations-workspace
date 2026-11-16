@@ -45,6 +45,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // The approver's own saved countersigning signature.
     // Own Telegram connection for workspace alerts.
     (method === 'GET' && path === 'staff/telegram') ||
+    // Admin › Keeping records (section 34): the hold dialog searches by name; holds and the switch are changes.
+    (method === 'GET' && path === 'retention/people') || (method === 'POST' && (path === 'retention/settings' || path === 'retention/holds' || match(`retention/holds/${ID}/(extend|end)`, path))) ||
     // Admin › Telegram (section 34): groups, their one-time codes and where each alert goes.
     (method === 'POST' && (path === 'telegram/groups/codes' || match(`telegram/groups/codes/${ID}/check`, path) || match(`telegram/groups/${ID}/(unlink|test)`, path))) ||
     (method === 'PATCH' && /^telegram\/routes\/[A-Z_]{1,32}$/.test(path)) || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
@@ -111,6 +113,8 @@ const LIST_QUERY = ['page', 'pageSize', 'status', 'search', 'sort', 'direction']
 /** The query fields passed on to the API for a list read through the BFF; anything else is dropped. */
 export function forwardedQuery(path: string): string[] {
   if (path === 'onboarding/review-queue' || path === 'it/onboarding') return LIST_QUERY;
+  // Keeping records: the hold dialog's name search (section 34).
+  if (path === 'retention/people') return ['q'];
   if (path === 'dispatch/members') return [...LIST_QUERY, 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId'];
   return [];
 }
