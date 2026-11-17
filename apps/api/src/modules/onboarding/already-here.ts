@@ -22,6 +22,7 @@ export interface HereMatch {
 export interface Probe { key: string; email: string | null; phone: string | null; applicationId: string | null; skipMemberId: string | null }
 
 /** Digits only, without a leading US 1: the file import's rule (existing.service.ts digits). */
+export const phoneSqlOf = (expr: string) => phoneSql(expr);
 export const phoneKey = (value: string | null | undefined) => (value ?? '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '') || null;
 const phoneSql = (expr: string) => `nullif(regexp_replace(regexp_replace(coalesce(${expr}, ''), '\\D', '', 'g'), '^1(?=\\d{10}$)', ''), '')`;
 // Undecided and not given up: one waiting for review counts however long ago the applicant's access ended.
@@ -45,6 +46,8 @@ function points(emails: boolean, phones: boolean) {
   `SELECT e."memberId", NULL, 'EMAIL', lower(e."personalEmail") FROM existing_member_records e WHERE ${email('lower(e."personalEmail")')}`,
   `SELECT e."memberId", NULL, 'EMAIL', lower(e."companyEmail") FROM existing_member_records e WHERE ${email('lower(e."companyEmail")')}`,
   `SELECT c."memberId", NULL, 'EMAIL', lower(c.value) FROM member_contacts c WHERE c."removedAt" IS NULL AND c.kind = 'EMAIL' AND ${email('lower(c.value)')}`,
+  // A company email handed over to them when its owner left (section 35): theirs now. Someone only using another person's isn't its owner.
+  `SELECT x."memberId", NULL, 'EMAIL', lower(x.value) FROM member_shared_accounts x WHERE x.kind = 'EMAIL' AND x."handedOverAt" IS NOT NULL AND x."endedAt" IS NULL AND ${email('lower(x.value)')}`,
   // An account at another of our companies (section 33) that isn't closed.
   `SELECT x."memberId", NULL, 'EMAIL', lower(x."companyEmail") FROM member_company_accounts x WHERE x.status <> 'CLOSED' AND ${email('lower(x."companyEmail")')}`,
   `SELECT coalesce(r."memberId", d.id), NULL, 'EMAIL', lower(r."companyEmail") FROM it_onboarding_requests r LEFT JOIN dispatch_members d ON d."applicationId" = r."applicationId"

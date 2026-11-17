@@ -15,14 +15,24 @@ import { Badge } from '@/components/ui/status-badge';
 import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow } from './existing-csv';
+import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow, type SharedAction } from './existing-csv';
+import { useAccountOwners } from './shared-accounts';
 import { supportName } from './types';
 
 export interface ExistingOptions { archivedMcs?: { id: string; name: string }[]; archivedTeams?: { id: string; name: string; mcId: string }[]; loadBoardAccounts?: { id: string; name: string; provider: 'DAT' | 'TRUCKSTOP'; placeholder: boolean }[]; mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
 type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 /** Someone already recorded that a row matches (section 33): what the file would add, and what can be done with the row. */
 interface Match { id: string; name: string; status: string; why: string; options: ('FILL' | 'CAME_BACK' | 'DIFFERENT' | 'ACCOUNT')[]; fills: string[]; account?: { mcId: string; mc: string; adds: string[] } }
-interface CheckedRow { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean; left?: boolean; leftOn?: string | null; hasAccounts?: boolean; match?: Match | null }
+/** Someone else's company email or RingCentral number on a row naming a different person (section 35). */
+interface SharedMatch { owners: { id: string; name: string; fields: ('companyEmail' | 'ringCentralNumber')[] }[]; options: SharedAction[] }
+interface CheckedRow { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean; left?: boolean; leftOn?: string | null; hasAccounts?: boolean; match?: Match | null; shared?: SharedMatch | null; sharedAction?: SharedAction | null }
+/** "company email and RingCentral number", "company email" or "RingCentral number". */
+const fieldsWord = (fields: string[]) => fields.length > 1 ? 'company email and RingCentral number' : fields[0] === 'companyEmail' ? 'company email' : 'RingCentral number';
+/** What each choice says, from the row's person and the one who has it now (SharedCheckRowsScreen). */
+function sharedLabel(option: SharedAction, person: string, owner: string, both: boolean) {
+  const them = both ? 'them' : 'it';
+  return option === 'SHARED' ? `Add ${person}, using ${owner}’s (shared)` : option === 'MOVE_SHARED' ? `${person}’s, and ${owner} uses ${them} too` : option === 'MOVE' ? `${person}’s: move ${them} from ${owner}` : `Add ${person} without ${them}`;
+}
 interface Checked { rows: CheckedRow[]; choices: { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number; wholeTeam?: number; sharedSignIn?: number; left?: number; noLastDay?: number; fill?: number } }
 interface Added { added: number; accounts?: number; filled?: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
 const STEPS = ['Upload the file', 'Check the rows', 'Add dispatchers'];
@@ -88,6 +98,9 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
     setChosen(current => { const next = { ...current }; if (value === 'SKIP') delete next[row]; else next[row] = match; return next; });
     void check(rows.map(item => item.row !== row ? item : { ...item, alreadyAction: value === 'FILL' || value === 'CAME_BACK' || value === 'ACCOUNT' ? value : undefined, differentPerson: value === 'DIFFERENT' ? true : undefined }));
   }
+  /** Someone else's email or number: the row is checked again with the choice, or without one to skip it. */
+  function share(row: number, value: string) { void check(rows.map(item => item.row !== row ? item : { ...item, sharedAction: value ? value as SharedAction : undefined })); }
+  const sharedRows = (checked?.rows ?? []).flatMap(row => row.shared ? [{ ...row, shared: row.shared }] : []);
   const matched = (checked?.rows ?? []).flatMap(row => { const match = row.match ?? chosen[row.row]; return match ? [{ ...row, match }] : []; });
   const choiceOf = (row: number) => { const item = rows.find(entry => entry.row === row); return item?.alreadyAction ?? (item?.differentPerson && chosen[row] ? 'DIFFERENT' : 'SKIP'); };
   const leaving = checked?.rows.filter(row => row.left && row.status === 'READY' && !chosen[row.row]) ?? [];
@@ -137,6 +150,15 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
         { key: 'it', label: 'Ask IT to close their accounts', cell: row => row.hasAccounts ? <Checkbox label="Ask IT" checked={!!fileRow(row.row)?.askIt} disabled={busy}
           description={[fileRow(row.row)?.companyEmail && 'Company email', fileRow(row.row)?.ringCentralNumber && 'number', (fileRow(row.row)?.datEmail || fileRow(row.row)?.truckstopEmail) && 'load board sign-in'].filter(Boolean).join(', ').replace(/^./, letter => letter.toUpperCase()) + ' recorded'}
           onChange={event => { const ask = event.target.checked; setRows(list => list.map(item => item.row === row.row ? { ...item, askIt: ask || undefined } : item)); }} /> : <span className="text-[13px] text-muted-foreground">No accounts recorded</span> }]} /></Card>}
+    {sharedRows.length > 0 && <Card><CardHeader title="Someone else’s email or number" description="These rows name a different person but use an email or number already recorded. Choose for each; a row without a choice is skipped." />
+      <ul className="mt-3 divide-y divide-border border-t border-border">{sharedRows.map(row => {
+        const first = row.name.split(' ')[0] || 'them', owner = row.shared.owners[0], both = row.shared.owners.flatMap(item => item.fields).length > 1;
+        return <li key={row.row} className="flex flex-wrap items-end justify-between gap-3 px-4 py-3 sm:px-5">
+          <div className="min-w-0 flex-[1_1_320px]"><Person name={row.name || 'No name'} secondary={`Row ${row.row} · same ${row.shared.owners.map(item => `${fieldsWord(item.fields)} as ${item.name}`).join(', and ')}, Active`} /></div>
+          <Select label="What to do" value={rows.find(item => item.row === row.row)?.sharedAction ?? ''} disabled={busy} width="md" onChange={event => share(row.row, event.target.value)}
+            options={[{ value: '', label: 'Choose… (skips the row)' }, ...row.shared.options.map(option => ({ value: option, label: sharedLabel(option, first, owner.name.split(' ')[0], both) }))]} />
+        </li>;
+      })}</ul></Card>}
     {matched.length > 0 && <Card><CardHeader title="Already here" description="These people have a record. Choose what to do with each row; leaving it means the row is skipped." />
       <ul className="mt-3 divide-y divide-border border-t border-border">{matched.map(row => <li key={row.row} className="flex flex-wrap items-end justify-between gap-3 px-4 py-3 sm:px-5">
         <div className="min-w-0 flex-[1_1_320px]"><Person name={row.match.name} secondary={`Row ${row.row}${row.left ? ' · Left in the file' : ''} · ${row.match.why}`} />
@@ -194,6 +216,14 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
   const [names, setNames] = useState<{ name: string; mcId: string }[]>([{ name: '', mcId: '' }]);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [sameName, setSameName] = useState(false);
   const left = here === 'left', support = position !== 'Dispatcher';
+  // Someone else's email or number (SharedMoveToOwnerScreen): asked as soon as it's typed, unless it's the same person by name.
+  const [typed, setTyped] = useState({ firstName: '', lastName: '', companyEmail: '', ringCentralNumber: '' }), [sharedAction, setSharedAction] = useState<SharedAction | ''>('');
+  const found = useAccountOwners(null, typed), fullName = `${typed.firstName} ${typed.lastName}`.trim().replace(/\s+/g, ' ').toLowerCase();
+  const others = left ? [] : [...new Map([...found.companyEmail, ...found.ringCentralNumber].filter(owner => owner.name.toLowerCase() !== fullName).map(owner => [owner.id, owner])).values()];
+  const holder = others[0] ?? null, holderFields = holder ? [...(found.companyEmail.some(item => item.id === holder.id) ? ['companyEmail'] : []), ...(found.ringCentralNumber.some(item => item.id === holder.id) ? ['ringCentralNumber'] : [])] : [];
+  const movable = !!holder && [...found.companyEmail, ...found.ringCentralNumber].filter(item => item.id === holder.id).every(item => item.onRecord);
+  const typing = (field: keyof typeof typed) => (event: React.ChangeEvent<HTMLInputElement>) => { const value = event.target.value; setTyped(current => ({ ...current, [field]: value })); if (field === 'companyEmail' || field === 'ringCentralNumber') setSharedAction(''); };
+  const them = holderFields.length > 1 ? 'them' : 'it', person = typed.firstName.trim() || 'this person', holderFirst = holder?.name.split(' ')[0] ?? '';
   // Someone who left may have last worked at an MC or team archived since.
   const allMcs = [...options.mcs.map(item => ({ ...item, archived: false })), ...(options.archivedMcs ?? []).map(item => ({ ...item, archived: true }))];
   const mcList = left ? allMcs : allMcs.filter(item => !item.archived), chosenMc = mcList.find(item => item.name === mc);
@@ -203,13 +233,14 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
     event.preventDefault(); if (busy) return;
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
     const differentPerson = (event.nativeEvent as SubmitEvent).submitter?.getAttribute('name') === 'differentPerson';
+    if (holder && !sharedAction) { setError(`Say whose the ${fieldsWord(holderFields)} ${holderFields.length > 1 ? 'are' : 'is'}.`); return; }
     setBusy(true); setError(''); setSameName(false);
     try {
       const where = support ? (left ? {} : assisting === 'TEAM' ? { supportsTeamId: data.supportsTeam } : { supportsMemberId: data.supports }) : { mc: mc === NO_MC ? '' : mc, team: data.team ?? '', jobTitle: data.jobTitle ?? '' };
       const row: ExistingRow = { row: 1, firstName: data.firstName, lastName: data.lastName, position, startedOn: data.startedOn, companyEmail: data.companyEmail, ringCentralNumber: data.ringCentralNumber, personalEmail: data.personalEmail, personalPhone: data.personalPhone,
         ringCentralExtension: data.ringCentralExtension, datEmail: data.datEmail, truckstopEmail: data.truckstopEmail, telegram: data.telegram, legalFirstName: data.legalFirstName, legalLastName: data.legalLastName,
         otherNameList: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId ? { mcId: item.mcId } : {}) })), ...where,
-        ...(left ? { status: 'Left', leftOn: data.leftOn, leftReason: data.leftReason } : { ...(nda === 'PAPER' ? { ndaSignedOn: data.ndaSignedOn } : {}), ...(sop === 'PAPER' ? { sopSignedOn: data.sopSignedOn } : {}) }), ...(differentPerson ? { differentPerson } : {}) };
+        ...(left ? { status: 'Left', leftOn: data.leftOn, leftReason: data.leftReason } : { ...(nda === 'PAPER' ? { ndaSignedOn: data.ndaSignedOn } : {}), ...(sop === 'PAPER' ? { sopSignedOn: data.sopSignedOn } : {}) }), ...(differentPerson ? { differentPerson } : {}), ...(holder && sharedAction ? { sharedAction } : {}) };
       const result = await mutate<Added>('dispatch/existing/add', 'POST', { rows: [row] });
       if (result.members[0]) onAdded(result.members[0].id, left);
       else { setError(result.left[0]?.problems.join(' ') || 'Check the MC, team and job title against the lists.'); setSameName(!!result.left[0]?.sameName); }
@@ -222,7 +253,7 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
   return <Dialog open onClose={onClose} busy={busy} size="lg" title="Add one existing dispatcher" description={left ? 'Added as Left: nobody is messaged, they get no sign-in, and IT isn’t asked to do anything.' : 'They become Active straight away. Nobody is messaged, and IT isn’t asked to set anything up.'}
     actions={<Button form="add-existing" type="submit" disabled={busy}><Plus aria-hidden="true" className="size-4" />{busy ? 'Adding…' : left ? 'Add as Left' : 'Add dispatcher'}</Button>}>
     <form id="add-existing" onSubmit={submit} className="space-y-5"><fieldset disabled={busy} className="min-w-0 space-y-5">
-      <div className="grid gap-4 sm:grid-cols-2"><Input name="firstName" label="First name" hint="As they use it at work." required maxLength={100} width="full" /><Input name="lastName" label="Last name" hint="As they use it at work." required maxLength={100} width="full" /></div>
+      <div className="grid gap-4 sm:grid-cols-2"><Input name="firstName" label="First name" hint="As they use it at work." required maxLength={100} width="full" onChange={typing('firstName')} /><Input name="lastName" label="Last name" hint="As they use it at work." required maxLength={100} width="full" onChange={typing('lastName')} /></div>
       <RadioGroup name="here" label="Do they work here now?" cards value={here} onChange={value => { setHere(value); setMc(''); }} options={[{ value: 'here', label: 'Yes, they work here', description: 'Added as Active.' }, { value: 'left', label: 'No, they already left', description: 'Added as Left, kept for the future: for example to know them if they come back.' }]} />
       {left ? <>
         <div className="grid gap-4 sm:grid-cols-2"><Input name="leftOn" label="Last day" optional type="date" width="full" hint="Leave empty if you don’t know. Add it later from their page." /><Input name="startedOn" label="Started on" optional type="date" width="full" /></div>
@@ -252,7 +283,16 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
         <Button type="button" size="sm" variant="outline" disabled={names.length >= 10} onClick={() => setNames(list => [...list, { name: '', mcId: '' }])}><Plus aria-hidden="true" className="size-4" />Add another name</Button>
         <p className="text-[13px] text-muted-foreground">Latin letters only.</p>
       </CardBody></Card>
-      <Card><CardHeader title="Accounts" description={left ? 'What they had, if you know it. Nothing is closed unless you ask IT later from their page.' : 'What you know now. IT uses these when they leave, so add them if you can.'} /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" /><Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" />
+      <Card><CardHeader title="Accounts" description={left ? 'What they had, if you know it. Nothing is closed unless you ask IT later from their page.' : 'What you know now. IT uses these when they leave, so add them if you can.'} /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" onChange={typing('companyEmail')} /><Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" onChange={typing('ringCentralNumber')} />
+        {holder && <div className="space-y-4 sm:col-span-2">
+          <Alert tone="warning" title={`${holder.name} has this ${fieldsWord(holderFields)} on their record`}><p>{movable ? `If ${holderFields.length > 1 ? 'they’re' : 'it’s'} ${person}’s, move ${them}. Nothing is retyped and ${holderFirst}’s history keeps the change.` : 'It’s from IT’s records, so it can’t be moved here.'}</p></Alert>
+          <RadioGroup name="sharedAction" label={`Whose ${holderFields.length > 1 ? 'are they' : 'is it'}?`} cards value={sharedAction} onChange={value => setSharedAction(value as SharedAction)} options={[
+            ...(movable ? [{ value: 'MOVE_SHARED', label: `${person}’s, and ${holderFirst} uses ${them} too`, description: `Move to ${person} and record ${holderFirst} as using ${them}, shared.` },
+              { value: 'MOVE', label: `${person}’s, and ${holderFirst} doesn’t use ${them}`, description: `Move to ${person}. ${holderFirst}’s record is left without ${them}.` }] : []),
+            { value: 'SHARED', label: `${holderFirst}’s, and ${person} uses ${them} too`, description: 'Recorded as shared: it stays where it is, and both pages say who else uses it.' },
+            { value: 'WITHOUT', label: `${holderFirst}’s only`, description: `Leave ${them} with ${holderFirst} and add ${person} without ${them}.` }]} />
+          <p className="text-[13px] text-muted-foreground">If they’re the same person, close this and use Correct details on {holderFirst}’s page instead.</p>
+        </div>}
         {!left && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" hint="Digits only." /><span className="max-sm:hidden" />
           <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /><Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /></>}</CardBody></Card>
       <Card><CardHeader title="Contact" description={left ? undefined : 'The catch-up link is checked against the personal email.'} /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" /><Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" />{!left && <Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" />}</CardBody></Card>

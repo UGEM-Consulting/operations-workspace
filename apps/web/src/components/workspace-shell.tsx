@@ -9,6 +9,7 @@ import { breadcrumbTrail, SIDEBAR_COOKIE, type WorkspaceCounts } from '@/lib/nav
 import { SessionEndedAlert } from './session-ended-alert';
 import { AppearanceSelect } from './appearance-select';
 import { NotificationBell } from './notification-bell';
+import { SearchSuggest } from './search-suggest';
 import { Sidebar } from './sidebar';
 import { ShellProvider, useGuardedLink, useShell } from './shell-context';
 import { Breadcrumbs } from './ui/breadcrumbs';
@@ -19,6 +20,12 @@ export function WorkspaceShell({ identity, counts, collapsed = false, children }
   return <ShellProvider><Shell identity={identity} counts={counts} initiallyCollapsed={collapsed}>{children}</Shell></ShellProvider>;
 }
 const subscribeNothing = () => () => undefined;
+// The top bar's search (SearchEverywhereScreen): for those it finds something for. The API applies each page's own rules; this only hides an empty box.
+const SEARCHERS = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'SAFETY_MANAGER', 'SAFETY_LEAD', 'SAFETY_STAFF'];
+function TopSearch() {
+  const [query, setQuery] = useState('');
+  return <SearchSuggest source="everywhere" label="Search people, drivers, teams…" value={query} onChange={setQuery} shortcut iconOnPhone className="sm:w-72" />;
+}
 function Shell({ identity, counts, initiallyCollapsed, children }: { identity: Identity; counts: WorkspaceCounts | null; initiallyCollapsed: boolean; children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(initiallyCollapsed);
   // Remembered per browser for a year; a display preference only, never read for access decisions.
@@ -63,6 +70,7 @@ function Shell({ identity, counts, initiallyCollapsed, children }: { identity: I
           <Breadcrumbs items={crumbs} onLinkClick={guarded} />
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {SEARCHERS.includes(identity.user.role) && <TopSearch key={pathname} />}
           {counts && counts.unreadNotifications !== null && <NotificationBell unread={counts.unreadNotifications} />}
           <AppearanceSelect />
         </div>

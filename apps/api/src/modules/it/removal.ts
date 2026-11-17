@@ -4,6 +4,7 @@ import { NotificationsService } from '../updates/notifications.service';
 import { In, IsNull } from 'typeorm';
 import { removalSeats } from '../load-boards/seats';
 import { removalCompanyAccounts } from '../company-accounts/accounts';
+import { removalSharing } from '../dispatch/shared-accounts';
 import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, REMOVAL_CHECKLIST } from './it.entity';
 
 /** Every setup of a dispatcher record: a new dispatcher's (by their application) and a support's (by the member), as two indexed lookups. */
@@ -89,14 +90,16 @@ export async function carrySupportSetups(em: EntityManager, request: ItOnboardin
  */
 export async function createRemoval(em: EntityManager, alerts: NotificationsService, input: {
  setup: ItOnboardingRequest | null; taskKeys?: string[]; accounts?: { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null }; position: string; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
- mcName: string | null; teamName: string | null; suspendedOnLeave?: boolean;
+ mcName: string | null; teamName: string | null; suspendedOnLeave?: boolean; handOverToId?: string | null;
 }) {
  const { setup } = input;
  // Their load board seats (section 33): IT ends each, or changes its password when someone else shares the sign-in.
  const seats = await removalSeats(em, input.memberId);
  // Their accounts at other companies (section 33): every one that isn't closed, with a support's checklist gaining its steps.
  const companyAccounts = await removalCompanyAccounts(em, input.memberId);
- const needed = [...(seats.length ? ['BUSINESS_SOFTWARE'] : []), ...(companyAccounts.some(account => account.companyEmail) ? ['GOOGLE_WORKSPACE'] : []), ...(companyAccounts.some(account => account.ringCentralNumber) ? ['RINGCENTRAL'] : [])];
+ // Shared emails and numbers (section 35): what they use of someone else's, what others use of theirs, and who gets them.
+ const shared = await removalSharing(em, input.memberId, input.handOverToId ?? null), sharedKinds = new Set([...shared.uses, ...shared.usedBy].map(item => item.kind));
+ const needed = [...(seats.length ? ['BUSINESS_SOFTWARE'] : []), ...(companyAccounts.some(account => account.companyEmail) || sharedKinds.has('EMAIL') ? ['GOOGLE_WORKSPACE'] : []), ...(companyAccounts.some(account => account.ringCentralNumber) || sharedKinds.has('RINGCENTRAL') ? ['RINGCENTRAL'] : [])];
  const taskKeys = input.taskKeys && [...new Set([...input.taskKeys, ...needed])];
  // Someone recorded by hand has no setup request: IT works from the accounts their manager recorded.
  const companyEmail = setup?.companyEmail ?? input.accounts?.companyEmail ?? null, ringCentralNumber = setup?.assignedRingCentralPhoneNumber ?? input.accounts?.ringCentralNumber ?? null;
@@ -109,7 +112,7 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
   memberId: input.memberId, setupRequestId: setup?.id ?? null, managerId: input.actorId, createdBy: input.actorId,
   profile: { displayName: setup?.profile.proposedDisplayName ?? input.name, position: input.position, companyEmail, ringCentralNumber, noSetupRecord: !setup,
    ringCentralExtension: setup?.ringCentralExtension ?? input.accounts?.ringCentralExtension ?? null, datEmail: setup?.datEmail ?? input.accounts?.datEmail ?? null, truckstopEmail: setup?.truckstopEmail ?? input.accounts?.truckstopEmail ?? null,
-   seats, companyAccounts, mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null, ...(input.suspendedOnLeave ? { suspendedOnLeave: true } : {}) },
+   seats, companyAccounts, ...(shared.uses.length || shared.usedBy.length ? { shared } : {}), mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null, ...(input.suspendedOnLeave ? { suspendedOnLeave: true } : {}) },
   emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? input.actorId : null,
   dueOn: input.dueOn, numberOutcome: null, version: 0, completedAt: null, dueAlertedAt: input.scheduled ? null : new Date() });
  await em.getRepository(ItRemovalTask).save(REMOVAL_CHECKLIST.filter(task => !taskKeys || taskKeys.includes(task.key)).map(task => ({ requestId: removal.id, key: task.key, status: 'PENDING' as const, notes: '' })));

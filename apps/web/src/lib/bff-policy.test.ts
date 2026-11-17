@@ -143,6 +143,10 @@ describe('offboarding and manager hand-over through the BFF', () => {
     assert.equal(allowedEndpoint('PATCH', 'telegram/routes/IT_SETUP'), true);
     assert.equal(allowedEndpoint('PATCH', 'telegram/routes/it-setup'), false);
     assert.equal(allowedEndpoint('DELETE', `telegram/groups/${ID}`), false);
+    // Search as you type and shared accounts (section 35): the dropdowns read as you type; whose an email is goes by POST, never in a URL.
+    for (const path of ['dispatch/members/suggest', 'search']) assert.equal(allowedEndpoint('GET', path), true, path);
+    assert.equal(allowedEndpoint('POST', 'dispatch/existing/account-owners'), true);
+    assert.equal(allowedEndpoint('GET', 'dispatch/existing/account-owners'), false);
     // Drivers while their dispatcher is away (section 34): the dialog reads who may cover, and Change who covers.
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/cover-options`), true);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/cover-options`), false);
@@ -235,6 +239,8 @@ describe('the Dispatchers list through the BFF', () => {
     assert.equal(allowedEndpoint('POST', 'dispatch/members'), false);
     assert.deepEqual(forwardedQuery('dispatch/members'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'only', 'loadBoardAccountId']);
     assert.deepEqual(forwardedQuery('onboarding/review-queue'), ['page', 'pageSize', 'status', 'search', 'sort', 'direction']);
+    assert.deepEqual(forwardedQuery('dispatch/members/suggest'), ['q']);
+    assert.deepEqual(forwardedQuery('search'), ['q']);
     assert.deepEqual(forwardedQuery('dispatch/teams'), []);
   });
 });
