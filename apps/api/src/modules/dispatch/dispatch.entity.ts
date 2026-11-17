@@ -10,7 +10,8 @@ export type SupportType = typeof SUPPORT_TYPES[number];
 /** What someone is called, for what IT reads. */
 export const positionLabel = (member: { position: Position; supportType: SupportType }) => member.position === 'DISPATCHER' ? 'Dispatcher' : member.supportType === 'UPDATER' ? 'Updater' : 'Support';
 export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED', 'TEAM_CREATED', 'TEAM_UPDATED', 'TEAM_ARCHIVED', 'TEAM_RESTORED', 'CONTACT_ADDED', 'CONTACT_REMOVED', 'SUPPORT_REASSIGNED',
- 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED', 'PAPER_SCAN_ADDED', 'PAPER_SCAN_VIEWED', 'MEMBERS_EXPORTED', 'NAMES_CHANGED', 'LEFT_DAY_RECORDED', 'CLOSE_ACCOUNTS_ASKED', 'SEAT_ADDED', 'SEAT_CHANGED', 'COMPANY_ACCOUNT_ADDED', 'COMPANY_ACCOUNT_CHANGED', 'PHOTO_ADDED', 'ID_PHOTO_VIEWED'] as const;
+ 'PROMOTION_REQUESTED', 'PROMOTION_APPROVED', 'PROMOTION_DECLINED', 'PROMOTION_CANCELLED', 'NOTICE_RECORDED', 'NOTICE_CHANGED', 'NOTICE_CANCELLED', 'ACCESS_REMOVAL_REQUESTED', 'EXISTING_ADDED', 'EXISTING_UPDATED', 'CATCH_UP_LINK_CREATED', 'PAPERWORK_ACCEPTED', 'MEMBER_PLACED', 'START_DATE_RECORDED', 'SUPPORT_TYPE_CHANGED', 'DETAILS_CORRECTED', 'LEAVE_RECORDED', 'LEAVE_CHANGED', 'LEAVE_ENDED', 'PAPER_SCAN_ADDED', 'PAPER_SCAN_VIEWED', 'MEMBERS_EXPORTED', 'NAMES_CHANGED', 'LEFT_DAY_RECORDED', 'CLOSE_ACCOUNTS_ASKED', 'SEAT_ADDED', 'SEAT_CHANGED', 'COMPANY_ACCOUNT_ADDED', 'COMPANY_ACCOUNT_CHANGED', 'PHOTO_ADDED', 'ID_PHOTO_VIEWED',
+ 'ACCOUNT_SHARED', 'SHARING_ENDED', 'ACCOUNT_MOVED', 'ACCOUNTS_HANDED_OVER'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
@@ -268,4 +269,25 @@ export class MemberDetailCorrection {
  @Column('varchar', { length: 500 }) reason!: string;
  @Column('uuid') actorId!: string;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+}
+
+export const SHARED_KINDS = ['EMAIL', 'RINGCENTRAL'] as const;
+export type SharedKind = typeof SHARED_KINDS[number];
+/**
+ * Someone using another person's company email or RingCentral number (section 35). The owner is the person whose record
+ * holds it; a row with handedOverAt is ownership handed over when the owner left, so the recipient owns it from then on.
+ */
+@Entity('member_shared_accounts')
+export class MemberSharedAccount {
+ @PrimaryGeneratedColumn('uuid') id!: string;
+ @Column('uuid') memberId!: string;
+ @Column('uuid', { nullable: true }) ownerMemberId!: string | null;
+ @Column('varchar') kind!: SharedKind;
+ @Column('varchar', { length: 254 }) value!: string;
+ @Column('uuid', { nullable: true }) createdBy!: string | null;
+ @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
+ @Column('timestamptz', { nullable: true }) handedOverAt!: Date | null;
+ @Column('timestamptz', { nullable: true }) endedAt!: Date | null;
+ @Column('uuid', { nullable: true }) endedBy!: string | null;
+ @Column('varchar', { nullable: true }) endedHow!: 'STOPPED' | 'MOVED' | 'OWNER_LEFT' | 'LEFT' | null;
 }

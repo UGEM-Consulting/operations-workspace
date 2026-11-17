@@ -28,7 +28,9 @@ export function notificationView(item:Notifications['items'][number]){
  return {title:'IT setup completed',text:`${name??'Dispatcher'} is ready to work.`,href:`/onboarding/applications/${item.applicationId}`,link:'View application'};
 }
 export type ItTasks=import('zod').infer<typeof import('@/lib/api-schemas').itTasksSchema>;
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;companyAccounts?:RemovalCompanyAccount[];}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;companyAccounts?:RemovalCompanyAccount[];shared?:RemovalSharing;}
+/** Shared company email and RingCentral number (section 35): what they used of someone else's, who uses theirs, and who gets them. An older API sends none. */
+export interface RemovalSharing {uses:{kind:'EMAIL'|'RINGCENTRAL';value:string;owner:string|null;handedOver:boolean}[];usedBy:{kind:'EMAIL'|'RINGCENTRAL';value:string;users:string[]}[];handOverToId:string|null;handOverTo:string|null}
 export type NumberOutcome='KEPT'|'FORWARDED'|'RELEASED';
 export interface RemovalRequest {id:string;memberId:string;version:number;status:TaskStatus;scheduled:boolean;removeNowAt:string|null;cancelledAt:string|null;dueOn:string;emailAfter:'FORWARD'|'SUSPEND';forwardToName:string|null;managerName:string|null;recordedByName?:string|null;leftAt:string|null;note?:string|null;numberOutcome:NumberOutcome|null;profile:RemovalProfile;completedAt:string|null;}
 /** Leave (section 35): suspending accounts while someone is away (SUSPEND), and restoring them (RESTORE). */

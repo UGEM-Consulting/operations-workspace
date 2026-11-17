@@ -113,7 +113,7 @@ export const KNOWN_REFERENCES = new Set([
   // dispatch_members and what hangs off them
   'dispatch_events.memberId', 'dispatch_members.previousMemberId', 'driver_assignments.memberId', 'driver_leave_covers.coverMemberId', 'existing_member_records.memberId', 'invitations.catchUpMemberId',
   'invitations.supportsMemberId', 'it_account_requests.memberId', 'it_leave_requests.memberId', 'it_onboarding_requests.memberId', 'it_removal_requests.memberId', 'member_assignments.memberId',
-  'member_company_accounts.memberId', 'member_contacts.memberId', 'member_detail_corrections.memberId', 'member_leaves.memberId', 'member_load_board_seats.memberId', 'member_notices.memberId',
+  'member_company_accounts.memberId', 'member_contacts.memberId', 'member_shared_accounts.memberId', 'member_shared_accounts.ownerMemberId', 'member_detail_corrections.memberId', 'member_leaves.memberId', 'member_load_board_seats.memberId', 'member_notices.memberId',
   'member_other_names.memberId', 'member_paper_documents.memberId', 'member_paper_scans.memberId', 'member_photos.memberId', 'member_start_date_changes.memberId', 'member_support_links.supportId',
   'member_support_links.dispatcherId', 'promotion_requests.supportId', 'team_lead_sign_ins.memberId', 'teams.leadMemberId', 'telegram_group_changes.addMemberId', 'telegram_group_changes.removeMemberId',
   'it_account_activity.requestId', 'it_account_tasks.requestId', 'portal_notifications.accountRequestId', 'it_leave_activity.requestId', 'it_leave_tasks.requestId', 'portal_notifications.leaveRequestId',

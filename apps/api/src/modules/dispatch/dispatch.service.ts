@@ -25,6 +25,7 @@ import { applicationDetails, currentDetails, MemberDetailsService } from './corr
 import { LeaveService } from './leave.service';
 import { PaperScansService } from './paper-scans';
 import { memberRowsSql } from './member-list';
+import { checkHandOver, memberSharing, sharingOnLeft } from './shared-accounts';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 /** Who last corrected each field, and when, for "Corrected by … on …". */
@@ -275,7 +276,7 @@ export class DispatchService {
    FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event IN ('EXISTING_UPDATED','NAMES_CHANGED','LEFT_DAY_RECORDED','CLOSE_ACCOUNTS_ASKED') ORDER BY e."createdAt" DESC LIMIT 100`, [id]);
   // IT requests about their company accounts that are still open (section 33): closing one, or a move's new accounts.
   const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
-  return { recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  return { recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), sharing: await memberSharing(this.db, id), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.
@@ -470,6 +471,7 @@ export class DispatchService {
    const member = await this.lockMember(em, id, dto.version);
    await sameSetups(em, id, setups);
    if (await onNotice(em, id)) throw new ConflictException('This dispatcher is already leaving. Change their last day instead.');
+   if (dto.handOverTo) await checkHandOver(em, id, dto.handOverTo);
    // Someone on leave who won't come back: the leave ends, nothing is restored, and IT's removal says what was suspended.
    const suspendedOnLeave = await this.leaves.endForLeaving(em, member, user.id);
    const today = usDay('latest'), lastDay = dto.leftAt.slice(0, 10), name = `${member.firstName} ${member.lastName}`;
@@ -480,7 +482,9 @@ export class DispatchService {
    const recorded = record && (setup || member.position === 'DISPATCHER' || record.companyEmail || record.ringCentralNumber || record.datEmail || record.truckstopEmail) ? { companyEmail: record.companyEmail, ringCentralNumber: record.ringCentralNumber, ringCentralExtension: record.ringCentralExtension, datEmail: record.datEmail, truckstopEmail: record.truckstopEmail } : undefined;
    const fromSetups = setups.length ? setupAccounts(setups) : undefined;
    const accounts = fromSetups || recorded ? { companyEmail: fromSetups?.companyEmail ?? recorded?.companyEmail ?? null, ringCentralNumber: fromSetups?.ringCentralNumber ?? recorded?.ringCentralNumber ?? null,
-    ringCentralExtension: fromSetups?.ringCentralExtension ?? recorded?.ringCentralExtension ?? null, datEmail: fromSetups?.datEmail ?? recorded?.datEmail ?? null, truckstopEmail: fromSetups?.truckstopEmail ?? recorded?.truckstopEmail ?? null } : undefined, removes = !!setup || !!accounts;
+    ringCentralExtension: fromSetups?.ringCentralExtension ?? recorded?.ringCentralExtension ?? null, datEmail: fromSetups?.datEmail ?? recorded?.datEmail ?? null, truckstopEmail: fromSetups?.truckstopEmail ?? recorded?.truckstopEmail ?? null } : undefined;
+   // Someone else's email or number they use, or theirs that others use (section 35), needs IT too, and the removal keeps the hand-over chosen now.
+   const sharing = await memberSharing(em, id), removes = !!setup || !!accounts || sharing.uses.length > 0 || sharing.usedBy.length > 0;
    // Read only once nothing below can refuse the request.
    const taskKeys = async () => removes ? removalTaskKeys(em, member.position, setups, accounts) : [];
    if (lastDay > today) {
@@ -488,7 +492,7 @@ export class DispatchService {
     if (setups.some(item => !item.completedAt)) throw new BadRequestException(`${member.position === 'SUPPORT' ? 'IT is still setting things up for them' : 'This dispatcher is still in IT setup'}, so their last day can’t be in the future. Choose today to cancel the setup.`);
     await em.getRepository(MemberNotice).save({ memberId: id, lastDay, reason: dto.reason, recordedBy: user.id, changes: [] });
     member.version += 1; await em.save(member);
-    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
+    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
     await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
     await syncSignIns(em, [id], user.id);
     return { id, version: member.version };
@@ -497,8 +501,8 @@ export class DispatchService {
    const leftAt = day(dto.leftAt);
    // The removal cancels the newest unfinished setup; any other unfinished one leaves the queue with it.
    for (const other of setups.slice(1).filter(item => !item.completedAt)) { other.cancelledAt = new Date(); other.version += 1; await em.save(other); }
-   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, ...place });
-   await this.finishLeaving(em, user, member, leftAt, dto.reason, removes);
+   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
+   await this.finishLeaving(em, user, member, leftAt, dto.reason, removes, dto.handOverTo ?? null);
    return { id, version: member.version };
   });
   this.alerts.dispatch(alerts);
@@ -516,7 +520,7 @@ export class DispatchService {
   if (drivers) throw new ConflictException('This dispatcher still has drivers. Reassign their drivers to another dispatcher first.');
  }
  /** Ends their place in the team and marks the record as left: the same for leaving now and at the end of a notice. */
- private async finishLeaving(em: EntityManager, actor: Pick<User, 'id'>, member: DispatchMember, date: Date, reason: string, itRemoval: boolean) {
+ private async finishLeaving(em: EntityManager, actor: Pick<User, 'id'>, member: DispatchMember, date: Date, reason: string, itRemoval: boolean, handOverTo?: string | null) {
   const id = member.id;
   let leftAt = date;
   const current = await em.getRepository(MemberAssignment).findOneBy({ memberId: id, endedAt: IsNull() });
@@ -536,6 +540,9 @@ export class DispatchService {
   }
   member.status = 'LEFT'; member.leftAt = leftAt; member.leftReason = reason; member.version += 1; await em.save(member);
   const signInOff = await this.endTeamLeadAccount(em, actor, member);
+  // Shared emails and numbers (section 35): what they used of others' ends, and theirs go to whoever was chosen at notice, or end.
+  const chosen = handOverTo !== undefined ? handOverTo : (await em.getRepository(ItRemovalRequest).findOneBy({ memberId: id, cancelledAt: IsNull() }))?.profile.shared?.handOverToId ?? null;
+  await sharingOnLeft(em, actor.id, id, chosen);
   // Their paperwork closes, started or not: the applicant session and any decision on it check the revoked link. Accepted paperwork stays as it is.
   const links: { id: string }[] = await em.query(`SELECT i.id FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id WHERE i."catchUpMemberId" = $1 AND i."revokedAt" IS NULL AND a.status <> 'APPROVED'`, [id]);
   for (const link of links) {

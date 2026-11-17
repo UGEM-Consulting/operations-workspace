@@ -22,6 +22,7 @@ import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
 import { PaperScanActions } from './paper-scan';
 import { SignIn } from './sign-in';
+import { OwnValue, SharedValue, ShareQuestion, useAccountOwners, usedOf, usersOf } from './shared-accounts';
 import { signInItems } from './sign-in-status';
 import { assists, supportName, underMc, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
 
@@ -172,14 +173,21 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
   const renamed = nameEditable && (names.firstName.trim() !== member.firstName || names.lastName.trim() !== member.lastName);
   // The record's version once the name is saved, so a retry after the other details failed doesn't send the name again.
   const [renamedVersion, setRenamedVersion] = useState<number | null>(null);
+  // Someone else's email or number (section 35): the one they share now shows in the field; typing another person's asks first.
+  const sharedEmail = usedOf(member, 'EMAIL'), sharedNumber = usedOf(member, 'RINGCENTRAL');
+  const [typed, setTyped] = useState({ companyEmail: existing.companyEmail ?? sharedEmail?.value ?? '', ringCentralNumber: existing.ringCentralNumber ?? sharedNumber?.value ?? '' });
+  const owners = useAccountOwners(member.id, typed), [shareAnswer, setShareAnswer] = useState<'yes' | 'no' | ''>('');
+  const unchanged = (value: string, use: typeof sharedEmail) => !!use && value.trim().toLowerCase() === use.value.toLowerCase();
+  const emailOwner = !unchanged(typed.companyEmail, sharedEmail) ? owners.companyEmail[0] ?? null : null, numberOwner = !unchanged(typed.ringCentralNumber, sharedNumber) ? owners.ringCentralNumber[0] ?? null : null;
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
-    const { firstName, lastName, nameReason, ...data } = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
+    const { firstName, lastName, nameReason, ...data } = Object.fromEntries([...new FormData(event.currentTarget).entries()].filter(([field]) => field !== 'shareAnswer')) as Record<string, string>;
+    if ((emailOwner || numberOwner) && shareAnswer !== 'yes') { setError(shareAnswer === 'no' ? 'Change the email or number that’s someone else’s.' : `Say whether ${member.firstName} uses it too.`); return; }
     setBusy(true); setError('');
     try {
       let version = renamedVersion ?? member.version, nameSaved = renamedVersion !== null;
       if (renamed && !nameSaved) { version = (await mutate<{ version: number }>(`dispatch/members/${member.id}/correct`, 'POST', { version, reason: nameReason, ...(firstName.trim() !== member.firstName ? { firstName } : {}), ...(lastName.trim() !== member.lastName ? { lastName } : {}) }))!.version; setRenamedVersion(version); nameSaved = true; }
-      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data }); }
+      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data, ...(emailOwner ? { shareCompanyEmail: true } : {}), ...(numberOwner ? { shareRingCentral: true } : {}) }); }
       catch (failure) { if (nameSaved) { setError(errorMessage(failure, 'Their name was saved, but the other details weren’t. Your entries have been kept: try again.')); router.refresh(); return; } throw failure; }
       setRenamedVersion(null); setEditing(false); toast({ title: 'Details saved' }); router.refresh(); }
     catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
@@ -190,7 +198,9 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
   const addedLeft = member.status === 'LEFT' && !!existing.addedAsLeft;
   return <Card><CardHeader title={addedLeft ? 'Accounts they had' : 'Accounts'} description={addedLeft ? (existing.sourceName ? 'Recorded from the file.' : 'Recorded by a manager.') : undefined} actions={open && <Button size="sm" variant="ghost" onClick={() => { setEditing(true); setError(''); }}><Pencil aria-hidden="true" className="size-3.5" />Edit</Button>} />
     <CardBody className="space-y-3">
-      <DescriptionList layout="rows" stacked items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
+      <DescriptionList layout="rows" stacked items={[
+        { label: 'Company email', value: existing.companyEmail ? <OwnValue value={existing.companyEmail} users={usersOf(member, 'EMAIL', existing.companyEmail)} /> : sharedEmail && <SharedValue use={sharedEmail} />, emptyLabel: member.position === 'SUPPORT' ? 'None of their own' : 'Not recorded' },
+        { label: 'RingCentral number', value: existing.ringCentralNumber ? <OwnValue value={existing.ringCentralNumber} users={usersOf(member, 'RINGCENTRAL', existing.ringCentralNumber)} mono /> : sharedNumber && <SharedValue use={sharedNumber} mono />, emptyLabel: 'Not recorded' },
         ...(existing.ringCentralExtension ? [{ label: 'Extension', value: existing.ringCentralExtension, mono: true }] : []),
         // Load board sign-ins show in the Load boards card once the API has seats (section 33).
         ...(member.loadBoardSeats ? [] : [{ label: 'DAT sign-in', value: existing.datEmail && <SignIn email={existing.datEmail} others={member.sharedSignIns?.dat} />, emptyLabel: 'Not recorded' }, { label: 'Truckstop sign-in', value: existing.truckstopEmail && <SignIn email={existing.truckstopEmail} others={member.sharedSignIns?.truckstop} />, emptyLabel: 'Not recorded' }]), ...signInItems(member)]} />
@@ -206,8 +216,9 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
           {renamed && <Textarea name="nameReason" label="Why the name changed" required maxLength={500} rows={2} hint="Kept in their history." />}
         </CardBody></Card>}
         <Card><CardHeader title={gone ? 'Accounts they had' : 'Accounts'} description={gone ? undefined : 'IT uses these when they leave, so add them if you can.'} /><CardBody className="grid gap-4 sm:grid-cols-2">
-          <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" defaultValue={existing.companyEmail ?? ''} />
-          <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" defaultValue={existing.ringCentralNumber ?? ''} />
+          <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" value={typed.companyEmail} onChange={event => { setTyped(current => ({ ...current, companyEmail: event.target.value })); setShareAnswer(''); }} />
+          <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" value={typed.ringCentralNumber} onChange={event => { setTyped(current => ({ ...current, ringCentralNumber: event.target.value })); setShareAnswer(''); }} />
+          {!gone && <ShareQuestion firstName={member.firstName} email={emailOwner} number={numberOwner} value={shareAnswer} onChange={setShareAnswer} />}
           {!gone && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" defaultValue={existing.ringCentralExtension ?? ''} hint="Digits only." /><span className="max-sm:hidden" /></>}
           <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.datEmail ?? ''} hint="The email only. Never a password." />
           <Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.truckstopEmail ?? ''} hint="The email only. Never a password." />

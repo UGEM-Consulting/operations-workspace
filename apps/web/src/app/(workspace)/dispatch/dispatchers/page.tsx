@@ -12,7 +12,7 @@ import { Pagination } from '@/components/ui/pagination';
 import { Table, type Column } from '@/components/ui/table';
 import { Badge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
-import { ListFilter, Plus } from 'lucide-react';
+import { ListFilter, Plus, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { PaperworkTable } from '@/features/dispatch/paperwork';
 import { MemberFilters, PageSizeSelect } from '@/features/dispatch/member-list';
@@ -121,7 +121,7 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
       action={paperwork && <Button asChild variant="outline"><Link href="/dispatch/dispatchers/add"><Plus aria-hidden="true" className="size-4" />Add existing dispatchers</Link></Button>} />
     {passed.map(member => <Alert key={member.id} tone="danger" title={`${fullName(member)}’s last day has passed`}><p>{toReassign(member.driversToReassign ?? 0, member.supportsToReassign ?? 0)} still assigned, so the record stays Leaving until they’re reassigned. IT’s removal of their access doesn’t wait for this.</p></Alert>)}
     <Card>
-      <FilterBar path="/dispatch/dispatchers" filters={filters} defaults={MEMBER_DEFAULTS} searchLabel="Search name, email or phone" wideSearch statuses={[
+      <FilterBar path="/dispatch/dispatchers" filters={filters} defaults={MEMBER_DEFAULTS} searchLabel="Search name, email or phone" wideSearch suggest="dispatchers" statuses={[
         { key: 'ONBOARDING', label: 'Onboarding', count: data.counts.onboarding ?? 0 },
         { key: 'ACTIVE', label: 'Active', count: data.counts.active },
         { key: 'ON_LEAVE', label: 'On leave', count: data.counts.onLeave ?? 0 },
@@ -131,6 +131,10 @@ export default async function DispatchersPage({ searchParams }: { searchParams: 
         { key: 'ALL', label: 'All', count: data.counts.all ?? total }]} />
       {paperworkNow && paperwork ? <PaperworkTable list={paperwork} search={filters.search} /> : <>
         <MemberFilters filters={filters} options={options} total={total} view={view} />
+        {/* A team lead's whole name finds that person; their team is one click away (SearchLeadScreen). */}
+        {data.leadOf && !filters.leadId && <div className="mx-4 mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-muted px-3.5 py-2.5 text-sm sm:mx-5">
+          <Users aria-hidden="true" className="size-4 text-muted-foreground" /><span><strong className="font-semibold">{data.leadOf.name}</strong> leads {data.leadOf.team} ({data.leadOf.count} {data.leadOf.count === 1 ? 'person' : 'people'}).</span>
+          <Button asChild variant="outline" size="sm"><Link href={membersHref(filters, { leadId: data.leadOf.id, search: '' })}>Show {data.leadOf.name.split(' ')[0]}’s team</Link></Button></div>}
         <Table caption="Dispatchers, supports and updaters" className="border-t border-border" rows={items as MemberRow[]} rowKey={member => member.id} columns={columns}
           empty={filtered ? <EmptyState compact icon={ListFilter} title="Nothing matches these filters" description="Remove a filter or clear them all."
             action={<Button asChild variant="outline"><Link href={membersHref(filters, { search: '', ...Object.fromEntries(FILTER_KEYS.map(key => [key, ''])) })}>Clear filters</Link></Button>} />

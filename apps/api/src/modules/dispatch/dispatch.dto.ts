@@ -51,7 +51,11 @@ export class ExistingRowDto {
  @IsOptional() @IsBoolean() askIt?: boolean;
  // A row that matches someone already recorded: fill only what their record is missing, or (for someone who left) add them again as the same person.
  @IsOptional() @IsIn(['FILL', 'CAME_BACK', 'ACCOUNT']) alreadyAction?: 'FILL' | 'CAME_BACK' | 'ACCOUNT';
+ // Someone else's company email or RingCentral number on a row naming a different person (section 35): this person uses it
+ // too, it's this person's (moved here, the other keeping it shared or not), or add them without it.
+ @IsOptional() @IsIn(['SHARED', 'MOVE', 'MOVE_SHARED', 'WITHOUT']) sharedAction?: SharedAction;
 }
+export type SharedAction = 'SHARED' | 'MOVE' | 'MOVE_SHARED' | 'WITHOUT';
 export class ExistingRowsDto {
  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => ExistingRowDto) rows!: ExistingRowDto[];
  // The file's name for the history, when there was one. The file itself is never sent or kept.
@@ -74,6 +78,19 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) truckstopEmail?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
  @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
+ // The company email or RingCentral number is someone else's and this person uses it too (section 35): recorded as shared.
+ @IsOptional() @IsBoolean() shareCompanyEmail?: boolean;
+ @IsOptional() @IsBoolean() shareRingCentral?: boolean;
+}
+/** What the search box sends as you type (section 35). */
+export class SuggestQueryDto {
+ @text() @IsString() @MaxLength(100) q!: string;
+}
+/** A company email or RingCentral number being typed: whose it is now (section 35), so the form can ask before saving. */
+export class AccountOwnersDto {
+ @IsOptional() @IsUUID() memberId?: string;
+ @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) companyEmail?: string;
+ @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) ringCentralNumber?: string;
 }
 /** Dispatch › Dispatchers' filters (the Dispatchers table group in the Design System). teamId NONE means placed under an MC with no team (Independent). */
 export class MemberFilters {
@@ -181,6 +198,8 @@ export class LeaveMemberDto {
  // What IT does with their company email: forward new mail to the manager marking them as left for 30 days, or just
  // suspend it. An older page sends nothing, which suspends.
  @IsOptional() @IsIn(['FORWARD', 'SUSPEND']) emailAfter?: 'FORWARD' | 'SUSPEND';
+ // Someone using their company email or RingCentral number (section 35) who gets them when they leave. None closes them, as before.
+ @IsOptional() @IsUUID() handOverTo?: string;
 }
 export class UpdateMemberDto {
  @IsInt() @Min(1) version!: number;

@@ -20,8 +20,9 @@ import { refreshRemovalAccounts } from '../company-accounts/accounts';
 import { addCompanyAccount } from '../company-accounts/company-accounts.service';
 import { LoadBoardSeat, type Provider } from '../load-boards/load-boards.entity';
 import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
-import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberOtherName, MemberPaperDocument, MemberSupportLink, NO_MC, Position, positionLabel, SupportType, Team } from './dispatch.entity';
-import { CloseAccountsDto, ExistingRowDto, LeftDayDto, MemberNamesDto, UpdateExistingDto } from './dispatch.dto';
+import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberOtherName, MemberPaperDocument, MemberSharedAccount, MemberSupportLink, NO_MC, Position, positionLabel, type SharedKind, SupportType, Team } from './dispatch.entity';
+import { AccountOwnersDto, CloseAccountsDto, ExistingRowDto, LeftDayDto, MemberNamesDto, type SharedAction, UpdateExistingDto } from './dispatch.dto';
+import { accountOwners, shareAccount, sharedKey, stopSharing } from './shared-accounts';
 
 export const IMPORT_LOCK = 42002037;
 const LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
@@ -93,7 +94,11 @@ export interface RowResult { row: number; name: string; position: 'DISPATCHER' |
  // The load board account each sign-in is on (section 33); null puts it on "account not recorded".
  seatAccounts: Record<Provider, string | null>;
  // Recorded as their account at another company instead of a second record.
- account: boolean }
+ account: boolean;
+ // Someone else's company email or RingCentral number on a row naming a different person (section 35), and what was chosen.
+ shared: SharedMatch | null; sharedAction: SharedAction | null }
+/** Who holds the email or number a row names. MOVE needs it on a record a manager typed, with IT not removing their accounts. */
+export interface SharedMatch { owners: { id: string; name: string; fields: ('companyEmail' | 'ringCentralNumber')[] }[]; options: SharedAction[] }
 // forSupports: the same team text on support and updater rows is its own choice, because they need a real team.
 export interface Choice { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }
 
@@ -115,6 +120,9 @@ interface Known {
  loadBoards: { id: string; name: string; provider: Provider; placeholder: boolean }[];
  // The MCs each person already has an open account at (section 33), so a file doesn't add another.
  accountMcs: Map<string, Set<string>>;
+ // Who owns each company email and RingCentral number (section 35): records, IT setups, other companies' accounts and hand-overs,
+ // never someone only using it. onRecord: the member whose record a manager typed it on; openRemoval: people IT is removing.
+ companyOwners: Map<string, string[]>; numberOwners: Map<string, string[]>; onRecord: Map<string, string>; openRemoval: Set<string>;
 }
 const NAME = /^[A-Za-z][A-Za-z .'-]*$/;
 /** The status column: Active (or blank) or Left. Suspended means on leave, which isn't a status: they're added as Active and put on leave from their page. */
@@ -173,11 +181,36 @@ export class ExistingDispatchersService {
   // Every contact detail with whose it is: added by hand, set up by IT, an applicant's verified email and phone, or added by a manager.
   const rows: { id: string; company: string | null; personal: string | null; phone: string | null }[] = await em.query(`
    SELECT r."memberId" AS id, r."companyEmail" AS company, r."personalEmail" AS personal, r."personalPhone" AS phone FROM existing_member_records r
-   UNION ALL SELECT d.id, r."companyEmail", i.email, s.fields->>'personalPhoneNumber' FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" JOIN invitations i ON i.id = a."invitationId"
-    LEFT JOIN it_onboarding_requests r ON r."applicationId" = a.id LEFT JOIN LATERAL (SELECT fields FROM application_submissions x WHERE x."applicationId" = a.id ORDER BY x.version DESC LIMIT 1) s ON true
+   UNION ALL SELECT d.id, r."companyEmail",
+     -- A personal email or phone an administrator corrected replaces the application's, as everywhere else (cleared stays cleared).
+     CASE WHEN d."correctedDetails" ? 'personalEmail' THEN d."correctedDetails"->>'personalEmail' ELSE i.email END,
+     CASE WHEN d."correctedDetails" ? 'personalPhoneNumber' THEN d."correctedDetails"->>'personalPhoneNumber' ELSE s.fields->>'personalPhoneNumber' END
+    FROM dispatch_members d JOIN dispatcher_applications a ON a.id = d."applicationId" JOIN invitations i ON i.id = a."invitationId"
+    LEFT JOIN it_onboarding_requests r ON r."applicationId" = a.id AND r."cancelledAt" IS NULL LEFT JOIN LATERAL (SELECT fields FROM application_submissions x WHERE x."applicationId" = a.id ORDER BY x.version DESC LIMIT 1) s ON true
    UNION ALL SELECT r."memberId", r."companyEmail", NULL, NULL FROM it_onboarding_requests r WHERE r."memberId" IS NOT NULL AND r."companyEmail" IS NOT NULL AND r."cancelledAt" IS NULL
    UNION ALL SELECT c."memberId", CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'EMAIL' THEN c.value END, CASE WHEN c.kind = 'PHONE' THEN c.value END FROM member_contacts c WHERE c."removedAt" IS NULL
-   UNION ALL SELECT x."memberId", x."companyEmail", NULL, NULL FROM member_company_accounts x WHERE x.status <> 'CLOSED' AND x."companyEmail" IS NOT NULL`);
+   UNION ALL SELECT x."memberId", x."companyEmail", NULL, NULL FROM member_company_accounts x WHERE x.status <> 'CLOSED' AND x."companyEmail" IS NOT NULL
+   UNION ALL SELECT x."memberId", x.value, NULL, NULL FROM member_shared_accounts x WHERE x.kind = 'EMAIL' AND x."handedOverAt" IS NOT NULL AND x."endedAt" IS NULL`);
+  // Who owns each company email and RingCentral number (section 35): the same sources without staff-added contacts, which are anyone's.
+  const accounts: { id: string; kind: 'EMAIL' | 'NUMBER'; value: string; onRecord: boolean }[] = await em.query(`
+   SELECT "memberId" AS id, 'EMAIL' AS kind, "companyEmail" AS value, true AS "onRecord" FROM existing_member_records WHERE "companyEmail" IS NOT NULL
+   UNION ALL SELECT "memberId", 'NUMBER', "ringCentralNumber", true FROM existing_member_records WHERE "ringCentralNumber" IS NOT NULL
+   UNION ALL SELECT coalesce(r."memberId", d.id), x.kind, x.value, false FROM it_onboarding_requests r LEFT JOIN dispatch_members d ON d."applicationId" = r."applicationId"
+    CROSS JOIN LATERAL (VALUES ('EMAIL', r."companyEmail"), ('NUMBER', r."assignedRingCentralPhoneNumber")) x(kind, value) WHERE r."cancelledAt" IS NULL AND x.value IS NOT NULL AND coalesce(r."memberId", d.id) IS NOT NULL
+   UNION ALL SELECT "memberId", x.kind, x.value, false FROM member_company_accounts CROSS JOIN LATERAL (VALUES ('EMAIL', "companyEmail"), ('NUMBER', "ringCentralNumber")) x(kind, value) WHERE status <> 'CLOSED' AND x.value IS NOT NULL
+   UNION ALL SELECT "memberId", CASE WHEN kind = 'EMAIL' THEN 'EMAIL' ELSE 'NUMBER' END, value, false FROM member_shared_accounts WHERE "handedOverAt" IS NOT NULL AND "endedAt" IS NULL`);
+  const accountKey = (kind: 'EMAIL' | 'NUMBER', value: string) => kind === 'EMAIL' ? value.toLowerCase() : digits(value);
+  const companyOwners = new Map<string, string[]>(), numberOwners = new Map<string, string[]>(), onRecord = new Map<string, string>();
+  for (const account of accounts) {
+   const map = account.kind === 'EMAIL' ? companyOwners : numberOwners, key = accountKey(account.kind, account.value), ids = map.get(key) ?? [];
+   if (!key) continue;
+   if (!ids.includes(account.id)) ids.push(account.id);
+   map.set(key, ids);
+   if (account.onRecord) onRecord.set(`${account.kind}|${key}|${account.id}`, account.id);
+  }
+  // Movable only when nothing but the manager's record holds it: an IT setup, another company's account or a hand-over would keep a second owner.
+  for (const account of accounts) if (!account.onRecord) onRecord.delete(`${account.kind}|${accountKey(account.kind, account.value)}|${account.id}`);
+  const openRemoval = new Set<string>((await em.query(`SELECT "memberId" FROM it_removal_requests WHERE "cancelledAt" IS NULL AND "completedAt" IS NULL`)).map((row: { memberId: string }) => row.memberId));
   const owners = (pick: (row: typeof rows[number]) => string | null, normal: (value: string) => string) => {
    const map = new Map<string, string[]>();
    for (const row of rows) { const value = pick(row); if (!value) continue; const key = normal(value), ids = map.get(key) ?? []; if (!ids.includes(row.id)) ids.push(row.id); map.set(key, ids); }
@@ -193,7 +226,7 @@ export class ExistingDispatchersService {
   const accountMcs = new Map<string, Set<string>>();
   for (const row of await em.query(`SELECT "memberId", "mcId" FROM member_company_accounts WHERE status <> 'CLOSED' AND "mcId" IS NOT NULL`) as { memberId: string; mcId: string }[]) accountMcs.set(row.memberId, (accountMcs.get(row.memberId) ?? new Set()).add(row.mcId));
   const active = <T extends { archived: boolean }>(items: T[]) => items.filter(item => !item.archived);
-  return { loadBoards, accountMcs, mcs: new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
+  return { loadBoards, accountMcs, companyOwners, numberOwners, onRecord, openRemoval, mcs:new Map(active(mcs).map(item => [listNameKey(item.name), item])), teams: active(teams), titles: new Map(active(titles).map(item => [listNameKey(item.name), item.id])),
    allMcs: new Map([...mcs].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item])), allTeams: teams, allTitles: new Map([...titles].sort((a, b) => Number(b.archived) - Number(a.archived)).map(item => [listNameKey(item.name), item.id])),
    members, byId: new Map(members.map(item => [item.id, item])), records: new Map(records.map(item => [item.memberId, item])),
    companyEmails: owners(row => row.company, value => value.toLowerCase()), personalEmails: owners(row => row.personal, value => value.toLowerCase()), phones: owners(row => row.phone, digits) };
@@ -275,10 +308,25 @@ export class ExistingDispatchersService {
     if (found) seatAccounts[provider] = found.placeholder ? null : found.id;
     else choice({ field: provider === 'DAT' ? 'datAccount' : 'truckstopAccount', text: named }, row.row);
    }
+   // A company email or RingCentral number someone here now owns, on a row naming a different person (section 35): not the
+   // same person, but one using it, or the one it really belongs to. Asked about below. Someone who left shares nothing.
+   const sharedHits = new Map<string, ('companyEmail' | 'ringCentralNumber')[]>();
+   if (!left) for (const [field, value, map] of [['companyEmail', company, known.companyOwners], ['ringCentralNumber', number ? digits(number) : '', known.numberOwners]] as const) {
+    if (value) for (const id of map.get(value) ?? []) {
+     const person = known.byId.get(id);
+     if (person && person.status !== 'LEFT' && listNameKey(person.name) !== listNameKey(name)) sharedHits.set(id, [...(sharedHits.get(id) ?? []), field]);
+    }
+   }
    // Someone already recorded, by a contact detail: here now first, then someone who left.
    const contactMatches: { id: string; label: string }[] = [];
-   for (const [value, map, label] of [[company, known.companyEmails, 'company email'], [personal, known.personalEmails, 'personal email'], [phone ? digits(phone) : '', known.phones, 'personal phone']] as const) {
-    if (value) for (const id of map.get(value) ?? []) if (!contactMatches.some(item => item.id === id)) contactMatches.push({ id, label });
+   for (const [value, map, label] of [[company, known.companyEmails, 'company email'], [personal, known.personalEmails, 'personal email'], [phone ? digits(phone) : '', known.phones, 'personal phone'], [number ? digits(number) : '', known.numberOwners, 'RingCentral number']] as const) {
+    const shareable = label === 'company email' || label === 'RingCentral number';
+    if (value) for (const id of map.get(value) ?? []) {
+     if (shareable && sharedHits.has(id)) continue;
+     // A number is only someone else's when the names differ; the same name is the same person here now.
+     if (label === 'RingCentral number' && (known.byId.get(id)?.status === 'LEFT' || listNameKey(known.byId.get(id)?.name ?? '') !== listNameKey(name))) continue;
+     if (!contactMatches.some(item => item.id === id)) contactMatches.push({ id, label });
+    }
    }
    const hereNow = contactMatches.find(item => known.byId.get(item.id)?.status !== 'LEFT'), wentAway = contactMatches.find(item => known.byId.get(item.id)?.status === 'LEFT');
    if (hereNow) {
@@ -417,11 +465,25 @@ export class ExistingDispatchersService {
    const account = !!match && row.alreadyAction === 'ACCOUNT' && match.options.includes('ACCOUNT');
    if (already) { state = 'ALREADY'; problems.unshift(already); }
    const hasAccounts = left && !!(company || number || text(row.datEmail) || text(row.truckstopEmail));
+   // Someone else's email or number (section 35). Moving it takes it off a record a manager typed, never off IT's records or
+   // another company's account, and not while IT is removing that person's accounts.
+   let shared: SharedMatch | null = null;
+   if (sharedHits.size && !already) {
+    const owners = [...sharedHits].map(([id, fields]) => ({ id, name: known.byId.get(id)!.name, fields }));
+    const movable = owners.every(owner => !known.openRemoval.has(owner.id) && owner.fields.every(field => {
+     const key = field === 'companyEmail' ? `EMAIL|${company}` : `NUMBER|${digits(number)}`;
+     return known.onRecord.get(`${key}|${owner.id}`) === owner.id && (field === 'companyEmail' ? known.companyOwners.get(company) : known.numberOwners.get(digits(number)))!.length === 1;
+    }));
+    shared = { owners, options: ['SHARED', ...(movable ? ['MOVE_SHARED', 'MOVE'] as const : []), 'WITHOUT'] };
+   }
+   const sharedAction = shared && row.sharedAction && shared.options.includes(row.sharedAction) ? row.sharedAction : null;
    return { row: row.row, name, position, supportType, status: state, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsTeamId, supportsRow: null, startedOn, noMc, mcFromTeam, sharesSignIn: false,
-    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, otherNameMcs, match, fill, previousMemberId, seatAccounts, account };
+    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, otherNameMcs, match, fill, previousMemberId, seatAccounts, account, shared, sharedAction };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
+  // Someone else's email or number needs a choice for the row (section 35).
+  for (const result of results) if (result.status === 'READY' && result.shared && !result.sharedAction) result.status = 'CHOICE';
   // Supports last: their dispatcher may be another row in the same file.
   rows.forEach((row, index) => {
    const result = results[index];
@@ -456,7 +518,7 @@ export class ExistingDispatchersService {
  }
  async check(rows: ExistingRowDto[]) {
   const { results, choices } = this.evaluate(rows, await this.known(this.db.manager), await signInsInUse(this.db.manager));
-  return { rows: results.map(({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, match }) => ({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts,
+  return { rows: results.map(({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, match, shared, sharedAction }) => ({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, shared, sharedAction,
    match: match && { id: match.id, name: match.name, status: match.status, why: match.why, options: match.options, ...(match.account ? { account: match.account } : {}), fills: match.fills.map(fill => fill.startsWith('otherNames:') ? `${fill.slice(11)} other ${fill.slice(11) === '1' ? 'name' : 'names'}` : FIELD_LABELS[fill] ?? fill) } })),
    choices, counts: this.counts(results) };
  }
@@ -464,7 +526,8 @@ export class ExistingDispatchersService {
   const count = (status: RowStatus) => results.filter(row => row.status === status).length;
   const ready = results.filter(row => row.status === 'READY');
   return { ready: count('READY'), choice: count('CHOICE'), problem: count('PROBLEM'), already: count('ALREADY'), noStartDate: ready.filter(row => !row.startedOn).length, noMc: ready.filter(row => row.noMc && !row.left).length, mcFromTeam: ready.filter(row => row.mcFromTeam).length, wholeTeam: ready.filter(row => row.supportsTeamId).length, sharedSignIn: ready.filter(row => row.sharesSignIn).length,
-   left: ready.filter(row => row.left).length, noLastDay: ready.filter(row => row.left && !row.leftOn).length, askIt: ready.filter(row => row.askIt).length, cameBack: ready.filter(row => row.previousMemberId).length, fill: results.filter(row => row.fill).length, account: results.filter(row => row.account).length };
+   left: ready.filter(row => row.left).length, noLastDay: ready.filter(row => row.left && !row.leftOn).length, askIt: ready.filter(row => row.askIt).length, cameBack: ready.filter(row => row.previousMemberId).length, fill: results.filter(row => row.fill).length, account: results.filter(row => row.account).length,
+   shared: ready.filter(row => row.sharedAction === 'SHARED').length, moved: ready.filter(row => row.sharedAction === 'MOVE' || row.sharedAction === 'MOVE_SHARED').length };
  }
  /** Adds the rows that are ready and fills in the ones chosen for it, checked again under one lock so two uploads can't both add the same person. */
  async add(user: User, rows: ExistingRowDto[], sourceName?: string) {
@@ -497,11 +560,14 @@ export class ExistingDispatchersService {
      if (!dispatcherId && !result.supportsTeamId) throw new ConflictException('A dispatcher changed while this was being added. Check the rows again.');
      await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, teamId: result.supportsTeamId, startedAt, reason: result.supportType === 'UPDATER' ? 'Added as an existing updater.' : 'Added as an existing support.', actorId: user.id });
     }
+    // Someone else's email or number (section 35): used shared or left out stays off this record; moved, it's on it.
+    const keepsOwn = (field: 'companyEmail' | 'ringCentralNumber') => !result.shared?.owners.some(owner => owner.fields.includes(field)) || result.sharedAction === 'MOVE' || result.sharedAction === 'MOVE_SHARED';
     const record = await em.getRepository(ExistingMemberRecord).save({ memberId: member.id, addedBy: user.id, sourceName: sourceName?.trim().slice(0, 200) || null,
-     companyEmail: text(row.companyEmail).toLowerCase() || null, ringCentralNumber: text(row.ringCentralNumber) || null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null,
+     companyEmail: keepsOwn('companyEmail') ? text(row.companyEmail).toLowerCase() || null : null, ringCentralNumber: keepsOwn('ringCentralNumber') ? text(row.ringCentralNumber) || null : null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null,
      telegram: telegramUsername(text(row.telegram)), ringCentralExtension: text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null,
      startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod, leftDateKnown: !result.left || !!result.leftOn,
      legalFirstName: text(row.legalFirstName) || null, legalLastName: text(row.legalLastName) || null });
+    if (result.shared && result.sharedAction && result.sharedAction !== 'WITHOUT') await this.settleShared(em, user, member.id, row, result.shared, result.sharedAction);
     // Load board sign-ins become seats (section 33), on the account the row names, before IT is asked to close anything.
     await this.fileSeats(em, user, member, row, result);
     await syncRecordedSeats(em, member.id, user.id);
@@ -590,6 +656,38 @@ export class ExistingDispatchersService {
    const left = member.status === 'LEFT';
    await em.getRepository(LoadBoardSeat).save({ memberId: member.id, accountId, signInEmail: email, startedAt: left ? member.leftAt ?? new Date() : new Date(), createdBy: user.id,
     status: left ? 'ENDED' : 'ACTIVE', endedAt: left ? member.leftAt ?? new Date() : null, endedHow: left ? 'LEFT' : null, endedBy: left ? user.id : null });
+  }
+ }
+ /**
+  * Someone else's email or number on a new row (section 35). SHARED: the new person uses it. MOVE: it was typed on the wrong
+  * person's record, so it comes off theirs (people using it now use the new owner's), and MOVE_SHARED keeps them as a user.
+  * The new record is saved first, so the new person already owns what moved. Events hold field names and kinds only.
+  */
+ private async settleShared(em: EntityManager, user: User, memberId: string, row: ExistingRowDto, shared: SharedMatch, action: Exclude<SharedAction, 'WITHOUT'>) {
+  const values = { companyEmail: text(row.companyEmail).toLowerCase(), ringCentralNumber: text(row.ringCentralNumber) };
+  const kindOf = (field: 'companyEmail' | 'ringCentralNumber'): SharedKind => field === 'companyEmail' ? 'EMAIL' : 'RINGCENTRAL';
+  for (const owner of shared.owners) {
+   // One person uses one of each kind: with two holders of the same value, the first is the one they share with.
+   if (action === 'SHARED') { for (const field of owner.fields) if (shared.owners.find(item => item.fields.includes(field))?.id === owner.id) await shareAccount(em, user.id, memberId, kindOf(field), values[field], owner.id); continue; }
+   const holder = await em.getRepository(DispatchMember).findOne({ where: { id: owner.id }, lock: { mode: 'pessimistic_write' } });
+   const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: owner.id });
+   if (!holder || !record || holder.status === 'LEFT') throw new ConflictException('A record changed while this was being added. Check the rows again.');
+   for (const field of owner.fields) {
+    if (sharedKey(kindOf(field), record[field] ?? '') !== sharedKey(kindOf(field), values[field])) throw new ConflictException('A record changed while this was being added. Check the rows again.');
+    record[field] = null;
+   }
+   holder.version += 1; await em.save(holder); await em.save(record);
+   for (const field of owner.fields) {
+    const kind = kindOf(field), value = values[field];
+    // Anyone who used it as the old holder's now uses it as the new owner's.
+    for (const use of await em.getRepository(MemberSharedAccount).find({ where: { ownerMemberId: owner.id, kind, endedAt: IsNull(), handedOverAt: IsNull() }, lock: { mode: 'pessimistic_write' } })) {
+     if (sharedKey(kind, use.value) !== sharedKey(kind, value)) continue;
+     if (use.memberId === memberId) { use.endedAt = new Date(); use.endedBy = user.id; use.endedHow = 'MOVED'; } else use.ownerMemberId = memberId;
+     await em.save(use);
+    }
+    if (action === 'MOVE_SHARED') await shareAccount(em, user.id, owner.id, kind, value, memberId);
+   }
+   await em.getRepository(DispatchEvent).save({ memberId: owner.id, teamId: null, event: 'ACCOUNT_MOVED', actorId: user.id, metadata: { fields: owner.fields, stillUses: action === 'MOVE_SHARED' } });
   }
  }
  /**
@@ -715,14 +813,34 @@ export class ExistingDispatchersService {
    const matches = probes.length ? await alreadyHere(em, probes) : new Map<string, HereMatch[]>();
    const usedByCurrent = (key: string) => (matches.get(key) ?? []).some(match => match.kind === 'MEMBER' && match.status !== 'LEFT');
    const set = (field: 'companyEmail' | 'ringCentralNumber' | 'personalEmail' | 'personalPhone' | 'telegram' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail', value: string | undefined) => { if (value !== undefined && value !== (record[field] ?? '')) { record[field] = value || null; changed.push(field); } };
+   // Someone else's company email or RingCentral number (section 35): the form asks first, and it's recorded as shared, never
+   // on this record. The one they share now, sent back unchanged, stays as it is; anything else ends it.
+   const handled = new Set<string>();
+   for (const [field, kind, share, label] of [['companyEmail', 'EMAIL', dto.shareCompanyEmail, 'company email'], ['ringCentralNumber', 'RINGCENTRAL', dto.shareRingCentral, 'RingCentral number']] as const) {
+    const value = dto[field];
+    if (value === undefined) continue;
+    if (value && kind === 'EMAIL' && this.fictionalOnly && !value.toLowerCase().endsWith('@example.test')) throw new BadRequestException(`Outside production, the ${label} must be a fictional example.test address.`);
+    const open = await em.getRepository(MemberSharedAccount).findOne({ where: { memberId: id, kind, endedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
+    if (open && value && sharedKey(kind, open.value) === sharedKey(kind, value)) { handled.add(field); continue; }
+    // Their own value sent back unchanged isn't asked about again: two records may hold one from before sharing was recorded.
+    if (value && sharedKey(kind, record[field] ?? '') === sharedKey(kind, value)) { handled.add(field); continue; }
+    const owners = value ? await accountOwners(em, kind, value, id) : [];
+    if (owners.length) {
+     if (!share) throw new ConflictException(`This ${label} is ${owners[0].name}’s. Say whether ${member.firstName} uses it too.`);
+     if (await shareAccount(em, user.id, id, kind, value, owners[0].memberId)) changed.push(kind === 'EMAIL' ? 'sharedEmail' : 'sharedNumber');
+     set(field, ''); handled.add(field);
+    } else if (open && !open.handedOverAt && await stopSharing(em, user.id, id, kind)) changed.push(kind === 'EMAIL' ? 'sharedEmail' : 'sharedNumber');
+   }
    for (const [field, label] of [['companyEmail', 'company email'], ['personalEmail', 'personal email']] as const) {
+    if (handled.has(field)) continue;
     const value = dto[field]?.toLowerCase();
     if (value && this.fictionalOnly && !value.endsWith('@example.test')) throw new BadRequestException(`Outside production, the ${label} must be a fictional example.test address.`);
     if (value && usedByCurrent(field)) throw new ConflictException(`Someone in the workspace already has this ${label}.`);
     set(field, value);
    }
    if (dto.personalPhone && usedByCurrent('personalPhone')) throw new ConflictException('Someone in the workspace already has this personal phone.');
-   set('ringCentralNumber', dto.ringCentralNumber); set('personalPhone', dto.personalPhone);
+   if (!handled.has('ringCentralNumber')) set('ringCentralNumber', dto.ringCentralNumber);
+   set('personalPhone', dto.personalPhone);
    if (dto.telegram && !telegramUsername(dto.telegram)) throw new BadRequestException('Telegram should be a username, like @alexmoreno.');
    set('telegram', dto.telegram && telegramUsername(dto.telegram)!); set('ringCentralExtension', dto.ringCentralExtension);
    // A sign-in may be shared, so unlike the other emails it's never refused for being on someone else's record.
@@ -759,6 +877,14 @@ export class ExistingDispatchersService {
   });
   this.alerts.dispatch(alerts);
   return result;
+ }
+ /**
+  * Whose a company email or RingCentral number being typed is now (section 35), so the form can ask whether this person uses it
+  * too, or (adding the real owner) whose it is. Names only; the value was typed by the asker.
+  */
+ async accountOwners(dto: AccountOwnersDto) {
+  const find = async (kind: SharedKind, value?: string) => value ? (await accountOwners(this.db.manager, kind, value, dto.memberId ?? null)).map(({ memberId, name, onRecord }) => ({ id: memberId, name, onRecord })) : [];
+  return { companyEmail: await find('EMAIL', dto.companyEmail), ringCentralNumber: await find('RINGCENTRAL', dto.ringCentralNumber) };
  }
  /** An unused link works only with the email on the record: it follows a correction, and stops when the email is cleared. */
  private async moveUnusedLink(em: EntityManager, user: User, memberId: string, email: string | null) {

@@ -100,7 +100,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect(status(10).status).toBe('PROBLEM');
     expect(body.choices.find((item: Row) => item.field === 'mc')).toMatchObject({ text: 'Northwind Frieght', rows: [3, 4] });
     expect(body.choices.find((item: Row) => item.field === 'team')).toMatchObject({ text: 'Chen', mc: 'Northwind Freight', rows: [5] });
-    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0, account: 0 });
+    expect(body.counts).toEqual({ ready: 2, choice: 4, problem: 3, already: 0, noStartDate: 0, noMc: 0, mcFromTeam: 0, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0, account: 0, shared: 0, moved: 0 });
     expect((await db.query(`SELECT count(*)::integer AS n FROM dispatch_members`))[0].n).toBe(0);
     // Refused without saving: a row with the same email as an earlier one.
     const twice = await check([base(2, 'One', { companyEmail: 'same@example.test' }), base(3, 'Two', { companyEmail: 'SAME@example.test' })]);
@@ -122,7 +122,9 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect(event.metadata).toEqual({ source: 'file', paper: 1, noStartDate: false, noMc: false });
     // The same people again, however the file spells them.
     const again = await check([base(2, 'Someone', { companyEmail: 'RILEY@example.test' }), base(3, 'Else', { personalEmail: 'riley.home@example.test' }), base(4, 'Phone', { personalPhone: '(202) 555-0147' }), base(5, 'riley')]);
-    expect(again.body.counts.already).toBe(4);
+    // Riley's company email on a row naming someone else is a choice now (section 35): shared, moved or left out.
+    expect(again.body.counts.already).toBe(3);
+    expect(again.body.rows[0]).toMatchObject({ status: 'CHOICE', shared: { owners: [expect.objectContaining({ fields: ['companyEmail'] })] } });
     expect(again.body.rows[3].sameName).toBe(true);
     expect((await check([base(5, 'riley', { differentPerson: true })])).body.rows[0].status).toBe('READY');
   });
@@ -401,7 +403,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     it('counts rows with no start date or MC as ready, and says how many, but a date that can’t be read is still a problem', async () => {
       const { body } = await check([missing(2, 'Blank'), base(3, 'Undated', { startedOn: '' }), missing(4, 'Typo', { startedOn: 'Marhc 2024' }), missing(5, 'Team', { team: 'Red team' }), missing(6, 'Typed', { mc: 'No MC yet' })]);
       expect(body.rows.map((row: Row) => row.status)).toEqual(['READY', 'READY', 'PROBLEM', 'READY', 'READY']);
-      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0, account: 0 });
+      expect(body.counts).toEqual({ ready: 4, choice: 0, problem: 1, already: 0, noStartDate: 4, noMc: 2, mcFromTeam: 1, wholeTeam: 0, sharedSignIn: 0, left: 0, noLastDay: 0, askIt: 0, cameBack: 0, fill: 0, account: 0, shared: 0, moved: 0 });
     });
     it('still needs a job title for a dispatcher', async () => {
       expect((await check([missing(2, 'Untitled', { jobTitle: '' })])).body.rows[0]).toMatchObject({ status: 'PROBLEM', problems: ['Job title is empty.'] });
@@ -1137,8 +1139,8 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await task(email.id, 'GOOGLE_WORKSPACE', 'COMPLETED');
       const gear = (await ask(sky, { items: ['EQUIPMENT'] }).expect(201)).body;
       await task(gear.id, 'EQUIPMENT', 'COMPLETED');
-      // A file row with Sky's company email is someone already here.
-      expect((await check([{ ...base(5, 'Copy'), companyEmail: 'sky.work@example.test' }])).body.rows[0].status).toBe('ALREADY');
+      // A file row naming someone else with Sky's company email asks whether they share it (section 35). IT recorded it, so it can't be moved.
+      expect((await check([{ ...base(5, 'Copy'), companyEmail: 'sky.work@example.test' }])).body.rows[0]).toMatchObject({ status: 'CHOICE', shared: { options: ['SHARED', 'WITHOUT'] } });
       // Notice for a future day: the removal keeps the older setup's mailbox, and a correction to the record doesn't replace it.
       const notice = async (id: string) => { const { version } = await page(id); await agents.manager.post(`/api/dispatch/members/${id}/leave`).set(headers).send({ version, leftAt: `${addDays(usDay('latest'), 7)}T12:00:00.000Z`, reason: 'Moving.' }).expect(201); };
       await notice(sky);
@@ -1279,8 +1281,8 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect(names(await page('page=1&search=%40riley_disp'))).toEqual(['Riley']);
       expect(names(await page('page=1&search=RILEY%40example'))).toEqual(['Riley']);
       expect((await page('page=1&search=sky.home')).items[0]).toMatchObject({ firstName: 'Sky', matched: { label: 'Personal email' } });
-      // A name or place match says nothing more; text that looks like a pattern matches only itself.
-      expect((await page('page=1&search=red%20team')).items.map(item => item.matched)).toEqual([null, null, null]);
+      // Search finds people, not groups (section 35): a team's name is a filter. Text that looks like a pattern matches only itself.
+      expect((await page('page=1&search=red%20team')).items).toEqual([]);
       expect(names(await page('page=1&search=%25'))).toEqual([]);
     });
     it('exports the view on screen with work details only, recorded with its count', async () => {
