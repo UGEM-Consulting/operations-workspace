@@ -9,11 +9,13 @@ type Query = Pick<EntityManager, 'query'>;
 export interface CompanyAccountView {
  id: string; mcId: string | null; mc: string | null; mcArchived: boolean; companyName: string | null; nameUsed: string | null; companyEmail: string | null; ringCentralNumber: string | null;
  ringCentralExtension: string | null; status: AccountStatus; closedAt: string | null; sourceName: string | null; version: number; createdAt: string; keptFor: string[];
+ /** Staff's note on the account (section 36), with who wrote it and when. */
+ note: string | null; noteBy: string | null; noteAt: string | null;
 }
 /** Someone's accounts at other companies, open ones first. keptFor names the seats (still open) their email signs in to. */
 export async function memberCompanyAccounts(em: Query, memberId: string): Promise<CompanyAccountView[]> {
  return em.query(`SELECT c.id, c."mcId", m.name AS mc, m."archivedAt" IS NOT NULL AS "mcArchived", c."companyName", c."nameUsed", c."companyEmail", c."ringCentralNumber", c."ringCentralExtension",
-   c.status, c."closedAt", c."sourceName", c.version, c."createdAt",
+   c.status, c."closedAt", c."sourceName", c.version, c."createdAt", c.note, c."noteAt", (SELECT u."firstName" || ' ' || u."lastName" FROM users u WHERE u.id = c."noteBy") AS "noteBy",
    coalesce((SELECT array_agg(DISTINCT a.name) FROM member_load_board_seats s JOIN load_board_accounts a ON a.id = s."accountId"
      WHERE s.status <> 'ENDED' AND c."companyEmail" IS NOT NULL AND s."signInEmail" = lower(c."companyEmail")), '{}') AS "keptFor"
   FROM member_company_accounts c LEFT JOIN mcs m ON m.id = c."mcId" WHERE c."memberId" = $1 ORDER BY (c.status = 'CLOSED'), c."createdAt"`, [memberId]);

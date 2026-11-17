@@ -106,7 +106,11 @@ export const teamDetailSchema = z.looseObject({ id: text, name: text, version: z
 
 const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText,
   // Leave (section 35): the open leave, upcoming or started.
-  leave: z.looseObject({ firstDay: text, backOn: text, started: z.boolean(), it: text }).nullable().optional().catch(undefined) });
+  leave: z.looseObject({ firstDay: text, backOn: text, started: z.boolean(), it: text }).nullable().optional().catch(undefined),
+  // At a glance (section 36): dropped when malformed, so the row still shows.
+  shared: z.array(z.looseObject({ kind: text, value: text, owner: nullableText })).nullable().optional().catch(undefined),
+  helpers: z.array(z.looseObject({ id: text, name: text, wholeTeam: z.boolean() })).nullable().optional().catch(undefined),
+  loadBoards: z.array(text).nullable().optional().catch(undefined) });
 /** GET /dispatch/members */
 export const memberListSchema = z.looseObject({ items: z.array(memberRow), total: z.number().optional().catch(undefined), page: z.number().optional().catch(undefined), pageSize: z.number().optional().catch(undefined),
   options: z.looseObject({ mcs: z.array(z.looseObject({ id: text, name: text })), teams: z.array(z.looseObject({ id: text, name: text })), leads: z.array(z.looseObject({ id: text, name: text })), jobTitles: z.array(z.looseObject({ id: text, name: text })) }).optional().catch(undefined),

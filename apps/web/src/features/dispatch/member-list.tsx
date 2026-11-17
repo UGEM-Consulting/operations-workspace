@@ -11,6 +11,7 @@ import { MEMBER_DEFAULTS } from '@/lib/navigation';
 import { cn } from '@/lib/utils';
 import { FILTER_KEYS, membersHref, type FilterKey } from './member-filters';
 import { archived, chipValue, DRIVERS, FILTER_LABELS as LABELS, POSITIONS, SOURCES } from './member-view.ts';
+import { ColumnsMenu } from './glance-columns';
 import { membersCsv, type ExportRow } from './members-csv';
 import type { MemberOptions } from './types';
 
@@ -33,7 +34,7 @@ function FilterSelect({ label, value, all, options, onChange, className }: { lab
  * approved 2026-11-13). From 768px the five main filters sit in a row and More filters holds Source and Drivers; on phones
  * one Filters button opens every filter in a dialog. Each change reloads the page from the server.
  */
-export function MemberFilters({ filters, options, total, view }: { filters: Record<string, string>; options: MemberOptions; total: number; view: string }) {
+export function MemberFilters({ filters, options, total, view, columns = false }: { filters: Record<string, string>; options: MemberOptions; total: number; view: string; columns?: boolean }) {
   const router = useRouter();
   const [dialog, setDialog] = useState<'all' | 'more' | null>(null);
   const go = (changes: Record<string, string>) => router.push(membersHref(filters, changes));
@@ -51,6 +52,8 @@ export function MemberFilters({ filters, options, total, view }: { filters: Reco
       </div>
       <Button variant="outline" size="sm" className="md:hidden" onClick={() => setDialog('all')}><SlidersHorizontal aria-hidden="true" />Filters{chosen.length > 0 && <FilterCount count={chosen.length} />}</Button>
       <span className="flex-1 max-md:hidden" />
+      {/* Columns (section 36) on the tabs with the at-a-glance table; phones show cards, which have no columns. */}
+      {columns && <span className="max-sm:hidden"><ColumnsMenu /></span>}
       <ExportButton filters={filters} total={total} view={view} />
     </div>
     {chosen.length > 0 && <div className="flex flex-wrap items-center gap-2 px-4 pb-3 sm:px-5">

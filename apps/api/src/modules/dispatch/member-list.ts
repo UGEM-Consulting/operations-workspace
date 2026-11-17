@@ -84,6 +84,30 @@ const CONTACT_POINTS = `(
     FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId" WHERE s."memberId" = b.id AND s."endedAt" IS NULL
   ) p WHERE p.value IS NOT NULL`;
 
+/** The RingCentral number and extension (IT's newest setup, else a manager's record) and Telegram (the application's answer, else the record), as the table and the export show them. */
+const WORK_CONTACTS = `coalesce((SELECT r."assignedRingCentralPhoneNumber" FROM ${SETUPS} r WHERE r."assignedRingCentralPhoneNumber" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
+     (SELECT e."ringCentralNumber" FROM existing_member_records e WHERE e."memberId" = b.id)) AS "ringCentralNumber",
+    coalesce((SELECT r."ringCentralExtension" FROM ${SETUPS} r WHERE r."ringCentralExtension" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
+     (SELECT e."ringCentralExtension" FROM existing_member_records e WHERE e."memberId" = b.id)) AS "ringCentralExtension",
+    (SELECT ${corrected('telegram', `coalesce(s.fields->>'telegram', e.telegram)`)} FROM dispatch_members dm LEFT JOIN existing_member_records e ON e."memberId" = dm.id
+      LEFT JOIN LATERAL (SELECT x.fields FROM application_submissions x WHERE x."applicationId" = dm."applicationId" ORDER BY x.version DESC LIMIT 1) s ON true WHERE dm.id = b.id) AS telegram`;
+/**
+ * What a row of the table shows at a glance (section 36), read for the rows of one page only: their latest other name, the
+ * email and number they use of someone else's (whose, unless it was handed over), who helps them (a lead's row adds those
+ * assisting the whole team), the load boards they hold a seat on, and whether IT finished removing a leaver's accounts.
+ */
+const GLANCE = `${WORK_CONTACTS},
+    (SELECT o.name FROM member_other_names o WHERE o."memberId" = b.id ORDER BY o."createdAt" DESC, o.id LIMIT 1) AS "otherName",
+    (SELECT json_agg(json_build_object('kind', s.kind, 'value', s.value, 'owner', CASE WHEN s."handedOverAt" IS NULL THEN o."firstName" || ' ' || o."lastName" END) ORDER BY s.kind)
+      FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId" WHERE s."memberId" = b.id AND s."endedAt" IS NULL) AS shared,
+    (SELECT json_agg(json_build_object('id', h.id, 'name', h."firstName" || ' ' || h."lastName", 'supportType', h."supportType", 'wholeTeam', l."teamId" IS NOT NULL)
+       ORDER BY l."teamId" IS NOT NULL, lower(h."firstName"), lower(h."lastName"))
+      FROM member_support_links l JOIN dispatch_members h ON h.id = l."supportId" WHERE l."endedAt" IS NULL AND h.status <> 'LEFT' AND b.position = 'DISPATCHER'
+       AND (l."dispatcherId" = b.id OR (b.lead AND l."teamId" = b."teamId"))) AS helpers,
+    (SELECT array_agg(DISTINCT a.provider ORDER BY a.provider) FROM member_load_board_seats s JOIN load_board_accounts a ON a.id = s."accountId"
+      WHERE s."memberId" = b.id AND s.status <> 'ENDED') AS "loadBoards",
+    EXISTS (SELECT 1 FROM it_removal_requests r WHERE r."memberId" = b.id AND r."cancelledAt" IS NULL AND r."completedAt" IS NOT NULL) AS "accountsClosed"`;
+
 /** What a search for this text matches: words anywhere, and a number by its digits whatever the separators (with or without the US 1). */
 export function searchTerms(search: string): { text: string; digits: string | null } {
  const text = search.trim().toLowerCase().replace(/^@/, '');
@@ -150,7 +174,7 @@ export class MemberListService {
   const pageSize = query.pageSize ?? 20, pages = Math.max(1, Math.ceil(total / pageSize)), page = Math.min(query.page ?? 1, pages);
   const limit = add(pageSize), offset = add((page - 1) * pageSize);
   const [items, options, leadOf] = await Promise.all([
-   this.db.query(`${base}SELECT b.* FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params), this.options(),
+   this.db.query(`${base}SELECT b.*, ${GLANCE} FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params), this.options(),
    query.search ? this.leadOf(query.search) : null]);
   return { items, counts, total, page, pageSize, options, leadOf };
  }
@@ -228,13 +252,7 @@ export class MemberListService {
   const [{ total }] = await this.db.query(`${base}SELECT count(*)::integer AS total FROM b WHERE ${where} AND ${TAB_SQL[tab]}`, params);
   if (total > EXPORT_LIMIT) throw new BadRequestException(`This view has ${total} people. Narrow the filters to ${EXPORT_LIMIT.toLocaleString('en-US')} or fewer to export.`);
   const rows = await this.db.query(`${base}SELECT b.id, b."firstName", b."lastName", b.position, b."supportType", b.mc, b.team, b."teamLead", b."jobTitle", b.since, b."sinceKnown", b.status, b."lastDay", b.leave,
-    b."wholeTeam", b.dispatcher, b."companyEmail",
-    coalesce((SELECT r."assignedRingCentralPhoneNumber" FROM ${SETUPS} r WHERE r."assignedRingCentralPhoneNumber" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
-     (SELECT e."ringCentralNumber" FROM existing_member_records e WHERE e."memberId" = b.id)) AS "ringCentralNumber",
-    coalesce((SELECT r."ringCentralExtension" FROM ${SETUPS} r WHERE r."ringCentralExtension" IS NOT NULL ORDER BY r."createdAt" DESC LIMIT 1),
-     (SELECT e."ringCentralExtension" FROM existing_member_records e WHERE e."memberId" = b.id)) AS "ringCentralExtension",
-    (SELECT ${corrected('telegram', `coalesce(s.fields->>'telegram', e.telegram)`)} FROM dispatch_members dm LEFT JOIN existing_member_records e ON e."memberId" = dm.id
-      LEFT JOIN LATERAL (SELECT x.fields FROM application_submissions x WHERE x."applicationId" = dm."applicationId" ORDER BY x.version DESC LIMIT 1) s ON true WHERE dm.id = b.id) AS telegram
+    b."wholeTeam", b.dispatcher, b."companyEmail", ${WORK_CONTACTS}
    FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)}`, params);
   const used = (['search', 'mcId', 'teamId', 'leadId', 'jobTitleId', 'position', 'source', 'drivers', 'loadBoardAccountId'] as const).filter(key => query[key]);
   await this.db.getRepository(DispatchEvent).save({ memberId: null, teamId: null, event: 'MEMBERS_EXPORTED', actorId: user.id, metadata: { count: rows.length, tab, filters: used } });

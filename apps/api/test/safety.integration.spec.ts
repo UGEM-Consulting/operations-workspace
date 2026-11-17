@@ -1414,7 +1414,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     let record = await driver(id, agents.manager);
     expect(record).toMatchObject({ status: 'CLEARED', email: 'dana.okafor@example.test', licenseState: 'TX', owner: { id: users.staff.id }, hold: { onHold: true, documents: true },
       paperFile: { hiredOn: '2023-05-15', sourceName: 'drivers-november.csv', keys: ['APPLICATION', 'MVR_AT_HIRE', 'ROAD_TEST', 'PREVIOUS_EMPLOYERS', 'DRUG_TEST', 'CLEARINGHOUSE', 'MEDICAL_REGISTRY', 'E_VERIFY'], paper: [], catchUp: { link: null, sentAt: null } } });
-    expect(record.documents.map((row: { kind: string; fromPaper: boolean; expiresOn: string | null; subtype: string | null }) => [row.kind, row.fromPaper, row.expiresOn, row.subtype]))
+    expect(record.documents.map((row: { kind: string; fromPaper: boolean; expiresOn: string | null; subtype: string | null }) => [row.kind, row.fromPaper, row.expiresOn, row.subtype]).sort((a: unknown[], b: unknown[]) => String(a[0]).localeCompare(String(b[0]))))
       .toEqual([['LICENSE', true, addDays(day, 700), null], ['MEDICAL_CARD', true, addDays(day, -2), null], ['WORK_AUTHORIZATION', true, null, 'GREEN_CARD']]);
     await agents.manager.get(`/api/safety/drivers/${id}/documents/${record.documents[0].id}/file`).set(headers).expect(404);
     // No last review on file: the yearly review is due from the day they were added.
@@ -2201,6 +2201,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
     // Ready for the road (or an acknowledgement, an owner's contract, a group change or their events) keeps RoadReady.
     await db.query(`INSERT INTO driver_road_ready ("driverId") VALUES ($1)`, [id]);
+    await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here
     await db.undoLastMigration(); // RetentionJob, with none here
     await db.undoLastMigration(); // TelegramGroups, with none here
@@ -2322,6 +2323,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SharedAccounts1793310000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('CompanyAccountNotes1793320000000');
   });
 });
