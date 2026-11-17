@@ -45,7 +45,9 @@ export const assists = (row: { dispatcher?: string | null; wholeTeam?: string | 
 export const toReassign = (drivers: number, supports: number) => [drivers ? `${drivers} driver${drivers === 1 ? '' : 's'}` : '', supports ? (supports === 1 ? '1 support or updater' : `${supports} supports or updaters`) : ''].filter(Boolean).join(drivers && supports ? ', ' : '') || 'Nobody';
 export interface MemberList { items: MemberRow[]; counts: { onboarding?: number; active: number; left: number; onLeave?: number; leaving?: number; missing?: number; all?: number; paperwork?: number };
   // A page of the Dispatchers table, with what its filters offer.
-  total?: number; page?: number; pageSize?: number; options?: MemberOptions }
+  total?: number; page?: number; pageSize?: number; options?: MemberOptions;
+  // A search that is a team lead's whole name (section 35): their team, offered as the Team lead filter. Absent from an older API.
+  leadOf?: { id: string; name: string; teamId: string; team: string; count: number } | null }
 export interface MemberOptions { mcs: { id: string; name: string; archived: boolean }[]; teams: { id: string; name: string; mcId: string; archived: boolean }[]; leads: { id: string; name: string }[]; jobTitles: { id: string; name: string; archived: boolean }[];
   /** The load board accounts anyone holds a seat on, for the Load board account filter (section 33); an older API sends none. */
   loadBoardAccounts?: { id: string; name: string; provider: string; archived: boolean }[] }
@@ -64,6 +66,10 @@ export interface ExistingRecord { sourceName: string | null; companyEmail: strin
   addedAsLeft?: boolean; leftDateKnown?: boolean; legalFirstName?: string | null; legalLastName?: string | null; startDateChanges?: { id: string; startedOn: string; previousOn: string | null; reason: string | null; createdAt: string; changedBy: string }[];
   paper: PaperCopy[]; published: string[]; paperScans?: boolean;
   catchUp: { expiresAt: string; opened: boolean; started: boolean; status: string; signed: { kind: string; signedAt: string }[]; applicationId: string | null; reference: string | null; canReview: boolean; timeEndedAt?: string | null; returnEmail?: string | null } | null }
+/** Shared company email and RingCentral number (section 35): what they use of someone else's, and who uses theirs. Absent from an older API. */
+export type SharedKind = 'EMAIL' | 'RINGCENTRAL';
+export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean }
+export interface SharedUsedBy { kind: SharedKind; value: string; users: { id: string; name: string }[] }
 export interface SharedSignIns { dat: { id: string; name: string }[]; truckstop: { id: string; name: string }[] }
 /** A support's or updater's IT setup (section 32): the request IT is working on and how many finished. Absent from an older API. */
 export interface SupportItSetup { open: { id: string; items: string[]; done: number; total: number; createdAt: string; requestedBy: string | null } | null; finished: number }
@@ -71,7 +77,7 @@ export interface SupportItSetup { open: { id: string; items: string[]; done: num
 export interface PaperScan { id: string; pageCount: number; createdAt: string; uploadedBy: string }
 export interface PaperCopy { kind: 'NDA' | 'SOP'; signedOn: string; createdAt: string; recordedBy: string; scan?: PaperScan | null; earlierScans?: (PaperScan & { replacedAt: string })[] }
 export interface OtherName { id: string; name: string; mcId: string | null; mc: string | null }
-export interface MemberProfile { recordChanges?: RecordChange[]; handPhotos?: { profile: { createdAt: string; uploadedBy: string | null } | null; id: { createdAt: string; uploadedBy: string | null } | null; idViews: { createdAt: string; viewedBy: string | null; role: string }[] } | null; accountRequests?: { id: string; kind: 'CLOSE' | 'MOVE'; accountId: string | null; toMc: string | null; createdAt: string }[]; companyAccounts?: CompanyAccount[]; loadBoardSeats?: Seat[]; otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+export interface MemberProfile { sharing?: { uses: SharedUse[]; usedBy: SharedUsedBy[] }; recordChanges?: RecordChange[]; handPhotos?: { profile: { createdAt: string; uploadedBy: string | null } | null; id: { createdAt: string; uploadedBy: string | null } | null; idViews: { createdAt: string; viewedBy: string | null; role: string }[] } | null; accountRequests?: { id: string; kind: 'CLOSE' | 'MOVE'; accountId: string | null; toMc: string | null; createdAt: string }[]; companyAccounts?: CompanyAccount[]; loadBoardSeats?: Seat[]; otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).

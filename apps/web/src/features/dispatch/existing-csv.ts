@@ -7,8 +7,11 @@ export interface ExistingRow {
   datAccount?: string; truckstopAccount?: string;
   // People who left and other names (section 33). askIt and alreadyAction are choices made on the check step, never columns.
   status?: string; leftOn?: string; leftReason?: string; legalFirstName?: string; legalLastName?: string; otherNames?: string; otherNameList?: { name: string; mcId?: string }[]; askIt?: boolean; alreadyAction?: 'FILL' | 'CAME_BACK' | 'ACCOUNT';
+  // Someone else's company email or RingCentral number (section 35), chosen on the check step, never a column.
+  sharedAction?: SharedAction;
 }
-type Field = Exclude<keyof ExistingRow, 'row' | 'otherNameList' | 'differentPerson' | 'supportsMemberId' | 'supportsTeamId' | 'askIt' | 'alreadyAction'>;
+export type SharedAction = 'SHARED' | 'MOVE' | 'MOVE_SHARED' | 'WITHOUT';
+type Field = Exclude<keyof ExistingRow, 'row' | 'otherNameList' | 'differentPerson' | 'supportsMemberId' | 'supportsTeamId' | 'askIt' | 'alreadyAction' | 'sharedAction'>;
 export const COLUMNS: readonly [string, Field][] = [['first_name', 'firstName'], ['last_name', 'lastName'], ['position', 'position'], ['mc', 'mc'], ['team', 'team'], ['job_title', 'jobTitle'], ['started_on', 'startedOn'],
   ['company_email', 'companyEmail'], ['ringcentral_number', 'ringCentralNumber'], ['personal_email', 'personalEmail'], ['personal_phone', 'personalPhone'], ['supports', 'supports'], ['nda_signed_on', 'ndaSignedOn'], ['sop_signed_on', 'sopSignedOn'], ['telegram', 'telegram'], ['ringcentral_ext', 'ringCentralExtension'], ['dat_email', 'datEmail'], ['truckstop_email', 'truckstopEmail'],
   ['dat_account', 'datAccount'], ['truckstop_account', 'truckstopAccount'],

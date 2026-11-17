@@ -69,8 +69,19 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
   }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
  }
  const blocked=tasks.filter(task=>task.status==='BLOCKED');
+ // Shared email and number (SharedItRemovalScreen): handed over, keep and change the password; used by others staying, say so.
+ const sharing=profile.shared,handOver=sharing?.handOverTo??null,sharedOf=(kind:'EMAIL'|'RINGCENTRAL')=>sharing?.usedBy.find(item=>item.kind===kind);
+ const borrowed=(kind:'EMAIL'|'RINGCENTRAL')=>sharing?.uses.find(item=>item.kind===kind&&!item.handedOver);
+ const taskText=(task:ItTask)=>{
+  const email=sharedOf('EMAIL'),number=sharedOf('RINGCENTRAL'),usedEmail=borrowed('EMAIL'),usedNumber=borrowed('RINGCENTRAL');
+  if(task.key==='GOOGLE_WORKSPACE'&&handOver&&email)return `Keep ${email.value} for ${handOver}: change its password, sign it out everywhere and give the new one to ${handOver}. Don’t suspend it.${usedEmail?` ${profile.displayName} also used ${usedEmail.owner??'someone else'}’s email ${usedEmail.value}: change its password.`:''}`;
+  if(task.key==='RINGCENTRAL'&&handOver&&number)return `Keep ${number.value} for ${handOver}: remove ${profile.displayName}’s user and give the number to ${handOver}’s. Record the number as Kept.`;
+  if(task.key==='GOOGLE_WORKSPACE'&&usedEmail&&!profile.companyEmail)return `${profile.displayName} used ${usedEmail.owner??'someone else'}’s email ${usedEmail.value}. Don’t close it: change its password and give the new one to ${usedEmail.owner??'its owner'}.`;
+  if(task.key==='RINGCENTRAL'&&usedNumber&&!profile.ringCentralNumber)return `${profile.displayName} used ${usedNumber.owner??'someone else'}’s number ${usedNumber.value}. Remove their access to it; don’t release the number.`;
+  return task.key==='GOOGLE_WORKSPACE'&&request.emailAfter==='FORWARD'?`${task.description} Forward new email to ${request.forwardToName??'the manager'} for 30 days.`:task.description;
+ };
  const toChecklist=(task:ItTask):ChecklistItem=>({id:task.key,title:task.label,optional:task.optional,status:task.status,note:task.notes||undefined,
-  description:task.key==='GOOGLE_WORKSPACE'&&request.emailAfter==='FORWARD'?`${task.description} Forward new email to ${request.forwardToName??'the manager'} for 30 days.`:task.description,
+  description:taskText(task),
   meta:task.status!=='PENDING'&&<>Updated <LocalTime iso={task.updatedAt}/></>,
   action:!closed&&<Button variant="outline" size="sm" disabled={busy} onClick={()=>open(task)}>{scheduled?'Add note':'Update'}<span className="sr-only">: {task.label}</span></Button>});
  const ringCentral=tasks.filter(task=>task.key==='RINGCENTRAL'),before=tasks.filter(task=>['GOOGLE_WORKSPACE','DISPATCH_GROUP'].includes(task.key)),after=tasks.filter(task=>!['GOOGLE_WORKSPACE','DISPATCH_GROUP','RINGCENTRAL'].includes(task.key));
@@ -91,6 +102,9 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
    {forwardingMoved&&<Alert tone="warning" title="Email forwarding changed"><p>The manager’s records were handed over, so new email now goes to {request.forwardToName??'the new manager'}. If you’ve already set up forwarding, change it.</p></Alert>}
    {!closed&&!cancelled&&data.activity.some(event=>event.event==='ACCOUNTS_CORRECTED'&&event.metadata.reopened===true)&&<Alert tone="warning" title="A manager corrected the accounts"><p>A step you finished opened again because a company email, RingCentral number or load board sign-in changed. Check the accounts below.</p></Alert>}
    {!closed&&!cancelled&&sharedPeople.length>0&&<Alert tone="warning" title="Someone else still uses a sign-in"><p>{sharedPeople.join(' and ')} also {sharedPeople.length===1?'uses':'use'} {profile.displayName}’s {sharedBoards} sign-in{seats&&seats.filter(seat=>seat.sharedWith.length).length>1?'s':''} and {sharedPeople.length===1?'is':'are'} staying. Change its password and tell their manager, rather than closing it.</p></Alert>}
+   {sharing&&!closed&&!cancelled&&sharing.usedBy.length>0&&(handOver?<Alert tone="info" title={`Handed over to ${handOver}`}><p>{profile.displayName}’s {sharing.usedBy.map(item=>item.kind==='EMAIL'?'company email':'RingCentral number').join(' and ')} stay open for {handOver}, who uses them now.{sharing.usedBy.some(item=>item.users.some(user=>user!==handOver))?` ${[...new Set(sharing.usedBy.flatMap(item=>item.users).filter(user=>user!==handOver))].join(' and ')} keep using them too.`:''}</p></Alert>
+    :<Alert tone="warning" title="Someone else still uses their email or number"><p>{[...new Set(sharing.usedBy.flatMap(item=>item.users))].join(' and ')} also {new Set(sharing.usedBy.flatMap(item=>item.users)).size===1?'uses':'use'} them and {new Set(sharing.usedBy.flatMap(item=>item.users)).size===1?'is':'are'} staying. The manager chose to close them, so they stop working for them too.</p></Alert>)}
+   {sharing&&!closed&&!cancelled&&sharing.uses.some(item=>!item.handedOver)&&<Alert tone="warning" title="They used someone else’s email or number"><p>{sharing.uses.filter(item=>!item.handedOver).map(item=>`${item.owner??'Someone else'}’s ${item.kind==='EMAIL'?'company email':'RingCentral number'}`).join(' and ')}. Remove {profile.displayName}’s access and change the password; don’t close {sharing.uses.filter(item=>!item.handedOver).length>1?'them':'it'}.</p></Alert>}
    {profile.suspendedOnLeave&&!closed&&!cancelled&&<Alert tone="info" title="Suspended during leave"><p>{profile.displayName} was on leave, so some accounts may already be suspended. Check them, then remove them.</p></Alert>}
    {request.note&&!closed&&!cancelled&&<Alert tone="info" title={`Note from ${request.managerName??'the manager'}`}><p className="whitespace-pre-wrap">{request.note}</p></Alert>}
    {profile.noSetupRecord&&!closed&&!cancelled&&<Alert tone="warning" title="No IT setup on record"><p>{profile.displayName} started before the workspace, so these accounts come from their manager and may be incomplete. Check the admin consoles as well.</p></Alert>}
@@ -120,6 +134,8 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
      {label:'Company email',value:profile.companyEmail&&<><span className="block break-all">{profile.companyEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.companyEmail} label="Copy email" size="sm" variant="ghost"/></span></>,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
      {label:'Email afterwards',value:request.emailAfter==='FORWARD'?`Forward to ${request.forwardToName??'the manager'}, 30 days`:'Suspend only'},
      {label:'RingCentral number',value:profile.ringCentralNumber,mono:true,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
+     ...(sharing?.uses??[]).map(item=>({label:item.kind==='EMAIL'?'Uses company email':'Uses RingCentral number',value:<><span className="block break-all">{item.value}</span><span className="block text-[13px] text-muted-foreground">{item.handedOver?'Handed over to them':`${item.owner??'Someone else'}’s, shared`}</span></>})),
+     ...(sharing?.usedBy??[]).map(item=>({label:item.kind==='EMAIL'?'Email also used by':'Number also used by',value:`${item.users.join(', ')}${handOver?` · handed over to ${handOver}`:''}`})),
      ...(profile.ringCentralExtension?[{label:'Extension',value:profile.ringCentralExtension,mono:true}]:[]),
      ...(!seats&&profile.datEmail?[{label:'DAT sign-in',value:<SignIn email={profile.datEmail} others={shared.dat}/>}]:[]),...(!seats&&profile.truckstopEmail?[{label:'Truckstop sign-in',value:<SignIn email={profile.truckstopEmail} others={shared.truckstop}/>}]:[]),
      ...(profile.ringCentralNumber?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),

@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import type { RemovalSharing } from '../dispatch/shared-accounts';
 // Request progress is derived from its tasks. NOT_NEEDED is a task outcome for optional tasks only.
 export const REQUEST_STATUSES = ['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'] as const;
 export type RequestStatus = typeof REQUEST_STATUSES[number];
@@ -125,7 +126,7 @@ export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return 
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
-export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];companyAccounts?:RemovalCompanyAccount[];}
+export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];companyAccounts?:RemovalCompanyAccount[];shared?:RemovalSharing;}
 /** An account at another of our companies, as IT's removal lists it (section 33). */
 export interface RemovalCompanyAccount {id:string;company:string;nameUsed:string|null;companyEmail:string|null;ringCentralNumber:string|null;ringCentralExtension:string|null;status:string;keptFor:string[];}
 /** A load board seat as IT's removal lists it (section 33). */

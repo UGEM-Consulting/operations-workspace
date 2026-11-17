@@ -32,6 +32,7 @@ import { askedFor, SupportItChoices, type SupportItItem } from './support-it';
 import { signInItems } from './sign-in-status';
 import { SignIn } from './sign-in';
 import { ChangeCoversDialog, CoveredDriversCard, LeavingCoveredAlert } from './leave-covers';
+import { HandOverChoice, usersOf } from './shared-accounts';
 import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard, LeaveDialog, LeaveHistory, LeaveItCard, leaveBadge, shortDay, WorkingWithCard, type LeaveAction } from './leave';
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
@@ -51,6 +52,8 @@ const NOTICE_MAX_DAYS = 90, INDEPENDENT = 'INDEPENDENT';
 const noticeLimit = () => today(Date.now() + NOTICE_MAX_DAYS * 86400_000);
 const LastDay = ({ day }: { day: string }) => <LocalTime iso={middayIso(day)} format="date" />;
 // One reachable way to contact the dispatcher: where it came from, and a copy button.
+/** " · also used by Drew Calloway" for an IT-recorded email or number others share (section 35). */
+const alsoUsed = (users: { name: string }[]) => users.length ? ` · also used by ${users.map(user => user.name).join(', ')}` : '';
 function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; value: string; source: string; action?: React.ReactNode }) {
   return <li className="flex items-center gap-3 px-4 py-3 sm:px-5">
     <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
@@ -78,6 +81,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [moveAccounts, setMoveAccounts] = useState<'KEEP' | 'NEW'>('KEEP');
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
   const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('FORWARD');
+  // Others using their email or number (section 35): handed over to the first of them unless the manager chooses to close them.
+  const [handOverTo, setHandOverTo] = useState(member.sharing?.usedBy[0]?.users[0]?.id ?? '');
   const [lastDay, setLastDay] = useState(today());
   const [removing, setRemoving] = useState<{ id: string; value: string } | null>(null);
   const [assisting, setAssisting] = useState(member.supportOf?.wholeTeam ? 'TEAM' : 'DISPATCHER');
@@ -105,7 +110,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason,
         ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on' } : {}) });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
-      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) ? { emailAfter } : {}) });
+      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) ? { emailAfter } : {}), ...(handOverTo && member.sharing?.usedBy.length ? { handOverTo } : {}) });
       else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
       else if (action === 'cancel') await mutate(`dispatch/members/${member.id}/cancel-notice`, 'POST', { version: member.version, reason: form.reason });
       else if (action === 'removeNow') await mutate(`dispatch/members/${member.id}/remove-access`, 'POST', { version: member.version, reason: form.reason });
@@ -256,8 +261,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
                 <Card>
               <CardHeader title="Contacts" description="Every way to reach this dispatcher." actions={open && <Button size="sm" variant="outline" onClick={() => start('contact')}><Plus aria-hidden="true" className="size-4" />Add email or phone</Button>} />
               <ul className="mt-3 divide-y divide-border border-t border-border">
-                {accounts?.companyEmail && <ContactRow icon={Mail} value={accounts.companyEmail} source="Company email (IT)" />}
-                {accounts?.workPhone && <ContactRow icon={Phone} value={accounts.workPhone} source="Work phone, RingCentral (IT)" />}
+                {accounts?.companyEmail && <ContactRow icon={Mail} value={accounts.companyEmail} source={`Company email (IT)${alsoUsed(usersOf(member, 'EMAIL', accounts.companyEmail))}`} />}
+                {accounts?.workPhone && <ContactRow icon={Phone} value={accounts.workPhone} source={`Work phone, RingCentral (IT)${alsoUsed(usersOf(member, 'RINGCENTRAL', accounts.workPhone))}`} />}
                 {existing?.personalEmail && existing.personalEmail !== details?.personalEmail && <ContactRow icon={Mail} value={existing.personalEmail} source="Personal email (recorded by a manager)" />}
                 {existing?.personalPhone && existing.personalPhone !== details?.personalPhoneNumber && <ContactRow icon={Phone} value={existing.personalPhone} source="Personal phone (recorded by a manager)" />}
                 {telegram && <ContactRow icon={Send} value={`@${telegram}`} source="Telegram (recorded by a manager)" />}
@@ -441,10 +446,12 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               { label: 'RingCentral number', value: accounts?.workPhone ?? recordedAccounts?.ringCentralNumber, mono: true, emptyLabel: recordedAccounts ? 'Not recorded' : 'None recorded' },
               ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : []),
               { label: noticeDay ? 'Remove' : 'Remove by', value: noticeDay ? <>At the end of <LastDay day={lastDay} />, not before</> : 'End of their last day' }]} />
-              {(accounts?.companyEmail || recordedAccounts?.companyEmail) && <RadioGroup name="emailAfter" label="Their company email" cards value={emailAfter} onChange={value => setEmailAfter(value as 'FORWARD' | 'SUSPEND')} options={[
+              {(accounts?.companyEmail || recordedAccounts?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) && <RadioGroup name="emailAfter" label="Their company email" cards value={emailAfter} onChange={value => setEmailAfter(value as 'FORWARD' | 'SUSPEND')} options={[
                 { value: 'FORWARD', label: 'Forward new email to me', description: 'IT suspends the account and forwards new email to you for 30 days.' },
                 { value: 'SUSPEND', label: 'Just suspend it', description: 'New email bounces. IT keeps the mailbox until the retention rules say otherwise.' }]} />}
             </CardBody></Card>}
+          <HandOverChoice member={member} value={handOverTo} onChange={setHandOverTo} />
+          {handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL') && <p className="text-[13px] leading-5 text-muted-foreground">Their email goes to {member.sharing.usedBy.flatMap(item => item.users).find(user => user.id === handOverTo)?.name} with the mailbox, so there’s nothing to forward.</p>}
           {!noticeDay && <p className="text-[13px] leading-5 text-muted-foreground">A dispatcher with drivers, supports or updaters can’t be marked as left: reassign them first, or choose a later last day.</p>}
         </>}
         {action === 'lastDay' && <>

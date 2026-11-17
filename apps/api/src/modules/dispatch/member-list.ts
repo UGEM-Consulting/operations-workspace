@@ -78,6 +78,10 @@ const CONTACT_POINTS = `(
    UNION ALL SELECT CASE WHEN c.kind = 'EMAIL' THEN 'Added email' ELSE 'Added phone' END, c.value FROM member_contacts c WHERE c."memberId" = b.id AND c."removedAt" IS NULL
    UNION ALL SELECT x.label || coalesce(' at ' || coalesce(xm.name, a."companyName"), ''), x.value FROM member_company_accounts a LEFT JOIN mcs xm ON xm.id = a."mcId"
      CROSS JOIN LATERAL (VALUES ('Company email', a."companyEmail"), ('RingCentral number', a."ringCentralNumber"), ('RingCentral extension', a."ringCentralExtension")) x(label, value) WHERE a."memberId" = b.id
+   -- Someone else's email or number they use (section 35), marked whose it is; one handed over to them is theirs.
+   UNION ALL SELECT CASE WHEN s.kind = 'EMAIL' THEN 'Company email' ELSE 'RingCentral number' END
+     || CASE WHEN s."handedOverAt" IS NOT NULL THEN '' WHEN o.id IS NULL THEN ', shared' ELSE ', ' || o."firstName" || ' ' || o."lastName" || '’s, shared' END, s.value
+    FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId" WHERE s."memberId" = b.id AND s."endedAt" IS NULL
   ) p WHERE p.value IS NOT NULL`;
 
 /** What a search for this text matches: words anywhere, and a number by its digits whatever the separators (with or without the US 1). */
@@ -86,7 +90,7 @@ export function searchTerms(search: string): { text: string; digits: string | nu
  const numberLike = /^[\d\s()+.-]+$/.test(search.trim()), digits = search.replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
  return { text, digits: numberLike && digits.length >= 3 ? digits : null };
 }
-const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${match}`);
+export const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${match}`);
 
 /**
  * Dispatch › Dispatchers on the server (designed as the Dispatchers table group and approved
@@ -116,7 +120,8 @@ export class MemberListService {
   if (query.search) {
    const { text, digits } = searchTerms(query.search), like = add(`%${escapeLike(text)}%`);
    const pointMatch = digits ? `regexp_replace(p.value, '\\D', '', 'g') LIKE ${add(`%${digits}%`)}` : `lower(p.value) LIKE ${like}`;
-   const own = `lower(concat_ws(' ', b."firstName", b."lastName", b.mc, b.team, b."jobTitle", b."teamLead", b.dispatcher)) LIKE ${like}`;
+   // People, not groups (section 35): their name, other and legal names and contact details. MC, team, team lead and job title are filters.
+   const own = `lower(concat_ws(' ', b."firstName", b."lastName")) LIKE ${like}`;
    // Which contact detail matched, unless the name or place did: worked out once per row, in base(), and filtered on here.
    matched = `CASE WHEN ${own} THEN NULL ELSE (SELECT json_build_object('label', p.label, 'value', p.value) FROM ${CONTACT_POINTS} AND ${pointMatch} LIMIT 1) END`;
    where.push(`(${own} OR b.matched IS NOT NULL)`);
@@ -144,9 +149,57 @@ export class MemberListService {
   if (query.only === 'counts') return { counts, total };
   const pageSize = query.pageSize ?? 20, pages = Math.max(1, Math.ceil(total / pageSize)), page = Math.min(query.page ?? 1, pages);
   const limit = add(pageSize), offset = add((page - 1) * pageSize);
-  const [items, options] = await Promise.all([
-   this.db.query(`${base}SELECT b.* FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params), this.options()]);
-  return { items, counts, total, page, pageSize, options };
+  const [items, options, leadOf] = await Promise.all([
+   this.db.query(`${base}SELECT b.* FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params), this.options(),
+   query.search ? this.leadOf(query.search) : null]);
+  return { items, counts, total, page, pageSize, options, leadOf };
+ }
+
+ /** A search that is a team lead's whole name (section 35): their team, offered as the Team lead filter above the table. */
+ private async leadOf(search: string) {
+  const name = search.trim().replace(/\s+/g, ' ').toLowerCase();
+  const [lead] = await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, t.id AS "teamId", t.name AS team FROM teams t JOIN dispatch_members d ON d.id = t."leadMemberId"
+   WHERE t."archivedAt" IS NULL AND d.status <> 'LEFT' AND lower(d."firstName" || ' ' || d."lastName") = $1 ORDER BY t.name LIMIT 1`, [name]);
+  if (!lead) return null;
+  return { ...lead, count: (await this.leadCounts([lead.id])).get(lead.id) ?? 0 };
+ }
+
+ /** Everyone the Team lead filter shows for each lead (their dispatchers and those assisting them or the team), in one query. */
+ private async leadCounts(leadIds: string[]): Promise<Map<string, number>> {
+  if (!leadIds.length) return new Map();
+  const rows: { leadId: string; count: number }[] = await this.db.query(`WITH a AS (${memberRowsSql('$1', '$2')}) SELECT a."leadId", count(*)::integer AS count FROM a WHERE a."leadId" = ANY($3::uuid[]) AND a.status <> 'LEFT' GROUP BY a."leadId"`,
+   [usDay('earliest'), usDay('latest'), leadIds]);
+  return new Map(rows.map(row => [row.leadId, row.count]));
+ }
+
+ /**
+  * What the search box shows as you type (section 35), from 3 letters or digits: up to 8 people on every tab, people who left
+  * included, each with what matched; and the teams and team leads whose name matches, offered as filters. Names and what each
+  * matched only, as the table shows them.
+  */
+ async suggest(search: string, limit = 8, forTable = true) {
+  const { text, digits } = searchTerms(search);
+  if (text.replace(/\s/g, '').length < 3 && !digits) return { people: [], teams: [], leads: [], total: 0 };
+  const { params, add, where, matched } = this.filters({ search }), base = this.base(matched), name = `lower(b."firstName" || ' ' || b."lastName")`;
+  const prefix = add(`${escapeLike(text)}%`), first = add(`% ${escapeLike(text)}%`);
+  // The total (See all) and team lead filters are for the Dispatchers box only; the top bar asks for neither.
+  const [people, totals] = await Promise.all([
+   this.db.query(`${base}SELECT b.id, b."firstName", b."lastName", b.position, b."supportType", b.status, b."lastDay", b.leave, b.mc, b.team, b."wholeTeam", b.lead, b.dispatcher, b.matched FROM b WHERE ${where}
+    ORDER BY CASE WHEN ${name} LIKE ${prefix} THEN 0 WHEN ${name} LIKE ${first} THEN 1 WHEN b.matched IS NULL THEN 2 ELSE 3 END, (b.status = 'LEFT'), lower(b."firstName"), lower(b."lastName"), b.id LIMIT ${add(limit)}`, params),
+   forTable ? this.db.query(`${base}SELECT count(*)::integer AS total FROM b WHERE ${where}`, params.slice(0, params.length - 3)) : [{ total: null }]]);
+  const total: number | null = totals[0].total;
+  const like = `%${escapeLike(text)}%`;
+  const [teams, leads] = digits ? [[], []] : await Promise.all([
+   this.db.query(`SELECT t.id, t.name, m.name AS mc, (SELECT count(*)::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."teamId" = t.id AND a."endedAt" IS NULL AND d.status <> 'LEFT')
+     + (SELECT count(*)::integer FROM member_support_links l JOIN dispatch_members s ON s.id = l."supportId" LEFT JOIN member_assignments a ON a."memberId" = l."dispatcherId" AND a."endedAt" IS NULL
+        WHERE l."endedAt" IS NULL AND s.status <> 'LEFT' AND (l."teamId" = t.id OR a."teamId" = t.id)) AS count
+     FROM teams t JOIN mcs m ON m.id = t."mcId" WHERE t."archivedAt" IS NULL AND lower(t.name) LIKE $1 ORDER BY lower(t.name) LIMIT 3`, [like]),
+   forTable ? this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, t.id AS "teamId", t.name AS team FROM teams t JOIN dispatch_members d ON d.id = t."leadMemberId"
+     WHERE t."archivedAt" IS NULL AND d.status <> 'LEFT' AND lower(d."firstName" || ' ' || d."lastName") LIKE $1 ORDER BY lower(d."firstName"), lower(d."lastName") LIMIT 3`, [like]) : []]);
+  // A lead's count is everyone the Team lead filter shows: their dispatchers and those assisting them or the team.
+  const counts = await this.leadCounts((leads as { id: string }[]).map(lead => lead.id));
+  for (const lead of leads as { id: string; count?: number }[]) lead.count = counts.get(lead.id) ?? 0;
+  return { people, teams, leads, total };
  }
 
  /** What the filters offer: active MCs, teams, job titles and current team leads, plus archived ones someone still has. */

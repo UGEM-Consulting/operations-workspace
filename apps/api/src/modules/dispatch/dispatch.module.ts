@@ -2,7 +2,7 @@ import { Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Patch, Pos
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto } from './dispatch.dto';
+import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, AccountOwnersDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto, SuggestQueryDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
 import { MemberListService } from './member-list';
@@ -31,6 +31,8 @@ class DispatchController {
  }
  // Export the view on screen: a POST, because it is recorded; rate-limited, work details only.
  @Post('members/export') exportMembers(@Req() req: AuthRequest, @Body() dto: MemberExportDto) { return this.list.export(req.currentUser, dto); }
+ // What the search box shows as you type (section 35). Declared before members/:id, which would take "suggest" as an id.
+ @Get('members/suggest') suggest(@Query() query: SuggestQueryDto) { return this.list.suggest(query.q); }
  @Get('members/:id') member(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.dispatch.member(req.currentUser, id); }
  @Post('members/:id/contacts') addContact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AddContactDto) { return this.dispatch.addContact(req.currentUser, id, dto); }
  @Post('members/:id/contacts/:contactId/remove') removeContact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('contactId', ParseUUIDPipe) contactId: string) { return this.dispatch.removeContact(req.currentUser, id, contactId); }
@@ -68,6 +70,8 @@ class ExistingDispatchersController {
  @Get('existing/options') options() { return this.existing.options(); }
  @Post('existing/check') check(@Body() dto: ExistingRowsDto) { return this.existing.check(dto.rows); }
  @Post('existing/add') add(@Req() req: AuthRequest, @Body() dto: ExistingRowsDto) { return this.existing.add(req.currentUser, dto.rows, dto.sourceName); }
+ // A POST so a typed email or number never travels in a URL (section 35).
+ @Post('existing/account-owners') accountOwners(@Body() dto: AccountOwnersDto) { return this.existing.accountOwners(dto); }
  @Get('paperwork') paperwork(@Req() req: AuthRequest) { return this.existing.paperwork(req.currentUser); }
  @Post('paperwork/links') links(@Req() req: AuthRequest, @Body() dto: CatchUpLinksDto) { return this.existing.links(req.currentUser, dto.memberIds); }
  @Post('members/:id/more-time') moreTime(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.existing.moreTime(req.currentUser, id); }
@@ -118,5 +122,5 @@ class TeamLeadController {
  @Post('promotions') async request(@Req() req: AuthRequest, @Body() dto: CreatePromotionDto) { await this.promotions.requireLead(req.currentUser); return this.promotions.request(req.currentUser, dto); }
  @Post('promotions/:id/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.promotions.cancel(req.currentUser, id); }
 }
-@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, MemberListService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService] })
+@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, MemberListService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService, MemberListService] })
 export class DispatchModule {}
