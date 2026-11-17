@@ -125,6 +125,33 @@ integration('Company accounts at other MCs (disposable PostgreSQL)', () => {
     expect(after.profile.companyAccounts.map((item: Row) => item.company)).toEqual(['Lakeside Carriers', 'YouPro']);
   });
 
+  it('keeps a note on an account with who wrote it, and records only that it changed (section 36)', async () => {
+    const riley = await addOne('Riley');
+    const note = 'Used only to sign in to YouPro DAT for Lakeside loads.';
+    const added = (await account({ memberId: riley, mcId: lakeside, companyEmail: 'ryan@example.test', note: `  ${note}  ` }).expect(201)).body;
+    const shown = async () => (await profile(riley)).companyAccounts.find((item: Row) => item.id === added.id);
+    expect(await shown()).toMatchObject({ note, noteBy: expect.any(String), noteAt: expect.any(String) });
+    await account({ memberId: riley, mcId: lakeside, companyName: undefined, ringCentralNumber: '+1 469 555 0177', note: 'x'.repeat(501) }).expect(400);
+    // The same note again changes nothing; '' clears it.
+    const change = (body: Row) => agents.it.patch(`/api/company-accounts/${added.id}`).set(headers).send(body);
+    expect((await change({ version: added.version, note }).expect(200)).body.version).toBe(added.version);
+    expect((await change({ version: added.version, note: '' }).expect(200)).body.version).toBe(added.version + 1);
+    expect(await shown()).toMatchObject({ note: null, noteBy: null, noteAt: null });
+    const events = await db.query(`SELECT event, metadata FROM dispatch_events WHERE "memberId" = $1 AND event LIKE 'COMPANY_ACCOUNT_%' ORDER BY "createdAt"`, [riley]);
+    expect(events.map((row: { event: string; metadata: { fields: string[] } }) => [row.event, row.metadata.fields])).toEqual([['COMPANY_ACCOUNT_ADDED', ['companyEmail', 'note']], ['COMPANY_ACCOUNT_CHANGED', ['note']]]);
+    expect(JSON.stringify(events)).not.toContain('YouPro');
+    // A closed account is kept as history: its note still changes, nothing else does.
+    const closed = (await change({ version: added.version + 1, status: 'CLOSED', closedOn: usDay('latest') }).expect(200)).body.version;
+    await change({ version: closed, companyEmail: 'other@example.test', note }).expect(409);
+    expect((await change({ version: closed, note }).expect(200)).body.version).toBe(closed + 1);
+    expect(await shown()).toMatchObject({ status: 'CLOSED', note, companyEmail: 'ryan@example.test' });
+    // The rollback refuses while a note is recorded.
+    const runner = db.createQueryRunner();
+    const { CompanyAccountNotes1793320000000: Notes } = await import('../src/database/migrations/1793320000000-CompanyAccountNotes');
+    await expect(new Notes().down(runner)).rejects.toThrow('Refusing to roll back while notes on company accounts');
+    await runner.release();
+  });
+
   it('refuses a rollback while accounts at other companies are recorded', async () => {
     await account({ memberId: await addOne('Riley'), mcId: lakeside, companyEmail: 'ryan@example.test' }).expect(201);
     const runner = db.createQueryRunner();

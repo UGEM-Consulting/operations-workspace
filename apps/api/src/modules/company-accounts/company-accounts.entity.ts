@@ -23,6 +23,10 @@ export class CompanyAccount {
  @Column('timestamptz', { nullable: true }) closedAt!: Date | null;
  @Column('uuid', { nullable: true }) closedBy!: string | null;
  @Column('varchar', { length: 200, nullable: true }) sourceName!: string | null;
+ // What staff should know about the account (section 36), with who wrote it and when. Never passwords.
+ @Column('varchar', { length: 500, nullable: true }) note!: string | null;
+ @Column('uuid', { nullable: true }) noteBy!: string | null;
+ @Column('timestamptz', { nullable: true }) noteAt!: Date | null;
  @Column('uuid', { nullable: true }) createdBy!: string | null;
  @Column('integer', { default: 1 }) version!: number;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;

@@ -34,7 +34,7 @@ export function Table<T>({ caption, columns, rows, rowKey, rowClassName, dense =
         <caption className="sr-only">{caption}</caption>
         <thead className="max-sm:hidden"><tr>{columns.map(column => {
           const Icon = column.sort?.direction === 'asc' ? ArrowUp : column.sort?.direction === 'desc' ? ArrowDown : ChevronsUpDown;
-          return <th key={column.key} scope="col" aria-sort={column.sort?.direction ? (column.sort.direction === 'asc' ? 'ascending' : 'descending') : undefined}
+          return <th key={column.key} data-column={column.key} scope="col" aria-sort={column.sort?.direction ? (column.sort.direction === 'asc' ? 'ascending' : 'descending') : undefined}
             className={cn('h-10 whitespace-nowrap border-b border-border bg-muted px-4 text-xs font-medium text-muted-foreground', column.align === 'right' && 'text-right', column.hideBelow && hidden[column.hideBelow])}>
             {column.srOnly ? <span className="sr-only">{column.label}</span> : column.sort
               ? <Link href={column.sort.href} className={cn('-mx-1.5 inline-flex items-center gap-1 rounded-xs px-1.5 py-1 hover:text-foreground', column.sort.direction && 'text-foreground')}>{column.label}<Icon aria-hidden="true" className="size-3.5" /></Link>
@@ -44,7 +44,7 @@ export function Table<T>({ caption, columns, rows, rowKey, rowClassName, dense =
         {rows.length > 0 && <tbody className="max-sm:block">{rows.map(row => <tr key={rowKey(row)} className={cn('border-b border-border transition-colors last:border-0 hover:bg-accent max-sm:grid max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-x-3 max-sm:gap-y-1 max-sm:px-4 max-sm:py-3', rowClassName?.(row))}>
           {columns.map(column => {
             const labelled = !column.primary && !column.action && !column.srOnly;
-            return <td key={column.key} data-label={labelled ? column.label : undefined}
+            return <td key={column.key} data-column={column.key} data-label={labelled ? column.label : undefined}
               className={cn('px-4 align-middle', dense ? 'py-2' : 'py-3', column.align === 'right' && 'text-right', column.nowrap && 'whitespace-nowrap', column.mono && 'font-mono text-[13px]', column.muted && 'text-muted-foreground',
                 column.hideBelow && hidden[column.hideBelow], stack, !labelled && 'max-sm:before:hidden', column.primary && stackTitle, column.action && stackAction, column.stacked === false && 'max-sm:!hidden')}><div className="min-w-0 max-sm:flex-1">{column.cell(row)}</div></td>;
           })}

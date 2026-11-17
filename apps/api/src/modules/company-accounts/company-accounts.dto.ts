@@ -21,6 +21,8 @@ export class AddCompanyAccountDto {
  @IsOptional() @IsIn(['ACTIVE', 'KEPT_FOR_LOAD_BOARDS', 'CLOSED']) status?: 'ACTIVE' | 'KEPT_FOR_LOAD_BOARDS' | 'CLOSED';
  // For an account recorded as already closed: the day it closed.
  @ValidateIf((dto: AddCompanyAccountDto) => dto.status === 'CLOSED') @IsDateString({ strict: true }) @Matches(/^\d{4}-\d{2}-\d{2}$/) closedOn?: string;
+ // What staff should know about the account (section 36). Never passwords.
+ @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
 }
 /** Only what changed; '' clears a field. Closing it here records that it's closed (Ask IT to close it is a separate request). */
 export class UpdateCompanyAccountDto {
@@ -31,6 +33,8 @@ export class UpdateCompanyAccountDto {
  @IsOptional() @text() @ValidateIf(filled) @Matches(EXTENSION, { message: 'The extension should be digits, up to 6.' }) ringCentralExtension?: string;
  @IsOptional() @IsIn(['ACTIVE', 'KEPT_FOR_LOAD_BOARDS', 'CLOSED']) status?: 'ACTIVE' | 'KEPT_FOR_LOAD_BOARDS' | 'CLOSED';
  @ValidateIf((dto: UpdateCompanyAccountDto) => dto.status === 'CLOSED') @IsDateString({ strict: true }) @Matches(/^\d{4}-\d{2}-\d{2}$/) closedOn?: string;
+ // Omitted keeps the note; '' clears it.
+ @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
 }
 /** Ask IT to close an account (CloseCompanyAccountScreen): what happens to new email, and a note (never passwords). */
 export class CloseCompanyAccountDto {
