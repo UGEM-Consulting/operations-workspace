@@ -27,7 +27,7 @@ export const aSupport = (row: { supportType?: string | null }) => row.supportTyp
 export interface MemberRow {
   // The Dispatchers table (from an API that filters on the server): where they work by id, their team lead, open drivers and what a search matched.
   mcId?: string | null; leadId?: string | null; teamLead?: string | null; jobTitleId?: string | null; drivers?: number; matched?: { label: string; value: string } | null;
-  addedByHand?: boolean; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
+  addedByHand?: boolean; paperworkAccepted?: boolean; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   jobTitle: string | null; since: string | null; mc: string | null; teamId: string | null; team: string | null; lead: boolean; dispatcherId?: string | null; dispatcher?: string | null; wholeTeam?: string | null;
   // On notice (from an API with notice periods): the last day, whether it has passed, who still needs reassigning, IT's removal.
   lastDay?: string | null; lastDayPassed?: boolean | null; driversToReassign?: number | null; supportsToReassign?: number | null; itRemoval?: 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | null;
@@ -36,7 +36,12 @@ export interface MemberRow {
   // What a team lead signs in with, and whether they have a sign-in (from an API with team lead sign-ins).
   companyEmail?: string | null; accountStatus?: 'ACTIVE' | 'INACTIVE' | null;
   // Leave (section 35): the open leave, upcoming or started, and how far IT's suspend is.
-  leave?: { firstDay: string; backOn: string; started: boolean; it: 'NONE' | 'IN_PROGRESS' | 'SUSPENDED' } | null }
+  leave?: { firstDay: string; backOn: string; started: boolean; it: 'NONE' | 'IN_PROGRESS' | 'SUSPENDED' } | null;
+  // At a glance (section 36), on a page of the table: work contacts, their latest other name, someone else's email or number
+  // they use (owner null once handed over), who helps them, load boards and whether IT closed a leaver's accounts.
+  ringCentralNumber?: string | null; ringCentralExtension?: string | null; telegram?: string | null; otherName?: string | null;
+  shared?: { kind: SharedKind; value: string; owner: string | null }[] | null; helpers?: { id: string; name: string; supportType: SupportType | null; wholeTeam: boolean }[] | null;
+  loadBoards?: string[] | null; accountsClosed?: boolean }
 /** Someone here who still needs a start date or, for a dispatcher, an MC. */
 export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' && (member.startDateKnown === false || (member.position === 'DISPATCHER' && member.placed === false));
 /** Who a support or updater assists: "Riley Santos", or a team's name when it's everyone on it. */

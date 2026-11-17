@@ -175,4 +175,19 @@ integration('Shared accounts and search (disposable PostgreSQL)', () => {
     expect(everywhere.groups[0].items[0]).toEqual({ id: riley, name: 'Riley Santos', meta: 'Dispatcher · team lead · Red team', status: { label: 'Active', tone: 'success' }, href: `/dispatch/dispatchers/${riley}` });
     await agents.it.get('/api/search').query({ q: 'rile' }).set(headers).expect(403);
   });
+
+  it('gives each row of a page its work contacts, other name, shared accounts and helpers (section 36)', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test', ringCentralNumber: '+1 469 555 0142', ringCentralExtension: '214', telegram: 'rileysantos', otherNameList: [{ name: 'Riley Kim' }] });
+    const sue = (await add([{ row: 2, firstName: 'Sue', lastName: 'Support', position: 'Support', supports: 'Riley Santos', startedOn: '2024-03-04', personalEmail: 'sue.home@example.test' }])).members[0].id;
+    await edit(sue, { companyEmail: 'riley.santos@example.test', shareCompanyEmail: true });
+    const { items } = (await agents.manager.get('/api/dispatch/members').query({ status: 'ALL', pageSize: 20 }).set(headers).expect(200)).body;
+    const row = (id: string) => items.find((item: Row) => item.id === id);
+    expect(row(riley)).toMatchObject({ companyEmail: 'riley.santos@example.test', ringCentralNumber: '+1 469 555 0142', ringCentralExtension: '214', telegram: 'rileysantos', otherName: 'Riley Kim',
+      shared: null, helpers: [{ id: sue, name: 'Sue Support', supportType: 'SUPPORT', wholeTeam: false }], loadBoards: null, accountsClosed: false });
+    expect(row(sue)).toMatchObject({ companyEmail: null, shared: [{ kind: 'EMAIL', value: 'riley.santos@example.test', owner: 'Riley Santos' }], helpers: null });
+    // The export keeps the same work contacts, never personal ones.
+    const exported = (await agents.manager.post('/api/dispatch/members/export').set(headers).send({ status: 'ALL' }).expect(201)).body.items;
+    expect(exported.find((item: Row) => item.id === riley)).toMatchObject({ ringCentralNumber: '+1 469 555 0142', ringCentralExtension: '214', telegram: 'rileysantos' });
+    expect(JSON.stringify(exported)).not.toContain('home@example.test');
+  });
 });

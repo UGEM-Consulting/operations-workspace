@@ -46,6 +46,10 @@
   --border-strong: var(--neutral-300);
   /* Edges of controls: 3.8:1 or better on card and background. */
   --input: var(--neutral-500);
+  /* Position chips on Dispatchers (section 36): identity colours no status uses, text 5.6:1 or better on its fill. */
+  --position-dispatcher: #5b3cc4; --position-dispatcher-background: #f1edfd;
+  --position-support: #0f6b5f; --position-support-background: #e4f5f2;
+  --position-updater: #a3285c; --position-updater-background: #fdecf3;
   --info: var(--blue-700);
   --info-background: var(--blue-50);
   --info-border: var(--blue-100);
@@ -119,6 +123,9 @@
   --border: var(--neutral-800);
   --border-strong: var(--neutral-700);
   --input: var(--neutral-500);
+  --position-dispatcher: #c7b8fa; --position-dispatcher-background: #2a2150;
+  --position-support: #7fd8c9; --position-support-background: #0f2e2a;
+  --position-updater: #f5a8c8; --position-updater-background: #3d1426;
   --info: var(--blue-300);
   --info-background: var(--blue-950);
   --info-border: var(--blue-900);
@@ -160,6 +167,9 @@
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-input: var(--input);
+  --color-position-dispatcher: var(--position-dispatcher); --color-position-dispatcher-background: var(--position-dispatcher-background);
+  --color-position-support: var(--position-support); --color-position-support-background: var(--position-support-background);
+  --color-position-updater: var(--position-updater); --color-position-updater-background: var(--position-updater-background);
   --color-info: var(--info);
   --color-info-background: var(--info-background);
   --color-info-border: var(--info-border);
@@ -257,3 +267,13 @@
 .org-row:not(:last-child)::after { content: ''; position: absolute; left: calc(50% - 1px); top: 0; bottom: -1.5rem; border-left: 2px solid var(--border-strong); }
 .org-branch { position: relative; display: grid; gap: 0.5rem; }
 .org-branch::before { content: ''; position: absolute; top: -1.25rem; left: 50%; height: 1.25rem; border-left: 2px solid var(--border-strong); }
+
+/* The Dispatchers table's Columns menu (section 36): a column whose key the wrapper lists is hidden, header and cells. */
+[data-hidden-columns~="mc"] [data-column="mc"],
+[data-hidden-columns~="team"] [data-column="team"],
+[data-hidden-columns~="drivers"] [data-column="drivers"],
+[data-hidden-columns~="contact"] [data-column="contact"],
+[data-hidden-columns~="helpers"] [data-column="helpers"],
+[data-hidden-columns~="loadBoards"] [data-column="loadBoards"],
+[data-hidden-columns~="title"] [data-column="title"],
+[data-hidden-columns~="since"] [data-column="since"] { display: none !important; }

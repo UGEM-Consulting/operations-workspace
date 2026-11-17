@@ -17,7 +17,8 @@ import { errorMessage, mutate } from '@/lib/client-api';
 // Accounts at other companies (Design System section 33, Company accounts and load boards, approved 2026-11-13).
 export type AccountStatus = 'ACTIVE' | 'KEPT_FOR_LOAD_BOARDS' | 'CLOSED';
 export interface CompanyAccount { id: string; mcId: string | null; mc: string | null; mcArchived: boolean; companyName: string | null; nameUsed: string | null; companyEmail: string | null;
-  ringCentralNumber: string | null; ringCentralExtension: string | null; status: AccountStatus; closedAt: string | null; sourceName: string | null; version: number; keptFor: string[] }
+  ringCentralNumber: string | null; ringCentralExtension: string | null; status: AccountStatus; closedAt: string | null; sourceName: string | null; version: number; keptFor: string[];
+  /** Staff's note (section 36), with who wrote it and when; an older API sends none. */ note?: string | null; noteBy?: string | null; noteAt?: string | null }
 const STATUS: Record<AccountStatus, { label: string; tone: 'success' | 'warning' | 'neutral' }> = { ACTIVE: { label: 'Active', tone: 'success' }, KEPT_FOR_LOAD_BOARDS: { label: 'Kept for load boards', tone: 'warning' }, CLOSED: { label: 'Closed', tone: 'neutral' } };
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 export const companyOf = (account: Pick<CompanyAccount, 'mc' | 'mcArchived' | 'companyName'>) => account.mc ? `${account.mc}${account.mcArchived ? ' (archived)' : ''}` : account.companyName ?? '';
@@ -39,7 +40,7 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk
     catch (failure) { toast({ tone: 'danger', title: 'Not changed', description: errorMessage(failure, 'Reload the page and try again.') }); }
     finally { setBusy(false); }
   }
-  const menu = (account: CompanyAccount): MenuEntry[] => [{ label: 'Edit', icon: Pencil, onSelect: () => setEditing(account) },
+  const menu = (account: CompanyAccount): MenuEntry[] => [{ label: account.status === 'CLOSED' ? 'Edit note' : 'Edit', icon: Pencil, onSelect: () => setEditing(account) },
     ...(account.status === 'ACTIVE' ? [{ label: 'Kept for load boards', onSelect: () => void setStatus(account, 'KEPT_FOR_LOAD_BOARDS') }] : [{ label: account.status === 'CLOSED' ? 'Open again' : 'Active', onSelect: () => void setStatus(account, 'ACTIVE') }]),
     ...(account.status === 'CLOSED' ? [] : [{ separator: true as const }, { label: 'Record as closed', onSelect: () => setClosing(account) }])];
   // A manager can't change accounts, but can ask IT to close one.
@@ -50,6 +51,9 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk
       <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{companyOf(account)}</span>
         <span className="flex items-center gap-1">{closingIds.includes(account.id) ? <Badge label="IT is closing it" tone="info" /> : <Badge label={STATUS[account.status].label} tone={STATUS[account.status].tone} />}{(canChange || askable(account)) && <DropdownMenu label={`Actions for the account at ${companyOf(account)}`} triggerIcon={Ellipsis} triggerVariant="ghost" align="end" items={[...askMenu(account), ...(canChange ? [...(askable(account) ? [{ separator: true as const }] : []), ...menu(account)] : [])]} />}</span></div>
       {account.nameUsed && <p className="text-[13px] text-muted-foreground">As {account.nameUsed}</p>}
+      {/* The note, with who wrote it and when (CompanyAccountNoteCardScreen). */}
+      {account.note && <p className="mt-0.5 rounded-r-md border-l-[3px] border-border-strong bg-muted px-2.5 py-1.5 text-[13px] leading-5 whitespace-pre-line">{account.note}
+        <span className="block text-xs leading-4 text-muted-foreground">Note{account.noteBy ? ` by ${account.noteBy}` : ''}{account.noteAt && <> · <LocalTime iso={account.noteAt} format="date" /></>}</span></p>}
       <DescriptionList layout="rows" stacked items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber, mono: true }] : []),
         ...(account.ringCentralExtension ? [{ label: 'Extension', value: account.ringCentralExtension, mono: true }] : []), ...(account.closedAt ? [{ label: 'Closed', value: <LocalTime iso={account.closedAt} format="date" /> }] : [])]} />
       {account.status !== 'CLOSED' && account.keptFor.length > 0 && <p className="text-[13px] leading-5 text-muted-foreground">Signs in to {account.keptFor.join(' and ')}.{account.status === 'KEPT_FOR_LOAD_BOARDS' ? ' Close it once no seat uses it.' : ''}</p>}
@@ -65,10 +69,15 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
   const router = useRouter(), toast = useToast();
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [company, setCompany] = useState(account?.mcId ?? (account?.companyName ? 'OTHER' : ''));
   const [state, setState] = useState<'ACTIVE' | 'CLOSED'>('ACTIVE');
+  const closed = account?.status === 'CLOSED';
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
-    const fields = { nameUsed: form.nameUsed ?? '', companyEmail: form.companyEmail ?? '', ringCentralNumber: form.ringCentralNumber ?? '', ringCentralExtension: form.ringCentralExtension ?? '' };
+    // The note goes only when it changed, so an older API (which refuses the field) still takes every other edit.
+    const note = (form.note ?? '').trim();
+    // A closed account is kept as history: only its note changes.
+    const fields = { ...(closed ? {} : { nameUsed: form.nameUsed ?? '', companyEmail: form.companyEmail ?? '', ringCentralNumber: form.ringCentralNumber ?? '', ringCentralExtension: form.ringCentralExtension ?? '' }),
+      ...(note !== (account?.note ?? '') ? { note } : {}) };
     setBusy(true); setError('');
     try {
       await (account ? mutate(`company-accounts/${account.id}`, 'PATCH', { version: account.version, ...fields })
@@ -78,20 +87,22 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
     } catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
-  return <Dialog open onClose={onClose} busy={busy} title={account ? `Edit the account at ${companyOf(account)}` : 'Add an account at another company'} description="Never a password. Nobody is messaged."
+  return <Dialog open onClose={onClose} busy={busy} title={closed ? `Note on the account at ${companyOf(account)}` : account ? `Edit the account at ${companyOf(account)}` : 'Add an account at another company'} description="Never a password. Nobody is messaged."
     actions={<Button type="submit" form="company-account" disabled={busy}>{busy ? 'Saving…' : account ? 'Save changes' : 'Add account'}</Button>}>
     <form id="company-account" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
       {!account && <Select label="Company" required width="full" placeholder="Choose a company" value={company} onChange={event => setCompany(event.target.value)}
         options={[...mcs.map(mc => ({ value: mc.id, label: mc.archived ? `${mc.name} (archived)` : mc.name })), { value: 'OTHER', label: 'Another company' }]} />}
       {company === 'OTHER' && !account && <Input label="Company name" name="companyName" required maxLength={100} width="full" />}
-      <Input label="Name used there" name="nameUsed" optional maxLength={100} defaultValue={account?.nameUsed ?? ''} width="full" hint="The American name they use or used at this company. Latin letters." />
+      {closed && <p className="text-sm text-muted-foreground">This account is closed and kept as history. Only its note can change.</p>}
+      {!closed && <><Input label="Name used there" name="nameUsed" optional maxLength={100} defaultValue={account?.nameUsed ?? ''} width="full" hint="The American name they use or used at this company. Latin letters." />
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Company email" name="companyEmail" optional type="email" maxLength={254} defaultValue={account?.companyEmail ?? ''} width="full" />
         <Input label="RingCentral number" name="ringCentralNumber" optional type="tel" maxLength={40} defaultValue={account?.ringCentralNumber ?? ''} width="full" />
       </div>
-      <Input label="Extension" name="ringCentralExtension" optional inputMode="numeric" maxLength={6} defaultValue={account?.ringCentralExtension ?? ''} width="sm" />
+      <Input label="Extension" name="ringCentralExtension" optional inputMode="numeric" maxLength={6} defaultValue={account?.ringCentralExtension ?? ''} width="sm" /></>}
       {!account && <RadioGroup name="state" label="Is it still open?" value={state} onChange={value => setState(value as 'ACTIVE' | 'CLOSED')} options={[{ value: 'ACTIVE', label: 'Yes, it’s open' }, { value: 'CLOSED', label: 'No, it’s closed', description: 'Recorded for history.' }]} />}
       {!account && state === 'CLOSED' && <Input label="Closed on" name="closedOn" type="date" required max={today()} min="1980-01-01" width="sm" />}
+      <Textarea label="Note" name="note" optional rows={3} maxLength={500} defaultValue={account?.note ?? ''} hint="What staff should know about this account. Never passwords. Up to 500 characters." />
       <Notice message={error} error />
     </fieldset></form>
   </Dialog>;
