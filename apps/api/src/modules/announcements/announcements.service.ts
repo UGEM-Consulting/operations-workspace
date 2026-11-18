@@ -94,10 +94,11 @@ export class AnnouncementsService implements OnApplicationBootstrap, BeforeAppli
         (SELECT u."firstName" || ' ' || u."lastName" FROM users u WHERE u.id = a."takenBackBy") AS "takenBackBy"
       FROM team_announcements a WHERE a.id = $1`, [id]);
     // A team lead sees only their own teams' deliveries; an announcement that reached none of them looks the same as none.
-    // retrying: a delete that is waiting to run or will be tried again, so the page says it's still being taken back.
+    // retrying: a delete that is waiting to run or will be tried again, so the page says it's still being taken back. Always
+    // true or false: a delivery with no failure code would otherwise compare as null.
     const deliveries = announcement ? await this.db.query(`SELECT d.id, t.name AS team, d."teamId", g.title AS "groupTitle", d.status, d."sentAt", d."takenBackAt",
         CASE WHEN d.status = 'FAILED' OR d."failureCode" LIKE 'DELETE_%' THEN d."failureCode" END AS "failureCode",
-        (d.status = 'SENT' AND d."failureCode" = ANY($3) AND d."sentAt" > now() - make_interval(hours => $4)) AS retrying
+        COALESCE(d.status = 'SENT' AND d."failureCode" = ANY($3) AND d."sentAt" > now() - make_interval(hours => $4), false) AS retrying
       FROM team_announcement_deliveries d JOIN teams t ON t.id = d."teamId" JOIN telegram_groups g ON g.id = d."groupId"
       WHERE d."announcementId" = $1 AND ($2::uuid[] IS NULL OR d."teamId" = ANY($2)) ORDER BY t."nameKey"`, [id, scope, DELETE_AGAIN, TAKE_BACK_HOURS]) : [];
     if (!announcement || !deliveries.length) throw new NotFoundException('This announcement no longer exists.');

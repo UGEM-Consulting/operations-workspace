@@ -83,7 +83,7 @@ integration('Announcements to team groups (disposable PostgreSQL)', () => {
     const text = 'Weekly check-in moves to Thursday 10:00 Central.\nRiley Santos covers Jordan’s drivers on Friday.';
     const sent = (await post('manager', { teamIds: [red, blue], text: `  ${text}  ` }).expect(201)).body;
     expect(sent).toMatchObject({ text, authorName: 'Avery manager', authorRole: 'Dispatch manager', canTakeBack: true });
-    expect(sent.deliveries.map((d: Row) => [d.team, d.groupTitle, d.status])).toEqual([['Blue team', 'Blue dispatch', 'SENT'], ['Red team', 'Red dispatch', 'SENT']]);
+    expect(sent.deliveries.map((d: Row) => [d.team, d.groupTitle, d.status, d.retrying])).toEqual([['Blue team', 'Blue dispatch', 'SENT', false], ['Red team', 'Red dispatch', 'SENT', false]]);
     expect(messages.map(m => m.chat_id).sort()).toEqual(['-2001', '-2002']);
     expect(messages[0].text).toBe(`Announcement from Avery manager, Dispatch manager\n\n${text}`);
     const list = (await agents.admin.get('/api/announcements').set(headers).expect(200)).body.items;
