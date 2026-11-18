@@ -109,7 +109,7 @@ const announcementRow = z.looseObject({ id: text, text, authorName: text, author
 export const announcementListSchema = z.looseObject({ items: z.array(announcementRow) });
 export const announcementOptionsSchema = z.looseObject({ available: z.boolean(), maxLength: z.number(), from: text, teams: z.array(z.looseObject({ id: text, name: text, mcId: text, mc: text, linked: z.boolean(), groupTitle: nullableText })) });
 export const announcementDetailSchema = z.looseObject({ id: text, text, authorName: text, authorRole: text, createdAt: text, takenBackAt: nullableText, takenBackBy: nullableText, takeBackReason: nullableText, canTakeBack: z.boolean(),
-  deliveries: z.array(z.looseObject({ id: text, team: text, teamId: text, groupTitle: nullableText, status: text, sentAt: nullableText, takenBackAt: nullableText, failureCode: nullableText })) });
+  deliveries: z.array(z.looseObject({ id: text, team: text, teamId: text, groupTitle: nullableText, status: text, sentAt: nullableText, takenBackAt: nullableText, failureCode: nullableText, retrying: z.boolean().optional().catch(undefined) })) });
 
 const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText,
   // Leave (section 35): the open leave, upcoming or started.

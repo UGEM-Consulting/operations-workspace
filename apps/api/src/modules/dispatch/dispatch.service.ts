@@ -102,10 +102,10 @@ export class DispatchService {
      WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND x.status <> 'LEFT')) ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
   ]);
   if (!team) throw new NotFoundException('This team no longer exists.');
-  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name, who linked it and, since section 37, its latest announcement.
+  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name, who linked it and, since section 37, the latest announcement this group received.
   const [telegramGroup] = await this.db.query(`SELECT g.title, g."linkedAt", u."firstName" || ' ' || u."lastName" AS "linkedBy", g."lostAt",
     (SELECT json_build_object('id', a.id, 'createdAt', a."createdAt", 'authorName', a."authorName") FROM team_announcement_deliveries d JOIN team_announcements a ON a.id = d."announcementId"
-     WHERE d."teamId" = g."teamId" AND a."takenBackAt" IS NULL ORDER BY a."createdAt" DESC LIMIT 1) AS "latestAnnouncement" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
+     WHERE d."groupId" = g.id AND d.status = 'SENT' AND a."takenBackAt" IS NULL ORDER BY a."createdAt" DESC LIMIT 1) AS "latestAnnouncement" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
    WHERE g."teamId" = $1 AND g."unlinkedAt" IS NULL`, [id]);
   return { ...team, dispatchers, helpers, telegramGroup: telegramGroup ?? null };
  }

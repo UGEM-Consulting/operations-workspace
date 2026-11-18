@@ -19,7 +19,7 @@ type Mode = 'all' | 'mc' | 'some';
  * every team with a group, one MC's teams or some teams; a team lead writes to the teams they lead. The preview shows what
  * each group gets; sending goes at once.
  */
-export function ComposeAnnouncement({ options, base, author, lead, presetTeam }: { options: AnnouncementOptions; base: string; author: string; lead: boolean; presetTeam: string | null }) {
+export function ComposeAnnouncement({ options, base, lead, presetTeam }: { options: AnnouncementOptions; base: string; lead: boolean; presetTeam: string | null }) {
   const router = useRouter();
   const linked = useMemo(() => options.teams.filter(team => team.linked), [options.teams]);
   const mcs = useMemo(() => [...new Map(linked.map(team => [team.mcId, team.mc])).entries()].map(([value, label]) => ({ value, label })), [linked]);
@@ -47,7 +47,7 @@ export function ComposeAnnouncement({ options, base, author, lead, presetTeam }:
   const groups = chosen.length === 1 ? '1 group' : `${chosen.length} groups`;
   const sendLabel = lead && linked.length === 1 ? `Send to ${linked[0].name}` : `Send to ${groups}`;
   const preview = <div className="grid gap-2"><p className="text-[13px] text-muted-foreground">What each group gets</p>
-    <TelegramPreview chat={chosenTeams[0]?.groupTitle ?? chosenTeams[0]?.name ?? linked[0]?.groupTitle ?? 'Team group'} from={author} text={trimmed} />
+    <TelegramPreview chat={chosenTeams[0]?.groupTitle ?? chosenTeams[0]?.name ?? linked[0]?.groupTitle ?? 'Team group'} from={options.from} text={trimmed} />
     {!lead && <p className="text-[13px] text-muted-foreground">No button: there’s nothing to open. Most of the team has no workspace sign-in.</p>}</div>;
 
   if (!options.available) return <div className="space-y-6"><PageHeader title="New announcement" />

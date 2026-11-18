@@ -152,7 +152,7 @@ integration('Announcements to team groups (disposable PostgreSQL)', () => {
     // The sweeper sends it once Telegram answers again.
     down.clear();
     await db.query(`UPDATE team_announcement_deliveries SET "claimedAt" = now() - interval '2 minutes' WHERE status = 'PENDING'`);
-    await app.get(AnnouncementsService).send(null);
+    await app.get(AnnouncementsService).sweep();
     expect((await agents.manager.get(`/api/announcements/${sent.id}`).set(headers).expect(200)).body.deliveries.map((d: Row) => d.status)).toEqual(['SENT', 'FAILED']);
     // A taken-back announcement still waiting is never sent.
     down.add('-2002');
@@ -160,8 +160,46 @@ integration('Announcements to team groups (disposable PostgreSQL)', () => {
     await agents.manager.post(`/api/announcements/${second.id}/take-back`).set(headers).send({}).expect(200);
     down.clear();
     await db.query(`UPDATE team_announcement_deliveries SET "claimedAt" = now() - interval '2 minutes' WHERE status = 'PENDING'`);
-    await app.get(AnnouncementsService).send(null);
+    await app.get(AnnouncementsService).sweep();
     expect(messages.some(m => m.text.endsWith('Never mind.'))).toBe(false);
+    // Red's group never got the first one, so the team page doesn't show it as the latest there.
+    expect((await agents.manager.get(`/api/dispatch/teams/${red}`).set(headers).expect(200)).body.telegramGroup.latestAnnouncement).toBeNull();
+  });
+
+  it('tries a take-back again when Telegram couldn’t delete it, until it can', async () => {
+    const sent = (await post('manager', { teamIds: [blue], text: 'Wrong truck.' }).expect(201)).body;
+    down.add('-2002');
+    const back = (await agents.manager.post(`/api/announcements/${sent.id}/take-back`).set(headers).send({}).expect(200)).body;
+    expect(back.deliveries.map((d: Row) => [d.status, d.failureCode, d.retrying])).toEqual([['SENT', 'DELETE_SERVER', true]]);
+    // Not again before five minutes have passed since the last try.
+    down.clear();
+    await app.get(AnnouncementsService).sweep();
+    expect(deleted).toHaveLength(0);
+    await db.query(`UPDATE team_announcement_deliveries SET "claimedAt" = now() - interval '6 minutes'`);
+    await app.get(AnnouncementsService).sweep();
+    expect(deleted.map(d => d.chat_id)).toEqual(['-2002']);
+    expect((await agents.manager.get(`/api/announcements/${sent.id}`).set(headers).expect(200)).body.deliveries.map((d: Row) => [d.status, d.retrying])).toEqual([['TAKEN_BACK', false]]);
+  });
+
+  it('sends a waiting delivery to the group that replaced the one it was written for', async () => {
+    down.add('-2002');
+    const sent = (await post('manager', { teamIds: [blue], text: 'New group test.' }).expect(201)).body;
+    await db.query(`UPDATE telegram_groups SET "unlinkedAt" = now() WHERE "chatId" = '-2002'`);
+    const replacement = await group(blue, '-2003', 'Blue dispatch 2');
+    down.clear();
+    await db.query(`UPDATE team_announcement_deliveries SET "claimedAt" = now() - interval '2 minutes' WHERE status = 'PENDING'`);
+    await app.get(AnnouncementsService).sweep();
+    expect(messages.filter(m => m.text.endsWith('New group test.')).map(m => m.chat_id)).toEqual(['-2003']);
+    expect(await one(`SELECT status, "groupId" FROM team_announcement_deliveries WHERE "announcementId" = $1`, [sent.id])).toEqual({ status: 'SENT', groupId: replacement.id });
+  });
+
+  it('never sends again a delivery whose claim nobody finished, since it may already be in the group', async () => {
+    const sent = (await post('manager', { teamIds: [red], text: 'Maybe sent.' }).expect(201)).body;
+    messages.length = 0;
+    await db.query(`UPDATE team_announcement_deliveries SET status = 'SENDING', "sentAt" = NULL, "messageId" = NULL, "claimedAt" = now() - interval '11 minutes' WHERE "announcementId" = $1`, [sent.id]);
+    await app.get(AnnouncementsService).sweep();
+    expect(messages).toHaveLength(0);
+    expect(await one(`SELECT status, "failureCode" FROM team_announcement_deliveries WHERE "announcementId" = $1`, [sent.id])).toEqual({ status: 'FAILED', failureCode: 'UNCONFIRMED' });
   });
 
   it('refuses a rollback while announcements are recorded', async () => {
