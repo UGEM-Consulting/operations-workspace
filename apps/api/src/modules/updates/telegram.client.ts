@@ -10,6 +10,8 @@ export class TelegramError extends Error {
  constructor(readonly code: string) { super(code); }
 }
 const REQUEST_TIMEOUT_MS = 10000;
+/** Failures no retry fixes: the bot was removed or blocked, Telegram refused the request, or the bot isn't set up. */
+export const TELEGRAM_FINAL = new Set(['FORBIDDEN', 'REJECTED', 'DISABLED']);
 
 /** Minimal Telegram Bot API client: read Start messages and send plain-text messages. */
 @Injectable()

@@ -6,7 +6,7 @@ import { webOrigins } from '../../config/environment';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import type { User } from '../users/user.entity';
 import { ALERT_ROUTES, codeHash, groupButton, groupLine, PURPOSE_NAMES, type GroupAlertKind, type GroupPurpose, type SendTo } from './groups';
-import { TelegramClient, TelegramError } from './telegram.client';
+import { TELEGRAM_FINAL, TelegramClient, TelegramError } from './telegram.client';
 import { DELIVERY_RETRY, UpdatesService } from './updates.service';
 
 const CODE_TTL_MS = 10 * 60000;
@@ -107,7 +107,7 @@ export class TelegramGroupsService implements OnApplicationBootstrap, BeforeAppl
         const [group]: { chatId: string; unlinkedAt: Date | null; lostAt: Date | null }[] = await this.db.query(`SELECT "chatId", "unlinkedAt", "lostAt" FROM telegram_groups WHERE id = $1`, [groupId]);
         const result = !group || group.unlinkedAt || group.lostAt ? 'UNLINKED' : await this.deliver(groupId, group.chatId, await this.text(mine), mine[0].kind);
         if (result !== true) this.logger.warn(`Telegram group alert failed: ${result}`);
-        const final = result === true || ['UNLINKED', 'FORBIDDEN', 'REJECTED'].includes(result);
+        const final = result === true || result === 'UNLINKED' || TELEGRAM_FINAL.has(result);
         for (const row of mine) await this.db.query(`UPDATE telegram_group_deliveries SET status = $2::varchar, "failureCode" = $3, "sentAt" = CASE WHEN $2::varchar = 'SENT' THEN now() ELSE NULL END WHERE id = $1 AND status = 'SENDING' AND attempts = $4`,
           [row.id, result === true ? 'SENT' : final || row.attempts >= DELIVERY_RETRY.maxAttempts ? 'FAILED' : 'PENDING', result === true ? null : result.slice(0, 32), row.attempts]);
       }
