@@ -61,12 +61,33 @@ integration('Load board accounts and seats (disposable PostgreSQL)', () => {
   });
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, dispatch_events, it_removal_requests, users, list_events CASCADE'); await db.query('DELETE FROM load_board_accounts WHERE NOT placeholder'); await db.destroy(); } });
 
+  it('offers someone’s company, other companies’ and personal emails as the sign-in when adding a seat', async () => {
+    const riley = await addOne('Riley', { companyEmail: 'riley@example.test', personalEmail: 'riley.home@example.test' });
+    await db.query(`INSERT INTO member_company_accounts ("memberId", "companyName", "companyEmail", status, "closedAt") VALUES ($1, 'YouPro', 'Riley.YouPro@example.test', 'ACTIVE', NULL), ($1, 'OldCo', 'riley.old@example.test', 'CLOSED', now())`, [riley]);
+    const expected = [{ email: 'riley@example.test', label: 'Company email' }, { email: 'riley.youpro@example.test', label: 'Company email at YouPro' }, { email: 'riley.home@example.test', label: 'Personal email' }];
+    const people = (await agents.it.get('/api/load-board-seats/people').set(headers).expect(200)).body;
+    expect(people.find((person: Row) => person.id === riley).seatEmails).toEqual(expected);
+    expect((await profile(riley)).seatEmails).toEqual(expected);
+    // Someone with no emails recorded gets an empty list, never nulls.
+    const kai = await addOne('Kai', { personalEmail: '' });
+    expect((await profile(kai)).seatEmails).toEqual([]);
+  });
+
   it('lets IT and administrators keep the list, and dispatch managers read it', async () => {
     await agents.manager.post('/api/lists/load-board-accounts').set(headers).send({ provider: 'DAT', name: 'Northwind DAT' }).expect(403);
     const id = await account('Northwind DAT');
-    await agents.it.post('/api/lists/load-board-accounts').set(headers).send({ provider: 'TRUCKSTOP', name: 'northwind  dat' }).expect(409);
+    // Names are unique within a provider, ignoring case and spacing; a Truckstop account may share a DAT account's name.
+    const same = await agents.it.post('/api/lists/load-board-accounts').set(headers).send({ provider: 'DAT', name: 'northwind  dat' }).expect(409);
+    expect(same.body.message).toBe('This provider already has a load board account with this name.');
+    await account('Northwind DAT', 'TRUCKSTOP');
+    await agents.it.post('/api/lists/load-board-accounts').set(headers).send({ provider: 'TRUCKSTOP', name: 'NORTHWIND DAT' }).expect(409);
     const { body } = await agents.manager.get('/api/lists/load-board-accounts').set(headers).expect(200);
-    expect(body.items.map((item: Row) => item.name)).toEqual(['Northwind DAT', 'DAT account not recorded', 'Truckstop account not recorded']);
+    expect(body.items.map((item: Row) => [item.name, item.provider]).sort()).toEqual([['DAT account not recorded', 'DAT'], ['Northwind DAT', 'DAT'], ['Northwind DAT', 'TRUCKSTOP'], ['Truckstop account not recorded', 'TRUCKSTOP']]);
+    // The rollback refuses while a name is used by both providers.
+    const runner = db.createQueryRunner();
+    const { LoadBoardNamesPerProvider1793340000000: Names } = await import('../src/database/migrations/1793340000000-LoadBoardNamesPerProvider');
+    await expect(new Names().down(runner)).rejects.toThrow('Refusing to roll back while a load board account name is used by both DAT and Truckstop.');
+    await runner.release();
     const [placeholder] = await db.query(`SELECT id, version FROM load_board_accounts WHERE placeholder AND provider = 'DAT'`);
     await agents.it.patch(`/api/lists/load-board-accounts/${placeholder.id}`).set(headers).send({ version: placeholder.version, name: 'Mine' }).expect(400);
     await agents.it.patch(`/api/lists/load-board-accounts/${id}`).set(headers).send({ version: 1, companyName: 'YouPro' }).expect(200);
@@ -169,6 +190,7 @@ integration('Load board accounts and seats (disposable PostgreSQL)', () => {
   it('turns the sign-ins recorded before it into seats when the migration runs', async () => {
     const riley = await addOne('Riley', { datEmail: 'riley.dat@example.test' }), gone = await addOne('Gone', { personalEmail: 'gone.home@example.test', truckstopEmail: 'gone.ts@example.test' });
     await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() WHERE id = $1`, [gone]);
+    await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here

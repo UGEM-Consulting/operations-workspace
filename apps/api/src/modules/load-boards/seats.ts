@@ -1,5 +1,6 @@
 import { EntityManager, IsNull } from 'typeorm';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, type RemovalSeat } from '../it/it.entity';
+import { companyEmailSql } from '../dispatch/lead-sign-in';
 import { LoadBoardSeat, Provider } from './load-boards.entity';
 
 type Query = Pick<EntityManager, 'query'>;
@@ -8,6 +9,21 @@ export interface SeatView {
  id: string; accountId: string; account: string; provider: Provider; placeholder: boolean; signInEmail: string; status: 'ACTIVE' | 'SUSPENDED' | 'ENDED';
  startedAt: string; suspendedAt: string | null; endedAt: string | null; endedHow: string | null; version: number; sharedWith: { id: string; name: string }[];
 }
+/**
+ * The emails Add seat offers as someone's sign-in, each once, with what it is: their company email, a company email they
+ * use shared or were handed, their open accounts at other companies, then their personal email (the user's request,
+ * 2026-11-18). d is the member row and e their existing_member_records row (may be empty). Never a password.
+ */
+export const seatEmailsSql = (d = 'd', e = 'e') => `(SELECT coalesce(json_agg(json_build_object('email', x.email, 'label', x.label) ORDER BY x.ord, x.label, x.email), '[]'::json) FROM (
+  SELECT DISTINCT ON (lower(v.email)) lower(v.email) AS email, v.label, v.ord FROM (
+   SELECT ${companyEmailSql(d, e)} AS email, 'Company email' AS label, 1 AS ord
+   UNION ALL SELECT s.value, CASE WHEN s."handedOverAt" IS NULL THEN 'Shared company email' ELSE 'Company email' END, 2 FROM member_shared_accounts s
+    WHERE s."memberId" = ${d}.id AND s.kind = 'EMAIL' AND s."endedAt" IS NULL
+   UNION ALL SELECT a."companyEmail", 'Company email at ' || coalesce(m.name, a."companyName"), 3 FROM member_company_accounts a LEFT JOIN mcs m ON m.id = a."mcId"
+    WHERE a."memberId" = ${d}.id AND a.status <> 'CLOSED' AND a."companyEmail" IS NOT NULL
+   UNION ALL SELECT coalesce(CASE WHEN ${d}."correctedDetails" ? 'personalEmail' THEN ${d}."correctedDetails"->>'personalEmail'
+     ELSE (SELECT i.email FROM dispatcher_applications ap JOIN invitations i ON i.id = ap."invitationId" WHERE ap.id = ${d}."applicationId") END, ${e}."personalEmail"), 'Personal email', 4
+  ) v WHERE v.email IS NOT NULL AND v.email <> '' ORDER BY lower(v.email), v.ord) x)`;
 // Open seats of people who haven't left: the one rule for who uses a sign-in.
 const IN_USE = `member_load_board_seats s JOIN dispatch_members d ON d.id = s."memberId" WHERE s.status <> 'ENDED' AND d.status <> 'LEFT'`;
 /** Every load board sign-in someone here uses, for checking a file against. */
