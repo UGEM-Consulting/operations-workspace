@@ -80,7 +80,7 @@ integration('Assigning cleared drivers to dispatch (disposable PostgreSQL)', () 
     await agents.safety.get('/api/dispatch/drivers').set(headers).expect(403);
     await agents.lead.get('/api/dispatch/drivers').set(headers).expect(403);
     expect((await agents.manager.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toContain('dispatchdrivers');
-    expect((await agents.lead.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toEqual(['myteam', 'teamdrivers', 'security']);
+    expect((await agents.lead.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item: { key: string }) => item.key)).toEqual(['myteam', 'teamdrivers', 'teamannouncements', 'security']);
   });
 
   it('assigns a cleared driver to an MC and a dispatcher in a team under it, keeping changes as history', async () => {

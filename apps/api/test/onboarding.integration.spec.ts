@@ -628,7 +628,7 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const teamLead=request.agent(app.getHttpServer());
   await teamLead.post('/api/auth/login').set(headers).send({email:account.email,password}).expect(200);
   expect((await teamLead.post('/api/auth/password').set(headers).send({currentPassword:password,newPassword:`${password}-changed`}).expect(200)).body.landingPage).toBe('/team');
-  expect((await teamLead.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item:{key:string})=>item.key)).toEqual(['myteam','teamdrivers','security']);
+  expect((await teamLead.get('/api/auth/me').set(headers).expect(200)).body.navigation.map((item:{key:string})=>item.key)).toEqual(['myteam','teamdrivers','teamannouncements','security']);
   await teamLead.get('/api/onboarding/applications').set(headers).expect(403);
   await teamLead.get('/api/dispatch/members').set(headers).expect(403);
   await manager.get('/api/team').set(headers).expect(403);

@@ -49,6 +49,8 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'GET' && path === 'staff/telegram') ||
     // Admin › Keeping records (section 34): the hold dialog searches by name; holds and the switch are changes.
     (method === 'GET' && path === 'retention/people') || (method === 'POST' && (path === 'retention/settings' || path === 'retention/holds' || match(`retention/holds/${ID}/(extend|end)`, path))) ||
+    // Announcements to team groups (section 37): send one, or take it back.
+    (method === 'POST' && (path === 'announcements' || match(`announcements/${ID}/take-back`, path))) ||
     // Admin › Telegram (section 34): groups, their one-time codes and where each alert goes.
     (method === 'POST' && (path === 'telegram/groups/codes' || match(`telegram/groups/codes/${ID}/check`, path) || match(`telegram/groups/${ID}/(unlink|test)`, path))) ||
     (method === 'PATCH' && /^telegram\/routes\/[A-Z_]{1,32}$/.test(path)) || (method === 'POST' && ['staff/telegram/connect', 'staff/telegram/check', 'staff/telegram/disconnect'].includes(path)) ||
