@@ -1,0 +1,6 @@
+import { DISPATCH, NewPage } from '@/features/announcements/pages';
+export const metadata = { title: 'New announcement' };
+export default async function NewAnnouncementPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const { team } = await searchParams;
+  return NewPage(DISPATCH, typeof team === 'string' ? team : undefined);
+}

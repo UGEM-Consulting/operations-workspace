@@ -5,6 +5,7 @@ const subscribe = () => () => {};
 const formats = {
   datetime: { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' },
   date: { year: 'numeric', month: 'short', day: 'numeric' },
+  time: { hour: 'numeric', minute: '2-digit' },
 } satisfies Record<string, Intl.DateTimeFormatOptions>;
 
 /**

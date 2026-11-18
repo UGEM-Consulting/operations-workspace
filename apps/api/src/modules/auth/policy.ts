@@ -18,6 +18,8 @@ const navigation = [
   { key: 'myteam', href: '/team', label: 'My team', section: null, roles: [Role.TEAM_LEAD] },
   // Cleared drivers waiting for a dispatcher in their teams, and the ones their teams work with.
   { key: 'teamdrivers', href: '/team/drivers', label: 'Drivers', section: null, roles: [Role.TEAM_LEAD] },
+  // Announcements to the Telegram groups of the teams they lead (section 37).
+  { key: 'teamannouncements', href: '/team/announcements', label: 'Announcements', section: null, roles: [Role.TEAM_LEAD] },
   { key: 'invitations', href: '/onboarding/invitations', label: 'Invitations', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'applications', href: '/onboarding/applications', label: 'Applications', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   { key: 'documents', href: '/onboarding/documents', label: 'Documents', section: 'Onboarding', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
@@ -26,6 +28,8 @@ const navigation = [
   { key: 'promotions', href: '/dispatch/promotions', label: 'Promotions', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   // Drivers Safety has cleared, assigned to an MC and a dispatcher.
   { key: 'dispatchdrivers', href: '/dispatch/drivers', label: 'Drivers', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
+  // Announcements to teams' Telegram groups (section 37).
+  { key: 'announcements', href: '/dispatch/announcements', label: 'Announcements', section: 'Dispatch', roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER] },
   // Safety onboards drivers; every Safety role reads all driver records, and the service decides who changes what.
   { key: 'drivers', href: '/safety/drivers', label: 'Drivers', section: 'Safety', roles: [Role.SYSTEM_ADMIN, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF] },
   // Units (section 34): trucks and trailers with their owners, dates and permits; owner-operators' trucks among them.

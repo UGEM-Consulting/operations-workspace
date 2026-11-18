@@ -12,7 +12,8 @@ export interface TeamPerson { id: string; firstName: string; lastName: string; s
 export interface TeamDetail { id: string; name: string; version: number; archived: boolean; leadId: string | null; mc: { id: string; name: string; archived: boolean };
   dispatchers: (TeamPerson & { jobTitle: string | null; drivers: number; companyEmail: string | null; accountStatus: 'ACTIVE' | 'INACTIVE' | null })[];
   helpers: (TeamPerson & { dispatcherId: string | null; teamId: string | null })[];
-  /** Its linked Telegram group (section 34); an older API sends none. */ telegramGroup?: { title: string | null; linkedAt: string; linkedBy: string; lostAt: string | null } | null }
+  /** Its linked Telegram group (section 34); an older API sends none. */ telegramGroup?: { title: string | null; linkedAt: string; linkedBy: string; lostAt: string | null;
+    /** Its latest announcement (section 37); an older API sends none. */ latestAnnouncement?: { id: string; createdAt: string; authorName: string } | null } | null }
 export interface TeamList { items: TeamRow[]; counts: { active: number; archived: number } }
 export type SupportType = 'SUPPORT' | 'UPDATER';
 /** What the API sends as the MC of someone who has none yet (never a list entry). */

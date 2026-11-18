@@ -104,6 +104,13 @@ export const teamDetailSchema = z.looseObject({ id: text, name: text, version: z
   dispatchers: z.array(teamPerson.extend({ jobTitle: nullableText, drivers: z.number(), companyEmail: nullableText, accountStatus: nullableText })),
   helpers: z.array(teamPerson.extend({ dispatcherId: nullableText, teamId: nullableText })) });
 
+// Announcements to team groups (section 37).
+const announcementRow = z.looseObject({ id: text, text, authorName: text, authorRole: text, createdAt: text, takenBackAt: nullableText, teams: z.array(text), delivered: z.number(), groups: z.number(), sending: z.number() });
+export const announcementListSchema = z.looseObject({ items: z.array(announcementRow) });
+export const announcementOptionsSchema = z.looseObject({ available: z.boolean(), maxLength: z.number(), from: text, teams: z.array(z.looseObject({ id: text, name: text, mcId: text, mc: text, linked: z.boolean(), groupTitle: nullableText })) });
+export const announcementDetailSchema = z.looseObject({ id: text, text, authorName: text, authorRole: text, createdAt: text, takenBackAt: nullableText, takenBackBy: nullableText, takeBackReason: nullableText, canTakeBack: z.boolean(),
+  deliveries: z.array(z.looseObject({ id: text, team: text, teamId: text, groupTitle: nullableText, status: text, sentAt: nullableText, takenBackAt: nullableText, failureCode: nullableText })) });
+
 const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText,
   // Leave (section 35): the open leave, upcoming or started.
   leave: z.looseObject({ firstDay: text, backOn: text, started: z.boolean(), it: text }).nullable().optional().catch(undefined),

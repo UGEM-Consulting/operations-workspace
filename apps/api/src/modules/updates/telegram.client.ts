@@ -39,6 +39,8 @@ export class TelegramClient {
  getUpdates(offset: number, limit: number) { return this.call<TelegramUpdate[]>('getUpdates', { offset, timeout: 0, limit, allowed_updates: ['message'] }); }
  /** Plain text, and optionally one button that opens a link (driver reminders). */
  sendMessage(chatId: string, text: string, button?: { text: string; url: string }) {
-  return this.call<unknown>('sendMessage', { chat_id: chatId, text, link_preview_options: { is_disabled: true }, ...(button ? { reply_markup: { inline_keyboard: [[button]] } } : {}) });
+  return this.call<{ message_id?: number }>('sendMessage', { chat_id: chatId, text, link_preview_options: { is_disabled: true }, ...(button ? { reply_markup: { inline_keyboard: [[button]] } } : {}) });
  }
+ /** Deletes a message the bot sent; Telegram allows it in groups for 48 hours (team announcements taken back). */
+ deleteMessage(chatId: string, messageId: string) { return this.call<boolean>('deleteMessage', { chat_id: chatId, message_id: Number(messageId) }); }
 }

@@ -41,7 +41,7 @@ export function TelegramGroups({ data }: { data: TelegramData }) {
   return <div className="space-y-6">
     <PageHeader title="Telegram" description="Alerts to Telegram groups and to staff who connected their own Telegram." action={<Button disabled={!data.available} onClick={() => setLinking(true)}><Plus aria-hidden="true" className="size-4" />Link a group</Button>} />
     {!data.available && <Alert tone="warning" title="Telegram isn’t set up for this workspace"><p>Groups can be linked once the bot is set up on the server.</p></Alert>}
-    <Alert tone="info" title="What a group gets"><p>What’s waiting and a link to the workspace, where permissions are checked. Never names of the people involved, phone numbers, emails, documents or test results.</p></Alert>
+    <Alert tone="info" title="What a group gets"><p>Alerts: what’s waiting and a link to the workspace, where permissions are checked. Never names of the people involved, phone numbers, emails, documents or test results. A team’s group also gets the announcements dispatch managers and its team lead write (Dispatch › Announcements).</p></Alert>
     <Notice message={error} error />
     <Card><CardHeader title="Linked groups" />
       {data.groups.length ? <Table className="mt-3 border-t border-border" caption="Telegram groups" rows={data.groups} rowKey={row => row.id} columns={[
