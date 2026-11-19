@@ -78,7 +78,7 @@ export class AccountRequestsService {
    const request = await openRequest(em, user.id, { memberId: member.id, kind: 'CLOSE', accountId, profile, note: dto.note?.trim() || null, emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? user.id : null },
     [...(account.companyEmail ? ['CLOSE_EMAIL' as const, 'SHARED_PASSWORDS' as const] : []), ...(account.ringCentralNumber ? ['CLOSE_NUMBER' as const] : [])]);
    account.version += 1; await em.save(account);
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { fields: [], closeAsked: true, forward } });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields: [], closeAsked: true, forward } });
    return { id: request.id };
   });
  }
@@ -154,7 +154,7 @@ export class AccountRequestsService {
    const account = await em.getRepository(CompanyAccount).findOne({ where: { id: request.accountId! }, lock: { mode: 'pessimistic_write' } });
    if (account && account.status !== 'CLOSED') {
     Object.assign(account, { status: 'CLOSED', closedAt: new Date(), closedBy: user.id, version: account.version + 1 }); await em.save(account);
-    await em.getRepository(DispatchEvent).save({ memberId: request.memberId, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { fields: [], status: 'CLOSED', byIt: true } });
+    await em.getRepository(DispatchEvent).save({ memberId: request.memberId, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: request.accountId, fields: [], status: 'CLOSED', byIt: true } });
    }
   } else await this.moveAccounts(em, user, request);
   await refreshRemovalAccounts(em, request.memberId, user.id);

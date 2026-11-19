@@ -68,7 +68,7 @@ export class CompanyAccountsService {
    if (!fields.length && !status) return { id, version: account.version };
    account.version += 1; await em.save(account);
    member.version += 1; await em.save(member);
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { fields, ...(status ? { status } : {}) } });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields, ...(status ? { status } : {}) } });
    await refreshRemovalAccounts(em, member.id, user.id);
    return { id, version: account.version };
   });
