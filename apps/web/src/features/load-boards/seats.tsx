@@ -48,7 +48,7 @@ export function seatMenu(seat: Pick<Seat, 'status'>, open: (action: SeatAction) 
  * Load boards on a dispatcher's page (CompanyAccountsProfileScreen): which DAT and Truckstop accounts they use, with the sign-in
  * and who else shares it. Administrators add and change seats here (CompanyAccountsAdminScreen); everyone else reads.
  */
-export function LoadBoardsCard({ memberId, name, seats, accounts, companyEmails, canChange }: { memberId: string; name: string; seats: Seat[]; accounts: LoadBoardAccount[]; companyEmails: string[]; canChange: boolean }) {
+export function LoadBoardsCard({ memberId, name, seats, accounts, companyEmails, seatEmails, canChange }: { memberId: string; name: string; seats: Seat[]; accounts: LoadBoardAccount[]; seatEmails?: SeatEmail[]; companyEmails: string[]; canChange: boolean }) {
   const [adding, setAdding] = useState(false), [changing, setChanging] = useState<{ seat: Seat; action: SeatAction } | null>(null);
   if (!seats.length && !canChange) return null;
   return <Card>
@@ -61,17 +61,21 @@ export function LoadBoardsCard({ memberId, name, seats, accounts, companyEmails,
       ...(canChange ? [{ key: 'actions', label: 'Actions', srOnly: true, action: true, align: 'right' as const, cell: (seat: Seat) => seat.status === 'ENDED' ? null
         : <DropdownMenu label={`Seat actions for ${seat.account}`} triggerIcon={Ellipsis} triggerVariant="ghost" align="end" items={seatMenu(seat, action => setChanging({ seat, action }))} /> }] : [])]}
       empty={<p className="px-4 py-4 text-sm text-muted-foreground sm:px-5">No load board seats recorded.</p>} />
-    {adding && <AddSeatDialog people={[{ id: memberId, name, companyEmail: companyEmails[0] ?? null }]} memberId={memberId} accounts={accounts} companyEmails={companyEmails} onClose={() => setAdding(false)} />}
+    {adding && <AddSeatDialog people={[{ id: memberId, name, companyEmail: companyEmails[0] ?? null, seatEmails }]} memberId={memberId} accounts={accounts} companyEmails={companyEmails} onClose={() => setAdding(false)} />}
     {changing && <ChangeSeatDialog seat={changing.seat} action={changing.action} who={name} accounts={accounts} companyEmails={companyEmails} onClose={() => setChanging(null)} />}
   </Card>;
 }
 
-export interface SeatPerson { id: string; name: string; companyEmail: string | null }
-/** Add a seat (LoadBoardSeatAddScreen): the account picked from the list, never typed; the sign-in offers company emails first. */
+/** An email Add seat offers as the sign-in, with what it is (Company email, Company email at Lakeside Carriers, Personal email). */
+export interface SeatEmail { email: string; label: string }
+/** seatEmails comes from the API; an older one sends only companyEmail. */
+export interface SeatPerson { id: string; name: string; companyEmail: string | null; seatEmails?: SeatEmail[] }
+/** Add a seat (LoadBoardSeatAddScreen): the account picked from the list, never typed; the sign-in offers their company, other companies' and personal emails. */
 export function AddSeatDialog({ people, memberId: fixed, accountId: fixedAccount, accounts, companyEmails, onClose }: { people: SeatPerson[]; memberId?: string; accountId?: string; accounts: LoadBoardAccount[]; companyEmails?: string[]; onClose: () => void }) {
   const router = useRouter(), toast = useToast();
   const [memberId, setMemberId] = useState(fixed ?? ''), person = people.find(item => item.id === memberId);
-  const offered = [...new Set([...(companyEmails ?? []), ...(person?.companyEmail ? [person.companyEmail] : [])])];
+  const known = person?.seatEmails ?? [...new Set([...(companyEmails ?? []), ...(person?.companyEmail ? [person.companyEmail] : [])])].map(email => ({ email, label: 'Company email' }));
+  const offered = known.map(item => item.email);
   const [pick, setPick] = useState(offered[0] ?? 'other'), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const usable = accounts.filter(account => !account.placeholder && !account.archived);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -84,11 +88,11 @@ export function AddSeatDialog({ people, memberId: fixed, accountId: fixedAccount
     } catch (failure) { setError(errorMessage(failure, 'Unable to add the seat. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
-  const choices = [...offered.map(email => ({ value: email, label: email, description: 'Company email' })), { value: 'other', label: 'Another email' }];
+  const choices = [...known.map(item => ({ value: item.email, label: item.email, description: item.label })), { value: 'other', label: 'Another email' }];
   return <Dialog open onClose={onClose} busy={busy} title="Add a load board seat" description={`${person?.name ?? 'Choose who uses it'}. Nobody is messaged.`}
     actions={<Button type="submit" form="add-seat" disabled={busy || !memberId}>{busy ? 'Adding…' : 'Add seat'}</Button>}>
     <form id="add-seat" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
-      {!fixed && <Select label="Person" name="memberId" required width="full" placeholder="Choose a person" value={memberId} onChange={event => { setMemberId(event.target.value); setPick('other'); }}
+      {!fixed && <Select label="Person" name="memberId" required width="full" placeholder="Choose a person" value={memberId} onChange={event => { const next = people.find(item => item.id === event.target.value); setMemberId(event.target.value); setPick(next?.seatEmails?.[0]?.email ?? next?.companyEmail ?? 'other'); }}
         options={people.map(item => ({ value: item.id, label: item.name }))} />}
       {!fixedAccount && <Select label="Load board account" name="accountId" required width="full" placeholder="Choose an account" options={usable.map(account => ({ value: account.id, label: `${account.name} · ${PROVIDER[account.provider]}` }))} />}
       <RadioGroup name="pick" label="Sign-in email" value={pick} onChange={setPick} options={choices} />

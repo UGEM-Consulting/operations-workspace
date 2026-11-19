@@ -12,6 +12,7 @@ integration('Retiring a converted demo database (disposable PostgreSQL)',()=>{
  // Recreates the state of a starter database converted to the demo: real operator email, fictional staff and data.
  async function convertedStarter(extraUsers:string[]=[]){
  if(await latest()==='CompleteHistory1793350000000')await db.undoLastMigration();
+ if(await latest()==='LoadBoardNamesPerProvider1793340000000')await db.undoLastMigration();
  if(await latest()==='TeamAnnouncements1793330000000')await db.undoLastMigration();
  if(await latest()==='CompanyAccountNotes1793320000000')await db.undoLastMigration();
  if(await latest()==='SharedAccounts1793310000000')await db.undoLastMigration();
