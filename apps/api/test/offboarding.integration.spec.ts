@@ -430,6 +430,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
     await db.undoLastMigration(); // CompleteHistory, with none here
+    await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here

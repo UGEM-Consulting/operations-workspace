@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { photoSummary } from '../documents/member-photos';
 import { askForMoveAccounts } from '../company-accounts/account-requests';
 import { memberCompanyAccounts } from '../company-accounts/accounts';
-import { memberSeats } from '../load-boards/seats';
+import { memberSeats, seatEmailsSql } from '../load-boards/seats';
 import { memberHistory } from './history';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
@@ -286,7 +286,8 @@ export class DispatchService {
   const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
   // The complete History (section 38): every change, worded, with its filter; the page shows and filters it.
   const timeline = await memberHistory(this.db, id);
-  return { timeline, recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), sharing: await memberSharing(this.db, id), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  return { timeline, recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true),
+   seatEmails: (await this.db.query(`SELECT ${seatEmailsSql('d', 'e')} AS emails FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $1`, [id]))[0]?.emails ?? [], sharedSignIns: await sharedSignIns(this.db, id, signIns), sharing: await memberSharing(this.db, id), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.

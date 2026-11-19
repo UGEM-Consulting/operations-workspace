@@ -2202,6 +2202,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     // Ready for the road (or an acknowledgement, an owner's contract, a group change or their events) keeps RoadReady.
     await db.query(`INSERT INTO driver_road_ready ("driverId") VALUES ($1)`, [id]);
     await db.undoLastMigration(); // CompleteHistory, with none here
+    await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here

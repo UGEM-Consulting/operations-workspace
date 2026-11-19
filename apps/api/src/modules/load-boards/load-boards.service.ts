@@ -9,11 +9,12 @@ import { usDay } from '../safety/screening-rules';
 import type { User } from '../users/user.entity';
 import { AddSeatDto, ChangeSeatDto, CreateAccountDto, UpdateAccountDto } from './load-boards.dto';
 import { LoadBoardAccount, LoadBoardSeat, PROVIDER_LABELS } from './load-boards.entity';
-import { memberSeats, refreshRemovalSeats, signInUsers } from './seats';
+import { memberSeats, refreshRemovalSeats, seatEmailsSql, signInUsers } from './seats';
 
 const midday = (date: string) => new Date(`${date}T12:00:00Z`);
 const DUPLICATES: Record<string, string> = {
- UQ_load_board_accounts_nameKey: 'A load board account with this name already exists.',
+ // Names are unique within a provider: a DAT and a Truckstop account may share one.
+ UQ_load_board_accounts_provider_nameKey: 'This provider already has a load board account with this name.',
  UQ_member_load_board_seats_open: 'They already have a seat on this account. Change that one instead.',
 };
 
@@ -150,11 +151,12 @@ export class LoadBoardsService {
  }
 
  /**
-  * Who can get a seat, for IT's Add seat on an account page: everyone who hasn't left, with their company email (offered as
-  * the sign-in first). IT reads no dispatcher pages, so this is all it gets: names and work details.
+  * Who can get a seat, for IT's Add seat on an account page: everyone who hasn't left, with their company email and the
+  * emails offered as the sign-in (seatEmails: company, shared, other companies', personal; IT's setup profile already holds
+  * the personal email). IT reads no dispatcher pages, so this is all it gets.
   */
  people() {
-  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.position, d."supportType", ${companyEmailSql('d', 'e')} AS "companyEmail"
+  return this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, d.position, d."supportType", ${companyEmailSql('d', 'e')} AS "companyEmail", ${seatEmailsSql('d', 'e')} AS "seatEmails"
    FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.status <> 'LEFT' ORDER BY lower(d."firstName"), lower(d."lastName"), d.id`);
  }
  /** Someone's seats for their page, open ones first with who shares each sign-in. */

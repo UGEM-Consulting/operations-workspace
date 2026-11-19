@@ -88,7 +88,7 @@ const accountSeat = z.looseObject({ id: text, memberId: text, name: text, signIn
 /** GET /lists/load-board-accounts/:id: who uses one account now, and its earlier seats. */
 export const loadBoardAccountSchema = z.looseObject({ account: z.looseObject({ id: text, name: text, provider, placeholder: z.boolean(), archived: z.boolean() }), using: z.array(accountSeat), history: z.array(accountSeat) });
 /** GET /load-board-seats/people: who IT can give a seat. */
-export const seatPeopleSchema = z.array(z.looseObject({ id: text, name: text, companyEmail: nullableText }));
+export const seatPeopleSchema = z.array(z.looseObject({ id: text, name: text, companyEmail: nullableText, seatEmails: z.array(z.looseObject({ email: text, label: text })).optional().catch(undefined) }));
 /** GET /lists/... when only the choices are used (id, name, archived). */
 export const choiceListSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, name: text, archived: z.boolean() })) });
 

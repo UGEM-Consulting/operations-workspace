@@ -244,7 +244,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
                 {existing?.addedAsLeft ? <p className="text-[13px] text-muted-foreground">From {existing.sourceName ? 'the file' : 'their record'}, added by {existing.addedBy} on <LocalTime iso={existing.createdAt} format="date" />.</p>
                   : (member.leftBy || member.leftAt) && <p className="text-[13px] text-muted-foreground">Marked as left{member.leftBy ? ` by ${member.leftBy}` : ''}{member.leftAt ? <> on <LocalTime iso={member.leftAt} format="date" /></> : null}.</p>}</CardBody></Card>}
             {/* Load boards (section 33): an administrator adds and changes seats here; IT does it from each account's page. */}
-            {member.loadBoardSeats && <LoadBoardsCard memberId={member.id} name={name} seats={member.loadBoardSeats} accounts={loadBoardAccounts} canChange={admin && !gone}
+            {member.loadBoardSeats && <LoadBoardsCard memberId={member.id} name={name} seats={member.loadBoardSeats} seatEmails={member.seatEmails} accounts={loadBoardAccounts} canChange={admin && !gone}
               companyEmails={[...new Set([accounts?.companyEmail, existing?.companyEmail].filter((email): email is string => !!email))]} />}
             <NamesCard member={member} onEdit={() => setLeftDialog('names')} />
             {gone && mcHistory}
