@@ -129,7 +129,9 @@ export const existingOptionsSchema = z.looseObject({ loadBoardAccounts: z.array(
 /** GET /dispatch/paperwork */
 export const paperworkSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, state: text, nda: z.looseObject({ state: text }), sop: z.looseObject({ state: text }) })), counts: z.looseObject({ toCreate: z.number(), sent: z.number(), waiting: z.number(), finished: z.number() }) });
 /** GET /dispatch/members/:id */
-export const memberProfileSchema = z.looseObject({
+// The complete History (section 38): every entry worded by the API, with its filter.
+const historyEntry = z.looseObject({ id: text, at: text, category: z.enum(['WORK', 'ACCOUNTS', 'AWAY', 'DETAILS', 'IT', 'VIEWS']).catch('DETAILS'), icon: text, title: text, by: nullableText, body: nullableText });
+export const memberProfileSchema = z.looseObject({ timeline: z.looseObject({ entries: z.array(historyEntry), counts: z.record(z.string(), z.number()) }).optional().catch(undefined),
   id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), joinedAt: text, leftAt: nullableText,
   jobTitle: z.looseObject({ id: text, name: text }).nullable(), current: assignment.nullable(), history: z.array(assignment), leadOf: z.looseObject({ id: text, name: text }).nullable(),
   accounts: z.looseObject({}).nullable(),

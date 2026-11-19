@@ -4,6 +4,7 @@ import { MemberPhotosCard } from './member-photos';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, UserCheck, UserMinus, Users, type LucideIcon } from 'lucide-react';
+import { HistoryTimeline } from './history';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
@@ -288,7 +289,12 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             </Card>}
                   {!member.photo && !member.idPhoto && !member.documents?.length && <p className="text-sm text-muted-foreground">No photos or signed documents.</p>}
             </div>,
-            history: <div className="space-y-6">
+            // One timeline of every change (section 38), with MC and team beside it; an older API sends no timeline and gets the earlier cards.
+            history: member.timeline ? <div className="grid gap-6 min-[1800px]:grid-cols-[minmax(0,1fr)_320px] min-[1800px]:items-start">
+              <HistoryTimeline timeline={member.timeline} />
+              {/* Beside the timeline only where the page's own rail leaves room; under it otherwise, as on a phone. */}
+              {!gone && mcHistory ? <div className="min-w-0">{mcHistory}</div> : null}
+            </div> : <div className="space-y-6">
             <LeaveHistory leaves={member.leaveHistory ?? []} />
             {!!member.noticeHistory?.length && <Card><CardHeader title="Notices" description="Last days that changed, and notices that were cancelled." />
               <CardBody><Timeline items={member.noticeHistory.flatMap(row => [

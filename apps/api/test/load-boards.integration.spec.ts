@@ -103,7 +103,7 @@ integration('Load board accounts and seats (disposable PostgreSQL)', () => {
     // Archiving waits until nobody holds a seat on it.
     await agents.it.patch(`/api/lists/load-board-accounts/${northwind}`).set(headers).send({ version: 1, archived: true }).expect(409);
     const events = await db.query(`SELECT event, metadata FROM dispatch_events WHERE event IN ('SEAT_ADDED','SEAT_CHANGED') ORDER BY "createdAt"`);
-    expect(events.map((row: Row) => row.metadata)).toEqual([{ provider: 'DAT', shared: false }, { provider: 'DAT', shared: true }, { action: 'SUSPEND', provider: 'DAT' }, { action: 'RESUME', provider: 'DAT' }, { action: 'MOVE', provider: 'DAT', to: 'DAT', shared: false }]);
+    expect(events.map((row: Row) => row.metadata)).toEqual([{ provider: 'DAT', shared: false }, { provider: 'DAT', shared: true }, { action: 'SUSPEND', provider: 'DAT', seatId: expect.any(String) }, { action: 'RESUME', provider: 'DAT', seatId: expect.any(String) }, { action: 'MOVE', provider: 'DAT', to: 'DAT', shared: false, seatId: expect.any(String) }]);
     expect(JSON.stringify(events)).not.toContain('@');
   });
 
@@ -169,6 +169,7 @@ integration('Load board accounts and seats (disposable PostgreSQL)', () => {
   it('turns the sign-ins recorded before it into seats when the migration runs', async () => {
     const riley = await addOne('Riley', { datEmail: 'riley.dat@example.test' }), gone = await addOne('Gone', { personalEmail: 'gone.home@example.test', truckstopEmail: 'gone.ts@example.test' });
     await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() WHERE id = $1`, [gone]);
+    await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here

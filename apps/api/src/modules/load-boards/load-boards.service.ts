@@ -142,7 +142,8 @@ export class LoadBoardsService {
     next = (await em.getRepository(LoadBoardSeat).save({ memberId: member.id, accountId: target.id, signInEmail: email, startedAt: on, createdBy: user.id })).id;
     Object.assign(metadata, { to: target.provider, shared: await this.shared(em, member.id, email) });
    }
-   await this.seatEvent(em, user, member.id, 'SEAT_CHANGED', metadata);
+   // Which seat, so History can name its account (section 38); never the sign-in.
+   await this.seatEvent(em, user, member.id, 'SEAT_CHANGED', { ...metadata, seatId: seat.id });
    await refreshRemovalSeats(em, member.id, user.id);
    return { id, version: seat.version, ...(next ? { movedTo: next } : {}) };
   });

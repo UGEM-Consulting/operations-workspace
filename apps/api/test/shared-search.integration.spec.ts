@@ -97,7 +97,7 @@ integration('Shared accounts and search (disposable PostgreSQL)', () => {
     const drewPage = await profile(drew);
     expect(drewPage.existing.companyEmail).toBeNull();
     expect(drewPage.sharing.uses).toEqual([expect.objectContaining({ kind: 'EMAIL', owner: { id: riley, name: 'Riley Santos' } })]);
-    expect(await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'ACCOUNT_MOVED'`)).toEqual([{ metadata: { fields: ['companyEmail'], stillUses: true } }]);
+    expect(await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'ACCOUNT_MOVED'`)).toEqual([{ metadata: { fields: ['companyEmail'], stillUses: true, to: expect.any(String) } }]);
     // A third person with the same email now asks about Riley, and adding them as a user works; same name is the same person.
     const sky = await check([base(3, 'Sky', 'Martin', { companyEmail: 'riley.santos@example.test' })]);
     expect(sky.rows[0].shared.owners).toEqual([{ id: riley, name: 'Riley Santos', fields: ['companyEmail'] }]);

@@ -113,9 +113,13 @@ export async function sharingOnLeft(em: EntityManager, actorId: string, memberId
   const ofKind = users.filter(row => row.kind === kind), mine = ofKind.find(row => row.memberId === to);
   if (mine) { mine.handedOverAt = new Date(); await repo.save(mine); }
   else await repo.save({ memberId: to, ownerMemberId: memberId, kind, value: ofKind[0].value, createdBy: actorId, handedOverAt: new Date(), endedAt: null, endedBy: null, endedHow: null });
-  for (const row of ofKind.filter(item => item.memberId !== to)) { row.ownerMemberId = to; await repo.save(row); }
+  for (const row of ofKind.filter(item => item.memberId !== to)) {
+   row.ownerMemberId = to; await repo.save(row);
+   // They keep using it, now as the recipient's (section 38).
+   await em.getRepository(DispatchEvent).save({ memberId: row.memberId, teamId: null, event: 'SHARED_OWNER_CHANGED', actorId, metadata: { kind, ownerId: to, previousOwnerId: memberId, why: 'handed-over' } });
+  }
  }
- await em.getRepository(DispatchEvent).save({ memberId, teamId: null, event: 'ACCOUNTS_HANDED_OVER', actorId, metadata: { kinds, users: users.length } });
+ await em.getRepository(DispatchEvent).save({ memberId, teamId: null, event: 'ACCOUNTS_HANDED_OVER', actorId, metadata: { kinds, users: users.length, to } });
  await refreshRemovalSharing(em, [to], actorId);
 }
 
