@@ -3,6 +3,7 @@ import { photoSummary } from '../documents/member-photos';
 import { askForMoveAccounts } from '../company-accounts/account-requests';
 import { memberCompanyAccounts } from '../company-accounts/accounts';
 import { memberSeats } from '../load-boards/seats';
+import { memberHistory } from './history';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
@@ -102,10 +103,10 @@ export class DispatchService {
      WHERE a."teamId" = $1 AND a."endedAt" IS NULL AND x.status <> 'LEFT')) ORDER BY lower(d."firstName"), lower(d."lastName")`, [id]),
   ]);
   if (!team) throw new NotFoundException('This team no longer exists.');
-  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name, who linked it and, since section 37, its latest announcement.
+  // The team's linked Telegram group (section 34, TelegramTeamGroupScreen): its name, who linked it and, since section 37, the latest announcement this group received.
   const [telegramGroup] = await this.db.query(`SELECT g.title, g."linkedAt", u."firstName" || ' ' || u."lastName" AS "linkedBy", g."lostAt",
     (SELECT json_build_object('id', a.id, 'createdAt', a."createdAt", 'authorName', a."authorName") FROM team_announcement_deliveries d JOIN team_announcements a ON a.id = d."announcementId"
-     WHERE d."teamId" = g."teamId" AND a."takenBackAt" IS NULL ORDER BY a."createdAt" DESC LIMIT 1) AS "latestAnnouncement" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
+     WHERE d."groupId" = g.id AND d.status = 'SENT' AND a."takenBackAt" IS NULL ORDER BY a."createdAt" DESC LIMIT 1) AS "latestAnnouncement" FROM telegram_groups g JOIN users u ON u.id = g."linkedBy"
    WHERE g."teamId" = $1 AND g."unlinkedAt" IS NULL`, [id]);
   return { ...team, dispatchers, helpers, telegramGroup: telegramGroup ?? null };
  }
@@ -153,6 +154,11 @@ export class DispatchService {
    await em.getRepository(Team).save(team);
    if (fields.length) await this.event(em, user, 'TEAM_UPDATED', { teamId: id }, { fields });
    if (archive !== null) await this.event(em, user, archive ? 'TEAM_ARCHIVED' : 'TEAM_RESTORED', { teamId: id }, {});
+   // On the people too (section 38), so each one's History says when they started or stopped leading.
+   if (previousLead !== team.leadMemberId) {
+    if (previousLead) await this.event(em, user, 'TEAM_LEAD_CLEARED', { memberId: previousLead, teamId: id }, { why: archive ? 'archived' : 'changed' });
+    if (team.leadMemberId) await this.event(em, user, 'TEAM_LEAD_SET', { memberId: team.leadMemberId, teamId: id }, {});
+   }
    // A new lead needs a sign-in, and someone who stops leading but stays on is turned off; IT or an administrator does both.
    if (previousLead !== team.leadMemberId) await syncSignIns(em, [previousLead, team.leadMemberId], user.id);
    return { id, version: team.version };
@@ -278,7 +284,9 @@ export class DispatchService {
    FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event IN ('EXISTING_UPDATED','NAMES_CHANGED','LEFT_DAY_RECORDED','CLOSE_ACCOUNTS_ASKED') ORDER BY e."createdAt" DESC LIMIT 100`, [id]);
   // IT requests about their company accounts that are still open (section 33): closing one, or a move's new accounts.
   const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
-  return { recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), sharing: await memberSharing(this.db, id), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
+  // The complete History (section 38): every change, worded, with its filter; the page shows and filters it.
+  const timeline = await memberHistory(this.db, id);
+  return { timeline, recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true), sharedSignIns: await sharedSignIns(this.db, id, signIns), sharing: await memberSharing(this.db, id), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
    // The onboarding record itself stays with its responsible manager and administrators.
@@ -345,7 +353,7 @@ export class DispatchService {
    else startedAt = notBefore(startedAt, member.joinedAt, 'The move can’t start before they joined.');
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
-   const leadCleared = await this.clearLead(em, id, teamId);
+   const leadCleared = await this.clearLead(em, user, id, teamId, 'moved');
    if (leadCleared) await syncSignIns(em, [id], user.id);
    // New accounts at the new MC go to IT; nothing on the record changes until IT finishes.
    const newAccounts = dto.accounts === 'NEW' && current?.mcId !== dto.mcId;
@@ -532,7 +540,7 @@ export class DispatchService {
   const link = await em.getRepository(MemberSupportLink).findOneBy({ supportId: id, endedAt: IsNull() });
   if (link) leftAt = notBefore(leftAt, link.startedAt, 'The leaving date can’t be before they started with their dispatcher.');
   if (link) { link.endedAt = leftAt; await em.save(link); }
-  const leadCleared = await this.clearLead(em, id, null);
+  const leadCleared = await this.clearLead(em, actor, id, null, 'left');
   // A support's open promotion request ends with them (locked after the member, as decide does).
   const pending = member.position === 'SUPPORT' ? await em.getRepository(PromotionRequest).findOne({ where: { supportId: id, status: 'PENDING' }, lock: { mode: 'pessimistic_write' } }) : null;
   if (pending) {
@@ -724,7 +732,8 @@ export class DispatchService {
     if (!title || title.archivedAt) throw new BadRequestException('Choose an active job title.');
    }
    member.jobTitleId = dto.jobTitleId; member.version += 1; await em.save(member);
-   await this.event(em, user, 'MEMBER_UPDATED', { memberId: id }, { fields: ['jobTitleId'] });
+   // The new title (a list choice, not a personal detail) so History can name it (section 38).
+   await this.event(em, user, 'MEMBER_UPDATED', { memberId: id }, { fields: ['jobTitleId'], to: dto.jobTitleId });
    return { id, version: member.version };
   });
  }
@@ -767,10 +776,11 @@ export class DispatchService {
   return member;
  }
  // Leaving a team ends being its lead.
- private async clearLead(em: EntityManager, memberId: string, stayingTeamId: string | null) {
+ private async clearLead(em: EntityManager, actor: Pick<User, 'id'>, memberId: string, stayingTeamId: string | null, why: 'moved' | 'left') {
   const team = await em.getRepository(Team).findOne({ where: { leadMemberId: memberId }, lock: { mode: 'pessimistic_write' } });
   if (!team || team.id === stayingTeamId) return false;
   team.leadMemberId = null; team.version += 1; await em.save(team);
+  await this.event(em, actor, 'TEAM_LEAD_CLEARED', { memberId, teamId: team.id }, { why });
   return true;
  }
  // Everyone in the team now, including dispatchers still in IT setup and anyone assisting the whole team (a team with them keeps its MC and stays open).

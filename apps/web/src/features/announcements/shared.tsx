@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Users } from 'lucide-react';
 import type { StatusTone } from '@/components/ui/status-badge';
 
@@ -9,14 +10,16 @@ export interface AnnouncementTeam { id: string; name: string; mcId: string; mc: 
 export interface AnnouncementOptions { available: boolean; maxLength: number; /** "Name, Role" as the groups will see it. */ from: string; teams: AnnouncementTeam[] }
 export interface AnnouncementRow { id: string; text: string; authorName: string; authorRole: string; createdAt: string; takenBackAt: string | null; teams: string[]; delivered: number; groups: number; sending: number }
 export type DeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'SKIPPED' | 'TAKEN_BACK';
-export interface AnnouncementDelivery { id: string; team: string; teamId: string; groupTitle: string | null; status: DeliveryStatus; sentAt: string | null; takenBackAt: string | null; failureCode: string | null }
+export interface AnnouncementDelivery { id: string; team: string; teamId: string; groupTitle: string | null; status: DeliveryStatus; sentAt: string | null; takenBackAt: string | null; failureCode: string | null;
+  /** Taken back and the delete is waiting to run or will be tried again (an older API sends none). */ retrying?: boolean }
 export interface AnnouncementDetail { id: string; text: string; authorName: string; authorRole: string; createdAt: string; takenBackAt: string | null; takenBackBy: string | null; takeBackReason: string | null;
   deliveries: AnnouncementDelivery[]; canTakeBack: boolean }
 
-const FAILURES: Record<string, string> = { FORBIDDEN: 'the bot was removed from the group', UNLINKED: 'the group was unlinked', REJECTED: 'Telegram refused it', MAX_ATTEMPTS: 'Telegram didn’t answer' };
+const FAILURES: Record<string, string> = { FORBIDDEN: 'the bot was removed from the group', UNLINKED: 'the group was unlinked', REJECTED: 'Telegram refused it', MAX_ATTEMPTS: 'Telegram didn’t answer', UNCONFIRMED: 'Telegram didn’t confirm it' };
 export const failureReason = (code: string | null) => (code && FAILURES[code]) ?? 'Telegram didn’t take it';
 /** A delivery's badge: what happened in that group. */
 export function deliveryBadge(delivery: AnnouncementDelivery): { label: string; tone: StatusTone } {
+  if (delivery.status === 'SENT' && delivery.retrying) return { label: 'Taking back', tone: 'info' };
   if (delivery.status === 'SENT') return delivery.failureCode?.startsWith('DELETE_') ? { label: 'Delivered; couldn’t take back', tone: 'warning' } : { label: 'Delivered', tone: 'success' };
   if (delivery.status === 'TAKEN_BACK') return { label: 'Taken back', tone: 'neutral' };
   if (delivery.status === 'SKIPPED') return { label: 'Not sent: taken back', tone: 'neutral' };
@@ -34,7 +37,7 @@ export const firstLine = (text: string) => text.split('\n').find(line => line.tr
 export const RULES = 'Work news for the team: schedules, who covers whom, trucks and loads. You may name the team’s people and drivers. Never phone numbers, emails, documents, test results, pay or passwords: the group is in Telegram, outside the workspace.';
 
 /** What the group sees: the writer and their role, then the message as written. A preview in workspace styling, not Telegram’s. */
-export function TelegramPreview({ chat, from, text, time }: { chat: string; from: string; text: string; time?: string }) {
+export function TelegramPreview({ chat, from, text, time }: { chat: string; from: string; text: string; time?: ReactNode }) {
   return <div className="overflow-hidden rounded-lg border border-border bg-card" aria-label={`Preview of the message in ${chat}`} role="figure">
     <div className="flex items-center gap-3 border-b border-border px-4 py-3">
       <span className="grid size-9 place-items-center rounded-full bg-muted text-muted-foreground"><Users aria-hidden="true" className="size-4" /></span>

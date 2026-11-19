@@ -109,7 +109,7 @@ const announcementRow = z.looseObject({ id: text, text, authorName: text, author
 export const announcementListSchema = z.looseObject({ items: z.array(announcementRow) });
 export const announcementOptionsSchema = z.looseObject({ available: z.boolean(), maxLength: z.number(), from: text, teams: z.array(z.looseObject({ id: text, name: text, mcId: text, mc: text, linked: z.boolean(), groupTitle: nullableText })) });
 export const announcementDetailSchema = z.looseObject({ id: text, text, authorName: text, authorRole: text, createdAt: text, takenBackAt: nullableText, takenBackBy: nullableText, takeBackReason: nullableText, canTakeBack: z.boolean(),
-  deliveries: z.array(z.looseObject({ id: text, team: text, teamId: text, groupTitle: nullableText, status: text, sentAt: nullableText, takenBackAt: nullableText, failureCode: nullableText })) });
+  deliveries: z.array(z.looseObject({ id: text, team: text, teamId: text, groupTitle: nullableText, status: text, sentAt: nullableText, takenBackAt: nullableText, failureCode: nullableText, retrying: z.boolean().optional().catch(undefined) })) });
 
 const memberRow = z.looseObject({ id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), mc: nullableText, team: nullableText, since: nullableText,
   // Leave (section 35): the open leave, upcoming or started.
@@ -129,7 +129,9 @@ export const existingOptionsSchema = z.looseObject({ loadBoardAccounts: z.array(
 /** GET /dispatch/paperwork */
 export const paperworkSchema = z.looseObject({ items: z.array(z.looseObject({ id: text, firstName: text, lastName: text, state: text, nda: z.looseObject({ state: text }), sop: z.looseObject({ state: text }) })), counts: z.looseObject({ toCreate: z.number(), sent: z.number(), waiting: z.number(), finished: z.number() }) });
 /** GET /dispatch/members/:id */
-export const memberProfileSchema = z.looseObject({
+// The complete History (section 38): every entry worded by the API, with its filter.
+const historyEntry = z.looseObject({ id: text, at: text, category: z.enum(['WORK', 'ACCOUNTS', 'AWAY', 'DETAILS', 'IT', 'VIEWS']).catch('DETAILS'), icon: text, title: text, by: nullableText, body: nullableText });
+export const memberProfileSchema = z.looseObject({ timeline: z.looseObject({ entries: z.array(historyEntry), counts: z.record(z.string(), z.number()) }).optional().catch(undefined),
   id: text, firstName: text, lastName: text, position: text, status: text, version: z.number(), joinedAt: text, leftAt: nullableText,
   jobTitle: z.looseObject({ id: text, name: text }).nullable(), current: assignment.nullable(), history: z.array(assignment), leadOf: z.looseObject({ id: text, name: text }).nullable(),
   accounts: z.looseObject({}).nullable(),

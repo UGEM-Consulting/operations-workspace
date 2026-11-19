@@ -58,6 +58,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
   afterAll(async () => { if (closeSessions) await closeSessions(); if (app) await app.close(); if (db?.isInitialized) { await db.query('TRUNCATE invitations, mcs, job_titles, dispatch_events CASCADE'); await db.destroy(); } });
 
   it('turns approved applications into members, teams per MC and team lead, and finds the lead by name', async () => {
+    await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here
@@ -117,7 +118,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     const long = 'X'.repeat(120);
     await approved(['Zed', 'North'], { mcName: 'Northwind Freight', teamLead: long, jobTitle: 'Dispatcher' });
     await approved(['Zed', 'Lake'], { mcName: 'Lakeside Carriers', teamLead: long, jobTitle: 'Dispatcher' });
-    await db.runMigrations(); expect(await latest()).toBe('TeamAnnouncements1793330000000');
+    await db.runMigrations(); expect(await latest()).toBe('CompleteHistory1793350000000');
 
     const list = await members();
     expect(list.map(item => [`${item.firstName} ${item.lastName}`, item.mc, item.team, item.lead, item.jobTitle])).toEqual([
@@ -135,7 +136,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     // Automatic rows write no events, so the backfill can still be rolled back and rebuilt.
     expect(await db.query('SELECT count(*)::integer AS n FROM dispatch_events')).toEqual([{ n: 0 }]);
   }
-  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('TeamAnnouncements1793330000000'); });
+  it('keeps the schema after the backfill test', async () => { expect(await latest()).toBe('CompleteHistory1793350000000'); });
 
   it('places a newly approved dispatcher by the confirmed assignment, inside the approval transaction', async () => {
     const northwind = await mc('Northwind Freight');
@@ -202,7 +203,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.manager.post(`/api/dispatch/members/${taylor.id}/move`).set(headers).send({ version: 5, mcId: northwind, startedAt: '2026-10-01', reason: 'Back' }).expect(409);
 
     const events = await db.query(`SELECT event, metadata FROM dispatch_events ORDER BY "createdAt", event`);
-    expect(events.map((row: { event: string }) => row.event)).toEqual(['TEAM_CREATED', 'TEAM_CREATED', 'MEMBER_MOVED', 'TEAM_UPDATED', 'MEMBER_MOVED', 'TEAM_ARCHIVED', 'MEMBER_LEFT']);
+    expect(events.map((row: { event: string }) => row.event)).toEqual(['TEAM_CREATED', 'TEAM_CREATED', 'MEMBER_MOVED', 'TEAM_LEAD_SET', 'TEAM_UPDATED', 'MEMBER_MOVED', 'TEAM_LEAD_CLEARED', 'TEAM_ARCHIVED', 'MEMBER_LEFT']);
     expect(JSON.stringify(events)).not.toMatch(/Taylor|Brooks|Resigned|Lakeside|Red team/);
   });
 
@@ -372,6 +373,9 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.manager.patch(`/api/dispatch/teams/${blue.id}`).set(headers).send({ version: 1, leadMemberId: blake.id }).expect(200);
     // The state DispatcherContacts left behind: a backfilled lead moved back to ONBOARDING while still leading.
     await db.query(`UPDATE dispatch_members SET status = 'ONBOARDING' WHERE id = $1`, [avery.id]);
+    // Choosing the leads above recorded team lead history, which CompleteHistory's rollback keeps; this test is about an older state.
+    await db.query(`DELETE FROM dispatch_events WHERE event IN ('TEAM_LEAD_SET','TEAM_LEAD_CLEARED')`);
+    await db.undoLastMigration(); // CompleteHistory
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here
@@ -430,6 +434,7 @@ integration('Teams and dispatch members (disposable PostgreSQL)', () => {
     await agents.it.get('/api/dispatch/teams').set(headers).expect(403);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Orphan', mcId: '00000000-0000-4000-8000-000000000000' }).expect(400);
     await agents.manager.post('/api/dispatch/teams').set(headers).send({ name: 'Kept team', mcId: await mc('Kept Carrier') }).expect(201);
+    await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here

@@ -684,10 +684,12 @@ export class ExistingDispatchersService {
      if (sharedKey(kind, use.value) !== sharedKey(kind, value)) continue;
      if (use.memberId === memberId) { use.endedAt = new Date(); use.endedBy = user.id; use.endedHow = 'MOVED'; } else use.ownerMemberId = memberId;
      await em.save(use);
+     // The others keep using it, now as the new owner's (section 38).
+     if (use.memberId !== memberId) await em.getRepository(DispatchEvent).save({ memberId: use.memberId, teamId: null, event: 'SHARED_OWNER_CHANGED', actorId: user.id, metadata: { kind, ownerId: memberId, previousOwnerId: owner.id, why: 'moved' } });
     }
     if (action === 'MOVE_SHARED') await shareAccount(em, user.id, owner.id, kind, value, memberId);
    }
-   await em.getRepository(DispatchEvent).save({ memberId: owner.id, teamId: null, event: 'ACCOUNT_MOVED', actorId: user.id, metadata: { fields: owner.fields, stillUses: action === 'MOVE_SHARED' } });
+   await em.getRepository(DispatchEvent).save({ memberId: owner.id, teamId: null, event: 'ACCOUNT_MOVED', actorId: user.id, metadata: { fields: owner.fields, stillUses: action === 'MOVE_SHARED', to: memberId } });
   }
  }
  /**

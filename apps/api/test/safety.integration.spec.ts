@@ -2201,6 +2201,7 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
     await publish(agents.manager, 'CLEARINGHOUSE_CONSENT', 201);
     // Ready for the road (or an acknowledgement, an owner's contract, a group change or their events) keeps RoadReady.
     await db.query(`INSERT INTO driver_road_ready ("driverId") VALUES ($1)`, [id]);
+    await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
     await db.undoLastMigration(); // CompanyAccountNotes, with none here
     await db.undoLastMigration(); // SharedAccounts, with none here
@@ -2324,6 +2325,6 @@ integration('Safety drivers (disposable PostgreSQL)', () => {
       expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('SafetyDrivers1792860000000');
     } finally { await db.runMigrations(); }
     } finally { await db.runMigrations(); }
-    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('TeamAnnouncements1793330000000');
+    expect((await db.query('SELECT name FROM migrations ORDER BY id DESC LIMIT 1'))[0].name).toBe('CompleteHistory1793350000000');
   });
 });

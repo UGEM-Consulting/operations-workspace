@@ -85,7 +85,7 @@ integration('Company accounts at other MCs (disposable PostgreSQL)', () => {
     const events = await db.query(`SELECT event, metadata FROM dispatch_events WHERE event LIKE 'COMPANY_ACCOUNT_%' ORDER BY "createdAt"`);
     expect(events.map((row: Row) => [row.event, row.metadata])).toEqual([
       ['COMPANY_ACCOUNT_ADDED', { status: 'ACTIVE', fields: ['nameUsed', 'companyEmail', 'ringCentralNumber', 'ringCentralExtension'], from: 'form' }],
-      ['COMPANY_ACCOUNT_CHANGED', { fields: [], status: 'KEPT_FOR_LOAD_BOARDS' }], ['COMPANY_ACCOUNT_CHANGED', { fields: [], status: 'CLOSED' }],
+      ['COMPANY_ACCOUNT_CHANGED', { accountId: expect.any(String), fields: [], status: 'KEPT_FOR_LOAD_BOARDS' }], ['COMPANY_ACCOUNT_CHANGED', { accountId: expect.any(String), fields: [], status: 'CLOSED' }],
       ['COMPANY_ACCOUNT_ADDED', { status: 'ACTIVE', fields: ['companyEmail'], from: 'form' }]]);
     expect(JSON.stringify(events)).not.toContain('@');
   });

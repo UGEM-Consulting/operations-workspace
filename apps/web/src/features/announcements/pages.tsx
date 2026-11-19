@@ -33,7 +33,7 @@ export async function NewPage(where: Where, team: string | undefined) {
   if (!response.ok) throw new Error('Unable to load teams');
   const options = await readResponse<AnnouncementOptions>(response, 'teams', announcementOptionsSchema);
   // The API sends the header the groups will see (name and role), so the preview matches it exactly.
-  return <><PageCrumb label="New" /><ComposeAnnouncement options={options} base={where.base} author={options.from} lead={where.lead} presetTeam={team && /^[0-9a-f-]{36}$/.test(team) ? team : null} /></>;
+  return <><PageCrumb label="New" /><ComposeAnnouncement options={options} base={where.base} lead={where.lead} presetTeam={team && /^[0-9a-f-]{36}$/.test(team) ? team : null} /></>;
 }
 export async function DetailPage(where: Where, id: string) {
   await requirePage(where.key);
