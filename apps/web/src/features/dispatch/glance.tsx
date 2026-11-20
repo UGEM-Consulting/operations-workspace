@@ -27,13 +27,13 @@ export function PositionChip({ row }: { row: Pick<MemberRow, 'position' | 'suppo
   </span>;
 }
 
-/** Name, position chip, who a support helps, and the name they used before. Links to their page. */
-export function NameCell({ row, children }: { row: MemberRow; children?: ReactNode }) {
+/** Name, position chip, who a support helps, and the name they used before. Links to their page (base: Dispatch's, or the view-only one). */
+export function NameCell({ row, children, base = '/dispatch/dispatchers' }: { row: MemberRow; children?: ReactNode; base?: string }) {
   const name = fullName(row);
   return <span className="flex min-w-0 items-start gap-2.5">
     <Avatar name={name} size="sm" />
     <span className="grid min-w-0 gap-0.5">
-      <Link href={`/dispatch/dispatchers/${row.id}`} className="truncate text-sm font-medium text-foreground hover:underline focus-visible:outline-2">{name}</Link>
+      <Link href={`${base}/${row.id}`} className="truncate text-sm font-medium text-foreground hover:underline focus-visible:outline-2">{name}</Link>
       <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5"><PositionChip row={row} />{row.position === 'SUPPORT' && <span className="text-[13px] leading-[18px] text-muted-foreground">for {assists(row)}</span>}</span>
       {row.otherName && <span className="text-[13px] leading-[18px] text-muted-foreground">Was {row.otherName}</span>}
       {children}
@@ -67,16 +67,16 @@ export function ContactCell({ row }: { row: MemberRow }) {
       {left ? <span className="truncate">{c.email}</span> : <a href={`mailto:${c.email}`} title={c.email} className="truncate text-foreground hover:underline">{c.email}</a>}{!left && <CopyIcon text={c.email} label="email" />}</span>
       : <span className={cn(line, 'text-muted-foreground')}><Mail aria-hidden="true" className={lineIcon} />No email recorded</span>}
     {owners.length > 0 && <span className="pl-5 text-xs leading-4 text-muted-foreground">{owners.join(' and ')}’s, shared</span>}
-    {c.telegram && !left && <span className={line}><Send aria-hidden="true" className={lineIcon} /><a href={`https://t.me/${encodeURIComponent(c.telegram.slice(1))}`} target="_blank" rel="noreferrer" className="text-primary hover:underline">{c.telegram}</a></span>}
+    {c.telegram && !left && <span className={line}><Send aria-hidden="true" className={lineIcon} /><a href={`https://t.me/${encodeURIComponent(c.telegram.slice(1))}`} target="_blank" rel="noreferrer" className="text-primary hover:underline">{c.telegram}</a><CopyIcon text={c.telegram} label="Telegram" /></span>}
     {left && row.accountsClosed && <span className="text-xs leading-4">Closed by IT</span>}
   </div>;
 }
 
 /** Their supports and updaters; on a lead's row, those assisting the whole team too. */
-export function HelpersCell({ row }: { row: MemberRow }) {
+export function HelpersCell({ row, base = '/dispatch/dispatchers' }: { row: MemberRow; base?: string }) {
   if (!row.helpers?.length) return <span className="text-muted-foreground">—</span>;
   return <span className="grid gap-0.5 text-[13px] leading-[18px]">{row.helpers.map(helper => <span key={helper.id}>
-    <Link href={`/dispatch/dispatchers/${helper.id}`} className="text-foreground hover:underline">{helper.name}</Link>
+    <Link href={`${base}/${helper.id}`} className="text-foreground hover:underline">{helper.name}</Link>
     <span className="text-muted-foreground"> · {supportName(helper).toLowerCase()}{helper.wholeTeam ? ', whole team' : ''}</span></span>)}</span>;
 }
 

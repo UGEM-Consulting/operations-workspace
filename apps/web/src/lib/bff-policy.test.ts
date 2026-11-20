@@ -244,3 +244,14 @@ describe('the Dispatchers list through the BFF', () => {
     assert.deepEqual(forwardedQuery('dispatch/teams'), []);
   });
 });
+
+describe('view-only access through the BFF (section 39)', () => {
+  it('opens only the files a viewer may be given, and never a view route that writes', () => {
+    for (const path of [`view/dispatch/members/${ID}/documents/${ID}/signed`, `view/dispatch/members/${ID}/paper-scans/${ID}/file`, `view/safety/drivers/${ID}/documents/${ID}/file`,
+      `view/safety/drivers/${ID}/consents/${ID}/signed`, `view/safety/units/${ID}/files/${ID}/file`]) assert.equal(isFileEndpoint(path), true, path);
+    assert.equal(isFileEndpoint(`view/safety/drivers/${ID}/reports/${ID}/file`), false);
+    // The pages read on the server; the browser reaches no view route except these files.
+    assert.equal(allowedEndpoint('GET', 'view/dispatch/members'), false);
+    assert.equal(allowedEndpoint('POST', `view/dispatch/members/${ID}`), false);
+  });
+});

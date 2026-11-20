@@ -1,5 +1,6 @@
 import { ForbiddenException, SetMetadata } from '@nestjs/common';
 import { Role, User, UserStatus } from '../users/user.entity';
+import type { ViewDepartment, ViewGrant } from '../users/view-access';
 import type { MfaStage } from './session';
 export const PUBLIC = 'auth:public';
 export const ROLES = 'auth:roles';
@@ -11,6 +12,8 @@ export const AllowPendingMfa = (...stages: MfaStage[]) => SetMetadata(MFA_STAGES
 /** The forced password-change step; same deny-by-default rules as AllowPendingMfa. */
 export const AllowPendingPasswordChange = () => AllowPendingMfa('password');
 export const STAFF = Object.values(Role);
+/** Staff with a job in a department: everyone but View only accounts, which read and get no alerts (section 39). */
+export const WORKING_STAFF = STAFF.filter(role => role !== Role.VIEWER);
 // section groups the sidebar; 'Account' items appear in the account menu instead of the main list.
 const navigation = [
   { key: 'dashboard', href: '/dashboard', label: 'Dashboard', section: null, roles: [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER, Role.IT_SPECIALIST] },
@@ -48,13 +51,26 @@ const navigation = [
   { key: 'settings', href: '/settings', label: 'Settings', section: 'Admin', roles: [Role.SYSTEM_ADMIN] },
   { key: 'security', href: '/account/security', label: 'Account security', section: 'Account', roles: STAFF },
 ];
-export function accessFor(user: User) {
-  return { navigation: navigation.filter(item => item.roles.includes(user.role)).map(({ key, href, label, section }) => ({ key, href, label, section })),
-    landingPage: user.role === Role.IT_SPECIALIST ? '/it/tasks' : user.role === Role.TEAM_LEAD ? '/team'
+// View-only access (section 39): each department's reading pages, in a section of their own marked view only. No counts.
+const viewNavigation: Record<ViewDepartment, { key: string; href: string; label: string }[]> = {
+  DISPATCH: [{ key: 'viewteams', href: '/view/dispatch/teams', label: 'Teams' }, { key: 'viewdispatchers', href: '/view/dispatch/dispatchers', label: 'Dispatchers' },
+    { key: 'viewdispatchdrivers', href: '/view/dispatch/drivers', label: 'Drivers' }],
+  SAFETY: [{ key: 'viewdrivers', href: '/view/safety/drivers', label: 'Drivers' }, { key: 'viewunits', href: '/view/safety/units', label: 'Units' },
+    { key: 'viewexpiring', href: '/view/safety/expiring', label: 'Expiring documents' }],
+};
+const VIEW_SECTION: Record<ViewDepartment, string> = { DISPATCH: 'Dispatch · view only', SAFETY: 'Safety · view only' };
+/** The menu and landing page; grants are the person's view-only departments (viewGrants), read by the caller. */
+export function accessFor(user: User, grants: ViewGrant[] = []) {
+  const views = grants.flatMap(grant => viewNavigation[grant.department].map(item => ({ ...item, section: VIEW_SECTION[grant.department] })));
+  const own = navigation.filter(item => item.roles.includes(user.role)).map(({ key, href, label, section }) => ({ key, href, label, section }));
+  // Account security stays last, after the departments they view.
+  const items = [...own.filter(item => item.section !== 'Account'), ...views, ...own.filter(item => item.section === 'Account')];
+  return { navigation: items, viewAccess: grants,
+    landingPage: user.role === Role.VIEWER ? (views.find(item => item.key === 'viewdispatchers') ?? views[0])?.href ?? '/account/security' : user.role === Role.IT_SPECIALIST ? '/it/tasks' : user.role === Role.TEAM_LEAD ? '/team'
     : [Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF].includes(user.role) ? '/safety/drivers' : '/dashboard' };
 }
-export function requirePage(user: User, key: string): void {
-  if (!accessFor(user).navigation.some(item => item.key === key)) throw new ForbiddenException();
+export function requirePage(user: User, key: string, grants: ViewGrant[] = []): void {
+  if (!accessFor(user, grants).navigation.some(item => item.key === key)) throw new ForbiddenException();
 }
 // Future record controllers must load assignments from PostgreSQL, never from request bodies.
 export function canAccessAssignedApplication(user: Pick<User, 'id' | 'role' | 'status'>, record: { assignedManagerId: string | null }): boolean {

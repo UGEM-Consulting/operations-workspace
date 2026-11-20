@@ -299,8 +299,10 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    case 'ACCOUNT_MOVED': add(id, at, 'ACCOUNTS', 'users', `Their ${list(((m.fields ?? []) as string[]).map(field => FIELD_WORDS[field] ?? field))} moved to ${row.toPerson ?? 'the right record'}`, row.by, m.stillUses ? 'They still use it.' : null); break;
    case 'ACCOUNTS_HANDED_OVER': add(id, at, 'ACCOUNTS', 'users', `Their ${list(((m.kinds ?? []) as string[]).map(kindWords))} handed over to ${row.toPerson ?? 'someone using it'}`, row.by); break;
    case 'SHARED_OWNER_CHANGED': add(id, at, 'ACCOUNTS', 'users', `Now uses ${row.owner ?? 'someone'}’s ${kindWords(m.kind)}${m.why === 'handed-over' ? `, handed over when ${row.previousOwner ?? 'its owner'} left` : `, moved from ${row.previousOwner ?? 'another record'}`}`, row.by); break;
-   case 'PAPER_SCAN_VIEWED': add(id, at, 'VIEWS', 'eye', `${m.kind ?? 'Paper'} paper scan opened`, row.by); break;
+   case 'PAPER_SCAN_VIEWED': add(id, at, 'VIEWS', 'eye', `${m.kind ?? 'Paper'} paper scan opened${m.role ? ' (view only)' : ''}`, row.by); break;
    case 'ID_PHOTO_VIEWED': add(id, at, 'VIEWS', 'eye', 'ID photo opened', row.by); break;
+   // Section 39: someone with view-only access to photos and documents opened a signed copy.
+   case 'SIGNED_COPY_VIEWED': add(id, at, 'VIEWS', 'eye', `Signed ${m.kind === 'CONTACT_LIST' ? 'contact list' : m.kind ?? 'document'} opened (view only)`, row.by); break;
   }
  }
  out.sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
