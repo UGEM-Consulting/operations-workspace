@@ -224,6 +224,7 @@ integration('Onboarding photos, documents and e-signatures (disposable PostgreSQ
    ApplicantUpdates1792730000000:'TRUNCATE applicant_update_deliveries,applicant_update_settings,telegram_link_tokens',StaffMfa1792720000000:'TRUNCATE staff_mfa,staff_mfa_recovery_codes,staff_security_events'};
   expect(await latestMigration()).toBe('LeavingEmailRingCentral1793370000000');
   await db.undoLastMigration(); // LeavingEmailRingCentral, with none here
+  await db.undoLastMigration(); // ViewAccess, with none here
   await db.undoLastMigration(); // CompleteHistory, with none here
   await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
   await db.undoLastMigration(); // TeamAnnouncements, with none here

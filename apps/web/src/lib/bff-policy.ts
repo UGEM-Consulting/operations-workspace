@@ -5,7 +5,10 @@ const match = (pattern: string, path: string) => new RegExp(`^${pattern}$`).test
 const FILE_ROUTES = [`applicant/photos/${PHOTO}`, `applicant/documents/${ID}/(file|signed)`, `documents/${ID}/file`,
   `onboarding/applications/${ID}/photos/${PHOTO}`, `onboarding/applications/${ID}/documents/${ID}/signed`, `it/onboarding/${ID}/photo`,
   `dispatch/members/${ID}/photos/${PHOTO}`, `member-photos/${ID}/(profile|id)`, `dispatch/members/${ID}/documents/${ID}/signed`, `dispatch/members/${ID}/paper-scans/${ID}/file`, `driver/documents/${ID}/file`, `driver/catch-up/documents/${ID}/file`, 'driver/contract/file', 'driver/contract/signed', `safety/drivers/${ID}/contracts/${ID}/signed`, `safety/owners/${ID}/contracts/${ID}/file`, `safety/drivers/${ID}/documents/${ID}/file`, `safety/drivers/${ID}/reports/${ID}/file`, `safety/drivers/${ID}/trucks/${ID}/documents/${ID}/file`,
-  `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/units/${ID}/files/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`];
+  `safety/consents/${ID}/file`, `safety/letters/${ID}/file`, `safety/units/${ID}/files/${ID}/file`, `safety/drivers/${ID}/letters/(pre-adverse|final)`, `safety/drivers/${ID}/consents/${ID}/signed`, `driver/consents/${ID}/(file|signed)`,
+  // View-only access (section 39): photos and documents an administrator gave, each checked and recorded by the API.
+  `view/dispatch/members/${ID}/documents/${ID}/signed`, `view/dispatch/members/${ID}/paper-scans/${ID}/file`, `view/safety/drivers/${ID}/documents/${ID}/file`,
+  `view/safety/drivers/${ID}/consents/${ID}/signed`, `view/safety/units/${ID}/files/${ID}/file`];
 const SCAN = '(license|medical-card|work-authorization|return-to-duty)';
 export function allowedEndpoint(method: string, path: string): boolean {
   return (method === 'GET' && ['it/onboarding','notifications'].includes(path)) ||

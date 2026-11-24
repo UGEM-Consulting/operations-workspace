@@ -9,6 +9,7 @@ import { clearSavedSignature } from '../documents/saved-signature';
 import { removeEmailEnrolment } from '../auth/mfa.service';
 import { handOver, openRecords, RESPONSIBLE_ROLES } from '../onboarding/hand-over';
 import { companyEmailOf, syncSignIns } from '../dispatch/lead-sign-in';
+import { checkedGrants, ownsDepartment, saveGrants, viewGrants, type ViewGrant } from './view-access';
 type Editable = 'firstName' | 'lastName' | 'email' | 'role' | 'status';
 const EDITABLE: Editable[] = ['firstName', 'lastName', 'email', 'role', 'status'];
 // Audit event per kind of change. Names change nothing about access; the others end the user's sessions.
@@ -29,14 +30,18 @@ export class UsersService {
     const methods = new Map(enrolled.map(row => [row.userId, row.method]));
     const links: { id: string; accountUserId: string }[] = await this.db.query(`SELECT id, "accountUserId" FROM dispatch_members WHERE "accountUserId" IS NOT NULL`);
     const members = new Map(links.map(row => [row.accountUserId, row.id]));
-    return users.map(user => ({ ...publicUser(user), mfaEnabled: methods.has(user.id), mfaMethod: methods.get(user.id) ?? null, mustChangePassword: user.mustChangePassword, memberId: members.get(user.id) ?? null }));
+    const grants: (ViewGrant & { userId: string })[] = await this.db.query(`SELECT "userId", department, "withFiles" FROM staff_view_access ORDER BY department`);
+    const viewAccess = (user: User) => grants.filter(row => row.userId === user.id && !ownsDepartment(user.role, row.department)).map(({ department, withFiles }) => ({ department, withFiles }));
+    return users.map(user => ({ ...publicUser(user), mfaEnabled: methods.has(user.id), mfaMethod: methods.get(user.id) ?? null, mustChangePassword: user.mustChangePassword, memberId: members.get(user.id) ?? null,
+      viewAccess: user.role === Role.SYSTEM_ADMIN ? [] : viewAccess(user) }));
   }
   /**
    * Without a password the API generates one and returns it this once, for the administrator to send them; only its hash is kept.
    * Either way someone else knows it, so the user must replace it at the first sign-in.
    */
   async create(dto: CreateUserDto, actor: User) {
-    const { password, memberId, ...fields } = dto;
+    const { password, memberId, viewAccess, ...fields } = dto;
+    const grants = checkedGrants(dto.role, viewAccess ?? []);
     const generatedPassword = password === undefined ? generatePassword() : undefined;
     const passwordHash = await hashPassword(password ?? generatedPassword!);
     try {
@@ -48,9 +53,11 @@ export class UsersService {
         await this.companyEmailOnly(manager, user, link.after);
         // A request waiting for IT to create this sign-in is no longer needed.
         await syncSignIns(manager, [link.after], actor.id, false);
-        const provided = [...Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key), ...(link.changed ? ['memberId'] : [])];
+        const viewed = await saveGrants(manager, user.id, actor.id, grants);
+        const provided = [...Object.entries(fields).filter(([, value]) => value !== undefined).map(([key]) => key), ...(link.changed ? ['memberId'] : []), ...(viewed ? ['viewAccess'] : [])];
         await this.audit(manager, user.id, actor.id, SecurityEventType.USER_CREATED, { fields: [...provided, 'password'] });
-        return { ...publicUser(user), ...(generatedPassword ? { generatedPassword } : {}) };
+        if (viewed) await this.audit(manager, user.id, actor.id, SecurityEventType.USER_VIEW_ACCESS_CHANGED, viewed);
+        return { ...publicUser(user), viewAccess: grants, ...(generatedPassword ? { generatedPassword } : {}) };
       });
     } catch (error) { return this.handleError(error); }
   }
@@ -122,6 +129,12 @@ export class UsersService {
         const events = CHANGE_EVENTS.filter(event => event.fields.some(field => changed.includes(field)));
         const sessionsRevoked = events.some(event => event.revokes);
         if (changed.length) await repo.save(user);
+        // View-only departments (section 39): as asked, or theirs kept, less any the role now includes. Taking one away
+        // works at once (the grants are read on every request), so it needs no sign-out. Stored grants are rewritten only when
+        // the administrator sent them or changed the role, so an unrelated edit never records a change nobody chose.
+        const grants = checkedGrants(user.role, dto.viewAccess ?? (user.role === Role.SYSTEM_ADMIN ? [] : await viewGrants(manager, user)));
+        const viewed = dto.viewAccess !== undefined || changed.includes('role') ? await saveGrants(manager, id, actor.id, grants) : null;
+        if (viewed) await this.audit(manager, id, actor.id, SecurityEventType.USER_VIEW_ACCESS_CHANGED, viewed);
         // Waiting sign-in requests this change answered (an account turned on or off, a new link) are cancelled, once the account
         // is saved so they're checked against what it is now. None are asked for here: the administrator changed it on purpose.
         await syncSignIns(manager, [link.before, link.after], actor.id, false);
@@ -136,7 +149,7 @@ export class UsersService {
         for (const event of events) {
           await this.audit(manager, id, actor.id, event.type, { fields: event.fields.filter(field => changed.includes(field)), sessionsRevoked });
         }
-        return { ...publicUser(user), sessionsRevoked, handedOver, ...(generatedPassword ? { generatedPassword } : {}) };
+        return { ...publicUser(user), viewAccess: grants, sessionsRevoked, handedOver, ...(generatedPassword ? { generatedPassword } : {}) };
       });
     } catch (error) { return this.handleError(error); }
   }

@@ -6,9 +6,11 @@ import { ChangePasswordDto, LoginDto } from './auth.dto';
 import { AuthRequest, cookieName } from './session';
 import { AllowPendingPasswordChange, Public, Roles, STAFF, accessFor, requirePage } from './policy';
 import { publicUser } from '../users/user.entity';
+import { viewGrants } from '../users/view-access';
+import { DataSource } from 'typeorm';
 @Controller()
 export class AuthController {
-  constructor(private readonly auth: AuthService, private readonly config: ConfigService) {}
+  constructor(private readonly auth: AuthService, private readonly config: ConfigService, private readonly db: DataSource) {}
   @Public() @Post('auth/login') @HttpCode(200)
   login(@Body() input: LoginDto, @Req() req: AuthRequest) { return this.auth.login(input, req); }
   // Own password: from a full session (Account security) or the forced change after an administrator-set password.
@@ -16,7 +18,7 @@ export class AuthController {
   @Roles(...STAFF) @AllowPendingPasswordChange() @Post('auth/password') @HttpCode(200)
   changePassword(@Body() input: ChangePasswordDto, @Req() req: AuthRequest) { return this.auth.changePassword(input, req); }
   @Roles(...STAFF) @Get('auth/me')
-  me(@Req() req: AuthRequest) { return { user: publicUser(req.currentUser), ...accessFor(req.currentUser) }; }
+  async me(@Req() req: AuthRequest) { return { user: publicUser(req.currentUser), ...accessFor(req.currentUser, await viewGrants(this.db, req.currentUser)) }; }
   // Public to the session guard so an expired or disabled session can still be cleared. BFF and CSRF remain required.
   @Public() @Post('auth/logout') @HttpCode(204)
   async logout(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response) {
@@ -24,5 +26,5 @@ export class AuthController {
     res.clearCookie(cookieName(this.config.get('NODE_ENV') === 'production'), { path: '/', httpOnly: true, sameSite: 'lax', secure: this.config.get('NODE_ENV') === 'production' });
   }
   @Roles(...STAFF) @Get('access/:page')
-  access(@Req() req: AuthRequest, @Param('page') page: string) { requirePage(req.currentUser, page); return { allowed: true }; }
+  async access(@Req() req: AuthRequest, @Param('page') page: string) { requirePage(req.currentUser, page, await viewGrants(this.db, req.currentUser)); return { allowed: true }; }
 }

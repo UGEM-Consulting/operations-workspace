@@ -51,6 +51,7 @@ integration('Managed lists (disposable PostgreSQL)', () => {
 
   it('starts the lists from manager-confirmed assignments, one entry per name however it was typed, without Independent', async () => {
     await db.undoLastMigration(); // LeavingEmailRingCentral, with none here
+    await db.undoLastMigration(); // ViewAccess, with none here
     await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here
@@ -148,6 +149,7 @@ integration('Managed lists (disposable PostgreSQL)', () => {
   it('refuses to roll back once someone has changed a list, so manual entries are never lost', async () => {
     await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'Kept Carrier', mcNumber: '765432' }).expect(201);
     await db.undoLastMigration(); // LeavingEmailRingCentral, with none here
+    await db.undoLastMigration(); // ViewAccess, with none here
     await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here

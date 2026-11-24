@@ -1,7 +1,8 @@
-import { Controller, Get, Injectable, Module, Query, Req } from '@nestjs/common';
+import { Controller, ForbiddenException, Get, Injectable, Module, Query, Req } from '@nestjs/common';
 import { IsString, MaxLength } from 'class-validator';
 import { DataSource } from 'typeorm';
-import { Roles } from '../auth/policy';
+import { Roles, STAFF } from '../auth/policy';
+import { viewGrants } from '../users/view-access';
 import { AuthRequest } from '../auth/session';
 import { DispatchModule } from '../dispatch/dispatch.module';
 import { escapeLike, MemberListService, searchTerms } from '../dispatch/member-list';
@@ -35,49 +36,56 @@ export class SearchService {
  constructor(private readonly db: DataSource, private readonly members: MemberListService, private readonly reviews: ReviewService) {}
 
  async search(user: User, q: string): Promise<{ groups: SearchGroup[] }> {
+  const dispatch = user.role === Role.SYSTEM_ADMIN || user.role === Role.DISPATCHER_MANAGER, safety = user.role === Role.SYSTEM_ADMIN || SAFETY.includes(user.role);
+  // View-only access (section 39): a department read only, linked to its view-only pages and searched by work details only.
+  const grants = dispatch && safety ? [] : await viewGrants(this.db, user);
+  const dispatchView = !dispatch && grants.some(grant => grant.department === 'DISPATCH'), safetyView = !safety && grants.some(grant => grant.department === 'SAFETY');
+  if (!dispatch && !safety && !dispatchView && !safetyView) throw new ForbiddenException();
   const { text, digits } = searchTerms(q);
   if (text.replace(/\s/g, '').length < 3 && !digits) return { groups: [] };
-  const dispatch = user.role === Role.SYSTEM_ADMIN || user.role === Role.DISPATCHER_MANAGER, safety = user.role === Role.SYSTEM_ADMIN || SAFETY.includes(user.role);
-  const groups: SearchGroup[] = [], found = dispatch ? await this.members.suggest(q, 4, false) : null;
+  const groups: SearchGroup[] = [], found = dispatch || dispatchView ? await this.members.suggest(q, 4, false, dispatchView) : null;
+  const dispatchPages = dispatch ? '/dispatch' : '/view/dispatch';
   if (found) {
-   groups.push({ key: 'dispatchers', label: 'Dispatchers', items: (found.people as Record<string, unknown>[]).map(person => this.member(person)) });
-   if (!digits) {
+   groups.push({ key: 'dispatchers', label: 'Dispatchers', items: (found.people as Record<string, unknown>[]).map(person => this.member(person, dispatchPages)) });
+   if (!digits && dispatch) {
     const applications = await this.reviews.queue(user, { status: 'ALL', search: q.trim(), page: 1, pageSize: 3, sort: 'updatedAt', direction: 'DESC' });
     groups.push({ key: 'applications', label: 'Applications', items: applications.items.filter(item => item.fields?.firstName).map(item => ({ id: item.id,
      name: `${item.fields.firstName} ${item.fields.lastName ?? ''}`.trim(), meta: `Dispatcher application · ${item.id.slice(0, 8).toUpperCase()}`, status: status(APPLICATION_STATUS, item.status), href: `/onboarding/applications/${item.id}` })) });
    }
   }
-  if (!digits && (dispatch || safety)) {
+  if (!digits && (dispatch || safety || dispatchView || safetyView)) {
    const like = `%${escapeLike(text)}%`;
    const drivers: { id: string; firstName: string; lastName: string; driverType: string; licenseType: string | null; status: string }[] = await this.db.query(`SELECT id, "firstName", "lastName", "driverType", "licenseType", status FROM drivers
     WHERE lower("firstName" || ' ' || "lastName") LIKE $1 AND ($2::boolean OR status = 'CLEARED') ORDER BY CASE WHEN lower("firstName" || ' ' || "lastName") LIKE $3 THEN 0 ELSE 1 END, lower("firstName"), lower("lastName") LIMIT 3`,
-    [like, safety, `${escapeLike(text)}%`]);
+    [like, safety || safetyView, `${escapeLike(text)}%`]);
    groups.push({ key: 'drivers', label: 'Drivers', items: drivers.map(driver => {
     const name = `${driver.firstName} ${driver.lastName}`;
     return { id: driver.id, name, meta: [DRIVER_TYPE[driver.driverType] ?? driver.driverType, driver.licenseType ? LICENSE[driver.licenseType] ?? driver.licenseType : null].filter(Boolean).join(' · '),
-     status: status(DRIVER_STATUS, driver.status), href: safety ? `/safety/drivers/${driver.id}` : `/dispatch/drivers?${new URLSearchParams({ status: 'ALL', search: name })}` };
+     status: status(DRIVER_STATUS, driver.status), href: safety ? `/safety/drivers/${driver.id}` : safetyView ? `/view/safety/drivers/${driver.id}` : dispatch ? `/dispatch/drivers?${new URLSearchParams({ status: 'ALL', search: name })}`
+     : `/view/dispatch/drivers?${new URLSearchParams({ search: name })}` };
    }) });
   }
   if (found && !digits) {
-   groups.push({ key: 'teams', label: 'Teams', items: (found.teams as { id: string; name: string; mc: string; count: number }[]).map(team => ({ id: team.id, name: team.name, meta: `${team.mc} · ${team.count} ${team.count === 1 ? 'person' : 'people'}`, status: null, href: `/dispatch/teams/${team.id}` })) });
+   groups.push({ key: 'teams', label: 'Teams', items: (found.teams as { id: string; name: string; mc: string; count: number }[]).map(team => ({ id: team.id, name: team.name, meta: `${team.mc} · ${team.count} ${team.count === 1 ? 'person' : 'people'}`, status: null, href: `${dispatchPages}/teams/${team.id}` })) });
   }
   return { groups: groups.filter(group => group.items.length) };
  }
 
  /** A dispatcher, support or updater as the Dispatchers page names them. */
- private member(person: Record<string, unknown>): SearchItem {
+ private member(person: Record<string, unknown>, pages: string): SearchItem {
   const leave = person.leave as { started?: boolean } | null, support = person.position === 'SUPPORT', kind = support ? (person.supportType === 'UPDATER' ? 'Updater' : 'Support') : 'Dispatcher';
   const meta = support ? `${kind} for ${person.wholeTeam ? `the whole ${person.wholeTeam}` : person.dispatcher ?? 'nobody yet'}` : [person.lead ? 'Dispatcher · team lead' : kind, person.team].filter(Boolean).join(' · ');
   const state: { label: string; tone: Tone } = person.status === 'LEFT' ? { label: 'Left', tone: 'neutral' } : person.lastDay ? { label: 'Leaving', tone: 'warning' }
    : leave?.started ? { label: 'On leave', tone: 'info' } : person.status === 'ONBOARDING' ? { label: 'Onboarding', tone: 'info' } : { label: 'Active', tone: 'success' };
   // What matched, unless their name did, as the Dispatchers box shows it.
   const matched = person.matched as { label: string; value: string } | null;
-  return { id: person.id as string, name: `${person.firstName} ${person.lastName}`, meta: matched ? `${matched.label}: ${matched.value}` : meta, status: state, href: `/dispatch/dispatchers/${person.id}` };
+  return { id: person.id as string, name: `${person.firstName} ${person.lastName}`, meta: matched ? `${matched.label}: ${matched.value}` : meta, status: state, href: `${pages}/dispatchers/${person.id}` };
  }
 }
 
 @Controller('search')
-@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER, Role.SAFETY_MANAGER, Role.SAFETY_LEAD, Role.SAFETY_STAFF)
+// Every role reaches it; the service answers 403 to anyone with neither Dispatch nor Safety, their own or view-only.
+@Roles(...STAFF)
 class SearchController {
  constructor(private readonly service: SearchService) {}
  @Get() search(@Req() req: AuthRequest, @Query() query: SearchQueryDto) { return this.service.search(req.currentUser, query.q); }

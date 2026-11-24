@@ -31,14 +31,14 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
     BFF_SHARED_SECRET: randomBytes(32).toString('hex'), SESSION_TTL_SECONDS: 3600, MFA_ENCRYPTION_KEY: randomBytes(32).toString('base64') });
   const headers = { 'x-workspace-key': env.BFF_SHARED_SECRET, origin: env.WEB_ORIGIN, 'x-csrf-protection': '1' };
   const accounts = new Map<Role, User>();
-  let adminSecret = '';
+  let adminSecret = '', viewerSecret = '';
   const login = (agent: ReturnType<typeof request.agent>, role = Role.SYSTEM_ADMIN) => agent.post('/api/auth/login').set(headers).send({ email: accounts.get(role)!.email, password });
-  // Full sign-in: administrators must complete the authenticator step.
+  // Full sign-in: administrators and View only accounts must complete the authenticator step.
   const signIn = async (agent: ReturnType<typeof request.agent>, role = Role.SYSTEM_ADMIN) => {
     const response = await login(agent, role).expect(200);
-    if (role !== Role.SYSTEM_ADMIN) return response;
+    if (role !== Role.SYSTEM_ADMIN && role !== Role.VIEWER) return response;
     expect(response.body).toEqual({ mfa: 'verify', landingPage: '/login/mfa' });
-    const verified = await completeMfa(agent, headers, db, accounts.get(role)!.id, adminSecret);
+    const verified = await completeMfa(agent, headers, db, accounts.get(role)!.id, role === Role.VIEWER ? viewerSecret : adminSecret);
     expect(verified.status).toBe(200);
     return verified;
   };
@@ -54,6 +54,7 @@ integration('Identity integration (isolated PostgreSQL database only)', () => {
       accounts.set(role, user);
     }
     adminSecret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, accounts.get(Role.SYSTEM_ADMIN)!.id);
+    viewerSecret = await enrolForTest(db, env.MFA_ENCRYPTION_KEY!, accounts.get(Role.VIEWER)!.id);
     const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, HealthModule], controllers: [UnclassifiedController] }).compile();
     app = module.createNestApplication();
     closeSessions = installSessions(app, env);

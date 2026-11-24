@@ -198,10 +198,10 @@ export class DocumentsService {
   const photo = await photoFor(this.db.manager,application.id,kind,application.submittedAt); if (!photo) throw new NotFoundException();
   return { body: await this.storage.get(photoKey(photo)), type: 'image/jpeg', filename: `${kind.toLowerCase()}.jpg` };
  }
- async memberSignedCopy(user: User, memberId: string, documentId: string) {
+ async memberSignedCopy(user: User, memberId: string, documentId: string, audience: 'applicant'|'staff' = 'staff') {
   const application = await this.memberApplication(memberId);
   await onboardingLimit(this.db,'signed-copy:'+user.id,60,900);
-  return this.signedCopy(this.db.manager,application.id,documentId,'staff');
+  return this.signedCopy(this.db.manager,application.id,documentId,audience);
  }
  /** IT sees only the profile photo (plain selfie) of an approved request, never the ID selfie. */
  async itPhoto(user: User, requestId: string): Promise<FileResult> {

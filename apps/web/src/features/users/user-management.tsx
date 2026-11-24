@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { KeyRound, Plus } from 'lucide-react';
+import { Eye, KeyRound, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
@@ -20,11 +20,14 @@ import { USER_DEFAULTS } from '@/lib/navigation';
 import type { StaffUser } from '@/lib/auth';
 import { PageHeader } from '@/components/workspace-ui';
 import { PasswordReadyDialog, type ReadyPassword } from './password-ready-dialog';
-const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD', 'SAFETY_MANAGER', 'SAFETY_LEAD', 'SAFETY_STAFF'];
+import { ViewAccessFields } from './view-access';
+import { chosenGrants, viewChoice, viewLabel, type ViewChoice, type ViewGrant } from './view-grants';
+const roles = ['SYSTEM_ADMIN', 'DISPATCHER_MANAGER', 'IT_SPECIALIST', 'TEAM_LEAD', 'SAFETY_MANAGER', 'SAFETY_LEAD', 'SAFETY_STAFF', 'VIEWER'];
 // Roles that can be responsible for invitations and applications; losing them (or the account) hands those records over.
 const RESPONSIBLE = ['DISPATCHER_MANAGER', 'SYSTEM_ADMIN'];
 interface OpenRecords { invitations: number; applications: number; changes: number; itSetup: number; removals?: number; leave?: number; total: number }
-type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null };
+// viewAccess: the departments they may also read (section 39); an older API sends none.
+type ManagedUser = StaffUser & { mustChangePassword?: boolean; memberId?: string | null; viewAccess?: ViewGrant[] };
 /** A dispatcher record a team lead account can link to; what the account sees follows the team it leads. */
 export interface LeadChoice { id: string; name: string; team: string | null; companyEmail?: string | null }
 /**
@@ -48,9 +51,11 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
   const [role, setRole] = useState('DISPATCHER_MANAGER');
   const [leadId, setLeadId] = useState('');
   const [status, setStatus] = useState('ACTIVE');
+  const [views, setViews] = useState<ViewChoice>(viewChoice());
+  const viewsKnown = users.some(user => user.viewAccess !== undefined);
   // A manager's open records, loaded when the change would take their access away (designed as HandOverOnDeactivateScreen).
   const [records, setRecords] = useState<OpenRecords | 'loading' | 'failed' | null>(null);
-  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); setLeadId(user?.memberId ?? ''); setStatus(user?.status ?? 'ACTIVE'); setRecords(null); }
+  function edit(user: ManagedUser | null) { setEditing(user); setError(''); setOpen(true); setRole(user?.role ?? 'DISPATCHER_MANAGER'); setLeadId(user?.memberId ?? ''); setStatus(user?.status ?? 'ACTIVE'); setViews(viewChoice(user?.viewAccess)); setRecords(null); }
   const responsible = !!editing && editing.status === 'ACTIVE' && RESPONSIBLE.includes(editing.role);
   const losesAccess = responsible && (status === 'INACTIVE' || !RESPONSIBLE.includes(role));
   async function change(next: { role?: string; status?: string }) {
@@ -76,11 +81,15 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
     if (pending) return;
     const data: Record<string, FormDataEntryValue> = Object.fromEntries(new FormData(event.currentTarget));
     if (!data.handOverTo) delete data.handOverTo;
+    const grants = chosenGrants(role, views);
+    if (role === 'VIEWER' && !grants.length) { setError('Choose at least one department they can view.'); return; }
     if (emailFromRecord && !leadEmail) { setError('Record their company email on their dispatcher record first. A team lead signs in with it.'); return; }
     setPending(true); setError('');
     try {
       // Name-only edits keep sessions; email, role and status changes end them.
-      const result = await mutate<{ sessionsRevoked?: boolean; generatedPassword?: string }>(editing ? `users/${editing.id}` : 'users', editing ? 'PATCH' : 'POST', data);
+      // View-only departments go only to an API that knows them, so an older one still takes other edits.
+      const body = viewsKnown || grants.length ? { ...data, viewAccess: grants } : data;
+      const result = await mutate<{ sessionsRevoked?: boolean; generatedPassword?: string }>(editing ? `users/${editing.id}` : 'users', editing ? 'PATCH' : 'POST', body);
       // A revoked own session: discard the authenticated router cache.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       if (editing?.id === currentUserId && result.sessionsRevoked !== false) { window.location.assign('/login'); return; }
@@ -122,6 +131,9 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
         rowClassName={user => highlight === user.email.toLowerCase() ? 'bg-success-background/50' : undefined} columns={[
           { key: 'person', label: 'Name', primary: true, cell: user => <Person name={`${user.firstName} ${user.lastName}`} secondary={user.email} /> },
           { key: 'role', label: 'Role', cell: user => user.role === 'TEAM_LEAD' && linked(user) ? <>{roleLabel(user.role)}<span className="block text-[13px] text-muted-foreground">{linked(user)!.team ?? 'No team led'}</span></> : roleLabel(user.role) },
+          ...(viewsKnown ? [{ key: 'views', label: 'Also views', cell: (user: ManagedUser) => user.viewAccess?.length
+            ? <span className="inline-flex h-[22px] items-center gap-1 whitespace-nowrap rounded-md border border-dashed border-border px-2 text-xs font-medium text-muted-foreground"><Eye aria-hidden="true" className="size-3.5" />{viewLabel(user.viewAccess)}</span>
+            : <span className="text-muted-foreground">—</span> }] : []),
           { key: 'status', label: 'Status', cell: user => <span className="flex flex-wrap gap-1.5"><StatusBadge status={user.status} />{user.mustChangePassword && <Badge label="Password change pending" tone="warning" />}</span> },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: user => <Button variant="outline" size="sm" onClick={() => edit(user)}>Edit<span className="sr-only"> {user.email}</span></Button> },
         ]} empty={<EmptyState compact title={filtered ? 'No matching accounts' : 'No staff accounts'} description={filtered ? 'Try another status, name or email.' : undefined} />}
@@ -150,6 +162,7 @@ export function UserManagement({ users, currentUserId, filters, page = false, le
         {role === 'TEAM_LEAD' && <Select label="Team lead’s dispatcher record" name="memberId" value={leadId} onChange={event => setLeadId(event.target.value)} required placeholder="Choose a dispatcher" width="full"
           options={leads.map(lead => ({ value: lead.id, label: lead.team ? `${lead.name} · leads ${lead.team}` : `${lead.name} · leads no team yet` }))}
           hint="They see and act only for the team this dispatcher leads. Changing it ends their sessions." />}
+        {(viewsKnown || role === 'VIEWER') && <ViewAccessFields role={role} choice={views} onChange={setViews} name={editing?.firstName} mfaEnabled={editing?.mfaEnabled} />}
         {!editing && <p className="text-[13px] leading-5 text-muted-foreground">We’ll create a first password for you to send them. They replace it with their own when they first sign in.</p>}
         {editing && (editing.id === currentUserId
           ? <p className="text-[13px] leading-5 text-muted-foreground">Change your own password in <Link href="/account/security" className="font-medium underline">Account security</Link>.</p>

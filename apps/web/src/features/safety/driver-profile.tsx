@@ -43,7 +43,7 @@ type Action = 'edit' | 'withdraw' | 'reopen' | 'owner' | 'left' | 'telegram' | '
 const events: Record<string, string> = { CREATED: 'Added as a lead', UPDATED: 'Details updated', WITHDRAWN: 'Withdrawn', LEFT: 'Marked as left', REOPENED: 'Reopened as a lead',
   SAFETY_LEAD_CHANGED: 'Safety lead changed', OWNER_ASSIGNED: 'Safety Manager assigned', LINK_SENT: 'Application link created', LINK_CANCELLED: 'Application link cancelled',
   APPLICATION_VERIFIED: 'Driver opened their application', APPLICATION_SUBMITTED: 'Driver submitted their application', SSN_REVEALED: 'Full SSN viewed',
-  DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened',
+  DOCUMENT_UPLOADED: 'Driver scanned a document', DOCUMENT_VERIFIED: 'Document verified', DOCUMENT_VIEWED: 'Document opened', CONSENT_VIEWED: 'Signed consent form opened (view only)',
   SCREENING_CHECKED: 'Screening check recorded', MVR_UPLOADED: 'MVR uploaded', MVR_VIEWED: 'MVR opened', CORRECTIONS_REQUESTED: 'Sent back to the driver for corrections',
   SENT_FOR_DECISION: 'Sent to the Safety Director', APPROVED: 'Approved', MORE_INFO_REQUESTED: 'Sent back to screening', PRE_ADVERSE_RECORDED: 'Pre-adverse notice recorded', REJECTED: 'Rejected', CONSENT_SIGNED: 'Driver signed a consent form',
   CLEARANCE_RECORDED: 'Clearance item recorded', EMPLOYER_RECORDED: 'Previous employer recorded', CLEARED: 'Cleared', DISPATCH_ASSIGNED: 'Assigned to a dispatcher',

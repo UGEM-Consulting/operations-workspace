@@ -16,6 +16,7 @@ import { accessFor } from './policy';
 import { revokeUserSessions } from './revoke';
 import { AuthRequest, MfaStage, regenerateSession, saveSession } from './session';
 import { deviceToken, trustDevice, trustedDevices, TRUSTED_DAYS, trustFailureCode, useTrustedDevice } from './trusted-devices';
+import { ownDepartments, viewGrants } from '../users/view-access';
 
 const ISSUER = 'UGEM Workspace';
 // Wrong codes per user (across all sessions and API instances) within 15 minutes before a lockout.
@@ -66,11 +67,14 @@ export class MfaService {
   }
 
   async state(user: Pick<User, 'id' | 'role'>, manager: DataSource | EntityManager = this.db) {
-    const [row]: { method: MfaMethod | null; policy: MfaPolicy | null }[] = await manager.query(`SELECT
+    const [row]: { method: MfaMethod | null; policy: MfaPolicy | null; views: boolean }[] = await manager.query(`SELECT
       (SELECT method FROM staff_mfa WHERE "userId" = $1 AND "confirmedAt" IS NOT NULL) AS method,
-      (SELECT "mfaRequiredFor" FROM staff_security_settings WHERE id = 1) AS policy`, [user.id]);
+      (SELECT "mfaRequiredFor" FROM staff_security_settings WHERE id = 1) AS policy,
+      EXISTS (SELECT 1 FROM staff_view_access WHERE "userId" = $1 AND NOT (department = ANY($2::varchar[]))) AS views`, [user.id, ownDepartments(user.role)]);
     const policy = row.policy ?? MfaPolicy.ADMINS;
-    return { enrolled: row.method !== null, method: row.method, required: mfaRequired(user.role, policy), policy };
+    // Anyone who can read another department (section 39) reads work data across the company, so they need a second step too.
+    const required = mfaRequired(user.role, policy) || user.role === Role.VIEWER || row.views;
+    return { enrolled: row.method !== null, method: row.method, required, policy };
   }
 
   /**
@@ -124,7 +128,7 @@ export class MfaService {
     await regenerateSession(req);
     Object.assign(req.session, { userId: user.id, authVersion: user.authVersion, mfa, expiresAt });
     await saveSession(req);
-    return { user: publicUser(user), ...accessFor(user) };
+    return { user: publicUser(user), ...accessFor(user, await viewGrants(this.db, user)) };
   }
 
   async verifyLogin(req: AuthRequest, code: string, trust = false) {
@@ -457,7 +461,7 @@ export class MfaService {
     req.session.expiresAt = Date.now() + this.config.getOrThrow<number>('SESSION_TTL_SECONDS') * 1000;
     await this.db.getRepository(User).update(user.id, { lastLoginAt: new Date() });
     await saveSession(req);
-    return { user: publicUser(user), ...accessFor(user) };
+    return { user: publicUser(user), ...accessFor(user, await viewGrants(this.db, user)) };
   }
 
   private async lockUser(manager: EntityManager, id: string): Promise<User> {

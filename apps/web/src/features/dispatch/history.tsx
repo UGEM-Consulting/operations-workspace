@@ -23,7 +23,8 @@ const FILTERS: { key: 'ALL' | Exclude<HistoryCategory, 'VIEWS'>; label: string }
 const PAGE = 50;
 const monthOf = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'America/New_York' });
 
-export function HistoryTimeline({ timeline }: { timeline: MemberTimeline }) {
+/** viewOnly (section 39, ViewOnlyHistoryScreen): no IT filter or file views, and a line saying where reasons and notes stay. */
+export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: MemberTimeline; viewOnly?: boolean }) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('ALL'), [views, setViews] = useState(false), [shown, setShown] = useState(PAGE);
   const matching = useMemo(() => timeline.entries.filter(entry => entry.category === 'VIEWS' ? views && (filter === 'ALL' || filter === 'DETAILS') : filter === 'ALL' || entry.category === filter), [timeline.entries, filter, views]);
   const page = matching.slice(0, shown);
@@ -34,15 +35,16 @@ export function HistoryTimeline({ timeline }: { timeline: MemberTimeline }) {
     return groups;
   }, []);
   const choose = (key: typeof filter) => { setFilter(key); setShown(PAGE); };
-  return <Card><CardHeader title="History" description="Every change and who made it. Emails, phone numbers and sign-ins stay on Overview." />
+  const filters = viewOnly ? FILTERS.filter(item => item.key !== 'IT') : FILTERS;
+  return <Card><CardHeader title="History" description={viewOnly ? 'Every change and who made it. Reasons and notes staff wrote stay with Dispatch managers.' : 'Every change and who made it. Emails, phone numbers and sign-ins stay on Overview.'} />
     <CardBody className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div role="group" aria-label="Show" className="inline-flex max-w-full gap-0.5 overflow-x-auto rounded-md bg-muted p-[3px] [scrollbar-width:none]">
-          {FILTERS.map(item => <button key={item.key} type="button" aria-pressed={filter === item.key} onClick={() => choose(item.key)} data-active={filter === item.key}
+          {filters.map(item => <button key={item.key} type="button" aria-pressed={filter === item.key} onClick={() => choose(item.key)} data-active={filter === item.key}
             className="inline-flex h-[30px] shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-sm px-3 text-[13px] font-medium text-muted-foreground hover:text-foreground data-[active=true]:bg-card data-[active=true]:text-foreground data-[active=true]:shadow-xs">
             {item.label}<span className="min-w-5 text-center text-xs font-semibold tabular-nums">{(timeline.counts[item.key] ?? 0) + (views && (item.key === 'ALL' || item.key === 'DETAILS') ? timeline.counts.VIEWS ?? 0 : 0)}</span></button>)}
         </div>
-        <Checkbox label="Show who opened files" checked={views} onChange={event => { setViews(event.target.checked); setShown(PAGE); }} description={views ? undefined : timeline.counts.VIEWS ? `${timeline.counts.VIEWS} recorded` : undefined} />
+        {!viewOnly && <Checkbox label="Show who opened files" checked={views} onChange={event => { setViews(event.target.checked); setShown(PAGE); }} description={views ? undefined : timeline.counts.VIEWS ? `${timeline.counts.VIEWS} recorded` : undefined} />}
       </div>
       {!matching.length ? <p className="text-sm text-muted-foreground">{timeline.entries.length ? 'Nothing here for this filter.' : 'Nothing recorded yet.'}</p>
         : months.map(group => <section key={group.month} aria-label={group.month}>

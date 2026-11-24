@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, Module, Param, ParseUUIDPipe, Patch, Post, Req } from '@nestjs/common';
 import { IsIn, IsOptional, IsUUID } from 'class-validator';
 import { Role } from '../users/user.entity';
-import { Roles, STAFF } from '../auth/policy';
+import { Roles, WORKING_STAFF } from '../auth/policy';
 import { GROUP_PURPOSES, SEND_TO, type GroupPurpose, type SendTo } from './groups';
 import { TelegramGroupsService } from './groups.service';
 import { AuthRequest } from '../auth/session';
@@ -11,7 +11,7 @@ import { TelegramClient } from './telegram.client';
 import { UpdatesService } from './updates.service';
 /** Each staff member's own Telegram connection for workspace alerts (Account security). */
 @Controller('staff/telegram')
-@Roles(...STAFF)
+@Roles(...WORKING_STAFF)
 class StaffTelegramController {
  constructor(private readonly notifications: NotificationsService) {}
  @Get() view(@Req() req: AuthRequest) { return this.notifications.telegramView(req.currentUser); }
