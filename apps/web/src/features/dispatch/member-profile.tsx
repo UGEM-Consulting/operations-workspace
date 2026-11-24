@@ -17,6 +17,8 @@ import { Avatar } from '@/components/ui/avatar';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Progress } from '@/components/ui/feedback';
 import { Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
+import { EmailAfterFields } from '@/features/it/email-choice';
+import { doneWord, emailAfterText, type EmailChoice } from '@/features/it/email-words';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
 import { PhotoButton, type ViewablePhoto } from '@/features/documents/photo-modal';
@@ -81,7 +83,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // A move's company accounts (section 33): kept by default.
   const [moveAccounts, setMoveAccounts] = useState<'KEEP' | 'NEW'>('KEEP');
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
-  const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('FORWARD');
+  // What happens to their company email (section 40): Archive and forwarding to the manager to start.
+  const [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: true });
   // Others using their email or number (section 35): handed over to the first of them unless the manager chooses to close them.
   const [handOverTo, setHandOverTo] = useState(member.sharing?.usedBy[0]?.users[0]?.id ?? '');
   const [lastDay, setLastDay] = useState(today());
@@ -109,9 +112,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       else if (action === 'startDate') await mutate(`dispatch/members/${member.id}/start-date`, 'POST', { version: member.version, startedOn: form.startedOn, ...(form.reason?.trim() ? { reason: form.reason } : {}) });
       // Their company accounts (section 33): sent only when IT is asked for new ones, so an older API never sees the field otherwise.
       else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason,
-        ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on' } : {}) });
+        ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on', ...(form.emailAction ? { emailAction: form.emailAction } : {}) } : {}) });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
-      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) ? { emailAfter } : {}), ...(handOverTo && member.sharing?.usedBy.length ? { handOverTo } : {}) });
+      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) ? { emailAfter: emailChoice.forward ? 'FORWARD' : 'SUSPEND', emailAction: emailChoice.action } : {}), ...(handOverTo && member.sharing?.usedBy.length ? { handOverTo } : {}) });
       else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
       else if (action === 'cancel') await mutate(`dispatch/members/${member.id}/cancel-notice`, 'POST', { version: member.version, reason: form.reason });
       else if (action === 'removeNow') await mutate(`dispatch/members/${member.id}/remove-access`, 'POST', { version: member.version, reason: form.reason });
@@ -191,8 +194,10 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       title: where(row), meta: <>{when(row)} – {row.endedAt ? (index === 0 && lastDayMissing(member) ? 'last day' : <LocalTime iso={row.endedAt} format="date" />) : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
       body: row.reason ?? undefined }))]} />{gone && !member.history.length && <p className="text-sm text-muted-foreground">No MC or team was recorded.</p>}</CardBody>
   </Card>;
-  const emailNow = removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
-    ? (removal.emailAfter === 'FORWARD' ? `suspended and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : 'suspended') : null;
+  // Handed over to someone staying: kept open for them, so nothing was archived or turned off.
+  const keptFor = `kept for ${removal?.handedOverTo ?? 'the person staying'}`;
+  const emailNow = removal?.emailHandedOver ? keptFor : removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
+    ? `${removal.emailDone ? doneWord(removal.emailDone).toLowerCase() : 'suspended'}${removal.emailAfter === 'FORWARD' ? ` and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : ''}` : null;
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <div className="flex flex-wrap items-start gap-4">
@@ -356,7 +361,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           <CardHeader title="IT access" actions={<Badge label="Scheduled" tone="info" />} />
           <CardBody className="text-sm"><DescriptionList layout="rows" items={[
             { label: 'Company email', value: <>Working until <LastDay day={removal.dueOn} /></> }, { label: 'RingCentral', value: <>Working until <LastDay day={removal.dueOn} /></> },
-            { label: 'Email afterwards', value: removal.emailAfter === 'FORWARD' ? `Forward to ${removal.forwardTo ?? 'the manager'}, 30 days` : 'Suspend only' },
+            { label: 'Email afterwards', value: removal.emailHandedOver ? `Kept for ${removal.handedOverTo ?? 'the person staying'}` : removal.emailAction ? emailAfterText(removal.emailAction, removal.emailAfter === 'FORWARD', removal.forwardTo) : removal.emailAfter === 'FORWARD' ? `Forward to ${removal.forwardTo ?? 'the manager'}, 30 days` : 'Suspend only' },
             { label: 'Remove', value: <>End of <LastDay day={removal.dueOn} /></> }]} /></CardBody></Card>}
         {notice && <Card><CardHeader title="On the last day" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">Once everyone is reassigned, the workspace marks {member.firstName} as left. A team lead sign-in ends then too. The workspace never messages the person leaving.</p></CardBody></Card>}
         {removal && !removal.scheduled && <Card>
@@ -365,7 +370,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             <Progress label="Removal" value={removal.done} max={removal.total} />
             <DescriptionList layout="rows" items={[
               { label: 'Company email', value: emailNow ? emailNow[0].toUpperCase() + emailNow.slice(1) : removal.completedAt ? 'Removed' : 'Being removed' },
-              { label: 'RingCentral', value: removal.tasks.find(task => task.key === 'RINGCENTRAL')?.status === 'COMPLETED' ? 'Removed' : 'Being removed' },
+              { label: 'RingCentral', value: removal.numberHandedOver ? `Kept for ${removal.handedOverTo ?? 'the person staying'}` : removal.tasks.find(task => task.key === 'RINGCENTRAL')?.status === 'COMPLETED' ? (removal.emailAction ? 'User disabled' : 'Removed') : 'Being removed' },
               { label: removal.completedAt ? 'Removed' : 'Remove by', value: <LocalTime iso={removal.completedAt ?? `${removal.dueOn}T12:00:00Z`} format="date" /> }]} />
           </CardBody>
         </Card>}
@@ -452,9 +457,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               { label: 'RingCentral number', value: accounts?.workPhone ?? recordedAccounts?.ringCentralNumber, mono: true, emptyLabel: recordedAccounts ? 'Not recorded' : 'None recorded' },
               ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : []),
               { label: noticeDay ? 'Remove' : 'Remove by', value: noticeDay ? <>At the end of <LastDay day={lastDay} />, not before</> : 'End of their last day' }]} />
-              {(accounts?.companyEmail || recordedAccounts?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) && <RadioGroup name="emailAfter" label="Their company email" cards value={emailAfter} onChange={value => setEmailAfter(value as 'FORWARD' | 'SUSPEND')} options={[
-                { value: 'FORWARD', label: 'Forward new email to me', description: 'IT suspends the account and forwards new email to you for 30 days.' },
-                { value: 'SUSPEND', label: 'Just suspend it', description: 'New email bounces. IT keeps the mailbox until the retention rules say otherwise.' }]} />}
+              {(accounts?.companyEmail || recordedAccounts?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) && <EmailAfterFields email={(accounts?.companyEmail || recordedAccounts?.companyEmail)!} value={emailChoice} onChange={setEmailChoice} />}
+              {(accounts?.workPhone || recordedAccounts?.ringCentralNumber) && <p className="text-[13px] leading-5 text-muted-foreground">IT disables their RingCentral user. The number stays with it and isn’t given to anyone else.</p>}
             </CardBody></Card>}
           <HandOverChoice member={member} value={handOverTo} onChange={setHandOverTo} />
           {handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL') && <p className="text-[13px] leading-5 text-muted-foreground">Their email goes to {member.sharing.usedBy.flatMap(item => item.users).find(user => user.id === handOverTo)?.name} with the mailbox, so there’s nothing to forward.</p>}

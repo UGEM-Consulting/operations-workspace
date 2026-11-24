@@ -13,12 +13,19 @@ import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
+import { EmailAfterFields } from '@/features/it/email-choice';
+import type { EmailChoice } from '@/features/it/email-words';
 
 // Accounts at other companies (Design System section 33, Company accounts and load boards, approved 2026-11-13).
 export type AccountStatus = 'ACTIVE' | 'KEPT_FOR_LOAD_BOARDS' | 'CLOSED';
 export interface CompanyAccount { id: string; mcId: string | null; mc: string | null; mcArchived: boolean; companyName: string | null; nameUsed: string | null; companyEmail: string | null;
   ringCentralNumber: string | null; ringCentralExtension: string | null; status: AccountStatus; closedAt: string | null; sourceName: string | null; version: number; keptFor: string[];
-  /** Staff's note (section 36), with who wrote it and when; an older API sends none. */ note?: string | null; noteBy?: string | null; noteAt?: string | null }
+  /** Staff's note (section 36), with who wrote it and when; an older API sends none. */ note?: string | null; noteBy?: string | null; noteAt?: string | null;
+  /** What they were there (section 40), when known. */ position?: AccountPosition | null }
+export type AccountPosition = 'DISPATCHER' | 'SUPPORT' | 'UPDATER';
+const POSITIONS: Record<AccountPosition, string> = { DISPATCHER: 'Dispatcher', SUPPORT: 'Support', UPDATER: 'Updater' };
+// The position held there, then the name used: "Updater · as Ryan Sands" (CompanyAccountPositionCardScreen).
+const heldAs = (account: Pick<CompanyAccount, 'position' | 'nameUsed'>) => [account.position ? POSITIONS[account.position] : null, account.nameUsed ? `${account.position ? 'as' : 'As'} ${account.nameUsed}` : null].filter(Boolean).join(' · ');
 const STATUS: Record<AccountStatus, { label: string; tone: 'success' | 'warning' | 'neutral' }> = { ACTIVE: { label: 'Active', tone: 'success' }, KEPT_FOR_LOAD_BOARDS: { label: 'Kept for load boards', tone: 'warning' }, CLOSED: { label: 'Closed', tone: 'neutral' } };
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 export const companyOf = (account: Pick<CompanyAccount, 'mc' | 'mcArchived' | 'companyName'>) => account.mc ? `${account.mc}${account.mcArchived ? ' (archived)' : ''}` : account.companyName ?? '';
@@ -40,7 +47,7 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk
     catch (failure) { toast({ tone: 'danger', title: 'Not changed', description: errorMessage(failure, 'Reload the page and try again.') }); }
     finally { setBusy(false); }
   }
-  const menu = (account: CompanyAccount): MenuEntry[] => [{ label: account.status === 'CLOSED' ? 'Edit note' : 'Edit', icon: Pencil, onSelect: () => setEditing(account) },
+  const menu = (account: CompanyAccount): MenuEntry[] => [{ label: 'Edit', icon: Pencil, onSelect: () => setEditing(account) },
     ...(account.status === 'ACTIVE' ? [{ label: 'Kept for load boards', onSelect: () => void setStatus(account, 'KEPT_FOR_LOAD_BOARDS') }] : [{ label: account.status === 'CLOSED' ? 'Open again' : 'Active', onSelect: () => void setStatus(account, 'ACTIVE') }]),
     ...(account.status === 'CLOSED' ? [] : [{ separator: true as const }, { label: 'Record as closed', onSelect: () => setClosing(account) }])];
   // A manager can't change accounts, but can ask IT to close one.
@@ -50,7 +57,7 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk
     <CardBody>{accounts.length ? <ul className="divide-y divide-border">{accounts.map(account => <li key={account.id} className="grid gap-1 py-3 first:pt-0 last:pb-0">
       <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{companyOf(account)}</span>
         <span className="flex items-center gap-1">{closingIds.includes(account.id) ? <Badge label="IT is closing it" tone="info" /> : <Badge label={STATUS[account.status].label} tone={STATUS[account.status].tone} />}{(canChange || askable(account)) && <DropdownMenu label={`Actions for the account at ${companyOf(account)}`} triggerIcon={Ellipsis} triggerVariant="ghost" align="end" items={[...askMenu(account), ...(canChange ? [...(askable(account) ? [{ separator: true as const }] : []), ...menu(account)] : [])]} />}</span></div>
-      {account.nameUsed && <p className="text-[13px] text-muted-foreground">As {account.nameUsed}</p>}
+      {heldAs(account) && <p className="text-[13px] text-muted-foreground">{heldAs(account)}</p>}
       {/* The note, with who wrote it and when (CompanyAccountNoteCardScreen). */}
       {account.note && <p className="mt-0.5 rounded-r-md border-l-[3px] border-border-strong bg-muted px-2.5 py-1.5 text-[13px] leading-5 whitespace-pre-line">{account.note}
         <span className="block text-xs leading-4 text-muted-foreground">Note{account.noteBy ? ` by ${account.noteBy}` : ''}{account.noteAt && <> · <LocalTime iso={account.noteAt} format="date" /></>}</span></p>}
@@ -68,16 +75,17 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk
 function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; account: CompanyAccount | null; mcs: { id: string; name: string; archived?: boolean }[]; onClose: () => void }) {
   const router = useRouter(), toast = useToast();
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [company, setCompany] = useState(account?.mcId ?? (account?.companyName ? 'OTHER' : ''));
-  const [state, setState] = useState<'ACTIVE' | 'CLOSED'>('ACTIVE');
+  const [state, setState] = useState<'ACTIVE' | 'CLOSED'>('ACTIVE'), [position, setPosition] = useState<string>(account?.position ?? '');
   const closed = account?.status === 'CLOSED';
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     // The note goes only when it changed, so an older API (which refuses the field) still takes every other edit.
     const note = (form.note ?? '').trim();
-    // A closed account is kept as history: only its note changes.
+    // A closed account is kept as history: only its note and the position held there change. The position goes only when
+    // it changed (section 40), as the note does, so an older API takes every other edit.
     const fields = { ...(closed ? {} : { nameUsed: form.nameUsed ?? '', companyEmail: form.companyEmail ?? '', ringCentralNumber: form.ringCentralNumber ?? '', ringCentralExtension: form.ringCentralExtension ?? '' }),
-      ...(note !== (account?.note ?? '') ? { note } : {}) };
+      ...(position !== (account?.position ?? '') ? { position } : {}), ...(note !== (account?.note ?? '') ? { note } : {}) };
     setBusy(true); setError('');
     try {
       await (account ? mutate(`company-accounts/${account.id}`, 'PATCH', { version: account.version, ...fields })
@@ -87,13 +95,15 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
     } catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
-  return <Dialog open onClose={onClose} busy={busy} title={closed ? `Note on the account at ${companyOf(account)}` : account ? `Edit the account at ${companyOf(account)}` : 'Add an account at another company'} description="Never a password. Nobody is messaged."
+  return <Dialog open onClose={onClose} busy={busy} title={closed ? `The closed account at ${companyOf(account)}` : account ? `Edit the account at ${companyOf(account)}` : 'Add an account at another company'} description="Never a password. Nobody is messaged."
     actions={<Button type="submit" form="company-account" disabled={busy}>{busy ? 'Saving…' : account ? 'Save changes' : 'Add account'}</Button>}>
     <form id="company-account" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
       {!account && <Select label="Company" required width="full" placeholder="Choose a company" value={company} onChange={event => setCompany(event.target.value)}
         options={[...mcs.map(mc => ({ value: mc.id, label: mc.archived ? `${mc.name} (archived)` : mc.name })), { value: 'OTHER', label: 'Another company' }]} />}
       {company === 'OTHER' && !account && <Input label="Company name" name="companyName" required maxLength={100} width="full" />}
-      {closed && <p className="text-sm text-muted-foreground">This account is closed and kept as history. Only its note can change.</p>}
+      {closed && <p className="text-sm text-muted-foreground">This account is closed and kept as history. Only its note and the position held there can change.</p>}
+      <RadioGroup name="position" label="Position there" hint="What they were at this company." value={position} onChange={setPosition}
+        options={[{ value: 'DISPATCHER', label: 'Dispatcher' }, { value: 'SUPPORT', label: 'Support' }, { value: 'UPDATER', label: 'Updater' }, { value: '', label: 'Not known' }]} />
       {!closed && <><Input label="Name used there" name="nameUsed" optional maxLength={100} defaultValue={account?.nameUsed ?? ''} width="full" hint="The American name they use or used at this company. Latin letters." />
       <div className="grid gap-4 sm:grid-cols-2">
         <Input label="Company email" name="companyEmail" optional type="email" maxLength={254} defaultValue={account?.companyEmail ?? ''} width="full" />
@@ -111,12 +121,13 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
 /** Ask IT to close an account (CloseCompanyAccountScreen): IT gets a one-account checklist; whoever asks gets a notice when it's done. */
 function AskToCloseDialog({ account, onClose }: { account: CompanyAccount; onClose: () => void }) {
   const router = useRouter(), toast = useToast();
-  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [emailAfter, setEmailAfter] = useState('SUSPEND');
+  // Section 40: Archive to start, and nothing forwarded unless they tick it, as before.
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const note = String(new FormData(event.currentTarget).get('note') ?? '').trim();
     setBusy(true); setError('');
-    try { await mutate(`company-accounts/${account.id}/close`, 'POST', { version: account.version, emailAfter: account.companyEmail ? emailAfter : 'SUSPEND', ...(note ? { note } : {}) }); toast({ title: 'Sent to IT', description: 'You get a notice when it’s done.' }); onClose(); router.refresh(); }
+    try { await mutate(`company-accounts/${account.id}/close`, 'POST', { version: account.version, emailAfter: account.companyEmail && emailChoice.forward ? 'FORWARD' : 'SUSPEND', ...(account.companyEmail ? { emailAction: emailChoice.action } : {}), ...(note ? { note } : {}) }); toast({ title: 'Sent to IT', description: 'You get a notice when it’s done.' }); onClose(); router.refresh(); }
     catch (failure) { setError(errorMessage(failure, 'Unable to send. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
@@ -124,7 +135,7 @@ function AskToCloseDialog({ account, onClose }: { account: CompanyAccount; onClo
     actions={<Button type="submit" form="ask-close" variant="destructive" disabled={busy}>{busy ? 'Sending…' : 'Ask IT to close it'}</Button>}>
     <form id="ask-close" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
       <DescriptionList layout="rows" items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber, mono: true }] : []), { label: 'Load board seats using it', value: 'None active' }]} />
-      {account.companyEmail && <RadioGroup name="emailAfter" label="New email to this address" value={emailAfter} onChange={setEmailAfter} options={[{ value: 'SUSPEND', label: 'Nothing forwarded', description: 'The account is suspended.' }, { value: 'FORWARD', label: 'Forward new email to me for 30 days' }]} />}
+      {account.companyEmail && <EmailAfterFields email={account.companyEmail} label="The email" value={emailChoice} onChange={setEmailChoice} />}
       <Textarea label="Note for IT" name="note" optional rows={2} maxLength={500} hint="Never passwords." />
       <Notice message={error} error />
     </fieldset></form>
@@ -158,7 +169,7 @@ function ClosedDialog({ account, onClose }: { account: CompanyAccount; onClose: 
  * seat still uses.
  */
 export function MoveAccounts({ value, onChange, toMc, fromMc, email, number, keptFor }: { value: 'KEEP' | 'NEW'; onChange: (value: 'KEEP' | 'NEW') => void; toMc: string; fromMc: string | null; email: string | null; number: string | null; keptFor: string[] }) {
-  const [closeAnyway, setCloseAnyway] = useState(false);
+  const [closeAnyway, setCloseAnyway] = useState(false), [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
   const keep = !!email && keptFor.length > 0 && !closeAnyway, at = fromMc ? ` at ${fromMc}` : '';
   return <div className="space-y-4">
     <RadioGroup name="accounts" label="Their company accounts" value={value} onChange={choice => onChange(choice as 'KEEP' | 'NEW')} options={[
@@ -170,6 +181,8 @@ export function MoveAccounts({ value, onChange, toMc, fromMc, email, number, kep
         ...(keep ? [{ label: `Keep${at}`, value: <div><div>{email}</div><div className="text-[13px] text-muted-foreground">Signs in to {keptFor.join(' and ')}. Kept for load boards until that seat ends.</div></div> }] : [])]} /></CardBody></Card>}
     {value === 'NEW' && email && keptFor.length > 0 && <Checkbox name="closeKept" label={`Close ${email} anyway`} checked={closeAnyway} onChange={event => setCloseAnyway(event.target.checked)}
       description={`Their ${keptFor.join(' and ')} seat would stop working. Move the seat first if they still need it.`} />}
+    {/* What happens to the old email IT closes (section 40), as when someone leaves. */}
+    {value === 'NEW' && email && !keep && <EmailAfterFields email={email} label={`${email} once IT closes it`} value={emailChoice} onChange={setEmailChoice} forwarding={false} />}
   </div>;
 }
 

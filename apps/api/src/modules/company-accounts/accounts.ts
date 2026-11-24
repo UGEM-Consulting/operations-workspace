@@ -1,20 +1,22 @@
 import { ConflictException } from '@nestjs/common';
 import { EntityManager, IsNull } from 'typeorm';
-import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, type RemovalCompanyAccount } from '../it/it.entity';
+import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, forgetDone, type RemovalCompanyAccount } from '../it/it.entity';
 import { alreadyHere } from '../onboarding/already-here';
-import type { AccountStatus } from './company-accounts.entity';
+import type { AccountPosition, AccountStatus } from './company-accounts.entity';
 
 type Query = Pick<EntityManager, 'query'>;
 /** An account at another company as people read it, with the load board seats its email signs in to. */
 export interface CompanyAccountView {
  id: string; mcId: string | null; mc: string | null; mcArchived: boolean; companyName: string | null; nameUsed: string | null; companyEmail: string | null; ringCentralNumber: string | null;
+ /** What they were there (section 40), when known. */
+ position: AccountPosition | null;
  ringCentralExtension: string | null; status: AccountStatus; closedAt: string | null; sourceName: string | null; version: number; createdAt: string; keptFor: string[];
  /** Staff's note on the account (section 36), with who wrote it and when. */
  note: string | null; noteBy: string | null; noteAt: string | null;
 }
 /** Someone's accounts at other companies, open ones first. keptFor names the seats (still open) their email signs in to. */
 export async function memberCompanyAccounts(em: Query, memberId: string): Promise<CompanyAccountView[]> {
- return em.query(`SELECT c.id, c."mcId", m.name AS mc, m."archivedAt" IS NOT NULL AS "mcArchived", c."companyName", c."nameUsed", c."companyEmail", c."ringCentralNumber", c."ringCentralExtension",
+ return em.query(`SELECT c.id, c."mcId", m.name AS mc, m."archivedAt" IS NOT NULL AS "mcArchived", c."companyName", c.position, c."nameUsed", c."companyEmail", c."ringCentralNumber", c."ringCentralExtension",
    c.status, c."closedAt", c."sourceName", c.version, c."createdAt", c.note, c."noteAt", (SELECT u."firstName" || ' ' || u."lastName" FROM users u WHERE u.id = c."noteBy") AS "noteBy",
    coalesce((SELECT array_agg(DISTINCT a.name) FROM member_load_board_seats s JOIN load_board_accounts a ON a.id = s."accountId"
      WHERE s.status <> 'ENDED' AND c."companyEmail" IS NOT NULL AND s."signInEmail" = lower(c."companyEmail")), '{}') AS "keptFor"
@@ -51,5 +53,7 @@ export async function refreshRemovalAccounts(em: EntityManager, memberId: string
   if (!task) { await em.getRepository(ItRemovalTask).save({ requestId: removal.id, key, status: 'PENDING', notes: '' }); added = true; }
   else if (task.status === 'COMPLETED') { task.status = 'PENDING'; task.updatedBy = actorId; await em.save(task); reopened = true; }
  }
+ // What IT recorded was for the accounts it knew of: it records again for the new one (section 40).
+ if (forgetDone(removal, steps)) await em.save(removal);
  await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId, event: 'ACCOUNTS_CORRECTED', metadata: { reopened, added, companyAccounts: true } });
 }

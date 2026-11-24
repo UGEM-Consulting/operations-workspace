@@ -4,7 +4,7 @@ import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requireme
 import { listName } from '../lists/lists.entity';
 import { EXTENSION } from './account-details';
 import { SUPPORT_TYPES, type SupportType } from './dispatch.entity';
-import { SUPPORT_IT_ITEM_KEYS, type SupportItItem } from '../it/it.entity';
+import { EMAIL_ACTIONS, SUPPORT_IT_ITEM_KEYS, type EmailAction, type SupportItItem } from '../it/it.entity';
 import { ScanUploadDto } from '../safety/scan.dto';
 const name = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? listName(value) : value);
 const text = () => Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value);
@@ -81,6 +81,9 @@ export class UpdateExistingDto {
  // The company email or RingCentral number is someone else's and this person uses it too (section 35): recorded as shared.
  @IsOptional() @IsBoolean() shareCompanyEmail?: boolean;
  @IsOptional() @IsBoolean() shareRingCentral?: boolean;
+ // Their first company email while IT's removal is open (section 40): what happens to it after the last day, as Mark as leaving asks.
+ @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
+ @IsOptional() @IsIn(['FORWARD', 'SUSPEND']) emailAfter?: 'FORWARD' | 'SUSPEND';
 }
 /** What the search box sends as you type (section 35). */
 export class SuggestQueryDto {
@@ -148,6 +151,8 @@ export class MoveMemberDto {
  @IsOptional() @IsIn(['KEEP', 'NEW']) accounts?: 'KEEP' | 'NEW';
  // With NEW: close an email that still signs in to a load board seat anyway.
  @IsOptional() @IsBoolean() closeKept?: boolean;
+ // With NEW: what happens to the old email IT closes (section 40). An older page sends nothing, which suspends it.
+ @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
 }
 /** Their first MC and team, for someone added with none. startedAt is optional: left out, the period follows their start date. */
 export class PlaceMemberDto {
@@ -198,6 +203,8 @@ export class LeaveMemberDto {
  // What IT does with their company email: forward new mail to the manager marking them as left for 30 days, or just
  // suspend it. An older page sends nothing, which suspends.
  @IsOptional() @IsIn(['FORWARD', 'SUSPEND']) emailAfter?: 'FORWARD' | 'SUSPEND';
+ // What happens to the company email after the last day (section 40). An older page sends nothing, which suspends it.
+ @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
  // Someone using their company email or RingCentral number (section 35) who gets them when they leave. None closes them, as before.
  @IsOptional() @IsUUID() handOverTo?: string;
 }
@@ -329,5 +336,6 @@ export class LeftDayDto {
 export class CloseAccountsDto {
  @IsInt() @Min(1) version!: number;
  @IsIn(['FORWARD', 'SUSPEND']) emailAfter!: 'FORWARD' | 'SUSPEND';
+ @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
  @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
 }

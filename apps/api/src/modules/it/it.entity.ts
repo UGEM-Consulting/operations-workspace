@@ -115,16 +115,34 @@ export function itStatusSql(alias:string,tasks:'it_onboarding_tasks'|'it_removal
 
 // Removal: the reverse of setup, opened when a dispatcher who had IT setup is marked as left. Same task rules as setup.
 export const REMOVAL_CHECKLIST: readonly {key:string;label:string;description:string;optional?:boolean}[] = [
- {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Suspend the account and sign it out everywhere.'},
+ {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Archive, suspend or delete the account as the manager chose, and sign it out everywhere. Record what you did.'},
  {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Remove them from the Dispatch group.'},
- {key:'RINGCENTRAL',label:'RingCentral',description:'Remove the user, including SMS and call recording. Record what happens to the number.'},
+ {key:'RINGCENTRAL',label:'RingCentral',description:'Disable the user, with SMS and call recording (inbound and outbound) turned off. Don’t delete it: the number stays with the disabled user.'},
  {key:'BUSINESS_SOFTWARE',label:'Business software',description:'Remove their access to every business app they had, including any load board sign-ins listed here. List the apps in notes; never store credentials.'},
  {key:'SHARED_PASSWORDS',label:'Shared passwords',description:'Change any shared password they knew, such as load board or carrier portal logins.'},
  {key:'EQUIPMENT',label:'Equipment',description:'Record the laptop and headset as returned, or Not needed when they used their own.',optional:true},
 ];
 export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&REMOVAL_CHECKLIST.some(item=>item.key===task.key&&item.optional));}
+// Before section 40 IT recorded what happened to the number; finished removals keep it, nothing new records it.
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
+// Section 40 (approved 2026-11-23): the manager chooses what happens to the company email, IT records what it did, and a
+// RingCentral user is disabled with these turned off. SUSPEND is what every earlier request meant.
+export const EMAIL_ACTIONS=['ARCHIVE','SUSPEND','DELETE'] as const;
+export type EmailAction=typeof EMAIL_ACTIONS[number];
+export const EMAIL_DONE=['ARCHIVED','SUSPENDED','DELETED'] as const;
+export type EmailDone=typeof EMAIL_DONE[number];
+export const RINGCENTRAL_OFF=['USER','SMS','INBOUND_RECORDING','OUTBOUND_RECORDING'] as const;
+export type RingCentralOff=typeof RINGCENTRAL_OFF[number];
+/** Their email or number goes to someone staying (section 35): IT keeps it open, so there's nothing to archive or turn off. */
+export function handedOver(profile:Pick<RemovalProfile,'shared'>,kind:'EMAIL'|'RINGCENTRAL'){return !!profile.shared?.handOverToId&&profile.shared.usedBy.some(item=>item.kind===kind);}
+/** A step opened again for an account IT wasn't told about: what IT recorded was for the others, so it records again. */
+export function forgetDone(removal:Pick<ItRemovalRequest,'emailDone'|'ringCentralOff'>,steps:string[]){
+ let changed=false;
+ if(steps.includes('GOOGLE_WORKSPACE')&&removal.emailDone){removal.emailDone=null;changed=true;}
+ if(steps.includes('RINGCENTRAL')&&removal.ringCentralOff.length){removal.ringCentralOff=[];changed=true;}
+ return changed;
+}
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
 export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];companyAccounts?:RemovalCompanyAccount[];shared?:RemovalSharing;}
 /** An account at another of our companies, as IT's removal lists it (section 33). */
@@ -144,6 +162,9 @@ export class ItRemovalRequest {
  @Column('jsonb') profile!:RemovalProfile;
  @Column('varchar') emailAfter!:'FORWARD'|'SUSPEND';
  @Column('uuid',{nullable:true}) forwardTo!:string|null;
+ @Column('varchar',{default:'SUSPEND'}) emailAction!:EmailAction;
+ @Column('varchar',{nullable:true}) emailDone!:EmailDone|null;
+ @Column('text',{array:true,default:()=>"'{}'"}) ringCentralOff!:RingCentralOff[];
  @Column('date') dueOn!:string;
  @Column('varchar',{nullable:true}) numberOutcome!:NumberOutcome|null;
  @Column('integer',{default:0}) version!:number;

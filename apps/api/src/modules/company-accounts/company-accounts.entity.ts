@@ -2,6 +2,9 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 export const ACCOUNT_STATUSES = ['ACTIVE', 'KEPT_FOR_LOAD_BOARDS', 'CLOSED'] as const;
 export type AccountStatus = typeof ACCOUNT_STATUSES[number];
+// What they were at that company (section 40): empty when nobody knows, as for accounts recorded before.
+export const ACCOUNT_POSITIONS = ['DISPATCHER', 'SUPPORT', 'UPDATER'] as const;
+export type AccountPosition = typeof ACCOUNT_POSITIONS[number];
 
 /**
  * An account someone has, or had, at another of our companies (section 33): the MC (or another company's name), the
@@ -16,6 +19,7 @@ export class CompanyAccount {
  @Column('uuid', { nullable: true }) mcId!: string | null;
  @Column('varchar', { length: 100, nullable: true }) companyName!: string | null;
  @Column('varchar', { length: 100, nullable: true }) nameUsed!: string | null;
+ @Column('varchar', { length: 10, nullable: true }) position!: AccountPosition | null;
  @Column('varchar', { length: 254, nullable: true }) companyEmail!: string | null;
  @Column('varchar', { length: 40, nullable: true }) ringCentralNumber!: string | null;
  @Column('varchar', { length: 6, nullable: true }) ringCentralExtension!: string | null;

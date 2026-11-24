@@ -137,28 +137,49 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     expect((await db.query(`SELECT type, metadata FROM staff_security_events WHERE "userId" = $1`, [lead.id]))).toEqual([{ type: 'USER_STATUS_CHANGED', metadata: { fields: ['status'], sessionsRevoked: true, reason: 'member-left' } }]);
   });
 
-  it('works through the removal: the number’s fate before RingCentral is done, then a portal notice for the manager', async () => {
+  it('works through the removal: what IT did with the email and what it turned off in RingCentral, then a portal notice for the manager', async () => {
     const taylor = await dispatcher('Taylor');
-    await leave(taylor.memberId);
+    // The manager chooses Archive and forwarding (section 40); an older page's emailAfter alone still means suspend.
+    await leave(taylor.memberId, { emailAfter: 'FORWARD', emailAction: 'ARCHIVE' });
+    expect(await removalOf(taylor.memberId)).toMatchObject({ emailAfter: 'FORWARD', emailAction: 'ARCHIVE', emailDone: null, ringCentralOff: [] });
     const removal = await removalOf(taylor.memberId);
     let detail = (await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body;
     const task = (key: string, body: Record<string, unknown>) => agents.it.patch(`/api/it/removals/${removal.id}/tasks/${key}`).set(headers).send({ version: detail.request.version, ...body });
     await agents.manager.get(`/api/it/removals/${removal.id}`).set(headers).expect(403);
     await task('RINGCENTRAL', { status: 'COMPLETED' }).expect(400);
     await task('SHARED_PASSWORDS', { status: 'NOT_NEEDED' }).expect(400);
-    await task('GOOGLE_WORKSPACE', { status: 'COMPLETED', numberOutcome: 'KEPT' }).expect(400);
+    await task('GOOGLE_WORKSPACE', { status: 'COMPLETED' }).expect(400);
+    await task('GOOGLE_WORKSPACE', { status: 'IN_PROGRESS', ringCentralOff: ['SMS'] }).expect(400);
+    await task('RINGCENTRAL', { status: 'IN_PROGRESS', emailDone: 'ARCHIVED' }).expect(400);
+    await task('RINGCENTRAL', { status: 'IN_PROGRESS', ringCentralOff: ['FORWARDED'] }).expect(400);
+    // Ticks saved part way are kept; completing needs all four. An older page's number outcome is accepted and not recorded.
+    detail = (await task('RINGCENTRAL', { status: 'IN_PROGRESS', ringCentralOff: ['SMS', 'USER'], numberOutcome: 'KEPT' }).expect(200)).body;
+    expect(detail.request).toMatchObject({ ringCentralOff: ['USER', 'SMS'], numberOutcome: null });
+    await task('RINGCENTRAL', { status: 'COMPLETED' }).expect(400);
     await task('BUSINESS_SOFTWARE', { status: 'BLOCKED' }).expect(400);
-    for (const [key, body] of [['RINGCENTRAL', { status: 'COMPLETED', numberOutcome: 'KEPT' }], ['GOOGLE_WORKSPACE', { status: 'COMPLETED' }], ['DISPATCH_GROUP', { status: 'COMPLETED' }],
+    for (const [key, body] of [['RINGCENTRAL', { status: 'COMPLETED', ringCentralOff: ['USER', 'SMS', 'INBOUND_RECORDING', 'OUTBOUND_RECORDING'] }], ['GOOGLE_WORKSPACE', { status: 'COMPLETED', emailDone: 'SUSPENDED' }], ['DISPATCH_GROUP', { status: 'COMPLETED' }],
       ['BUSINESS_SOFTWARE', { status: 'COMPLETED', notes: 'Load board and TMS access removed.' }], ['SHARED_PASSWORDS', { status: 'COMPLETED' }]] as const) detail = (await task(key, body).expect(200)).body;
-    expect(detail.request).toMatchObject({ status: 'IN_PROGRESS', numberOutcome: 'KEPT', completedAt: null });
+    expect(detail.request).toMatchObject({ status: 'IN_PROGRESS', emailAction: 'ARCHIVE', emailDone: 'SUSPENDED', ringCentralOff: ['USER', 'SMS', 'INBOUND_RECORDING', 'OUTBOUND_RECORDING'], numberOutcome: null, completedAt: null });
     await agents.it.patch(`/api/it/removals/${removal.id}/tasks/EQUIPMENT`).set(headers).send({ version: detail.request.version - 1, status: 'NOT_NEEDED' }).expect(409);
     detail = (await task('EQUIPMENT', { status: 'NOT_NEEDED' }).expect(200)).body;
     expect(detail.request.status).toBe('COMPLETED');
     await task('EQUIPMENT', { status: 'COMPLETED' }).expect(409);
     const notices = (await agents.manager.get('/api/notifications').set(headers).expect(200)).body;
     expect(notices.items.map((item: Record<string, unknown>) => [item.kind, item.memberId, item.applicationId, item.displayName])).toEqual([['IT_REMOVAL_COMPLETED', taylor.memberId, null, 'Taylor Fictional']]);
-    expect((await agents.manager.get(`/api/dispatch/members/${taylor.memberId}`).set(headers).expect(200)).body.removal).toMatchObject({ done: 6, total: 6, numberOutcome: 'KEPT' });
+    expect((await agents.manager.get(`/api/dispatch/members/${taylor.memberId}`).set(headers).expect(200)).body.removal).toMatchObject({ done: 6, total: 6, emailAction: 'ARCHIVE', emailDone: 'SUSPENDED' });
     expect((await db.query(`SELECT metadata FROM it_removal_activity WHERE event = 'TASK_UPDATED' AND metadata->>'key' = 'BUSINESS_SOFTWARE'`))[0].metadata).toEqual({ key: 'BUSINESS_SOFTWARE', previousStatus: 'PENDING', newStatus: 'COMPLETED' });
+    expect((await db.query(`SELECT metadata FROM it_removal_activity WHERE event = 'TASK_UPDATED' AND metadata->>'key' = 'GOOGLE_WORKSPACE' AND metadata->>'newStatus' = 'COMPLETED'`))[0].metadata).toEqual({ key: 'GOOGLE_WORKSPACE', previousStatus: 'PENDING', newStatus: 'COMPLETED', emailDone: 'SUSPENDED' });
+    // An older page sends no choice: the email is suspended, as before.
+    const older = await dispatcher('Older');
+    await leave(older.memberId, { emailAfter: 'SUSPEND' });
+    expect(await removalOf(older.memberId)).toMatchObject({ emailAfter: 'SUSPEND', emailAction: 'SUSPEND' });
+    // An older removal page, during an API-first deploy, still completes RingCentral by saying what happened to the number.
+    const olderRemoval = await removalOf(older.memberId);
+    const olderDetail = (await agents.it.patch(`/api/it/removals/${olderRemoval.id}/tasks/RINGCENTRAL`).set(headers).send({ version: olderRemoval.version, status: 'COMPLETED', numberOutcome: 'KEPT' }).expect(200)).body;
+    expect(olderDetail.request).toMatchObject({ numberOutcome: 'KEPT', ringCentralOff: [] });
+    await leave((await dispatcher('Wrong')).memberId, { emailAction: 'KEEP' }, 400);
+    // A deleted account can't forward new email.
+    await leave((await dispatcher('Deleted')).memberId, { emailAfter: 'FORWARD', emailAction: 'DELETE' }, 400);
   });
 
   it('lists setups and removals together, removals due first, with the counts for each view', async () => {
@@ -236,7 +257,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     const started = await dispatcher('Started'), untouched = await dispatcher('Untouched'), done = await dispatcher('Done');
     for (const person of [started, untouched, done]) await leave(person.memberId, { emailAfter: 'FORWARD' });
     const [startedRemoval, untouchedRemoval, doneRemoval] = await Promise.all([started, untouched, done].map(person => removalOf(person.memberId)));
-    await agents.it.patch(`/api/it/removals/${startedRemoval.id}/tasks/GOOGLE_WORKSPACE`).set(headers).send({ version: startedRemoval.version, status: 'COMPLETED' }).expect(200);
+    await agents.it.patch(`/api/it/removals/${startedRemoval.id}/tasks/GOOGLE_WORKSPACE`).set(headers).send({ version: startedRemoval.version, status: 'COMPLETED', emailDone: 'SUSPENDED' }).expect(200);
     await db.query(`UPDATE it_removal_requests SET "completedAt" = now(), "numberOutcome" = 'KEPT' WHERE id = $1`, [doneRemoval.id]);
     expect((await agents.admin.get(`/api/users/${users.manager.id}/open-records`).set(headers).expect(200)).body).toEqual({ invitations: 0, applications: 0, changes: 0, itSetup: 0, removals: 2, leave: 0, total: 2 });
     await agents.admin.patch(`/api/users/${users.manager.id}`).set(headers).send({ status: 'INACTIVE' }).expect(409);
@@ -249,7 +270,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     expect(await removalOf(done.memberId)).toMatchObject({ managerId: users.manager.id, forwardTo: users.manager.id });
     // The completion notice reaches whoever took over.
     let version = detail.request.version;
-    for (const [key, body] of [['DISPATCH_GROUP', { status: 'COMPLETED' }], ['RINGCENTRAL', { status: 'COMPLETED', numberOutcome: 'KEPT' }], ['BUSINESS_SOFTWARE', { status: 'COMPLETED' }], ['SHARED_PASSWORDS', { status: 'COMPLETED' }], ['EQUIPMENT', { status: 'NOT_NEEDED' }]] as const)
+    for (const [key, body] of [['DISPATCH_GROUP', { status: 'COMPLETED' }], ['RINGCENTRAL', { status: 'COMPLETED', ringCentralOff: ['USER', 'SMS', 'INBOUND_RECORDING', 'OUTBOUND_RECORDING'] }], ['BUSINESS_SOFTWARE', { status: 'COMPLETED' }], ['SHARED_PASSWORDS', { status: 'COMPLETED' }], ['EQUIPMENT', { status: 'NOT_NEEDED' }]] as const)
       version = (await agents.it.patch(`/api/it/removals/${startedRemoval.id}/tasks/${key}`).set(headers).send({ version, ...body }).expect(200)).body.request.version;
     expect((await db.query(`SELECT "recipientId" FROM portal_notifications WHERE "removalId" = $1`, [startedRemoval.id]))[0].recipientId).toBe(users.other.id);
   });
@@ -332,7 +353,11 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     const task = (key: string, body: Record<string, unknown>) => agents.it.patch(`/api/it/removals/${removal.id}/tasks/${key}`).set(headers).send({ version: detail.request.version, ...body });
     await task('GOOGLE_WORKSPACE', { status: 'COMPLETED' }).expect(400);
     await task('EQUIPMENT', { status: 'NOT_NEEDED' }).expect(400);
+    // Nothing is archived or turned off while they work, so nothing is recorded as done either (section 40).
+    await task('GOOGLE_WORKSPACE', { status: 'IN_PROGRESS', emailDone: 'DELETED' }).expect(400);
+    await task('RINGCENTRAL', { status: 'IN_PROGRESS', ringCentralOff: ['SMS'] }).expect(400);
     detail = (await task('BUSINESS_SOFTWARE', { status: 'IN_PROGRESS', notes: 'Planning for the last day.' }).expect(200)).body;
+    expect(detail.request).toMatchObject({ emailDone: null, ringCentralOff: [] });
     const list = (await agents.it.get('/api/it/tasks?view=scheduled').set(headers).expect(200)).body;
     expect(list.items.map((item: { name: string; scheduled: boolean; dueOn: string }) => [item.name, item.scheduled, item.dueOn])).toEqual([['Taylor Fictional', true, lastDay]]);
     expect(list.stats).toMatchObject({ scheduled: 1, nextScheduled: lastDay, removal: 0, removalsDue: 0 });
@@ -390,7 +415,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     await act(lee.memberId, 'cancel-notice', { reason: 'Too late.' }, 409);
     // The last day stays, and IT can finish now.
     expect((await agents.manager.get(`/api/dispatch/members/${lee.memberId}`).set(headers).expect(200)).body).toMatchObject({ status: 'ACTIVE', notice: { lastDay: ahead(12) }, removal: { scheduled: false } });
-    await agents.it.patch(`/api/it/removals/${removal.id}/tasks/GOOGLE_WORKSPACE`).set(headers).send({ version: removal.version, status: 'COMPLETED' }).expect(200);
+    await agents.it.patch(`/api/it/removals/${removal.id}/tasks/GOOGLE_WORKSPACE`).set(headers).send({ version: removal.version, status: 'COMPLETED', emailDone: 'ARCHIVED' }).expect(200);
     expect((await agents.it.get('/api/it/tasks?view=removal').set(headers).expect(200)).body.total).toBe(1);
   });
 
@@ -429,6 +454,7 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
   it('refuses to roll back while offboarding or hand-over history exists', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
+    await db.undoLastMigration(); // LeavingEmailRingCentral, with none here
     await db.undoLastMigration(); // CompleteHistory, with none here
     await db.undoLastMigration(); // LoadBoardNamesPerProvider, with none here
     await db.undoLastMigration(); // TeamAnnouncements, with none here

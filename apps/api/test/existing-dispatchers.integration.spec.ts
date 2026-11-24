@@ -243,7 +243,7 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     expect((await db.query(`SELECT kind FROM notification_deliveries`)).map((row: Row) => row.kind)).toContain('IT_REMOVAL_WAITING');
     const open = (await agents.it.get(`/api/it/removals/${removal.id}`).set(headers).expect(200)).body;
     expect(open.request.profile.noSetupRecord).toBe(true);
-    // No number recorded: RingCentral finishes with no number outcome.
+    // No number recorded: RingCentral finishes with nothing ticked.
     await agents.it.patch(`/api/it/removals/${removal.id}/tasks/RINGCENTRAL`).set(headers).send({ version: open.request.version, status: 'COMPLETED' }).expect(200);
   });
   it('gives a support a checklist only when accounts were recorded, and stops an unused link when someone leaves', async () => {
@@ -365,10 +365,13 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     await leave(id, inDays(10));
     const [before] = await db.query(`SELECT * FROM it_removal_requests WHERE "memberId" = $1`, [id]);
     expect(before.profile).toMatchObject({ companyEmail: null, ringCentralNumber: null });
-    await correct(id, { companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142' }).then(res => expect(res.status).toBe(200));
+    await correct(id, { companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', emailAction: 'DELETE', emailAfter: 'FORWARD' }).then(res => expect(res.status).toBe(400));
+    await correct(id, { companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', emailAction: 'ARCHIVE', emailAfter: 'FORWARD' }).then(res => expect(res.status).toBe(200));
     const [after] = await db.query(`SELECT * FROM it_removal_requests WHERE "memberId" = $1`, [id]);
     expect(after.profile).toMatchObject({ companyEmail: 'riley@example.test', ringCentralNumber: '+1 469 555 0142', noSetupRecord: true });
     expect(after.version).toBe(before.version + 1);
+    // Their first company email on the removal: the manager's choice comes with it (section 40), as when marking them as leaving.
+    expect(after).toMatchObject({ emailAction: 'ARCHIVE', emailAfter: 'FORWARD', forwardTo: expect.any(String) });
     const activity = async () => db.query(`SELECT metadata FROM it_removal_activity WHERE "requestId" = $1 AND event = 'ACCOUNTS_CORRECTED' ORDER BY "createdAt"`, [after.id]);
     expect(await activity()).toEqual([{ metadata: { added: false, reopened: false } }]);
     expect(JSON.stringify(await activity())).not.toContain('riley@example.test');
@@ -376,10 +379,11 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
     const current = await version(id);
     await agents.manager.post(`/api/dispatch/members/${id}/remove-access`).set(headers).send({ version: current, reason: 'Left early.' }).expect(201);
     const detail = (await agents.it.get(`/api/it/removals/${after.id}`).set(headers).expect(200)).body;
-    await agents.it.patch(`/api/it/removals/${after.id}/tasks/RINGCENTRAL`).set(headers).send({ version: detail.request.version, status: 'COMPLETED', numberOutcome: 'RELEASED' }).expect(200);
+    await agents.it.patch(`/api/it/removals/${after.id}/tasks/RINGCENTRAL`).set(headers).send({ version: detail.request.version, status: 'COMPLETED', ringCentralOff: ['USER', 'SMS', 'INBOUND_RECORDING', 'OUTBOUND_RECORDING'] }).expect(200);
     await correct(id, { ringCentralNumber: '+1 469 555 0199' }).then(res => expect(res.status).toBe(200));
-    const [reopened] = await db.query(`SELECT r."numberOutcome", t.status FROM it_removal_requests r JOIN it_removal_tasks t ON t."requestId" = r.id AND t.key = 'RINGCENTRAL' WHERE r.id = $1`, [after.id]);
-    expect(reopened).toEqual({ numberOutcome: null, status: 'PENDING' });
+    // A different number starts its ticks again (section 40).
+    const [reopened] = await db.query(`SELECT r."ringCentralOff", t.status FROM it_removal_requests r JOIN it_removal_tasks t ON t."requestId" = r.id AND t.key = 'RINGCENTRAL' WHERE r.id = $1`, [after.id]);
+    expect(reopened).toEqual({ ringCentralOff: [], status: 'PENDING' });
     expect((await activity()).at(-1)).toEqual({ metadata: { added: false, reopened: true } });
   });
   it('opens a removal for a support whose accounts are recorded during their notice', async () => {

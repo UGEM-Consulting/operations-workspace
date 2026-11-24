@@ -1,7 +1,7 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
-import { NUMBER_OUTCOMES, NumberOutcome, REQUEST_STATUSES, RequestStatus, TASK_STATUSES, TaskStatus } from './it.entity';
+import { EMAIL_DONE, EmailDone, NUMBER_OUTCOMES, NumberOutcome, RINGCENTRAL_OFF, RingCentralOff, REQUEST_STATUSES, RequestStatus, TASK_STATUSES, TaskStatus } from './it.entity';
 const trim=()=>Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim():value);
 export class TaskUpdateDto {
  @IsInt() @Min(0) version!:number;
@@ -30,8 +30,15 @@ export class ItQueueDto {
  @IsIn(['ALL',...REQUEST_STATUSES]) status:RequestStatus|'ALL'='ALL';
  @trim() @IsString() @MaxLength(100) search='';
 }
-/** A removal task. Completing RingCentral records what happens to the number (kept, forwarded or released). */
+/** A task on a request about company accounts. Closing an email records what IT did with it (section 40). */
+export class AccountTaskDto extends TaskUpdateDto {
+ @IsOptional() @IsIn(EMAIL_DONE) emailDone?:EmailDone;
+}
+/** A removal task. Google Workspace records what IT did with the account; RingCentral what was turned off (section 40). */
 export class RemovalTaskDto extends TaskUpdateDto {
+ @IsOptional() @IsIn(EMAIL_DONE) emailDone?:EmailDone;
+ @IsOptional() @IsArray() @ArrayMaxSize(4) @IsIn(RINGCENTRAL_OFF,{each:true}) ringCentralOff?:RingCentralOff[];
+ // An older page still sends what happens to the number; it's accepted and no longer recorded.
  @IsOptional() @IsIn(NUMBER_OUTCOMES) numberOutcome?:NumberOutcome;
 }
 /** IT tasks: setups and removals in one list. Open is every unfinished task; Setup and Removal the open ones of each, due removals only; Scheduled the removals not due yet. */

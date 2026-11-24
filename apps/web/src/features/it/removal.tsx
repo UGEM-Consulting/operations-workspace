@@ -9,7 +9,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Checklist, type ChecklistItem } from '@/components/ui/checklist';
 import { CopyButton } from '@/components/ui/copy-button';
 import { Avatar } from '@/components/ui/avatar';
-import { Checkbox, Select, Textarea } from '@/components/ui/field';
+import { Checkbox, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { Progress } from '@/components/ui/feedback';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Timeline } from '@/components/ui/timeline';
@@ -23,9 +23,12 @@ import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { SignIn } from '@/features/dispatch/sign-in';
 import { readApi } from '@/features/onboarding/types';
-import { type ItTask, type NumberOutcome, type RemovalDetail, taskDone, taskOutcomes, type TaskOutcome } from './types';
+import { type ItTask, type NumberOutcome, RINGCENTRAL_OFF, type RemovalDetail, type RingCentralOff, taskDone, taskOutcomes, type TaskOutcome } from './types';
+import { actionWord, doneFor, doneWord, EMAIL_DONE_OPTIONS, emailAfterText, emailStepText, type EmailDone } from './email-words';
 
+// Before section 40 IT recorded what happened to the number; an older API still asks for it, and finished removals show it.
 const NUMBER_OUTCOMES:{value:NumberOutcome;label:string}[]=[{value:'KEPT',label:'Kept for the next dispatcher'},{value:'FORWARDED',label:'Forwarded to the team'},{value:'RELEASED',label:'Released'}];
+// What IT turns off when it disables a RingCentral user (ItRingCentralTaskScreen); completing needs all four.
 const outcomeLabel=(value:NumberOutcome|null)=>NUMBER_OUTCOMES.find(option=>option.value===value)?.label;
 // Task names in the activity list, written as on the checklist.
 const TASK_NAMES:Record<string,string>={GOOGLE_WORKSPACE:'Google Workspace',DISPATCH_GROUP:'Dispatch group',RINGCENTRAL:'RingCentral',BUSINESS_SOFTWARE:'Business software',SHARED_PASSWORDS:'Shared passwords',EQUIPMENT:'Equipment'};
@@ -36,14 +39,16 @@ const PLANNING:readonly TaskOutcome[]=['PENDING','IN_PROGRESS','BLOCKED'];
 /**
  * An IT removal request (designed as ItRemovalScreen and ItRemovalScheduledScreen): the reverse of setup, opened when a
  * dispatcher's last day is recorded. Before that day IT can plan (notes, in progress) but not complete tasks, unless a
- * manager asked to remove access now. The RingCentral task records what happens to the number; finishing the last task
- * tells the manager who recorded it.
+ * manager asked to remove access now. The Google Workspace task records what IT did with the email (the manager chose
+ * archive, suspend or delete) and the RingCentral task what was turned off (section 40); finishing the last task tells the
+ * manager who recorded it.
  */
 export function ItRemoval({initial}:{initial:RemovalDetail}){
  const toast=useToast();
  const router=useRouter();
  const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[outcome,setOutcome]=useState<NumberOutcome|''>(''),[taskError,setTaskError]=useState('');
+ const [emailDone,setEmailDone]=useState<EmailDone|''>(''),[turnedOff,setTurnedOff]=useState<RingCentralOff[]>([]);
  const {request,tasks}=data,profile=request.profile,cancelled=!!request.cancelledAt,closed=!!request.completedAt||cancelled,scheduled=request.scheduled&&!cancelled,busy=!!pending;
  const shared=data.sharedSignIns??{dat:[],truckstop:[]},seats=data.seats;
  // With seats, who shares a sign-in comes from them, by account (ItRemovalSeveralAccountsScreen).
@@ -51,18 +56,25 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  const sharedBoards=seats?[...new Set(seats.filter(seat=>seat.sharedWith.length).map(seat=>seat.account))].join(' and '):[...(shared.dat.length?['DAT']:[]),...(shared.truckstop.length?['Truckstop']:[])].join(' and ');
  const completed=tasks.filter(taskDone).length;
  const completing=!!editing&&taskDone({status:taskStatus})&&tasks.filter(task=>task.id!==editing.id).every(taskDone);
- const needsOutcome=editing?.key==='RINGCENTRAL'&&!!profile.ringCentralNumber;
+ // Section 40: what IT did with the email and what it turned off, unless that account goes to someone staying. An older API
+ // sends no emailAction and still asks what happens to the number. Nothing is recorded as done before their last day.
+ const current=request.emailAction!==undefined,emailHanded=!!request.handedOver?.email,numberHanded=!!request.handedOver?.number;
+ const needsOutcome=!current&&editing?.key==='RINGCENTRAL'&&!!profile.ringCentralNumber;
+ const needsEmailDone=current&&!scheduled&&editing?.key==='GOOGLE_WORKSPACE'&&!!profile.companyEmail&&!emailHanded;
+ const needsTicks=current&&!scheduled&&editing?.key==='RINGCENTRAL'&&!!profile.ringCentralNumber&&!numberHanded;
  const due=!closed&&!scheduled&&request.dueOn<=today();
  async function refresh(){setPending('refresh');try{setData(await readApi<RemovalDetail>(`it/removals/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh.')});}finally{setPending(null);}}
- function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setOutcome(request.numberOutcome??'');setTaskError('');}
+ function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setOutcome(request.numberOutcome??'');setEmailDone(request.emailDone??(request.emailAction?doneFor(request.emailAction):''));setTurnedOff(request.ringCentralOff??[]);setTaskError('');}
  async function update(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(!editing||busy)return;
   const notes=String(new FormData(event.currentTarget).get('notes')??'');
   if(taskStatus==='BLOCKED'&&!notes.trim()){setTaskError('Describe what is blocking this task.');return;}
   if(needsOutcome&&taskStatus==='COMPLETED'&&!outcome){setTaskError('Choose what happens to the RingCentral number.');return;}
+  if(needsEmailDone&&taskStatus==='COMPLETED'&&!emailDone){setTaskError('Choose what you did with the account.');return;}
+  if(needsTicks&&taskStatus==='COMPLETED'&&turnedOff.length<RINGCENTRAL_OFF.length){setTaskError('Tick each one turned off: the user, SMS, and inbound and outbound call recording.');return;}
   setPending('task');setTaskError('');
   try{
-   const updated=await mutate<RemovalDetail>(`it/removals/${request.id}/tasks/${editing.key}`,'PATCH',{version:request.version,status:taskStatus,notes,...(needsOutcome&&outcome?{numberOutcome:outcome}:{})});
+   const updated=await mutate<RemovalDetail>(`it/removals/${request.id}/tasks/${editing.key}`,'PATCH',{version:request.version,status:taskStatus,notes,...(needsOutcome&&outcome?{numberOutcome:outcome}:{}),...(needsEmailDone&&emailDone?{emailDone}:{}),...(needsTicks?{ringCentralOff:turnedOff}:{})});
    setData(updated);setEditing(null);
    if(updated.request.completedAt)router.refresh();
    toast(updated.request.completedAt?{title:'Access removed',description:'The manager who marked them as left has been notified.'}:{title:'Checklist task updated'});
@@ -75,9 +87,10 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  const taskText=(task:ItTask)=>{
   const email=sharedOf('EMAIL'),number=sharedOf('RINGCENTRAL'),usedEmail=borrowed('EMAIL'),usedNumber=borrowed('RINGCENTRAL');
   if(task.key==='GOOGLE_WORKSPACE'&&handOver&&email)return `Keep ${email.value} for ${handOver}: change its password, sign it out everywhere and give the new one to ${handOver}. Don’t suspend it.${usedEmail?` ${profile.displayName} also used ${usedEmail.owner??'someone else'}’s email ${usedEmail.value}: change its password.`:''}`;
-  if(task.key==='RINGCENTRAL'&&handOver&&number)return `Keep ${number.value} for ${handOver}: remove ${profile.displayName}’s user and give the number to ${handOver}’s. Record the number as Kept.`;
+  if(task.key==='RINGCENTRAL'&&handOver&&number)return `Keep ${number.value} for ${handOver}: remove ${profile.displayName}’s user and give the number to ${handOver}’s.${current?'':' Record the number as Kept.'}`;
   if(task.key==='GOOGLE_WORKSPACE'&&usedEmail&&!profile.companyEmail)return `${profile.displayName} used ${usedEmail.owner??'someone else'}’s email ${usedEmail.value}. Don’t close it: change its password and give the new one to ${usedEmail.owner??'its owner'}.`;
   if(task.key==='RINGCENTRAL'&&usedNumber&&!profile.ringCentralNumber)return `${profile.displayName} used ${usedNumber.owner??'someone else'}’s number ${usedNumber.value}. Remove their access to it; don’t release the number.`;
+  if(task.key==='GOOGLE_WORKSPACE'&&request.emailAction&&profile.companyEmail)return emailStepText(profile.companyEmail,request.emailAction,request.emailAfter==='FORWARD',request.forwardToName);
   return task.key==='GOOGLE_WORKSPACE'&&request.emailAfter==='FORWARD'?`${task.description} Forward new email to ${request.forwardToName??'the manager'} for 30 days.`:task.description;
  };
  const toChecklist=(task:ItTask):ChecklistItem=>({id:task.key,title:task.label,optional:task.optional,status:task.status,note:task.notes||undefined,
@@ -132,13 +145,15 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
      <div className="min-w-0"><p className="truncate font-medium">{profile.displayName}</p><p className="text-[13px] text-muted-foreground">{profile.position??'Dispatcher'}{profile.mcName?` · ${profile.mcName}`:''}{profile.teamName?` · ${profile.teamName}`:''}</p></div></div>
     <DescriptionList layout="rows" items={[
      {label:'Company email',value:profile.companyEmail&&<><span className="block break-all">{profile.companyEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.companyEmail} label="Copy email" size="sm" variant="ghost"/></span></>,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
-     {label:'Email afterwards',value:request.emailAfter==='FORWARD'?`Forward to ${request.forwardToName??'the manager'}, 30 days`:'Suspend only'},
+     ...(profile.companyEmail&&!emailHanded?[{label:request.emailDone?'Email':'Email afterwards',value:current?emailAfterText(request.emailAction,request.emailAfter==='FORWARD',request.forwardToName,request.emailDone):request.emailAfter==='FORWARD'?`Forward to ${request.forwardToName??'the manager'}, 30 days`:'Suspend only'}]:[]),
      {label:'RingCentral number',value:profile.ringCentralNumber,mono:true,emptyLabel:profile.noSetupRecord?'Not recorded':'None recorded'},
      ...(sharing?.uses??[]).map(item=>({label:item.kind==='EMAIL'?'Uses company email':'Uses RingCentral number',value:<><span className="block break-all">{item.value}</span><span className="block text-[13px] text-muted-foreground">{item.handedOver?'Handed over to them':`${item.owner??'Someone else'}’s, shared`}</span></>})),
      ...(sharing?.usedBy??[]).map(item=>({label:item.kind==='EMAIL'?'Email also used by':'Number also used by',value:`${item.users.join(', ')}${handOver?` · handed over to ${handOver}`:''}`})),
      ...(profile.ringCentralExtension?[{label:'Extension',value:profile.ringCentralExtension,mono:true}]:[]),
      ...(!seats&&profile.datEmail?[{label:'DAT sign-in',value:<SignIn email={profile.datEmail} others={shared.dat}/>}]:[]),...(!seats&&profile.truckstopEmail?[{label:'Truckstop sign-in',value:<SignIn email={profile.truckstopEmail} others={shared.truckstop}/>}]:[]),
-     ...(profile.ringCentralNumber?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),
+     ...(profile.ringCentralNumber&&!current?[{label:'The number',value:outcomeLabel(request.numberOutcome),emptyLabel:'Chosen in the RingCentral task'}]:[]),
+     ...(profile.ringCentralNumber&&current&&request.numberOutcome?[{label:'The number',value:outcomeLabel(request.numberOutcome)}]:[]),
+     ...(profile.ringCentralNumber&&current&&!numberHanded&&!request.numberOutcome?[{label:'RingCentral afterwards',value:(request.ringCentralOff?.length??0)>=RINGCENTRAL_OFF.length?'User disabled · SMS and call recording off':'Disable the user · SMS and call recording off'}]:[]),
      {label:'Set up',value:profile.setUpAt&&<LocalTime iso={profile.setUpAt} format="date"/>,emptyLabel:profile.noSetupRecord?'Before the workspace':'Setup wasn’t finished'}]}/>
    </CardBody></Card>
    {!!profile.companyAccounts?.length&&<Card><CardHeader title="Accounts at other companies" description="Remove each as well. A kept email still signs in to a load board seat below."/><CardBody>
@@ -157,6 +172,13 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  <form id="it-removal-editor" onSubmit={update} className="space-y-4">
   <Select id="removal-status" label="Status" name="status" value={taskStatus} onChange={event=>setTaskStatus(event.target.value as TaskOutcome)} width="sm"
    options={taskOutcomes.filter(status=>(status!=='NOT_NEEDED'||editing.optional)&&(!scheduled||PLANNING.includes(status))).map(status=>({value:status,label:statusLabel(status)}))}/>
+  {needsEmailDone&&request.emailAction&&<>
+   <p className="rounded-md border border-border bg-muted px-4 py-3 text-[13px] leading-5"><span className="font-semibold">{recordedBy??'The manager'} chose {actionWord(request.emailAction)}</span>{request.emailAfter==='FORWARD'?', and to get new email for 30 days.':'.'}</p>
+   <RadioGroup name="emailDone" label="What you did with the account" value={emailDone} onChange={value=>setEmailDone(value as EmailDone)} options={EMAIL_DONE_OPTIONS} hint={`Starts at what the manager chose. Needed to mark the task completed.${request.emailDone?` Recorded so far: ${doneWord(request.emailDone)}.`:''}`}/>
+  </>}
+  {needsTicks&&<fieldset className="grid gap-2"><legend className="mb-1 text-sm font-medium">Turned off</legend>
+   {RINGCENTRAL_OFF.map(item=><Checkbox key={item.value} name="ringCentralOff" value={item.value} label={item.label} checked={turnedOff.includes(item.value)} onChange={event=>setTurnedOff(list=>event.target.checked?[...list,item.value]:list.filter(value=>value!==item.value))}/>)}
+   <p className="text-[13px] leading-5 text-muted-foreground">Completed needs all four ticked. Something that was never on counts as off.</p></fieldset>}
   {needsOutcome&&<Select id="removal-number" label="What happens to the number" name="numberOutcome" value={outcome} placeholder="Choose what happens" optional={taskStatus!=='COMPLETED'}
    onChange={event=>setOutcome(event.target.value as NumberOutcome)} width="md" options={NUMBER_OUTCOMES} hint={`${profile.ringCentralNumber}. Needed to mark the task completed.`}/>}
   <Textarea id="removal-notes" label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Don’t put passwords in notes."/>

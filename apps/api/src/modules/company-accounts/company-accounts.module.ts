@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Req } from '@nestjs/common';
-import { TaskUpdateDto } from '../it/it.dto';
+import { AccountTaskDto } from '../it/it.dto';
 import { AccountRequestsService } from './account-requests';
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
@@ -24,7 +24,7 @@ class AccountRequestsController {
  constructor(private readonly requests: AccountRequestsService) {}
  @Get(':id') detail(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.requests.detail(req.currentUser, id); }
  @Patch(':id/contact') contact(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: AccountContactDto) { return this.requests.contact(req.currentUser, id, dto); }
- @Patch(':id/tasks/:key') task(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: TaskUpdateDto) { return this.requests.task(req.currentUser, id, key, dto); }
+ @Patch(':id/tasks/:key') task(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Param('key') key: string, @Body() dto: AccountTaskDto) { return this.requests.task(req.currentUser, id, key, dto); }
 }
 @Module({ controllers: [CompanyAccountsController, AccountRequestsController], providers: [CompanyAccountsService, AccountRequestsService], exports: [CompanyAccountsService, AccountRequestsService] })
 export class CompanyAccountsModule {}

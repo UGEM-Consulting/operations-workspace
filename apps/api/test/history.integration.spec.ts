@@ -88,7 +88,8 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
     const times = rileyTimeline.entries.map(entry => entry.at);
     expect([...times].sort().reverse()).toEqual(times);
     expect(rileyTimeline.counts.WORK).toBe(rileyTimeline.entries.filter(entry => entry.category === 'WORK').length);
-    expect(JSON.stringify(rileyTimeline)).not.toMatch(/@|555|Work cell/);
+    // Random ids may hold any digits, so only what History shows is checked.
+    expect(JSON.stringify(rileyTimeline.entries.map((entry: Row) => [entry.title, entry.by, entry.body]))).not.toMatch(/@|555|Work cell/);
     expect(await titles(sue)).toEqual(expect.arrayContaining(['Started helping Riley Santos', 'Now called an updater']));
     // Team lead events are on the person, not only the team.
     expect((await db.query(`SELECT event FROM dispatch_events WHERE "memberId" = $1 AND event LIKE 'TEAM_LEAD%' ORDER BY "createdAt"`, [riley])).map((row: Row) => row.event)).toEqual(['TEAM_LEAD_SET', 'TEAM_LEAD_CLEARED']);
