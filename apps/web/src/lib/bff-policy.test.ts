@@ -150,6 +150,11 @@ describe('offboarding and manager hand-over through the BFF', () => {
     // Drivers while their dispatcher is away (section 34): the dialog reads who may cover, and Change who covers.
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/cover-options`), true);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/cover-options`), false);
+    // Bringing back someone who left (section 41): what the dialogs show, Undo leaving and Rehire.
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/bring-back`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/undo-leaving`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/rehire`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/bring-back`), false);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/covers`), true);
     assert.equal(allowedEndpoint('GET', `it/leave/${ID}`), true);
     assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/GOOGLE_WORKSPACE`), true);

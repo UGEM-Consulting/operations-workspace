@@ -427,33 +427,36 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     await leave(taylor.memberId, { leftAt: ahead(12) });
     const sweeper = app.get(LeavingSweeper);
     // Not yet: nothing happens.
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0, rehired: 0 });
     // The day has begun in the US: IT is alerted once; they aren't gone until the day has ended everywhere.
     await db.query(`UPDATE member_notices SET "lastDay" = $1; UPDATE it_removal_requests SET "dueOn" = $1`.replace(/\$1/g, `'${usDay('latest')}'`));
-    expect(await sweeper.run()).toEqual({ alerted: 1, left: 0, failed: 0, started: 0, returned: 0 });
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 1, left: 0, failed: 0, started: 0, returned: 0, rehired: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0, rehired: 0 });
     expect(await alerts()).toEqual(['IT_REMOVAL_SCHEDULED', 'IT_REMOVAL_DUE']);
     expect((await db.getRepository(User).findOneByOrFail({ id: lead.id })).status).toBe(UserStatus.ACTIVE);
     // The day has passed with a support still assigned: the record waits, the sign-in doesn't.
     const past = addDays(usDay('earliest'), -2);
     await db.query(`UPDATE member_notices SET "lastDay" = '${past}'`);
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0, rehired: 0 });
     expect((await db.getRepository(User).findOneByOrFail({ id: lead.id })).status).toBe(UserStatus.INACTIVE);
     expect((await agents.manager.get(`/api/dispatch/members/${taylor.memberId}`).set(headers).expect(200)).body).toMatchObject({ status: 'ACTIVE', notice: { passed: true } });
     await act(taylor.memberId, 'cancel-notice', { reason: 'Too late.' }, 409);
     // Reassigned: the next run marks them as left, dated their last day, with the reason given.
     await db.query(`UPDATE member_support_links SET "endedAt" = now() WHERE "supportId" = $1`, [support]);
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 1, failed: 0, started: 0, returned: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 1, failed: 0, started: 0, returned: 0, rehired: 0 });
     const member = (await agents.manager.get(`/api/dispatch/members/${taylor.memberId}`).set(headers).expect(200)).body;
     expect(member).toMatchObject({ status: 'LEFT', leftReason: 'Resigned for a job outside logistics.', notice: null, leftBy: 'Fictional manager' });
     expect(member.leftAt.slice(0, 10)).toBe(past);
     expect((await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'MEMBER_LEFT'`))[0].metadata).toMatchObject({ itRemoval: true });
-    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0 });
+    expect(await sweeper.run()).toEqual({ alerted: 0, left: 0, failed: 0, started: 0, returned: 0, rehired: 0 });
   });
 
   it('refuses to roll back while offboarding or hand-over history exists', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
+    await db.undoLastMigration(); // RetiredAccounts, with none here
+    await db.undoLastMigration(); // BringBack, with none here
+
     await db.undoLastMigration(); // LeavingEmailRingCentral, with none here
     await db.undoLastMigration(); // ViewAccess, with none here
     await db.undoLastMigration(); // CompleteHistory, with none here

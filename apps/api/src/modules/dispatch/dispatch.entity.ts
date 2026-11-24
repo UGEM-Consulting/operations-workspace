@@ -15,7 +15,9 @@ export const DISPATCH_EVENTS = ['MEMBER_MOVED', 'MEMBER_LEFT', 'MEMBER_UPDATED',
  // Section 38: on the person, when they start or stop leading a team, and when someone else becomes owner of an account they use.
  'TEAM_LEAD_SET', 'TEAM_LEAD_CLEARED', 'SHARED_OWNER_CHANGED',
  // Section 39: someone with view-only access to photos and documents opened a signed copy (kind and role only).
- 'SIGNED_COPY_VIEWED'] as const;
+ 'SIGNED_COPY_VIEWED',
+ // Section 41: someone who left is back, their leaving undone or rehired on the same record (flags only).
+ 'LEAVING_UNDONE', 'REHIRED'] as const;
 /** ONBOARDING from approval until IT completes setup; ACTIVE after that; LEFT is kept for history. */
 export type MemberStatus = 'ONBOARDING' | 'ACTIVE' | 'LEFT';
 export type DispatchEventType = typeof DISPATCH_EVENTS[number];
