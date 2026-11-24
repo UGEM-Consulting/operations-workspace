@@ -17,7 +17,7 @@ import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } f
 import { usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { ItLeaveActivity, ItLeaveRequest, ItLeaveTask, LEAVE_CHECKLIST, leaveTaskDone } from './it.entity';
-import { IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, itStatus, itStatusSql, PortalNotification, REMOVAL_CHECKLIST, removalScheduled, removalTaskDone, taskDone } from './it.entity';
+import { handedOver, IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, itStatus, itStatusSql, PortalNotification, REMOVAL_CHECKLIST, RINGCENTRAL_OFF, removalScheduled, removalTaskDone, taskDone } from './it.entity';
 
 const statusSql=itStatusSql('r');
 // Setups (approved, not cancelled) and removals as one list for IT tasks; each row's progress uses the shared rule.
@@ -227,7 +227,7 @@ export class ItService {
   const seats=removal.completedAt?((removal.profile as unknown as {seats?:unknown[]}).seats??[]):await removalSeats(em,removal.memberId);
   // Who this is (HandPhotosItScreen): which photos IT can open, through member-photos.
   const photos=await photoPresence(em,removal.memberId);
-  return {photos,sharedSignIns:shared,seats,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
+  return {photos,sharedSignIns:shared,seats,request:{...removal,status:itStatus(removal,tasks),scheduled:removalScheduled(removal,usDay('latest')),handedOver:{email:handedOver(removal.profile,'EMAIL'),number:handedOver(removal.profile,'RINGCENTRAL')},managerName:names.manager as string|null,recordedByName:names.recordedBy as string|null,forwardToName:names.forwardTo as string|null,leftAt:names.leftAt as Date|null},
    tasks:REMOVAL_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
  }
  async getRemoval(user:User,id:string){
@@ -238,21 +238,31 @@ export class ItService {
   this.allowIt(user);await onboardingLimit(this.db,'it-task:'+user.id,120,60);
   const template=REMOVAL_CHECKLIST.find(item=>item.key===key);if(!template)throw new NotFoundException();
   if(input.status==='NOT_NEEDED'&&!template.optional)throw new BadRequestException('Only optional tasks can be marked not needed.');
-  if(input.numberOutcome&&key!=='RINGCENTRAL')throw new BadRequestException('Only the RingCentral task records what happens to the number.');
+  if(input.emailDone&&key!=='GOOGLE_WORKSPACE')throw new BadRequestException('Only the Google Workspace task records what was done with the account.');
+  if(input.ringCentralOff&&key!=='RINGCENTRAL')throw new BadRequestException('Only the RingCentral task records what was turned off.');
   return this.db.transaction(async em=>{
    const removal=await em.getRepository(ItRemovalRequest).findOne({where:{id},lock:{mode:'pessimistic_write'}});if(!removal)throw new NotFoundException();
    if(removal.completedAt)throw new ConflictException('This removal is finished and cannot be changed.');
    if(removal.cancelledAt)throw new ConflictException('This removal was cancelled: the dispatcher is staying.');
    // Planning is fine while it is scheduled; nothing is removed before the last day unless a manager asked for it now.
-   if(removalScheduled(removal,usDay('latest'))&&(input.status==='COMPLETED'||input.status==='NOT_NEEDED'))throw new BadRequestException('They’re still working: tasks can be marked completed from their last day.');
+   const scheduled=removalScheduled(removal,usDay('latest'));
+   if(scheduled&&(input.status==='COMPLETED'||input.status==='NOT_NEEDED'))throw new BadRequestException('They’re still working: tasks can be marked completed from their last day.');
+   // Nothing is archived or turned off while they work, so nothing is recorded as done before then either.
+   if(scheduled&&(input.emailDone||input.ringCentralOff?.length))throw new BadRequestException('They’re still working: record what you did from their last day.');
    if(removal.version!==input.version)throw new ConflictException('This request changed. Reload before saving.');
    const task=await em.getRepository(ItRemovalTask).findOneBy({requestId:id,key});if(!task)throw new NotFoundException();
    const notes=input.notes??task.notes;
    if(input.status==='BLOCKED'&&!notes.trim())throw new BadRequestException('Provide a reason for a blocked task.');
-   if(input.numberOutcome)removal.numberOutcome=input.numberOutcome;
-   if(key==='RINGCENTRAL'&&input.status==='COMPLETED'&&removal.profile.ringCentralNumber&&!removal.numberOutcome)throw new BadRequestException('Choose what happens to the RingCentral number first.');
+   // Section 40: what IT did with the email, and what it turned off in RingCentral, kept even when saved part way.
+   if(input.emailDone)removal.emailDone=input.emailDone;
+   if(input.ringCentralOff)removal.ringCentralOff=RINGCENTRAL_OFF.filter(item=>input.ringCentralOff!.includes(item));
+   // An older page (before section 40) completes RingCentral by saying what happened to the number, as it did then.
+   const olderPage=key==='RINGCENTRAL'&&!!input.numberOutcome&&!input.ringCentralOff;
+   if(olderPage&&input.status==='COMPLETED')removal.numberOutcome=input.numberOutcome!;
+   if(key==='GOOGLE_WORKSPACE'&&input.status==='COMPLETED'&&removal.profile.companyEmail&&!handedOver(removal.profile,'EMAIL')&&!removal.emailDone)throw new BadRequestException('Choose what you did with the account first.');
+   if(key==='RINGCENTRAL'&&input.status==='COMPLETED'&&removal.profile.ringCentralNumber&&!handedOver(removal.profile,'RINGCENTRAL')&&!olderPage&&RINGCENTRAL_OFF.some(item=>!removal.ringCentralOff.includes(item)))throw new BadRequestException('Tick each one turned off first: the user, SMS, and inbound and outbound call recording.');
    const previous=task.status;task.status=input.status;task.notes=notes;task.updatedBy=user.id;await em.save(task);
-   await em.getRepository(ItRemovalActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status,...(input.numberOutcome?{numberOutcome:input.numberOutcome}:{})}});
+   await em.getRepository(ItRemovalActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status,...(input.emailDone?{emailDone:input.emailDone}:{}),...(input.ringCentralOff?{ringCentralOff:removal.ringCentralOff.join(',')}:{})}});
    const tasks=await em.getRepository(ItRemovalTask).findBy({requestId:id});
    if(tasks.length>0&&tasks.every(removalTaskDone)){
     removal.completedAt=new Date();

@@ -2,8 +2,8 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord } from '../dispatch/dispatch.entity';
-import { ItOnboardingActivity, ItOnboardingRequest, PortalNotification, itStatus } from '../it/it.entity';
-import { memberSetups, setupAccounts } from '../it/removal';
+import { ItOnboardingActivity, ItOnboardingRequest, PortalNotification, itStatus, type EmailAction, type EmailDone } from '../it/it.entity';
+import { checkEmailChoice, memberSetups, setupAccounts } from '../it/removal';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, UserStatus, type User } from '../users/user.entity';
 import { checkEmailFree, refreshRemovalAccounts } from './accounts';
@@ -29,7 +29,7 @@ async function seatsUsing(em: Pick<EntityManager, 'query'>, email: string | null
  * number at the new MC and closes the old ones, except an email that still signs in to a load board seat, which is kept
  * unless the manager said to close it anyway. Nothing changes on the record until IT finishes.
  */
-export async function askForMoveAccounts(em: EntityManager, actorId: string, member: DispatchMember, from: { id: string; name: string } | null, to: { id: string; name: string }, closeKept: boolean) {
+export async function askForMoveAccounts(em: EntityManager, actorId: string, member: DispatchMember, from: { id: string; name: string } | null, to: { id: string; name: string }, closeKept: boolean, emailAction: EmailAction = 'SUSPEND') {
  if (await em.getRepository(ItAccountRequest).existsBy({ memberId: member.id, kind: 'MOVE', completedAt: IsNull(), cancelledAt: IsNull() }))
   throw new ConflictException('IT is still working on their accounts from an earlier move. Wait for it to finish, or keep the same accounts.');
  const main = await mainAccounts(em, member.id), kept = closeKept ? [] : await seatsUsing(em, main.companyEmail);
@@ -37,9 +37,9 @@ export async function askForMoveAccounts(em: EntityManager, actorId: string, mem
   close: [...(main.ringCentralNumber ? [{ label: 'RingCentral number', value: main.ringCentralNumber }] : []), ...(main.companyEmail && !kept.length ? [{ label: 'Company email', value: main.companyEmail }] : [])],
   keep: main.companyEmail && kept.length ? [{ value: main.companyEmail, reason: `Signs in to ${kept.join(' and ')}` }] : [] };
  const keys: AccountTaskKey[] = ['NEW_EMAIL', 'NEW_NUMBER', ...(main.companyEmail && !kept.length ? ['CLOSE_EMAIL' as const] : []), ...(main.ringCentralNumber ? ['CLOSE_NUMBER' as const] : []), ...(main.companyEmail && !kept.length ? ['SHARED_PASSWORDS' as const] : [])];
- return openRequest(em, actorId, { memberId: member.id, kind: 'MOVE', accountId: null, profile, note: null, emailAfter: 'SUSPEND', forwardTo: null }, keys);
+ return openRequest(em, actorId, { memberId: member.id, kind: 'MOVE', accountId: null, profile, note: null, emailAfter: 'SUSPEND', forwardTo: null, emailAction: keys.includes('CLOSE_EMAIL') ? emailAction : 'SUSPEND' }, keys);
 }
-async function openRequest(em: EntityManager, actorId: string, input: Pick<ItAccountRequest, 'memberId' | 'kind' | 'accountId' | 'profile' | 'note' | 'emailAfter' | 'forwardTo'>, keys: AccountTaskKey[]) {
+async function openRequest(em: EntityManager, actorId: string, input: Pick<ItAccountRequest, 'memberId' | 'kind' | 'accountId' | 'profile' | 'note' | 'emailAfter' | 'forwardTo' | 'emailAction'>, keys: AccountTaskKey[]) {
  const request = await em.getRepository(ItAccountRequest).save({ ...input, managerId: actorId });
  await em.getRepository(ItAccountTask).save(ACCOUNT_TASKS.filter(task => keys.includes(task.key)).map(task => ({ requestId: request.id, key: task.key, status: 'PENDING' as const, notes: '' })));
  await em.getRepository(ItAccountActivity).save({ requestId: request.id, actorId, event: 'ACCOUNT_REQUEST_CREATED', metadata: { kind: input.kind } });
@@ -59,7 +59,8 @@ export class AccountRequestsService {
  private allowIt(user: User) { if (user.status !== UserStatus.ACTIVE || ![Role.SYSTEM_ADMIN, Role.IT_SPECIALIST].includes(user.role)) throw new ForbiddenException(); }
 
  /** Close one account at another company (CloseCompanyAccountScreen). Refused while a load board seat still signs in with it. */
- async askToClose(user: User, accountId: string, dto: { version: number; emailAfter: 'FORWARD' | 'SUSPEND'; note?: string }) {
+ async askToClose(user: User, accountId: string, dto: { version: number; emailAfter: 'FORWARD' | 'SUSPEND'; emailAction?: EmailAction; note?: string }) {
+  checkEmailChoice(dto.emailAfter, dto.emailAction);
   return this.db.transaction(async em => {
    const found = await em.getRepository(CompanyAccount).findOneBy({ id: accountId });
    if (!found) throw new NotFoundException('This account no longer exists.');
@@ -75,10 +76,10 @@ export class AccountRequestsService {
    const profile: AccountRequestProfile = { displayName: `${member.firstName} ${member.lastName}`, fromMc: company, toMc: null, create: [], keep: [],
     close: [...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber }] : [])] };
    const forward = dto.emailAfter === 'FORWARD' && !!account.companyEmail;
-   const request = await openRequest(em, user.id, { memberId: member.id, kind: 'CLOSE', accountId, profile, note: dto.note?.trim() || null, emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? user.id : null },
+   const request = await openRequest(em, user.id, { memberId: member.id, kind: 'CLOSE', accountId, profile, note: dto.note?.trim() || null, emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? user.id : null, emailAction: account.companyEmail ? dto.emailAction ?? 'SUSPEND' : 'SUSPEND' },
     [...(account.companyEmail ? ['CLOSE_EMAIL' as const, 'SHARED_PASSWORDS' as const] : []), ...(account.ringCentralNumber ? ['CLOSE_NUMBER' as const] : [])]);
    account.version += 1; await em.save(account);
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields: [], closeAsked: true, forward } });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields: [], closeAsked: true, forward, ...(account.companyEmail && dto.emailAction ? { emailAction: dto.emailAction } : {}) } });
    return { id: request.id };
   });
  }
@@ -114,10 +115,11 @@ export class AccountRequestsService {
   });
  }
 
- async task(user: User, id: string, key: string, dto: { version: number; status: string; notes?: string }) {
+ async task(user: User, id: string, key: string, dto: { version: number; status: string; notes?: string; emailDone?: EmailDone }) {
   this.allowIt(user); await onboardingLimit(this.db, 'it-task:' + user.id, 120, 60);
   if (!ACCOUNT_TASKS.some(task => task.key === key)) throw new NotFoundException();
   if (dto.status === 'NOT_NEEDED') throw new BadRequestException('Each of these tasks is needed.');
+  if (dto.emailDone && key !== 'CLOSE_EMAIL') throw new BadRequestException('Only closing the email records what was done with it.');
   return this.db.transaction(async em => {
    const request = await this.locked(em, id, dto.version);
    const task = await em.getRepository(ItAccountTask).findOneBy({ requestId: id, key: key as AccountTaskKey });
@@ -126,8 +128,10 @@ export class AccountRequestsService {
    if (dto.status === 'BLOCKED' && !notes.trim()) throw new BadRequestException('Provide a reason for a blocked task.');
    if (dto.status === 'COMPLETED' && key === 'NEW_EMAIL' && !request.newCompanyEmail) throw new BadRequestException('Record the new company email first.');
    if (dto.status === 'COMPLETED' && key === 'NEW_NUMBER' && !request.newRingCentralNumber) throw new BadRequestException('Record the new RingCentral number first.');
+   if (dto.emailDone) request.emailDone = dto.emailDone;
+   if (dto.status === 'COMPLETED' && key === 'CLOSE_EMAIL' && !request.emailDone) throw new BadRequestException('Choose what you did with the email first.');
    const previous = task.status; Object.assign(task, { status: dto.status, notes, updatedBy: user.id }); await em.save(task);
-   await em.getRepository(ItAccountActivity).save({ requestId: id, actorId: user.id, event: 'TASK_UPDATED', metadata: { key, previousStatus: previous, newStatus: dto.status } });
+   await em.getRepository(ItAccountActivity).save({ requestId: id, actorId: user.id, event: 'TASK_UPDATED', metadata: { key, previousStatus: previous, newStatus: dto.status, ...(dto.emailDone ? { emailDone: dto.emailDone } : {}) } });
    const tasks = await em.getRepository(ItAccountTask).findBy({ requestId: id });
    if (tasks.every(done)) await this.finish(em, user, request);
    request.version += 1; await em.save(request);

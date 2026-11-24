@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, HttpException } from '@nestjs/common';
 import { EntityManager, IsNull } from 'typeorm';
 import { phoneKey, phoneSqlOf } from '../onboarding/already-here';
-import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
+import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, forgetDone, handedOver } from '../it/it.entity';
 import { DispatchEvent, MemberSharedAccount, type SharedKind } from './dispatch.entity';
 
 type Query = Pick<EntityManager, 'query'>;
@@ -101,13 +101,17 @@ export async function checkHandOver(em: EntityManager, ownerId: string, toId: st
  */
 export async function sharingOnLeft(em: EntityManager, actorId: string, memberId: string, handOverTo: string | null) {
  const repo = em.getRepository(MemberSharedAccount);
- for (const row of await repo.find({ where: { memberId, endedAt: IsNull() }, lock: { mode: 'pessimistic_write' } })) await endRow(em, actorId, row, 'LEFT');
+ const used = await repo.find({ where: { memberId, endedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
+ for (const row of used) await endRow(em, actorId, row, 'LEFT');
+ // An owner whose removal counted on handing it to them learns they left (refreshRemovalSharing drops that hand-over).
+ const owners = used.flatMap(row => row.ownerMemberId ? [row.ownerMemberId] : []);
+ if (owners.length) await refreshRemovalSharing(em, owners, actorId);
  const users = await repo.find({ where: { ownerMemberId: memberId, endedAt: IsNull(), handedOverAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
- if (!users.length) return;
+ if (!users.length) { if (handOverTo) await dropHandOver(em, memberId, actorId); return; }
  let to = handOverTo;
  // A recipient who can't take them any more (left since, or now uses someone else's) means they close, as with no choice.
  if (to) { try { await checkHandOver(em, memberId, to); } catch (error) { if (!(error instanceof HttpException)) throw error; to = null; } }
- if (!to) { for (const row of users) await endRow(em, actorId, row, 'OWNER_LEFT'); return; }
+ if (!to) { for (const row of users) await endRow(em, actorId, row, 'OWNER_LEFT'); if (handOverTo) await dropHandOver(em, memberId, actorId); return; }
  const kinds = [...new Set(users.map(row => row.kind))];
  for (const kind of kinds) {
   const ofKind = users.filter(row => row.kind === kind), mine = ofKind.find(row => row.memberId === to);
@@ -123,6 +127,31 @@ export async function sharingOnLeft(em: EntityManager, actorId: string, memberId
  await refreshRemovalSharing(em, [to], actorId);
 }
 
+/**
+ * The person chosen at notice can't take them after all, so they close: IT's removal stops saying they're handed over (keeping
+ * the lists IT reads), and a step IT completed on that understanding opens again, to record what it did (section 40).
+ */
+async function dropHandOver(em: EntityManager, memberId: string, actorId: string) {
+ const removal = await em.getRepository(ItRemovalRequest).findOne({ where: { memberId, cancelledAt: IsNull(), completedAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
+ const earlier = removal?.profile.shared;
+ if (!removal || !earlier?.handOverToId) return;
+ const steps = handedOverSteps(removal.profile);
+ removal.profile = { ...removal.profile, shared: { ...earlier, handOverToId: null, handOverTo: null } }; removal.version += 1; await em.save(removal);
+ const reopened = await reopenSteps(em, removal, steps, actorId);
+ if (reopened.reopened) await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId, event: 'ACCOUNTS_CORRECTED', metadata: { ...reopened, shared: true } });
+}
+const handedOverSteps = (profile: ItRemovalRequest['profile']) => [...(handedOver(profile, 'EMAIL') ? ['GOOGLE_WORKSPACE'] : []), ...(handedOver(profile, 'RINGCENTRAL') ? ['RINGCENTRAL'] : [])];
+/** Adds the steps a removal lacks and opens again the ones IT completed, forgetting what IT recorded for them. */
+async function reopenSteps(em: EntityManager, removal: ItRemovalRequest, steps: string[], actorId: string) {
+ let reopened = false, added = false;
+ for (const key of steps) {
+  const task = await em.getRepository(ItRemovalTask).findOneBy({ requestId: removal.id, key });
+  if (!task) { await em.getRepository(ItRemovalTask).save({ requestId: removal.id, key, status: 'PENDING', notes: '' }); added = true; }
+  else if (task.status === 'COMPLETED') { task.status = 'PENDING'; task.updatedBy = actorId; await em.save(task); reopened = true; }
+ }
+ if (forgetDone(removal, steps)) await em.save(removal);
+ return { reopened, added };
+}
 /** What IT's removal says about shared emails and numbers: what they use of others', what others use of theirs, and the hand-over chosen. */
 export interface RemovalSharing { uses: { kind: SharedKind; value: string; owner: string | null; handedOver: boolean }[]; usedBy: { kind: SharedKind; value: string; users: string[] }[]; handOverToId: string | null; handOverTo: string | null }
 export async function removalSharing(em: Query, memberId: string, handOverToId: string | null): Promise<RemovalSharing> {
@@ -144,13 +173,10 @@ export async function refreshRemovalSharing(em: EntityManager, memberIds: string
   removal.profile = { ...removal.profile, shared }; removal.version += 1; await em.save(removal);
   const told = (kind: SharedKind, value: string) => [...(earlier?.uses ?? []), ...(earlier?.usedBy ?? [])].some(item => item.kind === kind && sharedKey(kind, item.value) === sharedKey(kind, value));
   const fresh = [...shared.uses, ...shared.usedBy].filter(item => !told(item.kind, item.value));
-  const steps = [...new Set(fresh.map(item => item.kind === 'EMAIL' ? 'GOOGLE_WORKSPACE' : 'RINGCENTRAL'))];
-  let reopened = false, added = false;
-  for (const key of steps) {
-   const task = await em.getRepository(ItRemovalTask).findOneBy({ requestId: removal.id, key });
-   if (!task) { await em.getRepository(ItRemovalTask).save({ requestId: removal.id, key, status: 'PENDING', notes: '' }); added = true; }
-   else if (task.status === 'COMPLETED') { task.status = 'PENDING'; task.updatedBy = actorId; await em.save(task); reopened = true; }
-  }
+  // A hand-over that no longer applies (the person chosen stopped using it) means IT records what it did with those too.
+  const kept = handedOverSteps(removal.profile), lost = earlier ? handedOverSteps({ ...removal.profile, shared: earlier }).filter(key => !kept.includes(key)) : [];
+  const steps = [...new Set([...fresh.map(item => item.kind === 'EMAIL' ? 'GOOGLE_WORKSPACE' : 'RINGCENTRAL'), ...lost])];
+  const { reopened, added } = await reopenSteps(em, removal, steps, actorId);
   if (reopened || added) await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId, event: 'ACCOUNTS_CORRECTED', metadata: { reopened, added, shared: true } });
  }
 }

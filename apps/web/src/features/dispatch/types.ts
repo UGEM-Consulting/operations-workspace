@@ -1,3 +1,4 @@
+import type { EmailAction, EmailDone } from '@/features/it/email-words';
 import type { RecordChange } from './left-record';
 import { statusLabel } from '@/components/ui/status-badge';
 import type { Seat, SeatEmail } from '@/features/load-boards/seats';
@@ -91,7 +92,8 @@ export interface MemberProfile { /** The complete History (section 38); an older
   leftReason?: string | null; leftBy?: string | null; signInOff?: boolean;
   // Their workspace sign-in as a team lead: waiting for IT (to create, turn on or turn off), on or off; null with none.
   signIn?: { status: 'WAITING' | 'ACTIVE' | 'OFF'; request: 'CREATE' | 'TURN_ON' | 'TURN_OFF' | null } | null;
-  removal?: { id: string; dueOn: string; scheduled?: boolean; removeNowAt?: string | null; removeNowReason?: string | null; completedAt: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardTo: string | null; numberOutcome: string | null; done: number; total: number; tasks: { key: string; status: string }[] } | null;
+  removal?: { id: string; dueOn: string; scheduled?: boolean; removeNowAt?: string | null; removeNowReason?: string | null; completedAt: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardTo: string | null; numberOutcome: string | null; emailAction?: EmailAction; emailDone?: EmailDone | null;
+    /** Handed over to someone staying (section 35): kept open for them. */ handedOverTo?: string | null; emailHandedOver?: boolean; numberHandedOver?: boolean; done: number; total: number; tasks: { key: string; status: string }[] } | null;
   // A notice period in progress, who still needs reassigning, and earlier notices that were cancelled or moved.
   notice?: { id: string; lastDay: string; reason: string; createdAt: string; recordedBy: string | null; passed: boolean } | null;
   driversToReassign?: { id: string; name: string; truck: string | null }[];

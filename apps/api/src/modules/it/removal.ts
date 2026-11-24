@@ -1,12 +1,16 @@
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { NotificationsService } from '../updates/notifications.service';
 import { In, IsNull } from 'typeorm';
 import { removalSeats } from '../load-boards/seats';
 import { removalCompanyAccounts } from '../company-accounts/accounts';
 import { removalSharing } from '../dispatch/shared-accounts';
-import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, REMOVAL_CHECKLIST } from './it.entity';
+import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, REMOVAL_CHECKLIST, type EmailAction } from './it.entity';
 
+/** A deleted Google account can't forward new email (section 40), so the manager's choice never asks for both. */
+export function checkEmailChoice(emailAfter: 'FORWARD' | 'SUSPEND' | undefined, emailAction: EmailAction | undefined) {
+ if (emailAction === 'DELETE' && emailAfter === 'FORWARD') throw new BadRequestException('A deleted account can’t forward new email. Choose Archive or Suspend to forward it.');
+}
 /** Every setup of a dispatcher record: a new dispatcher's (by their application) and a support's (by the member), as two indexed lookups. */
 const MEMBER_SETUP_IDS = `SELECT x.id FROM it_onboarding_requests x WHERE x."memberId" = :memberId
  UNION SELECT x.id FROM it_onboarding_requests x JOIN dispatch_members d ON d."applicationId" = x."applicationId" WHERE d.id = :memberId`;
@@ -89,7 +93,7 @@ export async function carrySupportSetups(em: EntityManager, request: ItOnboardin
  * Returns the alert ids to send after commit.
  */
 export async function createRemoval(em: EntityManager, alerts: NotificationsService, input: {
- setup: ItOnboardingRequest | null; taskKeys?: string[]; accounts?: { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null }; position: string; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; actorId: string;
+ setup: ItOnboardingRequest | null; taskKeys?: string[]; accounts?: { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null }; position: string; memberId: string; name: string; dueOn: string; scheduled: boolean; emailAfter: 'FORWARD' | 'SUSPEND'; emailAction?: EmailAction; actorId: string;
  mcName: string | null; teamName: string | null; suspendedOnLeave?: boolean; handOverToId?: string | null;
 }) {
  const { setup } = input;
@@ -114,6 +118,8 @@ export async function createRemoval(em: EntityManager, alerts: NotificationsServ
    ringCentralExtension: setup?.ringCentralExtension ?? input.accounts?.ringCentralExtension ?? null, datEmail: setup?.datEmail ?? input.accounts?.datEmail ?? null, truckstopEmail: setup?.truckstopEmail ?? input.accounts?.truckstopEmail ?? null,
    seats, companyAccounts, ...(shared.uses.length || shared.usedBy.length ? { shared } : {}), mcName: input.mcName, teamName: input.teamName, setUpAt: setup?.completedAt?.toISOString() ?? null, ...(input.suspendedOnLeave ? { suspendedOnLeave: true } : {}) },
   emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? input.actorId : null,
+  // What happens to the email after the last day (section 40); an older page sends nothing, which suspends as before.
+  emailAction: companyEmail ? input.emailAction ?? 'SUSPEND' : 'SUSPEND', emailDone: null, ringCentralOff: [],
   dueOn: input.dueOn, numberOutcome: null, version: 0, completedAt: null, dueAlertedAt: input.scheduled ? null : new Date() });
  await em.getRepository(ItRemovalTask).save(REMOVAL_CHECKLIST.filter(task => !taskKeys || taskKeys.includes(task.key)).map(task => ({ requestId: removal.id, key: task.key, status: 'PENDING' as const, notes: '' })));
  await em.getRepository(ItRemovalActivity).save({ requestId: removal.id, actorId: input.actorId, event: 'REMOVAL_REQUEST_CREATED', metadata: { setupCancelled: !!setup && !setup.completedAt, noSetupRecord: !setup } });

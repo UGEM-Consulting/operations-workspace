@@ -7,7 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Dialog } from '@/components/ui/dialog';
-import { Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
+import { Input, Select, Textarea } from '@/components/ui/field';
+import { EmailAfterFields } from '@/features/it/email-choice';
+import type { EmailChoice } from '@/features/it/email-words';
 import { LocalTime } from '@/components/ui/local-time';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
@@ -111,13 +113,14 @@ export function LeftDayDialog({ member, onClose }: { member: MemberProfile; onCl
 /** Ask IT to close their accounts (LeftAskItScreen): a removal checklist due today from what's recorded. */
 export function CloseAccountsDialog({ member, onClose }: { member: MemberProfile; onClose: () => void }) {
   const router = useRouter(), toast = useToast(), existing = member.existing!;
-  const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('SUSPEND'), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  // Section 40: Archive to start, and nothing forwarded unless they tick it, as before.
+  const [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false }), [busy, setBusy] = useState(false), [error, setError] = useState('');
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     setBusy(true); setError('');
     try {
-      await mutate(`dispatch/members/${member.id}/close-accounts`, 'POST', { version: member.version, emailAfter: existing.companyEmail ? emailAfter : 'SUSPEND', ...(form.note?.trim() ? { note: form.note.trim() } : {}) });
+      await mutate(`dispatch/members/${member.id}/close-accounts`, 'POST', { version: member.version, emailAfter: existing.companyEmail && emailChoice.forward ? 'FORWARD' : 'SUSPEND', ...(existing.companyEmail ? { emailAction: emailChoice.action } : {}), ...(form.note?.trim() ? { note: form.note.trim() } : {}) });
       toast({ title: 'Sent to IT', description: 'You get a notice when they finish.' }); onClose(); router.refresh();
     } catch (failure) { setError(errorMessage(failure, 'Unable to ask IT. Your entries have been kept.')); }
     finally { setBusy(false); }
@@ -128,8 +131,7 @@ export function CloseAccountsDialog({ member, onClose }: { member: MemberProfile
     <form id="close-accounts" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
       <DescriptionList layout="rows" items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
         { label: 'Load board sign-ins', value: signIns || null, emptyLabel: 'None recorded' }]} />
-      {existing.companyEmail && <RadioGroup name="emailAfter" label="New email to their company email" value={emailAfter} onChange={value => setEmailAfter(value as 'FORWARD' | 'SUSPEND')}
-        options={[{ value: 'SUSPEND', label: 'Nothing forwarded', description: 'The account is suspended.' }, { value: 'FORWARD', label: 'Forward new email to me for 30 days' }]} />}
+      {existing.companyEmail && <EmailAfterFields email={existing.companyEmail} label="Their company email" value={emailChoice} onChange={setEmailChoice} />}
       <Textarea name="note" label="Note for IT" optional maxLength={500} rows={2} hint="Never passwords." />
       <Notice message={error} error />
     </fieldset></form>

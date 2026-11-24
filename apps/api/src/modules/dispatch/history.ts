@@ -30,7 +30,7 @@ const FIELD_WORDS: Record<string, string> = { companyEmail: 'company email', rin
  personalPhoneNumber: 'personal phone', telegram: 'Telegram', datEmail: 'DAT sign-in', truckstopEmail: 'Truckstop sign-in', NDA: 'paper NDA date', SOP: 'paper SOP date', legalName: 'legal name', lastDay: 'last day',
  leftReason: 'reason for leaving', otherNames: 'other names', companyAccount: 'an account at another company', seats: 'load board seats', sharedEmail: 'shared company email', sharedNumber: 'shared RingCentral number',
  legalFirstName: 'legal first name', legalLastName: 'legal last name', preferredAmericanFirstName: 'American first name', preferredAmericanLastName: 'American last name', firstName: 'first name', lastName: 'last name',
- nameUsed: 'name used there', note: 'note' };
+ nameUsed: 'name used there', note: 'note', position: 'position there' };
 const words = (fields: string[]) => fields.map(field => FIELD_WORDS[field] ?? field);
 // Onboarding steps worth reading; sends, failures and drafts stay out, and IT's own entries come from its requests.
 const ACTIVITY: Record<string, string | null> = { INVITATION_CREATED: 'Invitation created', INVITATION_CLAIMED: 'Invitation opened', APPLICANT_VERIFIED: 'Email verified', APPLICATION_SUBMITTED: 'Application sent',

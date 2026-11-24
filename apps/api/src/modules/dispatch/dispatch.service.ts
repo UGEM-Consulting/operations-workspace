@@ -17,7 +17,7 @@ import { addDays, usDay } from '../safety/screening-rules';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } from '../it/it.entity';
 import { DriverAssignment } from '../safety/safety.entity';
 import { NotificationsService } from '../updates/notifications.service';
-import { createRemoval, lockSetupRequests, removalTaskKeys, sameSetups, setupAccounts } from '../it/removal';
+import { checkEmailChoice, createRemoval, lockSetupRequests, removalTaskKeys, sameSetups, setupAccounts } from '../it/removal';
 import { createSupportItRequest } from '../it/support-setup';
 import { SupportItItem } from '../it/it.entity';
 import { User as UserEntity, UserStatus } from '../users/user.entity';
@@ -211,7 +211,11 @@ export class DispatchService {
   const canOpenApplication = !!application && (user.role === Role.SYSTEM_ADMIN || application.assignedManagerId === user.id);
   const existing = await this.existingRecord(user, id);
   // On notice or after they left: IT's removal progress (never IT notes) and what happens to their company email.
-  const [removalRow] = await this.db.query(`SELECT r.id, r."dueOn"::text AS "dueOn", r."completedAt", r."emailAfter", r."numberOutcome", r."removeNowAt", r."removeNowReason",
+  const [removalRow] = await this.db.query(`SELECT r.id, r."dueOn"::text AS "dueOn", r."completedAt", r."emailAfter", r."emailAction", r."emailDone", r."numberOutcome", r."removeNowAt", r."removeNowReason",
+    -- Handed over to someone staying (section 35): kept open for them, so nothing was archived or turned off.
+    CASE WHEN r.profile->'shared'->>'handOverToId' IS NULL THEN NULL ELSE r.profile->'shared'->>'handOverTo' END AS "handedOverTo",
+    coalesce(r.profile->'shared'->>'handOverToId' IS NOT NULL AND r.profile->'shared'->'usedBy' @> '[{"kind":"EMAIL"}]', false) AS "emailHandedOver",
+    coalesce(r.profile->'shared'->>'handOverToId' IS NOT NULL AND r.profile->'shared'->'usedBy' @> '[{"kind":"RINGCENTRAL"}]', false) AS "numberHandedOver",
     CASE WHEN f.id IS NULL THEN NULL ELSE f."firstName" || ' ' || f."lastName" END AS "forwardTo",
     count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total,
     coalesce(json_agg(json_build_object('key', t.key, 'status', t.status)) FILTER (WHERE t.id IS NOT NULL), '[]') AS tasks
@@ -360,7 +364,7 @@ export class DispatchService {
    const newAccounts = dto.accounts === 'NEW' && current?.mcId !== dto.mcId;
    if (newAccounts) {
     const mcs: { id: string; name: string }[] = await em.query(`SELECT id, name FROM mcs WHERE id = ANY($1)`, [[dto.mcId, current?.mcId].filter(Boolean)]);
-    await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept);
+    await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept, dto.emailAction);
    }
    member.version += 1; await em.save(member);
    await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared, ...(newAccounts ? { newAccounts: true } : {}) });
@@ -474,6 +478,7 @@ export class DispatchService {
   * locked before the member, the order IT completion uses.
   */
  async leave(user: User, id: string, dto: LeaveMemberDto) {
+  checkEmailChoice(dto.emailAfter, dto.emailAction);
   let alerts: string[] = [];
   const result = await this.write(async em => {
    // The newest setup is the one an unfinished request is cancelled from; accounts come from all of them, then what a manager recorded.
@@ -503,7 +508,7 @@ export class DispatchService {
     if (setups.some(item => !item.completedAt)) throw new BadRequestException(`${member.position === 'SUPPORT' ? 'IT is still setting things up for them' : 'This dispatcher is still in IT setup'}, so their last day can’t be in the future. Choose today to cancel the setup.`);
     await em.getRepository(MemberNotice).save({ memberId: id, lastDay, reason: dto.reason, recordedBy: user.id, changes: [] });
     member.version += 1; await em.save(member);
-    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
+    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', emailAction: dto.emailAction, actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
     await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
     await syncSignIns(em, [id], user.id);
     return { id, version: member.version };
@@ -512,7 +517,7 @@ export class DispatchService {
    const leftAt = day(dto.leftAt);
    // The removal cancels the newest unfinished setup; any other unfinished one leaves the queue with it.
    for (const other of setups.slice(1).filter(item => !item.completedAt)) { other.cancelledAt = new Date(); other.version += 1; await em.save(other); }
-   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
+   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', emailAction: dto.emailAction, actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
    await this.finishLeaving(em, user, member, leftAt, dto.reason, removes, dto.handOverTo ?? null);
    return { id, version: member.version };
   });
