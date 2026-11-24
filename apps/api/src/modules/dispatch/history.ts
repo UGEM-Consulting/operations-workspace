@@ -1,5 +1,6 @@
 import type { EntityManager } from 'typeorm';
 import { usDay } from '../safety/screening-rules';
+import { WITH_LEAVING_MS } from './bring-back';
 
 /**
  * The complete dispatcher History (section 38: HistoryTimelineScreen and the screens with it; approved 2026-11-19). One
@@ -86,7 +87,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    WHERE a."memberId" = $1 ORDER BY a."startedAt"`),
   q(`SELECT n.id, n."lastDay"::text AS "lastDay", n.reason, n.changes, n."createdAt", n."cancelledAt", n."cancelReason", ${actor('r')} AS by, ${actor('c')} AS "cancelledBy"
    FROM member_notices n LEFT JOIN users r ON r.id = n."recordedBy" LEFT JOIN users c ON c.id = n."cancelledBy" WHERE n."memberId" = $1`),
-  q(`SELECT r.id, r."dueOn"::text AS "dueOn", r."createdAt", r."completedAt", r."cancelledAt", r."removeNowAt", r."removeNowReason", ${actor('u')} AS by FROM it_removal_requests r LEFT JOIN users u ON u.id = r."createdBy" WHERE r."memberId" = $1`),
+  q(`SELECT r.id, r."dueOn"::text AS "dueOn", r."createdAt", r."completedAt", r."cancelledAt", r."reversedAt", r."removeNowAt", r."removeNowReason", ${actor('u')} AS by FROM it_removal_requests r LEFT JOIN users u ON u.id = r."createdBy" WHERE r."memberId" = $1`),
   q(`SELECT l.id, l."firstDay"::text AS "firstDay", l."backOn"::text AS "backOn", l.reason, l.changes, l."startedAt", l."endedAt", l."endedHow", l."createdAt", ${actor('r')} AS by, ${actor('e')} AS "endedBy"
    FROM member_leaves l LEFT JOIN users r ON r.id = l."recordedBy" LEFT JOIN users e ON e.id = l."endedBy" WHERE l."memberId" = $1`),
   q(`SELECT q.id, q.kind, q."createdAt", q."completedAt", q."cancelledAt" FROM it_leave_requests q WHERE q."memberId" = $1`),
@@ -134,7 +135,9 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  // Work: MC and team, job title, team lead, support or updater, who they help, drivers, promotion.
  assignments.forEach((row, index) => {
   const place = row.team ? `${row.team} at ${row.mc}` : row.mc ? `${row.mc}, independent` : 'no MC yet';
-  add(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : `Moved to ${place}`, row.by, row.reason ?? null);
+  // A period after time away (a rehire, section 41) starts again rather than moving.
+  const previous = assignments[index - 1], again = !!previous?.endedAt && new Date(row.startedAt).getTime() - new Date(previous.endedAt).getTime() > WITH_LEAVING_MS;
+  add(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : again ? `Started again in ${place}` : `Moved to ${place}`, row.by, row.reason ?? null);
  });
  links.forEach((row, index) => {
   const who = row.team ? `the whole ${row.team}` : row.dispatcher ?? 'a dispatcher no longer recorded';
@@ -227,20 +230,27 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   if (row.endedAt && row.endedHow === 'STOPPED') add(`owned-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'users', `${row.user} stopped using their ${kindWords(row.kind)}`, row.endedBy);
  }
 
+ // Coming back (section 41): each undone leaving and rehire, with why a leaving was undone.
+ const returns = await q(`SELECT r.id, r.kind, r."leftReason", r."firstDay"::text AS "firstDay", r.reason, r."createdAt", ${actor('u')} AS by FROM member_returns r LEFT JOIN users u ON u.id = r."actorId" WHERE r."memberId" = $1 ORDER BY r."createdAt"`);
+ for (const row of returns) {
+  if (row.kind === 'UNDO') add(`return-${row.id}`, row.createdAt, 'AWAY', 'undo-2', 'Leaving undone', row.by, row.reason);
+  else add(`return-${row.id}`, row.createdAt, 'WORK', 'user-plus', `Rehired, back ${day(row.firstDay)}`, row.by);
+ }
  // IT: setups, removals, leave suspend and restore, account requests, sign-ins. A promotion starts the dispatcher setup in its decision.
  const promotion = (at: Date) => promotions.find(row => row.status === 'APPROVED' && near(row.decidedAt, at, 60000));
  for (const row of setups) {
   const items = list((row.tasks as string[]).map(key => IT_ITEMS[key]).filter((value, index, all) => value && all.indexOf(value) === index));
-  const promoted = row.purpose === 'SUPPORT' ? null : promotion(row.createdAt);
-  add(`setup-${row.id}`, row.createdAt, 'IT', 'monitor', row.purpose === 'SUPPORT' ? `IT setup asked: ${items}` : promoted ? 'IT setup started for their promotion' : 'IT setup started',
-   row.by ?? (row.purpose === 'SUPPORT' ? null : promoted ? promoted.decidedBy : 'Approval'));
+  const asked = row.purpose !== 'DISPATCHER', promoted = asked ? null : promotion(row.createdAt);
+  const title = row.purpose === 'RESTORE' ? `IT asked to restore their access: ${items || 'the Dispatch group'}` : row.purpose === 'REHIRE' ? `IT setup asked for their return: ${items || 'the Dispatch group'}`
+   : row.purpose === 'SUPPORT' ? `IT setup asked: ${items}` : promoted ? 'IT setup started for their promotion' : 'IT setup started';
+  add(`setup-${row.id}`, row.createdAt, 'IT', 'monitor', title, row.by ?? (asked ? null : promoted ? promoted.decidedBy : 'Approval'));
   if (row.completedAt) add(`setup-done-${row.id}`, row.completedAt, 'IT', 'monitor', 'IT finished setting up their accounts');
   if (row.cancelledAt) add(`setup-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', 'IT setup stopped');
  }
  for (const row of removals) {
   add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', row.dueOn && row.dueOn > usDay('latest', new Date(row.createdAt)) ? `IT removal scheduled for ${day(row.dueOn)}` : 'IT asked to remove access', row.by);
   if (row.completedAt) add(`removal-done-${row.id}`, row.completedAt, 'IT', 'monitor', 'IT finished removing access');
-  if (row.cancelledAt) add(`removal-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', 'IT removal cancelled');
+  if (row.cancelledAt) add(`removal-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', row.reversedAt ? 'IT’s removal reversed: they came back' : 'IT removal cancelled');
  }
  for (const row of leaveIt) {
   const suspend = row.kind === 'SUSPEND';
@@ -261,7 +271,8 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  for (const row of events) {
   const m = row.metadata ?? {}, at = row.createdAt, id = `event-${row.id}`;
   switch (row.event) {
-   case 'MEMBER_LEFT': add(id, at, 'AWAY', 'log-out', 'Left', row.by ?? 'Leaving job', row.id === latestLeft ? member.leftReason ?? null : null); break;
+   // A leaving later undone or followed by a rehire keeps its reason on that return (section 41).
+   case 'MEMBER_LEFT': add(id, at, 'AWAY', 'log-out', 'Left', row.by ?? 'Leaving job', returns.find(back => new Date(back.createdAt) > new Date(at))?.leftReason ?? (row.id === latestLeft ? member.leftReason ?? null : null)); break;
    case 'ACCESS_REMOVAL_REQUESTED': add(id, at, 'AWAY', 'shield-check', 'Access removal asked for today', row.by, removeNowReason(at)); break;
    case 'LEAVE_CHANGED': if ((m.fields ?? []).includes('covers')) add(id, at, 'AWAY', 'truck', 'Who covers their drivers changed', row.by); break;
    case 'MEMBER_UPDATED': if ((m.fields ?? []).includes('jobTitleId')) add(id, at, 'WORK', 'pen-line', row.jobTitle ? `Job title changed to ${row.jobTitle}` : m.to === null ? 'Job title removed' : 'Job title changed', row.by); break;

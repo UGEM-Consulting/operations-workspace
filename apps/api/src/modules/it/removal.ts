@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
-import { EntityManager } from 'typeorm';
+import { EntityManager, Not } from 'typeorm';
 import { NotificationsService } from '../updates/notifications.service';
 import { In, IsNull } from 'typeorm';
 import { removalSeats } from '../load-boards/seats';
@@ -70,7 +70,7 @@ export async function removalTaskKeys(em: EntityManager, position: 'DISPATCHER' 
  * before the member row, the order leaving uses, and checked sameSetups, so this takes no new locks.
  */
 export async function carrySupportSetups(em: EntityManager, request: ItOnboardingRequest, memberId: string, actorId: string) {
- const setups = await em.getRepository(ItOnboardingRequest).find({ where: { memberId, purpose: 'SUPPORT', cancelledAt: IsNull() }, order: { createdAt: 'DESC' } });
+ const setups = await em.getRepository(ItOnboardingRequest).find({ where: { memberId, purpose: Not('DISPATCHER'), cancelledAt: IsNull() }, order: { createdAt: 'DESC' } });
  if (!setups.length) return;
  const accounts = setupAccounts(setups);
  Object.assign(request, { companyEmail: accounts.companyEmail, assignedRingCentralPhoneNumber: accounts.ringCentralNumber, ringCentralExtension: accounts.ringCentralExtension, datEmail: accounts.datEmail, truckstopEmail: accounts.truckstopEmail });

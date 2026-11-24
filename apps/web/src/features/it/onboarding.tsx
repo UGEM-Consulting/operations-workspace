@@ -33,6 +33,8 @@ const ACCOUNTS:Record<string,{label:string;prompt:string;type:'email'|'tel';max:
  RINGCENTRAL:{label:'Assigned RingCentral number',prompt:'RingCentral number',type:'tel',max:40,placeholder:'+1 202 555 0190',hint:'Include the country code, such as +1 202 555 0190.'}};
 // Only completing the task needs its account; IT can start it, or record what blocks it (often the account itself), before.
 const WITHOUT_ACCOUNT:readonly TaskOutcome[]=['PENDING','IN_PROGRESS','BLOCKED'];
+// A calendar day (YYYY-MM-DD) from a returning person's checklist, shown as the same date everywhere.
+const ReturnDay=({day}:{day:string})=><LocalTime iso={`${day}T12:00:00Z`} format="date"/>;
 /**
  * An IT request: the setup checklist with progress and the profile in a side rail. The Google Workspace and RingCentral
  * dialogs ask for the company email or number first; the status can change once it is filled in.
@@ -90,14 +92,19 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const grouped=tasks.filter(task=>RINGCENTRAL.includes(task.key)),firstGrouped=tasks.findIndex(task=>RINGCENTRAL.includes(task.key));
  const sections=tasks.flatMap((task,index):{heading?:string;items:ItTask[]}[]=>index===firstGrouped?[{heading:'RingCentral',items:grouped}]:RINGCENTRAL.includes(task.key)?[]:[{heading:undefined,items:[task]}]);
  const supportSetup=request.purpose==='SUPPORT',hasTask=(key:string)=>tasks.some(task=>task.key===key);
+ // Someone coming back (section 41: ItRestoreAfterUndoScreen, ItRehireSetupScreen): what IT restores rather than creates, and why.
+ const returning=profile.returning??null,restoring=(request.restoreKeys?.length??0)>0;
+ const emailWas=returning?.emailWas?{ARCHIVED:'archived',SUSPENDED:'suspended',DELETED:'deleted'}[returning.emailWas]:null;
  const activityTone=(event:ItDetail['activity'][number])=>event.event==='IT_ONBOARDING_COMPLETED'||event.metadata.newStatus==='COMPLETED'?'success' as const:event.metadata.newStatus==='BLOCKED'?'warning' as const:'neutral' as const;
  return <div className="space-y-6">
  <PageCrumb label={name}/>
  <PageHeader title={name} badge={cancelled?<Badge label="Cancelled" tone="neutral"/>:<StatusBadge status={closed?'COMPLETED':request.status}/>}
-  meta={[created&&<>{supportSetup?'Asked':'Request created'} <LocalTime iso={created} format="date"/>{supportSetup&&request.requestedByName?` by ${request.requestedByName}`:''}</>,supportSetup?[profile.assists,profile.mcName||'No MC yet',profile.teamLead].filter(Boolean).join(' · '):`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
+  meta={returning?(returning.kind==='REHIRE'?[returning.firstDay&&<>First day back <ReturnDay day={returning.firstDay}/></>,`Rehired by ${returning.by}`]:[created&&<>Asked <LocalTime iso={created} format="date"/></>,'Active again']).filter(Boolean):[created&&<>{supportSetup?'Asked':'Request created'} <LocalTime iso={created} format="date"/>{supportSetup&&request.requestedByName?` by ${request.requestedByName}`:''}</>,supportSetup?[profile.assists,profile.mcName||'No MC yet',profile.teamLead].filter(Boolean).join(' · '):`${profile.mcName} · ${profile.teamLead} · ${profile.jobTitle}`].filter(Boolean)}
   action={!closed&&<Button variant="outline" disabled={busy} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
   <div className="min-w-0 space-y-6">
+   {returning&&!closed&&(returning.kind==='UNDO'?<Alert tone="info" title={<>Leaving undone by {returning.by}{created?<> on <LocalTime iso={created} format="date"/></>:null}</>}><p>{name} didn’t leave after all. Give back what was removed{returning.leftOn?<> after <ReturnDay day={returning.leftOn}/></>:null}.</p></Alert>
+    :<Alert tone="info" title={restoring?'Rehired: restore, don’t create':'Rehired: set them up again'}><p>{name} worked here{returning.leftOn?<> until <ReturnDay day={returning.leftOn}/></>:' before'}. {restoring?'Each step that says Restore brings back what they had':'Their old accounts can’t come back, so create what’s listed'}{emailWas&&request.restoreKeys?.includes('GOOGLE_WORKSPACE')?`; their email is ${emailWas}`:''}.</p></Alert>)}
    {supportSetup&&request.note&&<Alert tone="info" title={`Note from ${request.requestedByName??'the manager'}`}><p className="whitespace-pre-line">{request.note}</p></Alert>}
    {cancelled?<Alert tone="info" title="Setup cancelled"><p>{supportSetup?'They':'The dispatcher'} left on <LocalTime iso={request.cancelledAt} format="date"/> before setup finished. Remove anything already created on their removal checklist in <Link href="/it/tasks?view=removal" className="text-primary underline-offset-4 hover:underline">IT tasks</Link>.</p></Alert>
     :closed?<Alert tone="success" title="Setup complete"><p>Finished <LocalTime iso={request.completedAt}/>. The manager was notified and this checklist is read-only.</p></Alert>
@@ -117,12 +124,12 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
      {label:'Legal name',value:[profile.legalFirstName,profile.legalLastName].filter(Boolean).join(' ')},
      {label:'Personal email',value:profile.personalEmail&&<><span className="block break-all">{profile.personalEmail}</span><span className="-ml-2.5 mt-1 block"><CopyButton text={profile.personalEmail} label="Copy email" size="sm" variant="ghost"/></span></>},
      {label:'Personal phone',value:profile.personalPhoneNumber,mono:true},
-     ...(supportSetup?[{label:'Position',value:profile.assists??profile.jobTitle},{label:'MC',value:profile.mcName||null,emptyLabel:'No MC yet'},{label:'Team',value:profile.teamLead||null,emptyLabel:'Independent or none'}]
+     ...(supportSetup||profile.assists?[{label:'Position',value:profile.assists??profile.jobTitle},{label:'MC',value:profile.mcName||null,emptyLabel:'No MC yet'},{label:'Team',value:profile.teamLead||null,emptyLabel:'Independent or none'}]
       :[{label:'MC',value:profile.mcName},{label:'Team lead',value:profile.teamLead},{label:'Job title',value:profile.jobTitle}]),
      // Recorded in the Google Workspace and RingCentral tasks; the manager sees these on the employee details.
      // A support's setup asks only for some: the others say so.
-     {label:'Company email',value:request.companyEmail,emptyLabel:hasTask('GOOGLE_WORKSPACE')?'Set in the Google Workspace task':'Not asked for'},
-     {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber,mono:true,emptyLabel:hasTask('RINGCENTRAL')?'Set in the RingCentral task':'Not asked for'},
+     {label:'Company email',value:request.companyEmail??(request.retiredCompanyEmail?<span className="break-all">{request.retiredCompanyEmail} <span className="text-muted-foreground">(replaced when they came back)</span></span>:null),emptyLabel:hasTask('GOOGLE_WORKSPACE')?'Set in the Google Workspace task':'Not asked for'},
+     {label:'RingCentral number',value:request.assignedRingCentralPhoneNumber??(request.retiredRingCentralNumber?<>{request.retiredRingCentralNumber} <span className="font-sans text-muted-foreground">(replaced when they came back)</span></>:null),mono:true,emptyLabel:hasTask('RINGCENTRAL')?'Set in the RingCentral task':'Not asked for'},
      ...(request.ringCentralExtension?[{label:'Extension',value:request.ringCentralExtension,mono:true}]:[]),
      ...(request.datEmail?[{label:'DAT sign-in',value:<span className="break-all">{request.datEmail}</span>}]:[]),...(request.truckstopEmail?[{label:'Truckstop sign-in',value:<span className="break-all">{request.truckstopEmail}</span>}]:[]),
      ...(legacyPhone?[{label:'Older application work phone',value:<span className="flex flex-wrap items-center gap-2"><span className="font-mono text-[13px]">{profile.workPhoneNumber}</span><Badge label={request.workPhoneVerifiedAt?'Verified by IT':'Applicant provided'} tone={request.workPhoneVerifiedAt?'success':'neutral'}/></span>}]:[])]}/>

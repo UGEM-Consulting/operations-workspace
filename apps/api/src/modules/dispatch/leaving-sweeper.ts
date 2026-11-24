@@ -1,6 +1,7 @@
 import { BeforeApplicationShutdown, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { DispatchService } from './dispatch.service';
 import { LeaveService } from './leave.service';
+import { BringBackService } from './bring-back';
 
 const EVERY_MS = 10 * 60_000, FIRST_AFTER_MS = 60_000;
 
@@ -12,7 +13,7 @@ const EVERY_MS = 10 * 60_000, FIRST_AFTER_MS = 60_000;
 @Injectable()
 export class LeavingSweeper implements OnApplicationBootstrap, BeforeApplicationShutdown {
  private timers: NodeJS.Timeout[] = [];
- constructor(private readonly dispatch: DispatchService, private readonly leaves: LeaveService) {}
+ constructor(private readonly dispatch: DispatchService, private readonly leaves: LeaveService, private readonly bringBack: BringBackService) {}
  onApplicationBootstrap() {
   const first = setTimeout(() => void this.run(), FIRST_AFTER_MS); first.unref();
   const every = setInterval(() => void this.run(), EVERY_MS); every.unref();
@@ -24,6 +25,8 @@ export class LeavingSweeper implements OnApplicationBootstrap, BeforeApplication
  async run() {
   const leaving = await this.dispatch.sweepLeaving().catch(() => ({ alerted: 0, left: 0, failed: 1 }));
   const leave = await this.leaves.sweep().catch(() => ({ started: 0, returned: 0, failed: 1 }));
-  return { ...leaving, ...leave, failed: leaving.failed + leave.failed };
+  // Someone rehired with nothing asked of IT becomes Active on their first day back (section 41).
+  const rehired = await this.bringBack.sweep().catch(() => -1);
+  return { ...leaving, ...leave, rehired: Math.max(rehired, 0), failed: leaving.failed + leave.failed + (rehired < 0 ? 1 : 0) };
  }
 }

@@ -30,7 +30,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     (method === 'POST' && ['applicant/updates/telegram','applicant/updates/telegram/check','applicant/updates/telegram/disconnect'].includes(path)) ||
     (method === 'GET' && ['applicant/application','onboarding/invitations','onboarding/applications','onboarding/review-queue','onboarding/summary'].includes(path)) ||
     // The Dispatchers filters ask how many people the filters being chosen would show (DispatchersFilterSheetPhoneScreen).
-    (method === 'GET' && path === 'dispatch/members') || (method === 'GET' && match(`dispatch/members/${ID}/cover-options`, path)) ||
+    (method === 'GET' && path === 'dispatch/members') || (method === 'GET' && match(`dispatch/members/${ID}/(cover-options|bring-back)`, path)) ||
     // Search as you type (section 35): the Dispatchers box and the top bar.
     (method === 'GET' && (path === 'dispatch/members/suggest' || path === 'search')) ||
     (method === 'GET' && /^onboarding\/applications\/[0-9a-f-]{36}$/.test(path)) ||
@@ -70,7 +70,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Dispatchers table: export the view on screen (recorded, so a POST).
     (method === 'POST' && path === 'dispatch/members/export') ||
     // Teams and dispatch members: add and edit teams, move a dispatcher, mark them as left, change their job title.
-    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|left-day|close-accounts|names|on-leave|on-leave/(return|cancel|back-on|reason|covers))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
+    (method === 'POST' && (path === 'dispatch/teams' || match(`dispatch/members/${ID}/(move|place|start-date|support-type|leave|last-day|cancel-notice|remove-access|contacts|reassign|it-setup|correct|left-day|close-accounts|names|undo-leaving|rehire|on-leave|on-leave/(return|cancel|back-on|reason|covers))`, path) || match(`dispatch/members/${ID}/contacts/${ID}/remove`, path))) ||
     (method === 'PATCH' && match(`dispatch/(teams|members)/${ID}`, path)) ||
     // People already working here: check and add them, their paperwork and catch-up links, what a manager recorded.
     (method === 'POST' && ['dispatch/existing/check', 'dispatch/existing/add', 'dispatch/existing/account-owners', 'dispatch/paperwork/links'].includes(path)) || (method === 'PATCH' && match(`dispatch/members/${ID}/existing`, path)) || (method === 'POST' && match(`dispatch/members/${ID}/more-time`, path)) ||

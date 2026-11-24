@@ -339,3 +339,26 @@ export class CloseAccountsDto {
  @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
  @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
 }
+/** Undo leaving (section 41): for a mistake or a change of mind, within 30 days of the last day. Why is staff text. */
+export class UndoLeavingDto {
+ @IsInt() @Min(1) version!: number;
+ @text() @IsString() @MinLength(1, { message: 'Say why their leaving is undone.' }) @MaxLength(500) reason!: string;
+}
+/**
+ * Rehire (section 41): someone who left comes back on the same record from their first day back, as a dispatcher (MC,
+ * optional team, job title) or a support or updater (who they help). Their accounts: restore the old one, a new one or none.
+ */
+export class RehireDto {
+ @IsInt() @Min(1) version!: number;
+ @IsDateString({ strict: true }) firstDay!: string;
+ @IsIn(['DISPATCHER', 'SUPPORT', 'UPDATER']) position!: 'DISPATCHER' | 'SUPPORT' | 'UPDATER';
+ @IsOptional() @IsUUID() mcId?: string;
+ @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
+ @IsOptional() @IsUUID() jobTitleId?: string;
+ @IsOptional() @IsUUID() supportsMemberId?: string;
+ @IsOptional() @IsUUID() supportsTeamId?: string;
+ @IsIn(['RESTORE', 'NEW', 'NONE']) email!: 'RESTORE' | 'NEW' | 'NONE';
+ @IsIn(['RESTORE', 'NEW', 'NONE']) ringCentral!: 'RESTORE' | 'NEW' | 'NONE';
+ @IsBoolean() businessSoftware!: boolean;
+ @IsBoolean() equipment!: boolean;
+}

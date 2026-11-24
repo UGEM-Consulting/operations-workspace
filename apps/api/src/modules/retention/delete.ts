@@ -58,6 +58,8 @@ export async function deleteMember(em: Q, memberId: string): Promise<string[]> {
   const photos: { id: string; kind: 'PROFILE' | 'ID' }[] = await em.query(`SELECT id, kind FROM member_photos WHERE "memberId" = $1`, [memberId]);
   const scans: { id: string; kind: string }[] = await em.query(`SELECT id, kind FROM member_paper_scans WHERE "memberId" = $1`, [memberId]);
   const keys = [...photos.map(photo => memberPhotoKey({ ...photo, memberId })), ...scans.map(scan => paperScanKey({ ...scan, memberId }))];
+  // Times they came back (section 41) name the removal and setup they reversed, so they go first.
+  await em.query(`DELETE FROM member_returns WHERE "memberId" = $1`, [memberId]);
   await deleteChecklists(em, memberId);
   await deleteSetups(em, ids(await em.query(`SELECT id FROM it_onboarding_requests WHERE "memberId" = $1`, [memberId])));
   const leaves = ids(await em.query(`SELECT id FROM member_leaves WHERE "memberId" = $1`, [memberId]));
@@ -115,7 +117,7 @@ export const KNOWN_REFERENCES = new Set([
   'invitations.supportsMemberId', 'it_account_requests.memberId', 'it_leave_requests.memberId', 'it_onboarding_requests.memberId', 'it_removal_requests.memberId', 'member_assignments.memberId',
   'member_company_accounts.memberId', 'member_contacts.memberId', 'member_shared_accounts.memberId', 'member_shared_accounts.ownerMemberId', 'member_detail_corrections.memberId', 'member_leaves.memberId', 'member_load_board_seats.memberId', 'member_notices.memberId',
   'member_other_names.memberId', 'member_paper_documents.memberId', 'member_paper_scans.memberId', 'member_photos.memberId', 'member_start_date_changes.memberId', 'member_support_links.supportId',
-  'member_support_links.dispatcherId', 'promotion_requests.supportId', 'team_lead_sign_ins.memberId', 'teams.leadMemberId', 'telegram_group_changes.addMemberId', 'telegram_group_changes.removeMemberId',
+  'member_support_links.dispatcherId', 'member_returns.memberId', 'member_returns.removalId', 'member_returns.setupRequestId', 'promotion_requests.supportId', 'team_lead_sign_ins.memberId', 'teams.leadMemberId', 'telegram_group_changes.addMemberId', 'telegram_group_changes.removeMemberId',
   'it_account_activity.requestId', 'it_account_tasks.requestId', 'portal_notifications.accountRequestId', 'it_leave_activity.requestId', 'it_leave_tasks.requestId', 'portal_notifications.leaveRequestId',
   'it_onboarding_activity.requestId', 'it_onboarding_tasks.requestId', 'it_removal_requests.setupRequestId', 'portal_notifications.requestId', 'promotion_requests.itRequestId',
   'it_removal_activity.requestId', 'it_removal_tasks.requestId', 'portal_notifications.removalId', 'it_account_requests.accountId', 'driver_leave_covers.leaveId', 'it_leave_requests.leaveId',

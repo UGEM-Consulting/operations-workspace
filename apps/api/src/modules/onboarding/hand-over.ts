@@ -30,8 +30,8 @@ const OPEN_RECORDS = `SELECT a.id, a."invitationId", CASE
   OR (a.status = 'APPROVED' AND EXISTS (SELECT 1 FROM it_onboarding_requests r WHERE r."applicationId" = a.id AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL)))`;
 /** Unfinished IT removals that send them the completion notice or new mail from the mailbox of someone who left. */
 const OPEN_REMOVALS = `FROM it_removal_requests r WHERE (r."managerId" = $1 OR r."forwardTo" = $1) AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
-/** Unfinished setups they asked IT for a support or updater (section 32): the completion notice goes to them. */
-const OPEN_SUPPORT_SETUPS = `FROM it_onboarding_requests r WHERE r.purpose = 'SUPPORT' AND r."managerId" = $1 AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
+/** Unfinished setups they asked IT for a support or updater (section 32), or for someone coming back (section 41): the completion notice goes to them. */
+const OPEN_SUPPORT_SETUPS = `FROM it_onboarding_requests r WHERE r.purpose <> 'DISPATCHER' AND r."managerId" = $1 AND r."completedAt" IS NULL AND r."cancelledAt" IS NULL`;
 /**
  * Leave (section 35): open suspend or restore checklists that send them the completion notice, and leaves not over yet whose
  * mail and calls go to them while the person is away.

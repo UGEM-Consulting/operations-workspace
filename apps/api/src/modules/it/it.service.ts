@@ -17,6 +17,7 @@ import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } f
 import { usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { ItLeaveActivity, ItLeaveRequest, ItLeaveTask, LEAVE_CHECKLIST, leaveTaskDone } from './it.entity';
+import { memberSetup, RESTORE_TASKS } from './it.entity';
 import { handedOver, IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, itStatus, itStatusSql, PortalNotification, REMOVAL_CHECKLIST, RINGCENTRAL_OFF, removalScheduled, removalTaskDone, taskDone } from './it.entity';
 
 const statusSql=itStatusSql('r');
@@ -24,30 +25,30 @@ const statusSql=itStatusSql('r');
 const SETUP_AND_REMOVAL_ROWS=`SELECT 'SETUP' AS kind, r.id, r.profile->>'proposedDisplayName' AS name, r.profile->>'personalEmail' AS email, r.profile->>'mcName' AS mc,
   ${itStatusSql('r')} AS status, (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done,
   (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = r.id)::integer AS total, NULL::text AS "dueOn", NULL::timestamptz AS "removeNowAt", r."createdAt", r."updatedAt", r."completedAt",
-  NULL::text AS "signIn", r."memberId", NULL::text AS team, r.profile->>'assists' AS assists
+  NULL::text AS "signIn", r."memberId", NULL::text AS team, r.profile->>'assists' AS assists, r.purpose
  FROM it_onboarding_requests r LEFT JOIN dispatcher_applications a ON a.id = r."applicationId" AND a.status = 'APPROVED'
  LEFT JOIN application_reviews v ON v.id = r."approvalId" AND v."applicationId" = r."applicationId" AND v."decisionType" = 'APPROVE'
- WHERE r."cancelledAt" IS NULL AND (r.purpose = 'SUPPORT' OR (a.id IS NOT NULL AND v.id IS NOT NULL))
+ WHERE r."cancelledAt" IS NULL AND (r.purpose <> 'DISPATCHER' OR (a.id IS NOT NULL AND v.id IS NOT NULL))
  UNION ALL
  SELECT 'REMOVAL', m.id, m.profile->>'displayName', m.profile->>'companyEmail', m.profile->>'mcName', ${itStatusSql('m','it_removal_tasks')},
   (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer,
-  (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id)::integer, m."dueOn"::text, m."removeNowAt", m."createdAt", m."updatedAt", m."completedAt", NULL, NULL, NULL, NULL
- FROM it_removal_requests m WHERE m."cancelledAt" IS NULL`;
+  (SELECT count(*) FROM it_removal_tasks t WHERE t."requestId" = m.id)::integer, m."dueOn"::text, m."removeNowAt", m."createdAt", m."updatedAt", m."completedAt", NULL, NULL, NULL, NULL, NULL
+ FROM it_removal_requests m WHERE m."cancelledAt" IS NULL OR m."reversedAt" IS NOT NULL`;
 // A team lead's sign-in: one step, so done is 0 or 1 of 1. The email is the one they sign in with: their account's, else the company email on record.
 const SIGN_IN_ROWS=`SELECT 'SIGN_IN', s.id, d."firstName" || ' ' || d."lastName", coalesce(u.email, ${companyEmailSql()}),
-  mc.name, CASE WHEN s."doneAt" IS NULL THEN 'PENDING' ELSE 'COMPLETED' END, CASE WHEN s."doneAt" IS NULL THEN 0 ELSE 1 END, 1, NULL, NULL, s."createdAt", coalesce(s."doneAt", s."createdAt"), s."doneAt", s.kind, d.id, t.name, NULL
+  mc.name, CASE WHEN s."doneAt" IS NULL THEN 'PENDING' ELSE 'COMPLETED' END, CASE WHEN s."doneAt" IS NULL THEN 0 ELSE 1 END, 1, NULL, NULL, s."createdAt", coalesce(s."doneAt", s."createdAt"), s."doneAt", s.kind, d.id, t.name, NULL, NULL
  FROM team_lead_sign_ins s JOIN dispatch_members d ON d.id = s."memberId" LEFT JOIN users u ON u.id = d."accountUserId" LEFT JOIN existing_member_records e ON e."memberId" = d.id
  LEFT JOIN member_assignments a ON a."memberId" = d.id AND a."endedAt" IS NULL LEFT JOIN teams t ON t.id = a."teamId" LEFT JOIN mcs mc ON mc.id = a."mcId" WHERE s."cancelledAt" IS NULL`;
 // Leave (section 35): suspending someone's accounts while they're away, and restoring them. Their own kinds, SUSPEND and RESTORE.
 const LEAVE_ROWS=`SELECT q.kind, q.id, q.profile->>'displayName', q.profile->>'companyEmail', q.profile->>'mcName', ${itStatusSql('q','it_leave_tasks')},
   (SELECT count(*) FROM it_leave_tasks t WHERE t."requestId" = q.id AND t.status IN ('COMPLETED','NOT_NEEDED'))::integer,
-  (SELECT count(*) FROM it_leave_tasks t WHERE t."requestId" = q.id)::integer, q."dueOn"::text, NULL::timestamptz, q."createdAt", q."updatedAt", q."completedAt", NULL, q."memberId", q.profile->>'teamName', NULL
+  (SELECT count(*) FROM it_leave_tasks t WHERE t."requestId" = q.id)::integer, q."dueOn"::text, NULL::timestamptz, q."createdAt", q."updatedAt", q."completedAt", NULL, q."memberId", q.profile->>'teamName', NULL, NULL
  FROM it_leave_requests q WHERE q."cancelledAt" IS NULL`;
 // Company accounts (section 33): CLOSE_ACCOUNT for one account, MOVE_ACCOUNTS for a move's new accounts.
 const ACCOUNT_ROWS=`SELECT CASE WHEN q.kind = 'CLOSE' THEN 'CLOSE_ACCOUNT' ELSE 'MOVE_ACCOUNTS' END, q.id, q.profile->>'displayName', NULL, coalesce(q.profile->>'toMc', q.profile->>'fromMc'),
   CASE WHEN q."completedAt" IS NOT NULL THEN 'COMPLETED' WHEN EXISTS (SELECT 1 FROM it_account_tasks t WHERE t."requestId" = q.id AND t.status = 'BLOCKED') THEN 'BLOCKED' WHEN EXISTS (SELECT 1 FROM it_account_tasks t WHERE t."requestId" = q.id AND t.status IN ('IN_PROGRESS','COMPLETED')) THEN 'IN_PROGRESS' ELSE 'PENDING' END,
   (SELECT count(*) FROM it_account_tasks t WHERE t."requestId" = q.id AND t.status = 'COMPLETED')::integer,
-  (SELECT count(*) FROM it_account_tasks t WHERE t."requestId" = q.id)::integer, NULL, NULL::timestamptz, q."createdAt", q."updatedAt", q."completedAt", NULL, q."memberId", NULL, NULL
+  (SELECT count(*) FROM it_account_tasks t WHERE t."requestId" = q.id)::integer, NULL, NULL::timestamptz, q."createdAt", q."updatedAt", q."completedAt", NULL, q."memberId", NULL, NULL, NULL
  FROM it_account_requests q WHERE q."cancelledAt" IS NULL`;
 const taskRows=(signIns:boolean,leave:boolean,accounts=false)=>[SETUP_AND_REMOVAL_ROWS,...(signIns?[SIGN_IN_ROWS]:[]),...(leave?[LEAVE_ROWS]:[]),...(accounts?[ACCOUNT_ROWS]:[])].join(' UNION ALL ');
 // Not due yet: the Eastern date (the given parameter) hasn't reached the last day and nobody asked to remove access now.
@@ -56,11 +57,11 @@ const SCHEDULED=scheduledSql('$2');
 const VIEW_SQL:Record<ItTasksDto['view'],string>={open:`status <> 'COMPLETED'`,setup:`kind = 'SETUP' AND status <> 'COMPLETED'`,signin:`kind = 'SIGN_IN' AND status <> 'COMPLETED'`,leave:`kind IN ('SUSPEND','RESTORE') AND status <> 'COMPLETED'`,accounts:`kind IN ('CLOSE_ACCOUNT','MOVE_ACCOUNTS') AND status <> 'COMPLETED'`,removal:`kind = 'REMOVAL' AND status <> 'COMPLETED' AND NOT ${SCHEDULED}`,scheduled:SCHEDULED,finished:`status = 'COMPLETED'`,all:'true'};
 /**
  * IT access requires the approved application and the APPROVE review a new dispatcher's request was created from. A
- * support's setup needs their dispatcher record, and returns their approved application when they came through onboarding
+ * setup that names the person (a support's, or someone coming back) needs their dispatcher record, and returns their approved application when they came through onboarding
  * (for the profile photo), else null.
  */
 export async function approvedApplication(em:EntityManager,request:ItOnboardingRequest):Promise<DispatcherApplication|null>{
- if(request.purpose==='SUPPORT'){
+ if(memberSetup(request)){
   const member=await em.getRepository(DispatchMember).findOneBy({id:request.memberId!});if(!member)throw new NotFoundException();
   return member.applicationId?em.getRepository(DispatcherApplication).findOneBy({id:member.applicationId,status:'APPROVED'}):null;
  }
@@ -94,12 +95,13 @@ export class ItService {
   // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
   const application=await approvedApplication(em,request);
   const profilePhoto=!!application&&!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
-  return {request:{...request,status:itStatus(request,tasks),profilePhoto,requestedByName:(loaded.raw[0]?.asker as string|null|undefined)??null},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);return task?[{...task,label:template.label,description:template.description,optional:!!template.optional}]:[];}),activity};
+  return {request:{...request,status:itStatus(request,tasks),profilePhoto,requestedByName:(loaded.raw[0]?.asker as string|null|undefined)??null},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);// Someone coming back (section 41): a task that restores an old account says so.
+   return task?[{...task,label:template.label,description:request.restoreKeys?.includes(template.key)?RESTORE_TASKS[template.key]:template.description,optional:!!template.optional}]:[];}),activity};
  }
   // Every required task must exist on a new dispatcher's setup. An optional task added later is missing only on requests created
- // before it existed. A support's setup has only the tasks a manager asked for.
+ // before it existed. A setup that names the person has only the tasks asked for.
  private checklistComplete(request:Pick<ItOnboardingRequest,'purpose'>,tasks:Pick<ItOnboardingTask,'key'>[]){
-  if(request.purpose==='SUPPORT'?!tasks.length:IT_CHECKLIST.some(template=>!template.optional&&!tasks.some(task=>task.key===template.key)))throw new ConflictException('The checklist is incomplete. Contact an administrator.');
+  if(memberSetup(request)?!tasks.length:IT_CHECKLIST.some(template=>!template.optional&&!tasks.some(task=>task.key===template.key)))throw new ConflictException('The checklist is incomplete. Contact an administrator.');
  }
  /**
   * IT tasks: setups and removals together. Removals that are due come first, the earliest first, then setups by most
@@ -179,13 +181,17 @@ export class ItService {
    await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'TASK_UPDATED',metadata:{key,previousStatus:previous,newStatus:input.status}});
    const tasks=await em.getRepository(ItOnboardingTask).findBy({requestId:id});
    this.checklistComplete(request,tasks);
-   if(tasks.every(taskDone)&&request.purpose==='SUPPORT'){
-    // A support's setup needs a number or company email only when that was asked for. The manager who asked gets a notice; the person isn't messaged.
+   if(tasks.every(taskDone)&&memberSetup(request)){
+    // A setup that names the person needs a number or company email only when that was asked for. The manager who asked gets a notice; the person isn't messaged.
     if(tasks.some(item=>item.key==='RINGCENTRAL')&&!request.assignedRingCentralPhoneNumber||tasks.some(item=>item.key==='GOOGLE_WORKSPACE')&&!request.companyEmail)
      throw new BadRequestException('Record the company email and RingCentral number that were asked for before finishing setup.');
     request.completedAt=new Date();
     await em.getRepository(PortalNotification).save({recipientId:request.managerId,requestId:id,kind:'IT_ONBOARDING_COMPLETED'});
     await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'IT_ONBOARDING_COMPLETED',metadata:{}});
+    // Someone rehired (section 41) is Onboarding until IT finishes and their first day back (US Eastern) has come; before that day
+    // the last-day job makes them Active. The request was locked before the member, as always.
+    if(request.purpose==='REHIRE')await em.query(`UPDATE dispatch_members SET status = 'ACTIVE', version = version + 1, "updatedAt" = now() WHERE id = $1 AND status = 'ONBOARDING'
+     AND EXISTS (SELECT 1 FROM member_returns r WHERE r."memberId" = $1 AND r."setupRequestId" = $2 AND r."firstDay" <= $3::date)`,[request.memberId,request.id,usDay('latest')]);
    }else if(tasks.every(taskDone)){
     if((request.profile.workPhoneNumber?.trim()&&!request.workPhoneVerifiedAt)||!request.assignedRingCentralPhoneNumber||!request.companyEmail)throw new BadRequestException('Record the company email and assigned RingCentral number, and verify any existing applicant-provided work phone, before completing onboarding.');
     request.completedAt=new Date();
@@ -208,7 +214,7 @@ export class ItService {
   const setups=await this.db.getRepository(ItOnboardingRequest).createQueryBuilder('r')
    .leftJoin(DispatcherApplication,'a','a.id=r.applicationId AND a.status = :approved',{approved:'APPROVED'})
    .leftJoin(ApplicationReview,'v',"v.id=r.approvalId AND v.applicationId=r.applicationId AND v.decisionType='APPROVE'")
-   .where("r.completedAt IS NULL AND r.cancelledAt IS NULL AND (r.purpose = 'SUPPORT' OR (a.id IS NOT NULL AND v.id IS NOT NULL))").getCount();
+   .where("r.completedAt IS NULL AND r.cancelledAt IS NULL AND (r.purpose <> 'DISPATCHER' OR (a.id IS NOT NULL AND v.id IS NOT NULL))").getCount();
   const [{signIns}]=await this.db.query(`SELECT count(*)::integer AS "signIns" FROM team_lead_sign_ins WHERE "doneAt" IS NULL AND "cancelledAt" IS NULL`);
   const leave=await this.db.getRepository(ItLeaveRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
   const accounts=await this.db.getRepository(ItAccountRequest).countBy({completedAt:IsNull(),cancelledAt:IsNull()});
