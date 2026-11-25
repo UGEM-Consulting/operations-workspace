@@ -41,10 +41,15 @@ export async function memberSetups(em: EntityManager, memberId: string, include:
   .where(`(r."cancelledAt" IS NULL OR r.id = :include) AND r.id IN (${MEMBER_SETUP_IDS})`, { memberId, include: include ?? '00000000-0000-0000-0000-000000000000' })
   .orderBy('r.createdAt', 'DESC').getMany();
 }
-/** The accounts IT set up across those requests: for each, the newest one recorded. The dispatcher page and IT's removal both use this. */
+/**
+ * The accounts IT set up across those requests: for each, the newest one recorded. The extension comes from a setup with that
+ * same number, never another line's. The dispatcher page and IT's removal both use this.
+ */
 export function setupAccounts(setups: Pick<ItOnboardingRequest, 'companyEmail' | 'assignedRingCentralPhoneNumber' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail'>[]) {
  const first = <K extends 'companyEmail' | 'assignedRingCentralPhoneNumber' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail'>(key: K) => setups.find(setup => setup[key])?.[key] ?? null;
- return { companyEmail: first('companyEmail'), ringCentralNumber: first('assignedRingCentralPhoneNumber'), ringCentralExtension: first('ringCentralExtension'), datEmail: first('datEmail'), truckstopEmail: first('truckstopEmail') };
+ const ringCentralNumber = first('assignedRingCentralPhoneNumber');
+ const ringCentralExtension = ringCentralNumber ? setups.find(setup => setup.assignedRingCentralPhoneNumber === ringCentralNumber && setup.ringCentralExtension)?.ringCentralExtension ?? null : first('ringCentralExtension');
+ return { companyEmail: first('companyEmail'), ringCentralNumber, ringCentralExtension, datEmail: first('datEmail'), truckstopEmail: first('truckstopEmail') };
 }
 
 /**

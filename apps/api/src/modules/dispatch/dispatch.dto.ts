@@ -359,6 +359,8 @@ export class RehireDto {
  @IsOptional() @IsUUID() supportsTeamId?: string;
  @IsIn(['RESTORE', 'NEW', 'NONE']) email!: 'RESTORE' | 'NEW' | 'NONE';
  @IsIn(['RESTORE', 'NEW', 'NONE']) ringCentral!: 'RESTORE' | 'NEW' | 'NONE';
+ /** What IT does with an old email it never closed that they don't get back (asked to close it): Archive, Suspend or Delete; an older page sends none (Suspend). */
+ @IsOptional() @IsIn(EMAIL_ACTIONS) closeEmailAction?: EmailAction;
  @IsBoolean() businessSoftware!: boolean;
  @IsBoolean() equipment!: boolean;
 }
