@@ -223,6 +223,9 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
  });
  it('paginates, searches, sorts and counts only authorized submitted revisions',async()=>{
   const flow=await submittedApplication();await create();await create();
+  // Invitations nobody has claimed belong to Invitations, not All; once claimed they're applications in progress.
+  expect((await manager.get('/api/onboarding/review-queue?status=ALL').set(headers).expect(200)).body.total).toBe(1);
+  await db.query(`UPDATE dispatcher_applications SET status='DRAFT' WHERE status='INVITED'`);
   const first=await manager.get('/api/onboarding/review-queue?page=1&pageSize=2&sort=updatedAt&direction=ASC').set(headers).expect(200);
   const second=await manager.get('/api/onboarding/review-queue?page=2&pageSize=2&sort=updatedAt&direction=ASC').set(headers).expect(200);
   expect((await manager.get('/api/onboarding/review-queue?status=AWAITING_REVIEW').set(headers).expect(200)).body.total).toBe(1);

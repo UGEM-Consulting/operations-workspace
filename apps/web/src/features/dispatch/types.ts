@@ -128,7 +128,8 @@ export interface Choice { id: string; name: string; archived: boolean }
 export const fullName = (member: { firstName: string; lastName: string }) => `${member.firstName} ${member.lastName}`.trim();
 
 /** A time someone came back (section 41): their leaving undone, or rehired from a first day back. */
-export interface MemberReturn { id: string; kind: 'UNDO' | 'REHIRE'; leftAt: string; leftKnown: boolean; leftReason?: string | null; previousJoinedAt: string; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: string; by: string | null }
+export interface MemberReturn { id: string; kind: 'UNDO' | 'REHIRE'; leftAt: string; leftKnown: boolean; leftReason?: string | null; previousJoinedAt: string; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: string; by: string | null;
+  /** The IT checklist it asked for, null when IT wasn't asked; an older API sends none. */ setup?: { done: number; total: number; completedAt: string | null; cancelledAt: string | null } | null }
 /** What the Undo leaving and Rehire dialogs show (GET dispatch/members/:id/bring-back). */
 export interface BringBackOptions {
   undo: { allowed: boolean; why: string | null; until: string | null;

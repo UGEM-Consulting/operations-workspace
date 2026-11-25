@@ -65,6 +65,8 @@ export class ReviewService {
   const query = this.listed(user).innerJoin(Invitation,'i','i.id = a.invitationId').leftJoin(ApplicationSubmission,'s',LATEST_SUBMISSION);
   if (input.status === 'AWAITING_REVIEW') query.andWhere('a.status IN (:...statuses)',{statuses:['SUBMITTED','RESUBMITTED']});
   else if (input.status !== 'ALL') query.andWhere('a.status = :status',{status:input.status});
+  // An invitation nobody has claimed yet (including revoked and expired ones) belongs to Invitations, not to All.
+  else query.andWhere(`a.status <> 'INVITED'`);
   if (input.search) {
    const search = '%' + input.search.replace(/[\\%_]/g, '\\$&') + '%';
    query.andWhere(`(concat(${submittedFields}->>'firstName',' ',${submittedFields}->>'lastName') ILIKE :search OR i.email ILIKE :search OR (COALESCE(i."mcName",${submittedFields}->>'mcName')) ILIKE :search OR (COALESCE(i."teamLead",${submittedFields}->>'teamLead')) ILIKE :search OR CAST(a.id AS text) ILIKE :search)`,{search});

@@ -29,6 +29,8 @@ const WITH_REMOVAL_MS = 60_000;
 const RESTORE_FOR: Record<string, string[]> = { GOOGLE_WORKSPACE: ['GOOGLE_WORKSPACE'], DISPATCH_GROUP: ['DISPATCH_GROUP'], RINGCENTRAL: ['RINGCENTRAL', 'SMS', 'CALL_RECORDING'], BUSINESS_SOFTWARE: ['BUSINESS_SOFTWARE'], EQUIPMENT: ['EQUIPMENT'] };
 const day = (at: Date) => at.toISOString().slice(0, 10);
 const easternDay = (at: Date) => usDay('latest', at);
+/** The first day back a rehire accepts: its midday (how first days are stored) must be after they left. */
+const firstDayAfter = (leftAt: Date) => new Date(`${day(leftAt)}T12:00:00Z`).getTime() > leftAt.getTime() ? day(leftAt) : addDays(day(leftAt), 1);
 
 interface Accounts {
  // notClosed: IT has no removal for them, so the account was never closed here: IT checks it before turning it back on, or is asked to close it.
@@ -62,7 +64,7 @@ export class BringBackService {
   const [link]: { dispatcherId: string | null; teamId: string | null }[] = await em.query(`SELECT "dispatcherId", "teamId" FROM member_support_links WHERE "supportId" = $1 ORDER BY "startedAt" DESC, "createdAt" DESC LIMIT 1`, [id]);
   // What the undo will do, worked out as the undo works it out: the status they come back to and the steps IT restores.
   return { undo: { allowed: !state.undoRefusal, why: state.undoRefusal, until: state.undoUntil, comesBack, notBack, status: plan.status, restore: plan.restore?.keys ?? [] },
-   rehire: { allowed: !state.rehireRefusal, why: state.rehireRefusal, earliest: usDay('latest'), latest: addDays(usDay('latest'), REHIRE_MAX_DAYS),
+   rehire: { allowed: !state.rehireRefusal, why: state.rehireRefusal, earliest: [usDay('latest'), member.leftAt ? firstDayAfter(member.leftAt) : ''].sort().at(-1)!, latest: addDays(usDay('latest'), REHIRE_MAX_DAYS),
     previous: { position: member.position === 'DISPATCHER' ? 'DISPATCHER' : member.supportType, mcId: previous?.mcId ?? null, teamId: previous?.teamId ?? null, jobTitleId: member.jobTitleId,
      supportsMemberId: link?.dispatcherId ?? null, supportsTeamId: link?.teamId ?? null } },
    removal: state.removal ? { open: !state.removal.completedAt, completedAt: state.removal.completedAt } : null, ...accounts };
@@ -250,7 +252,8 @@ export class BringBackService {
   const later = 'They came back as a newer record. Bring them back from that record instead.';
   const undoRefusal = facts.later ? later : !marked ? 'Only a leaving recorded here can be undone. Rehire brings them back.'
    : usDay('latest') > undoUntil ? `Undo leaving was possible until ${undoUntil}. Rehire brings them back.` : null;
-  const rehireRefusal = facts.later ? later : removal && !removal.completedAt ? 'IT is still removing their access. Undo leaving instead, or rehire once IT finishes.' : null;
+  // Undo is offered as the way round only when it's possible now.
+  const rehireRefusal = facts.later ? later : removal && !removal.completedAt ? `IT is still removing their access. ${undoRefusal ? 'Rehire them' : 'Undo leaving instead, or rehire them'} once IT finishes.` : null;
   return { removal, undoUntil: marked ? undoUntil : null, undoRefusal, rehireRefusal, leftKnown: facts.leftKnown, leftReason: member.leftReason };
  }
 
@@ -417,9 +420,15 @@ export class BringBackService {
  }
 }
 
-/** Every time someone came back (section 41), newest first, for the dispatcher page: undone leavings and rehires, with who and why. */
-export function memberReturns(db: Pick<EntityManager, 'query'>, memberId: string): Promise<{ id: string; kind: 'UNDO' | 'REHIRE'; leftAt: Date; leftKnown: boolean; previousJoinedAt: Date; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: Date; by: string | null }[]> {
+/**
+ * Every time someone came back (section 41), newest first, for the dispatcher page: undone leavings and rehires, with who and
+ * why, and the IT checklist each one asked for (setup: its progress, null when IT wasn't asked), so the page words what IT does.
+ */
+export function memberReturns(db: Pick<EntityManager, 'query'>, memberId: string): Promise<{ id: string; kind: 'UNDO' | 'REHIRE'; leftAt: Date; leftKnown: boolean; previousJoinedAt: Date; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: Date; by: string | null;
+  setup: { done: number; total: number; completedAt: Date | null; cancelledAt: Date | null } | null }[]> {
  return db.query(`SELECT r.id, r.kind, r."leftAt", r."leftKnown", r."leftReason", r."previousJoinedAt", r."previousStartKnown", r."firstDay"::text AS "firstDay", r.reason, r."createdAt",
-   CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS by
-  FROM member_returns r LEFT JOIN users u ON u.id = r."actorId" WHERE r."memberId" = $1 ORDER BY r."createdAt" DESC`, [memberId]);
+   CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS by,
+   CASE WHEN s.id IS NULL THEN NULL ELSE json_build_object('done', (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = s.id AND t.status IN ('COMPLETED', 'NOT_NEEDED'))::int,
+    'total', (SELECT count(*) FROM it_onboarding_tasks t WHERE t."requestId" = s.id)::int, 'completedAt', s."completedAt", 'cancelledAt', s."cancelledAt") END AS setup
+  FROM member_returns r LEFT JOIN users u ON u.id = r."actorId" LEFT JOIN it_onboarding_requests s ON s.id = r."setupRequestId" WHERE r."memberId" = $1 ORDER BY r."createdAt" DESC`, [memberId]);
 }

@@ -10,7 +10,12 @@ import { WITH_LEAVING_MS } from './bring-back';
  * field or the account, never an email, phone number, sign-in, Telegram or legal name; reasons staff wrote show as written.
  */
 export type HistoryCategory = 'WORK' | 'ACCOUNTS' | 'AWAY' | 'DETAILS' | 'IT' | 'VIEWS';
-export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null }
+/** dateOnly: a day picked in a form (stored at midday UTC), shown as a date with no time. */
+export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null; dateOnly?: boolean }
+/** Days picked in forms are stored at midday UTC; nothing recorded by a click lands on it to the millisecond. */
+const DAY_ONLY = 'T12:00:00.000Z';
+/** A day sorts after what was clicked that day (US Eastern), since it's usually recorded later the same day or for an earlier one. */
+const sortKey = (entry: HistoryEntry) => entry.dateOnly ? new Date(`${entry.at.slice(0, 10)}T23:59:59.999-05:00`).toISOString() : entry.at;
 type Q = Pick<EntityManager, 'query'>;
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -46,7 +51,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  const [member]: Row[] = await db.query(`SELECT d.id, d.position, d.status, d."applicationId", d."accountUserId", d."leftReason", d."leftAt" FROM dispatch_members d WHERE d.id = $1`, [memberId]);
  if (!member) return { entries: [], counts: { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 } };
  const out: HistoryEntry[] = [];
- const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null) => { if (at && title) out.push({ id, at: iso(at), category, icon, title, by, body }); };
+ const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null) => { if (!at || !title) return; const when = iso(at); out.push({ id, at: when, category, icon, title, by, body, ...(when.endsWith(DAY_ONLY) ? { dateOnly: true } : {}) }); };
  // A few queries at a time, so one page never takes the whole connection pool (max 10) from other requests.
  const running = new Set<Promise<unknown>>();
  const q = async (sql: string, params: unknown[] = [memberId]): Promise<Row[]> => {
@@ -133,10 +138,12 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  const undated = (row: Row) => row.id === firstPeriod ? ' (start date not recorded)' : '';
 
  // Work: MC and team, job title, team lead, support or updater, who they help, drivers, promotion.
+ // A rehire's first day starts again even when it's the day after they left, which the gap alone can't tell from a move.
+ const rehireDays = new Set((await q(`SELECT "firstDay"::text AS day FROM member_returns WHERE "memberId" = $1 AND kind = 'REHIRE'`)).map(row => row.day as string));
  assignments.forEach((row, index) => {
   const place = row.team ? `${row.team} at ${row.mc}` : row.mc ? `${row.mc}, independent` : 'no MC yet';
   // A period after time away (a rehire, section 41) starts again rather than moving.
-  const previous = assignments[index - 1], again = !!previous?.endedAt && new Date(row.startedAt).getTime() - new Date(previous.endedAt).getTime() > WITH_LEAVING_MS;
+  const previous = assignments[index - 1], again = !!previous?.endedAt && (new Date(row.startedAt).getTime() - new Date(previous.endedAt).getTime() > WITH_LEAVING_MS || rehireDays.has(new Date(row.startedAt).toISOString().slice(0, 10)));
   add(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : again ? `Started again in ${place}` : `Moved to ${place}`, row.by, row.reason ?? null);
  });
  links.forEach((row, index) => {
@@ -166,7 +173,8 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
 
  // Leave and leaving: notices, access removal, leaving; leave and who covers.
  for (const row of notices) {
-  add(`notice-${row.id}`, row.createdAt, 'AWAY', 'calendar', `Notice given: last day ${day(row.lastDay)}`, row.by, row.reason);
+  // The last day as given: a change keeps the day it replaced, so the first one's from is the original.
+  add(`notice-${row.id}`, row.createdAt, 'AWAY', 'calendar', `Notice given: last day ${day(row.changes?.[0]?.from ?? row.lastDay)}`, row.by, row.reason);
   (row.changes ?? []).forEach((change: Row, index: number) => add(`notice-change-${row.id}-${index}`, change.at, 'AWAY', 'calendar', `Last day changed to ${day(change.to)}`, changerNames.get(change.by) ?? null, change.reason ?? null));
   if (row.cancelledAt) add(`notice-cancel-${row.id}`, row.cancelledAt, 'AWAY', 'calendar', 'Notice cancelled', row.cancelledBy, row.cancelReason ?? null);
  }
@@ -248,7 +256,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   if (row.cancelledAt) add(`setup-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', 'IT setup stopped');
  }
  for (const row of removals) {
-  add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', row.dueOn && row.dueOn > usDay('latest', new Date(row.createdAt)) ? `IT removal scheduled for ${day(row.dueOn)}` : 'IT asked to remove access', row.by);
+  add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', row.dueOn && row.dueOn > usDay('latest', new Date(row.createdAt)) ? 'IT removal scheduled for their last day' : 'IT asked to remove access', row.by);
   if (row.completedAt) add(`removal-done-${row.id}`, row.completedAt, 'IT', 'monitor', 'IT finished removing access');
   if (row.cancelledAt) add(`removal-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', row.reversedAt ? 'IT’s removal reversed: they came back' : 'IT removal cancelled');
  }
@@ -316,7 +324,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    case 'SIGNED_COPY_VIEWED': add(id, at, 'VIEWS', 'eye', `Signed ${m.kind === 'CONTACT_LIST' ? 'contact list' : m.kind ?? 'document'} opened (view only)`, row.by); break;
   }
  }
- out.sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+ out.sort((a, b) => sortKey(b).localeCompare(sortKey(a)) || b.id.localeCompare(a.id));
  const counts = { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 };
  for (const entry of out) { counts[entry.category] += 1; if (entry.category !== 'VIEWS') counts.ALL += 1; }
  return { entries: out, counts };

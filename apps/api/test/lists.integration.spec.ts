@@ -140,6 +140,18 @@ integration('Managed lists (disposable PostgreSQL)', () => {
     expect(JSON.stringify(events)).not.toMatch(/North Star|123456|2876102/);
   });
 
+  it('counts as Used by everyone working there now, however they were added, and nobody who left', async () => {
+    const mc = (await agents.manager.post('/api/lists/mcs').set(headers).send({ name: 'Hand Added Haulers' }).expect(201)).body;
+    const title = (await agents.manager.post('/api/lists/job-titles').set(headers).send({ name: 'Night dispatcher' }).expect(201)).body;
+    for (const [first, status] of [['Rae', 'ACTIVE'], ['Sol', 'ACTIVE'], ['Tam', 'LEFT']]) {
+      const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",status,"jobTitleId","joinedAt","leftAt") VALUES ($1,'Fictional',$2,$3,now() - interval '1 day',$4) RETURNING id`, [first, status, title.id, status === 'LEFT' ? new Date() : null]);
+      await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt","endedAt") VALUES ($1,$2,now() - interval '1 day',$3)`, [member.id, mc.id, status === 'LEFT' ? new Date() : null]);
+    }
+    const usage = async (path: string, id: string) => (await agents.manager.get(`/api/lists/${path}`).set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id).usage;
+    expect(await usage('mcs', mc.id)).toBe(2);
+    expect(await usage('job-titles', title.id)).toBe(2);
+  });
+
   it('keeps lists to dispatch managers and administrators, and validates job titles', async () => {
     await mcs(agents.it).expect(403);
     await agents.it.post('/api/lists/job-titles').set(headers).send({ name: 'Dispatcher' }).expect(403);

@@ -85,8 +85,10 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
       ['WORK', 'Job title changed to Senior dispatcher'], ['DETAILS', 'Phone number added'], ['DETAILS', 'Phone number removed'], ['WORK', 'Sue Support started helping them'], ['DETAILS', 'Added by hand']]));
     expect(rileyTimeline.entries.find(entry => entry.title === 'Moved to Blue team at Northwind Freight')).toMatchObject({ by: 'Avery Quinn', body: 'Team change after the merge.' });
     // Newest first, counts follow the categories, and nothing names a value.
-    const times = rileyTimeline.entries.map(entry => entry.at);
+    // A day picked in a form shows as a date and sorts after what was clicked that day (US Eastern).
+    const times = rileyTimeline.entries.map(entry => (entry as { dateOnly?: boolean }).dateOnly ? new Date(`${entry.at.slice(0, 10)}T23:59:59.999-05:00`).toISOString() : entry.at);
     expect([...times].sort().reverse()).toEqual(times);
+    expect(rileyTimeline.entries.filter(entry => entry.at.endsWith('T12:00:00.000Z')).every(entry => (entry as { dateOnly?: boolean }).dateOnly)).toBe(true);
     expect(rileyTimeline.counts.WORK).toBe(rileyTimeline.entries.filter(entry => entry.category === 'WORK').length);
     // Random ids may hold any digits, so only what History shows is checked.
     expect(JSON.stringify(rileyTimeline.entries.map((entry: Row) => [entry.title, entry.by, entry.body]))).not.toMatch(/@|555|Work cell/);

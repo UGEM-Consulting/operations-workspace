@@ -198,7 +198,7 @@ export class NoticeActionDto {
 }
 export class LeaveMemberDto {
  @IsInt() @Min(1) version!: number;
- @IsDateString({ strict: true }) leftAt!: string;
+ @IsDateString({ strict: true }, { message: 'Enter a real date.' }) leftAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher left.' }) @MaxLength(500) reason!: string;
  // What IT does with their company email: forward new mail to the manager marking them as left for 30 days, or just
  // suspend it. An older page sends nothing, which suspends.
@@ -286,15 +286,15 @@ export class LeaveDto {
  @IsInt() @Min(1) version!: number;
  // Every driver they have, each with who covers them; an older page sends none and the drivers stay with them.
  @IsOptional() @IsArray() @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => CoverDto) covers?: CoverDto[];
- @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) firstDay!: string;
- @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) firstDay!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) backOn!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why they’re away.' }) @MaxLength(1000) reason!: string;
  @IsOptional() @IsIn(['FORWARD', 'AUTO_REPLY']) emailWhileAway?: 'FORWARD' | 'AUTO_REPLY';
  @IsOptional() @IsIn(['FORWARD', 'VOICEMAIL']) callsWhileAway?: 'FORWARD' | 'VOICEMAIL';
 }
 export class BackOnDto {
  @IsInt() @Min(1) version!: number;
- @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) backOn!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the return date changed.' }) @MaxLength(1000) reason!: string;
 }
 export class LeaveReasonDto {

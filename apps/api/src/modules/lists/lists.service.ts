@@ -24,10 +24,13 @@ export class ListsService {
  constructor(private readonly db: DataSource) {}
 
  async list(kind: ListKind, status: 'ACTIVE' | 'ARCHIVED' | 'ALL' = 'ALL') {
-  const { table, column } = TABLES[kind];
-  // "Used by" counts approved dispatchers whose confirmed assignment matches the entry's name.
-  const rows: Record<string, unknown>[] = await this.db.query(`SELECT l.*, (SELECT count(*)::integer FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id
-    WHERE a.status = 'APPROVED' AND lower(regexp_replace(btrim(i."${column}"), '\\s+', ' ', 'g')) = l."nameKey") AS usage
+  const { table } = TABLES[kind];
+  // "Used by" counts the dispatchers working there now (an open MC period) or with that job title, however they were added;
+  // supports and updaters take their MC from whoever they help, so they aren't counted.
+  const usage = kind === 'MC'
+   ? `(SELECT count(DISTINCT a."memberId")::integer FROM member_assignments a JOIN dispatch_members d ON d.id = a."memberId" WHERE a."mcId" = l.id AND a."endedAt" IS NULL AND d.status <> 'LEFT')`
+   : `(SELECT count(*)::integer FROM dispatch_members d WHERE d."jobTitleId" = l.id AND d.position = 'DISPATCHER' AND d.status <> 'LEFT')`;
+  const rows: Record<string, unknown>[] = await this.db.query(`SELECT l.*, ${usage} AS usage
    FROM ${table} l WHERE ($1 = 'ALL' OR ($1 = 'ACTIVE') = (l."archivedAt" IS NULL)) ORDER BY l."nameKey"`, [status]);
   const [counts] = await this.db.query(`SELECT count(*) FILTER (WHERE "archivedAt" IS NULL)::integer AS active, count(*) FILTER (WHERE "archivedAt" IS NOT NULL)::integer AS archived FROM ${table}`);
   return { items: rows.map(row => this.view(kind, row as unknown as Item & { usage: number })), counts };

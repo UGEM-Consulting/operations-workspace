@@ -233,6 +233,31 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect((await profile(taylor.memberId)).status).toBe('ACTIVE');
   });
 
+  it('offers a first day back the rehire takes, shows each return’s IT checklist, and words days picked in forms as dates', async () => {
+    const taylor = await dispatcher('Taylor');
+    // Impossible days are refused as such, never a server error.
+    for (const body of [{ firstDay: '2026-11-31', backOn: ahead(10) }, { firstDay: ahead(1), backOn: '2027-02-30' }])
+      expect((await act(taylor.memberId, 'on-leave', { ...body, reason: 'Family matters.' }, 400)).body.message).toEqual(expect.arrayContaining(['Enter a real date.']));
+    await leave(taylor.memberId, { emailAction: 'ARCHIVE' });
+    const removalId = await finishRemoval(taylor.memberId);
+    const offered = await options(taylor.memberId);
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    const rehire = (firstDay: string, status = 201) => act(taylor.memberId, 'rehire', { firstDay, position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: title.id, email: 'RESTORE', ringCentral: 'NONE', businessSoftware: false, equipment: false }, status);
+    // Left today: the day offered is one the rehire accepts, and any earlier day is refused.
+    expect(offered.rehire.earliest >= usDay('latest')).toBe(true);
+    if (offered.rehire.earliest > usDay('latest')) await rehire(usDay('latest'), 400);
+    await rehire(offered.rehire.earliest);
+    const back = await profile(taylor.memberId);
+    expect(back.returns[0]).toMatchObject({ kind: 'REHIRE', setup: { done: 0, total: expect.any(Number), completedAt: null, cancelledAt: null } });
+    await finishSetup((await returnSetup(taylor.memberId)).id);
+    expect((await profile(taylor.memberId)).returns[0].setup.completedAt).not.toBeNull();
+    // A day picked in a form (the period's start) is a date with no time; History sorts it after that day's clicks.
+    const entries: { title: string; at: string; dateOnly?: boolean }[] = (await profile(taylor.memberId)).timeline.entries;
+    expect(entries.find(entry => /^Started again/.test(entry.title))).toMatchObject({ dateOnly: true });
+    expect(entries.find(entry => entry.title.startsWith('Rehired'))?.dateOnly).toBeUndefined();
+    expect(removalId).toBeTruthy();
+  });
+
   it('rehires a support with nothing asked of IT: Active on their first day back', async () => {
     const dana = await dispatcher('Dana');
     const sky = await supportOf(dana.memberId);

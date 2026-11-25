@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
  * approved 2026-11-19). The API words every entry and gives its filter; this shows them newest first by month, 50 at a time.
  */
 export type HistoryCategory = 'WORK' | 'ACCOUNTS' | 'AWAY' | 'DETAILS' | 'IT' | 'VIEWS';
-export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null }
+export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null; dateOnly?: boolean }
 export interface MemberTimeline { entries: HistoryEntry[]; counts: Record<'ALL' | HistoryCategory, number> }
 
 const ICONS: Record<string, LucideIcon> = { route: Route, crown: Crown, headset: Headset, 'refresh-cw': RefreshCw, 'trending-up': TrendingUp, truck: Truck, 'pen-line': PenLine, 'user-plus': UserPlus, 'user-check': UserCheck,
@@ -50,7 +50,7 @@ export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: Memb
         : months.map(group => <section key={group.month} aria-label={group.month}>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.month}</h3>
           <Timeline items={group.entries.map(entry => { const Icon = ICONS[entry.icon] ?? PenLine; return { id: entry.id, icon: <Icon aria-hidden="true" />, title: entry.title,
-            meta: <>{entry.by ? `${entry.by} · ` : ''}<LocalTime iso={entry.at} /></>, body: entry.body ?? undefined }; })} />
+            meta: <>{entry.by ? `${entry.by} · ` : ''}<LocalTime iso={entry.at} format={entry.dateOnly ? 'date' : 'datetime'} /></>, body: entry.body ?? undefined }; })} />
         </section>)}
       {matching.length > shown && <div className="flex justify-center"><Button variant="outline" className={cn('max-sm:w-full')} onClick={() => setShown(count => count + PAGE)}>Show older ({matching.length - shown})</Button></div>}
     </CardBody>
