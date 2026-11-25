@@ -41,6 +41,8 @@ export const RESTORE_TASKS:Record<string,string>={
 export const RESTORE_UNCLOSED:Record<string,string>={
  GOOGLE_WORKSPACE:'Their email was never closed through the workspace: check it still exists and is theirs, then make sure it has a full license and set a new password for them.',
  RINGCENTRAL:'Their RingCentral user was never turned off through the workspace: check it still has this number and isn’t someone else’s, then make sure it’s enabled.',
+ SMS:'Check SMS is on for their RingCentral user; it was never turned off through the workspace.',
+ CALL_RECORDING:'Check call recording is on, inbound and outbound; it was never turned off through the workspace.',
 };
 /** Who is coming back, kept on their checklist's profile so IT sees it without reading the dispatcher record. */
 export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:EmailDone|null;emailDeletedOn:string|null;by:string;/** Restored accounts IT was never asked to close, so IT checks them first. */notClosed?:('EMAIL'|'RINGCENTRAL')[];}

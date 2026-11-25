@@ -11,12 +11,20 @@ import { ACCOUNT_TASKS, ItAccountActivity, ItAccountRequest, ItAccountTask, type
 import { CompanyAccount } from './company-accounts.entity';
 
 const done = (task: Pick<ItAccountTask, 'status'>) => task.status === 'COMPLETED';
-/** Someone's main accounts: what IT recorded on their setups (newest first), else what a manager recorded by hand. */
-export async function mainAccounts(em: EntityManager, memberId: string) {
+/**
+ * Someone's main accounts: what IT recorded on their setups (newest first), else what a manager recorded by hand. The
+ * extension comes with its number: the record's only when the record holds that same number. `loaded` is their record when
+ * the caller already read it.
+ */
+export async function mainAccounts(em: EntityManager, memberId: string, loaded?: ExistingMemberRecord | null) {
  const setups = await memberSetups(em, memberId), fromIt = setups.length ? setupAccounts(setups) : null;
- const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId });
- return { companyEmail: fromIt?.companyEmail ?? record?.companyEmail ?? null, ringCentralNumber: fromIt?.ringCentralNumber ?? record?.ringCentralNumber ?? null,
-  ringCentralExtension: fromIt?.ringCentralExtension ?? record?.ringCentralExtension ?? null, setup: setups.find(setup => setup.companyEmail || setup.assignedRingCentralPhoneNumber) ?? null, record };
+ const record = loaded !== undefined ? loaded : await em.getRepository(ExistingMemberRecord).findOneBy({ memberId });
+ const ringCentralNumber = fromIt?.ringCentralNumber ?? record?.ringCentralNumber ?? null;
+ const recordExtension = record?.ringCentralNumber && record.ringCentralNumber === ringCentralNumber ? record.ringCentralExtension : null;
+ const ringCentralExtension = !ringCentralNumber ? fromIt?.ringCentralExtension ?? record?.ringCentralExtension ?? null
+  : (fromIt?.ringCentralNumber ? fromIt.ringCentralExtension : null) ?? recordExtension ?? null;
+ return { companyEmail: fromIt?.companyEmail ?? record?.companyEmail ?? null, ringCentralNumber, ringCentralExtension,
+  setup: setups.find(setup => setup.companyEmail || setup.assignedRingCentralPhoneNumber) ?? null, record };
 }
 /** The load board accounts an email still signs in to (open seats). */
 async function seatsUsing(em: Pick<EntityManager, 'query'>, email: string | null): Promise<string[]> {
@@ -38,6 +46,21 @@ export async function askForMoveAccounts(em: EntityManager, actorId: string, mem
   keep: main.companyEmail && kept.length ? [{ value: main.companyEmail, reason: `Signs in to ${kept.join(' and ')}` }] : [] };
  const keys: AccountTaskKey[] = ['NEW_EMAIL', 'NEW_NUMBER', ...(main.companyEmail && !kept.length ? ['CLOSE_EMAIL' as const] : []), ...(main.ringCentralNumber ? ['CLOSE_NUMBER' as const] : []), ...(main.companyEmail && !kept.length ? ['SHARED_PASSWORDS' as const] : [])];
  return openRequest(em, actorId, { memberId: member.id, kind: 'MOVE', accountId: null, profile, note: null, emailAfter: 'SUSPEND', forwardTo: null, emailAction: keys.includes('CLOSE_EMAIL') ? emailAction : 'SUSPEND' }, keys);
+}
+/**
+ * Ask IT to close one account at another company (its row locked by the caller): the email, with shared passwords, and the
+ * number it holds. Whoever asks gets the notice; with FORWARD the email forwards to them.
+ */
+export async function askToCloseAccount(em: EntityManager, actorId: string, member: DispatchMember, account: CompanyAccount, choice: { emailAfter: 'FORWARD' | 'SUSPEND'; emailAction?: EmailAction; note: string | null }, from?: string) {
+ const company = (await em.query(`SELECT name FROM mcs WHERE id = $1`, [account.mcId]))[0]?.name ?? account.companyName;
+ const profile: AccountRequestProfile = { displayName: `${member.firstName} ${member.lastName}`, fromMc: company, toMc: null, create: [], keep: [],
+  close: [...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber }] : [])] };
+ const forward = choice.emailAfter === 'FORWARD' && !!account.companyEmail;
+ const request = await openRequest(em, actorId, { memberId: member.id, kind: 'CLOSE', accountId: account.id, profile, note: choice.note, emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? actorId : null, emailAction: account.companyEmail ? choice.emailAction ?? 'SUSPEND' : 'SUSPEND' },
+  [...(account.companyEmail ? ['CLOSE_EMAIL' as const, 'SHARED_PASSWORDS' as const] : []), ...(account.ringCentralNumber ? ['CLOSE_NUMBER' as const] : [])]);
+ account.version += 1; await em.getRepository(CompanyAccount).save(account);
+ await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId, metadata: { accountId: account.id, fields: [], closeAsked: true, forward, ...(account.companyEmail && choice.emailAction ? { emailAction: choice.emailAction } : {}), ...(from ? { from } : {}) } });
+ return request;
 }
 async function openRequest(em: EntityManager, actorId: string, input: Pick<ItAccountRequest, 'memberId' | 'kind' | 'accountId' | 'profile' | 'note' | 'emailAfter' | 'forwardTo' | 'emailAction'>, keys: AccountTaskKey[]) {
  const request = await em.getRepository(ItAccountRequest).save({ ...input, managerId: actorId });
@@ -72,14 +95,7 @@ export class AccountRequestsService {
    if (await em.getRepository(ItAccountRequest).existsBy({ accountId, completedAt: IsNull(), cancelledAt: IsNull() })) throw new ConflictException('IT has already been asked to close this account.');
    const using = await seatsUsing(em, account.companyEmail);
    if (using.length) throw new ConflictException(`It still signs in to ${using.join(' and ')}. Move or end that seat first.`);
-   const company = (await em.query(`SELECT name FROM mcs WHERE id = $1`, [account.mcId]))[0]?.name ?? account.companyName;
-   const profile: AccountRequestProfile = { displayName: `${member.firstName} ${member.lastName}`, fromMc: company, toMc: null, create: [], keep: [],
-    close: [...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber }] : [])] };
-   const forward = dto.emailAfter === 'FORWARD' && !!account.companyEmail;
-   const request = await openRequest(em, user.id, { memberId: member.id, kind: 'CLOSE', accountId, profile, note: dto.note?.trim() || null, emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? user.id : null, emailAction: account.companyEmail ? dto.emailAction ?? 'SUSPEND' : 'SUSPEND' },
-    [...(account.companyEmail ? ['CLOSE_EMAIL' as const, 'SHARED_PASSWORDS' as const] : []), ...(account.ringCentralNumber ? ['CLOSE_NUMBER' as const] : [])]);
-   account.version += 1; await em.save(account);
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields: [], closeAsked: true, forward, ...(account.companyEmail && dto.emailAction ? { emailAction: dto.emailAction } : {}) } });
+   const request = await askToCloseAccount(em, user.id, member, account, { emailAfter: dto.emailAfter, emailAction: dto.emailAction, note: dto.note?.trim() || null });
    return { id: request.id };
   });
  }

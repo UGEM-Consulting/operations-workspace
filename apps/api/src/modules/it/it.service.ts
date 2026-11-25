@@ -92,7 +92,8 @@ export class ItService {
   this.checklistComplete(request,tasks);
   // A restored account IT was never asked to close is worded so IT checks it first (RESTORE_UNCLOSED).
   const notClosed=request.profile.returning?.notClosed??[];
-  const unclosed=(key:string)=>key==='GOOGLE_WORKSPACE'?notClosed.includes('EMAIL'):key==='RINGCENTRAL'&&notClosed.includes('RINGCENTRAL');
+  // The RingCentral user's SMS and call recording were never turned off either.
+  const unclosed=(key:string)=>key in RESTORE_UNCLOSED&&notClosed.includes(key==='GOOGLE_WORKSPACE'?'EMAIL':'RINGCENTRAL');
   const activity=await em.getRepository(ItOnboardingActivity).find({where:{requestId:request.id},order:{createdAt:'ASC'}});
   // This projection deliberately excludes application revisions, applicant sessions and reviewer comments.
   // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
