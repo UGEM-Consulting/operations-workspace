@@ -140,6 +140,6 @@ export interface BringBackOptions {
   rehire: { allowed: boolean; why: string | null; earliest: string; latest: string;
     previous: { position: 'DISPATCHER' | 'SUPPORT' | 'UPDATER'; mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null } };
   removal: { open: boolean; completedAt: string | null } | null;
-  email: { value: string; was: 'ARCHIVED' | 'SUSPENDED' | 'DELETED' | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null } | null;
-  ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null } | null;
+  email: { value: string; was: 'ARCHIVED' | 'SUSPENDED' | 'DELETED' | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
+  ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
 }

@@ -4,7 +4,7 @@ import type { User } from '../users/user.entity';
 import { JobTitle, Mc } from '../lists/lists.entity';
 import { addDays, usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
-import { lockSetupRequests, sameSetups } from '../it/removal';
+import { lockSetupRequests, memberSetups, sameSetups, setupAccounts } from '../it/removal';
 import { createReturnSetup } from '../it/support-setup';
 import { EmailDone, handedOver, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, RemovalProfile } from '../it/it.entity';
 import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberSupportLink, Team } from './dispatch.entity';
@@ -29,8 +29,9 @@ const day = (at: Date) => at.toISOString().slice(0, 10);
 const easternDay = (at: Date) => usDay('latest', at);
 
 interface Accounts {
- email: { value: string; was: EmailDone | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null } | null;
- ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null } | null;
+ // notClosed: IT has no removal for them, so the account was never closed here and IT checks it before turning it back on.
+ email: { value: string; was: EmailDone | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
+ ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
 }
 
 /**
@@ -238,7 +239,7 @@ export class BringBackService {
 
  /** Their company email and RingCentral user as IT left them, and whether each can come back as it was. */
  private async accounts(em: EntityManager, member: DispatchMember, removal: ItRemovalRequest | null): Promise<Accounts> {
-  if (!removal) return { email: null, ringCentral: null };
+  if (!removal) return this.recordedAccounts(em, member);
   const profile = removal.profile, tasks = await em.getRepository(ItRemovalTask).findBy({ requestId: removal.id });
   const task = (key: string) => tasks.find(item => item.key === key);
   const taken = async (kind: 'EMAIL' | 'RINGCENTRAL', value: string) => (await accountOwners(em, kind, value, member.id)).map(owner => owner.name);
@@ -258,6 +259,21 @@ export class BringBackService {
    ringCentral = { number: profile.ringCentralNumber, extension: profile.ringCentralExtension ?? null, restorable: !why, why };
   }
   return { email, ringCentral };
+ }
+ /**
+  * IT was never asked to remove their access (someone added from a file as Left, or nothing was recorded when they left): their
+  * email and number are what IT set up, else what a manager recorded, as leave reads them. IT checks each and turns it back on.
+  */
+ private async recordedAccounts(em: EntityManager, member: DispatchMember): Promise<Accounts> {
+  const setups = await memberSetups(em, member.id), fromSetups = setups.length ? setupAccounts(setups) : null;
+  const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: member.id });
+  const companyEmail = fromSetups?.companyEmail ?? record?.companyEmail ?? null, ringCentralNumber = fromSetups?.ringCentralNumber ?? record?.ringCentralNumber ?? null;
+  const ringCentralExtension = fromSetups?.ringCentralNumber ? fromSetups.ringCentralExtension : record?.ringCentralExtension ?? null;
+  const taken = async (kind: 'EMAIL' | 'RINGCENTRAL', value: string) => (await accountOwners(em, kind, value, member.id)).map(owner => owner.name);
+  const emailOwners = companyEmail ? await taken('EMAIL', companyEmail) : [], numberOwners = ringCentralNumber ? await taken('RINGCENTRAL', ringCentralNumber) : [];
+  const emailWhy = emailOwners.length ? `${companyEmail} is someone else’s now (${emailOwners.join(', ')}).` : null, numberWhy = numberOwners.length ? `${ringCentralNumber} is someone else’s now (${numberOwners.join(', ')}).` : null;
+  return { email: companyEmail ? { value: companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true } : null,
+   ringCentral: ringCentralNumber ? { number: ringCentralNumber, extension: ringCentralExtension, restorable: !numberWhy, why: numberWhy, notClosed: true } : null };
  }
 
  /** The restore checklist for an undone leaving: each step IT did (or started) comes back; an old email or number IT can't restore is made new. */

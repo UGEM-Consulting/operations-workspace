@@ -265,6 +265,24 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect((await removalOf(taylor.memberId)).profile).toMatchObject({ companyEmail: null, ringCentralNumber: null });
   });
 
+  it('offers to restore the email and number on their record when IT never removed their access', async () => {
+    // Someone added from a file as Left, with accounts a manager recorded and IT never asked to close them.
+    const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",status,"joinedAt","leftAt") VALUES ('Rowan','Fictional','LEFT',now() - interval '400 days',now() - interval '60 days') RETURNING id`);
+    const [mc] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt","endedAt") VALUES ($1,$2,now() - interval '400 days',now() - interval '60 days')`, [member.id, mc.id]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail","ringCentralNumber","ringCentralExtension") VALUES ($1,$2,'rowan.work@example.test','+1 202 555 0177','177')`, [member.id, users.manager.id]);
+    const offered = await options(member.id);
+    expect(offered.removal).toBeNull();
+    expect(offered.email).toMatchObject({ value: 'rowan.work@example.test', restorable: true, notClosed: true });
+    expect(offered.ringCentral).toMatchObject({ number: '+1 202 555 0177', extension: '177', restorable: true, notClosed: true });
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    await act(member.id, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: mc.id, jobTitleId: title.id, email: 'RESTORE', ringCentral: 'RESTORE', businessSoftware: false, equipment: false });
+    const setup = await returnSetup(member.id);
+    expect(setup).toMatchObject({ purpose: 'REHIRE', companyEmail: 'rowan.work@example.test', assignedRingCentralPhoneNumber: '+1 202 555 0177', ringCentralExtension: '177' });
+    expect(setup.restoreKeys).toEqual(expect.arrayContaining(['GOOGLE_WORKSPACE', 'RINGCENTRAL']));
+    expect((await profile(member.id)).accounts).toMatchObject({ companyEmail: 'rowan.work@example.test' });
+  });
+
   it('undoes a leaving that interrupted a rehire: the rehire checklist carries on with what IT had removed added to it', async () => {
     const taylor = await dispatcher('Taylor');
     await leave(taylor.memberId);
