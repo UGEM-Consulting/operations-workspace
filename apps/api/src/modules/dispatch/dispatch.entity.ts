@@ -90,6 +90,10 @@ export class MemberOtherName {
  @Column('uuid') memberId!: string;
  @Column('varchar', { length: 100 }) name!: string;
  @Column('uuid', { nullable: true }) mcId!: string | null;
+ /** Where it was used when that isn't one of our MCs (section 43); never with mcId. */
+ @Column('varchar', { length: 100, nullable: true }) companyName!: string | null;
+ /** Why the name is needed: staff text. */
+ @Column('varchar', { length: 200, nullable: true }) note!: string | null;
  @Column('uuid') addedBy!: string;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }

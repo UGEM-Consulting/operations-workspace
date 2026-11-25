@@ -1427,6 +1427,18 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await names(page.version, { otherNames: [{ name: 'Riley Stone' }, { name: 'Ryan Sands', mcId: mc.id }] }).expect(201);
       expect((await profile(id)).version).toBe(page.version);
       expect((await db.query(`SELECT count(*)::integer AS n FROM dispatch_events WHERE "memberId" = $1 AND event = 'NAMES_CHANGED'`, [id]))[0].n).toBe(1);
+      // Section 43: a name used at a company that isn't one of our MCs, typed in, and why it's kept; never an MC and a company both.
+      await names(page.version, { otherNames: [{ name: 'Riley Stone', mcId: mc.id, companyName: 'Lakeside Logistics' }] }).expect(400);
+      await names(page.version, { otherNames: [{ name: 'Riley Stone', companyName: '<b>' }] }).expect(400);
+      await names(page.version, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id, note: 'Name on their DAT account there.' }, { name: 'Riley Stone', companyName: ' Lakeside  Logistics ', note: 'Brokers still ask for Riley Stone.' }] }).expect(201);
+      const placed = await profile(id);
+      expect(placed.otherNames).toEqual([expect.objectContaining({ name: 'Ryan Sands', mc: 'Lakeside Carriers', companyName: null, note: 'Name on their DAT account there.' }),
+        expect.objectContaining({ name: 'Riley Stone', mc: null, companyName: 'Lakeside Logistics', note: 'Brokers still ask for Riley Stone.' })]);
+      const atCompany = (await agents.manager.get('/api/dispatch/members?page=1&status=ALL&search=Riley%20Stone').set(headers).expect(200)).body;
+      expect(atCompany.items[0].matched).toEqual({ label: 'Other name', value: 'Riley Stone at Lakeside Logistics' });
+      // The event names the field only, never a company or a note.
+      const latestEvent = (await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event = 'NAMES_CHANGED' ORDER BY "createdAt" DESC LIMIT 1`, [id]))[0];
+      expect(latestEvent.metadata).toEqual({ fields: ['otherNames'] });
     });
     it('fills in nothing from a row with a problem, so a value the check refused never reaches the record', async () => {
       const first = await add([gone(2, 'Drew', { leftOn: '', personalEmail: 'drew.home@example.test' })]);
