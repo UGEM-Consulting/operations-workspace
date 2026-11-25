@@ -225,6 +225,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   const flow=await submittedApplication();await create();await create();
   // Invitations nobody has claimed belong to Invitations, not All; once claimed they're applications in progress.
   expect((await manager.get('/api/onboarding/review-queue?status=ALL').set(headers).expect(200)).body.total).toBe(1);
+  // Claimed (email verified) but not saved yet: still INVITED, and already an application in progress.
+  const [claimed]=await db.query(`SELECT "invitationId" FROM dispatcher_applications WHERE status='INVITED' LIMIT 1`);
+  await db.query(`UPDATE invitations SET "consumedAt"=now() WHERE id=$1`,[claimed.invitationId]);
+  expect((await manager.get('/api/onboarding/review-queue?status=ALL').set(headers).expect(200)).body.total).toBe(2);
   await db.query(`UPDATE dispatcher_applications SET status='DRAFT' WHERE status='INVITED'`);
   const first=await manager.get('/api/onboarding/review-queue?page=1&pageSize=2&sort=updatedAt&direction=ASC').set(headers).expect(200);
   const second=await manager.get('/api/onboarding/review-queue?page=2&pageSize=2&sort=updatedAt&direction=ASC').set(headers).expect(200);

@@ -70,7 +70,7 @@ export function RehiredAlert({ member }: { member: MemberProfile }) {
   // The rehire's own checklist (an older API sends none: then the newest setup, as before).
   const setup = back.setup !== undefined ? back.setup : member.accounts?.total ? { done: member.accounts.done ?? 0, total: member.accounts.total, completedAt: member.accounts.completedAt ?? null, cancelledAt: null } : null;
   if (setup && !setup.completedAt && !setup.cancelledAt) return <Alert tone="info" title={`IT is setting ${member.firstName} up again`}><p>{setup.done} of {setup.total} tasks done. {member.firstName} becomes Active when IT finishes, as a new hire does.</p></Alert>;
-  return <Alert tone="info" title={<>Back <Day day={back.firstDay!} /></>}><p>{setup?.completedAt ? 'IT finished setting them up' : 'Nothing was asked of IT'}, so {member.firstName} becomes Active on their first day back.</p></Alert>;
+  return <Alert tone="info" title={<>Back <Day day={back.firstDay!} /></>}><p>{setup?.completedAt ? 'IT finished setting them up' : setup?.cancelledAt ? 'IT’s setup checklist was stopped' : 'Nothing was asked of IT'}, so {member.firstName} becomes Active on their first day back.</p></Alert>;
 }
 /** The time away between two stays, for MC and team history: from the day after they left to the day before they came back. */
 export function awayPeriods(member: MemberProfile) {

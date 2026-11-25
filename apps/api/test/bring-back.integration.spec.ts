@@ -255,6 +255,14 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     const entries: { title: string; at: string; dateOnly?: boolean }[] = (await profile(taylor.memberId)).timeline.entries;
     expect(entries.find(entry => /^Started again/.test(entry.title))).toMatchObject({ dateOnly: true });
     expect(entries.find(entry => entry.title.startsWith('Rehired'))?.dateOnly).toBeUndefined();
+    // A move later on their first day back is a move, and its day (one millisecond after the period it ends) still shows as a date.
+    const [open] = await db.query(`SELECT id, "mcId", "startedAt" FROM member_assignments WHERE "memberId" = $1 AND "endedAt" IS NULL`, [taylor.memberId]);
+    const moved = new Date(new Date(open.startedAt).getTime() + 1);
+    await db.query(`UPDATE member_assignments SET "endedAt" = $2 WHERE id = $1`, [open.id, open.startedAt]);
+    await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt") VALUES ($1,$2,$3)`, [taylor.memberId, open.mcId, moved]);
+    const after: { title: string; dateOnly?: boolean }[] = (await profile(taylor.memberId)).timeline.entries;
+    expect(after.filter(entry => /^Started again/.test(entry.title))).toHaveLength(1);
+    expect(after.find(entry => /^Moved to/.test(entry.title))).toMatchObject({ dateOnly: true });
     expect(removalId).toBeTruthy();
   });
 

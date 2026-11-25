@@ -138,7 +138,8 @@ export class BringBackService {
    const state = await this.state(em, member, true);
    if (state.rehireRefusal) throw new ConflictException(state.rehireRefusal);
    const leftAt = member.leftAt!, startedAt = new Date(`${firstDay}T12:00:00Z`);
-   if (startedAt.getTime() <= leftAt.getTime()) throw new BadRequestException('Their first day back must be after the day they left.');
+   // The same rule the dialog's earliest day comes from.
+   if (firstDay < firstDayAfter(leftAt)) throw new BadRequestException('Their first day back must be after the day they left.');
    const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: id });
    const accounts = await this.accounts(em, member, state.removal, { recorded: true, record });
    if (dto.email === 'RESTORE' && !accounts.email?.restorable) throw new BadRequestException(accounts.email?.why ?? 'There’s no company email of theirs to restore. Choose a new email or none.');

@@ -124,7 +124,10 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
       'Their company email handed over to Drew Calloway', 'IT asked to remove access']));
     expect((await timeline(riley)).entries.find(entry => entry.title === 'Left')).toMatchObject({ category: 'AWAY', body: 'Moved to another company.' });
     expect((await timeline(riley)).entries.find(entry => entry.title.startsWith('Last day changed to'))?.by).toBeTruthy();
-    expect(rileyTitles).toEqual(expect.arrayContaining([expect.stringMatching(/^IT removal scheduled for /)]));
+    // The notice and its removal keep the last day as given, not the one it was changed to.
+    const given = rileyTitles.find(title => title.startsWith('Notice given: last day '))!.slice('Notice given: last day '.length);
+    expect(rileyTitles).toContain(`IT removal scheduled for ${given}`);
+    expect(rileyTitles).not.toContain(`Last day changed to ${given}`);
     // Morgan's use stays on Riley's History from when it began, and reaches Drew's only when Drew became the owner.
     expect(rileyTitles).toEqual(expect.arrayContaining(['Morgan Pike started using their company email']));
     const drewTitles = await titles(drew);

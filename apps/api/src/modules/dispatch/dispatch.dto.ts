@@ -76,8 +76,8 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @Matches(EXTENSION, { message: 'The extension should be digits, up to 6.' }) ringCentralExtension?: string;
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) datEmail?: string;
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) truckstopEmail?: string;
- @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
- @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
+ @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) ndaSignedOn?: string;
+ @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) sopSignedOn?: string;
  // The company email or RingCentral number is someone else's and this person uses it too (section 35): recorded as shared.
  @IsOptional() @IsBoolean() shareCompanyEmail?: boolean;
  @IsOptional() @IsBoolean() shareRingCentral?: boolean;
@@ -164,7 +164,7 @@ export class PlaceMemberDto {
 /** A start date a manager found, or a correction of one, which needs a reason. */
 export class StartDateDto {
  @IsInt() @Min(1) version!: number;
- @Matches(/^\d{4}-\d{2}-\d{2}$/) startedOn!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) startedOn!: string;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 /** What a dispatch manager asks IT to set up for a support or updater (section 32), and a note for IT (never passwords). */
