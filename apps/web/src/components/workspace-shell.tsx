@@ -70,7 +70,7 @@ function Shell({ identity, counts, initiallyCollapsed, children }: { identity: I
           <Breadcrumbs items={crumbs} onLinkClick={guarded} />
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {SEARCHERS.includes(identity.user.role) && <TopSearch key={pathname} />}
+          {(SEARCHERS.includes(identity.user.role) || identity.navigation.some(item => item.href.startsWith('/view/'))) && <TopSearch key={pathname} />}
           {counts && counts.unreadNotifications !== null && <NotificationBell unread={counts.unreadNotifications} />}
           <AppearanceSelect />
         </div>

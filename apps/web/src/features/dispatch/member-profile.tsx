@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { MemberPhotosCard } from './member-photos';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, UserCheck, UserMinus, Users, type LucideIcon } from 'lucide-react';
+import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, Undo2, UserCheck, UserMinus, UserPlus, Users, type LucideIcon } from 'lucide-react';
 import { HistoryTimeline } from './history';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,8 @@ import { Avatar } from '@/components/ui/avatar';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Progress } from '@/components/ui/feedback';
 import { Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
+import { EmailAfterFields } from '@/features/it/email-choice';
+import { doneWord, emailAfterText, type EmailChoice } from '@/features/it/email-words';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
 import { PhotoButton, type ViewablePhoto } from '@/features/documents/photo-modal';
@@ -38,6 +40,7 @@ import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard,
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
 import { itNotAsked, lastWorked, recordChangeItems } from './left-record';
+import { awayPeriods, lastRehire, RehireDialog, RehiredAlert, rehiredMeta, UndoLeavingDialog, UndoWindowAlert } from './bring-back';
 import { LoadBoardsCard, type LoadBoardAccount } from '@/features/load-boards/seats';
 import { CompanyAccountsCard, MoveAccounts } from '@/features/company-accounts/card';
 import { aSupport, assists, Choice, fullName, memberBadge, MemberProfile, supportName, TeamRow, toReassign, underMc } from './types';
@@ -81,7 +84,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // A move's company accounts (section 33): kept by default.
   const [moveAccounts, setMoveAccounts] = useState<'KEEP' | 'NEW'>('KEEP');
   const [kind, setKind] = useState<'EMAIL' | 'PHONE'>('PHONE');
-  const [emailAfter, setEmailAfter] = useState<'FORWARD' | 'SUSPEND'>('FORWARD');
+  // What happens to their company email (section 40): Archive and forwarding to the manager to start.
+  const [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: true });
   // Others using their email or number (section 35): handed over to the first of them unless the manager chooses to close them.
   const [handOverTo, setHandOverTo] = useState(member.sharing?.usedBy[0]?.users[0]?.id ?? '');
   const [lastDay, setLastDay] = useState(today());
@@ -91,6 +95,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [leaveAction, setLeaveAction] = useState<LeaveAction | null>(null), [correcting, setCorrecting] = useState(false);
   // People who left and other names (section 33) have their own dialogs.
   const [leftDialog, setLeftDialog] = useState<'names' | 'lastDay' | 'close' | 'record' | null>(null);
+  // Bringing back someone who left (section 41).
+  const [bringing, setBringing] = useState<'undo' | 'rehire' | null>(null);
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts, photos = memberPhotos(member.id, !!member.photo, !!member.idPhoto, name);
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
@@ -109,9 +115,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       else if (action === 'startDate') await mutate(`dispatch/members/${member.id}/start-date`, 'POST', { version: member.version, startedOn: form.startedOn, ...(form.reason?.trim() ? { reason: form.reason } : {}) });
       // Their company accounts (section 33): sent only when IT is asked for new ones, so an older API never sees the field otherwise.
       else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason,
-        ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on' } : {}) });
+        ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on', ...(form.emailAction ? { emailAction: form.emailAction } : {}) } : {}) });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
-      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) ? { emailAfter } : {}), ...(handOverTo && member.sharing?.usedBy.length ? { handOverTo } : {}) });
+      else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) ? { emailAfter: emailChoice.forward ? 'FORWARD' : 'SUSPEND', emailAction: emailChoice.action } : {}), ...(handOverTo && member.sharing?.usedBy.length ? { handOverTo } : {}) });
       else if (action === 'lastDay') await mutate(`dispatch/members/${member.id}/last-day`, 'POST', { version: member.version, lastDay: form.lastDay, reason: form.reason });
       else if (action === 'cancel') await mutate(`dispatch/members/${member.id}/cancel-notice`, 'POST', { version: member.version, reason: form.reason });
       else if (action === 'removeNow') await mutate(`dispatch/members/${member.id}/remove-access`, 'POST', { version: member.version, reason: form.reason });
@@ -173,8 +179,11 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // Someone who left shows what was: their MC and team history on Overview, ending with the day they left, and no Now card.
   const gone = member.status === 'LEFT', addedLeft = gone && !!existing?.addedAsLeft;
   // Someone who left: the record can't be moved, but a missing last day, their names and (once) closing their accounts still can.
-  const leftMenu: MenuEntry[] = [...(existing ? [{ label: 'Edit recorded details', icon: FilePenLine, onSelect: () => setLeftDialog('record') }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }, ...(canAskItToClose(member) ? [{ separator: true as const }, { label: 'Ask IT to close their accounts', icon: Monitor, onSelect: () => setLeftDialog('close') }] : [])];
-  const leftActions = <div className="flex flex-wrap items-center gap-2 max-sm:w-full">{lastDayMissing(member) && <Button className="max-sm:flex-1" onClick={() => setLeftDialog('lastDay')}><Calendar aria-hidden="true" className="size-4" />Add last day</Button>}<DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={leftMenu} /></div>;
+  // Undo leaving waits in More actions for 30 days after the last day; Rehire is the main button (LeftBringBackScreen). An older API offers neither.
+  const bringBack = gone ? member.bringBack ?? null : null, rehired = lastRehire(member);
+  const leftMenu: MenuEntry[] = [...(bringBack?.canUndo ? [{ label: 'Undo leaving', icon: Undo2, onSelect: () => setBringing('undo') }] : []), ...(existing ? [{ label: 'Edit recorded details', icon: FilePenLine, onSelect: () => setLeftDialog('record') }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }, ...(canAskItToClose(member) ? [{ separator: true as const }, { label: 'Ask IT to close their accounts', icon: Monitor, onSelect: () => setLeftDialog('close') }] : [])];
+  const leftActions = <div className="flex flex-wrap items-center gap-2 max-sm:w-full">{lastDayMissing(member) && <Button className="max-sm:flex-1" onClick={() => setLeftDialog('lastDay')}><Calendar aria-hidden="true" className="size-4" />Add last day</Button>}
+    {bringBack && <Button className="max-sm:flex-1" variant={lastDayMissing(member) ? 'outline' : 'default'} onClick={() => setBringing('rehire')}><UserPlus aria-hidden="true" className="size-4" />Rehire</Button>}<DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={leftMenu} /></div>;
   const ending = onNotice ? [{ label: 'Cancel notice', icon: RotateCcw, onSelect: () => start('cancel') }, ...(removalOpen && !removal?.removeNowAt ? [{ label: 'Remove access now', icon: Ban, danger: true, onSelect: () => start('removeNow') }] : [])]
     : [{ label: 'Mark as leaving', icon: UserMinus, danger: true, onSelect: () => start('leave') }];
   const otherItems: MenuEntry[] = others.map(key => ({ label: actions[key].label, icon: actions[key].icon, onSelect: actions[key].onClick }));
@@ -185,14 +194,19 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     <CardHeader title="MC and team history" description={gone ? undefined : 'Every MC and team this dispatcher has worked for. Moves are recorded, never overwritten.'} />
     <CardBody>{noMc && !gone && <p className="text-sm text-muted-foreground">No MC yet. {member.firstName} can’t be given drivers or lead a team until they have one.</p>}<Timeline items={[
       ...(gone ? [{ id: 'left', tone: 'neutral' as const, icon: <UserMinus aria-hidden="true" />, title: 'Left', meta: lastDayMissing(member) ? 'Day not recorded' : member.leftAt ? <LocalTime iso={member.leftAt} format="date" /> : undefined }] : []),
-      ...member.history.map((row, index) => ({ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
+      ...member.history.flatMap((row, index) => [{ id: row.id, tone: row.endedAt ? 'neutral' as const : 'success' as const,
       icon: index < member.history.length - 1 && member.history[index + 1].mcId === row.mcId ? <Users aria-hidden="true" /> : <Building2 aria-hidden="true" />,
       // The period of someone added as Left with no last day ends on a day that isn't recorded.
       title: where(row), meta: <>{when(row)} – {row.endedAt ? (index === 0 && lastDayMissing(member) ? 'last day' : <LocalTime iso={row.endedAt} format="date" />) : 'today'}{row.movedBy ? ` · by ${row.movedBy}` : ''}</>,
-      body: row.reason ?? undefined }))]} />{gone && !member.history.length && <p className="text-sm text-muted-foreground">No MC or team was recorded.</p>}</CardBody>
+      body: row.reason ?? undefined },
+      // The time away between two stays (section 41), under the period they came back to.
+      ...awayPeriods(member).filter(away => row.startedAt.slice(0, 10) === away.firstDay).map(away => ({ id: away.id, tone: 'neutral' as const, icon: <UserMinus aria-hidden="true" />, title: 'Away',
+        meta: <>{away.leftKnown ? <LocalTime iso={new Date(Date.parse(away.leftAt) + 86400_000).toISOString()} format="date" /> : 'After a day not recorded'} – <LocalTime iso={new Date(Date.parse(`${away.firstDay}T12:00:00Z`) - 86400_000).toISOString()} format="date" /></> }))])]} />{gone && !member.history.length && <p className="text-sm text-muted-foreground">No MC or team was recorded.</p>}</CardBody>
   </Card>;
-  const emailNow = removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
-    ? (removal.emailAfter === 'FORWARD' ? `suspended and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : 'suspended') : null;
+  // Handed over to someone staying: kept open for them, so nothing was archived or turned off.
+  const keptFor = `kept for ${removal?.handedOverTo ?? 'the person staying'}`;
+  const emailNow = removal?.emailHandedOver ? keptFor : removal?.tasks.find(task => task.key === 'GOOGLE_WORKSPACE')?.status === 'COMPLETED'
+    ? `${removal.emailDone ? doneWord(removal.emailDone).toLowerCase() : 'suspended'}${removal.emailAfter === 'FORWARD' ? ` and forwarded to ${removal.forwardTo ?? 'the manager'} for 30 days` : ''}` : null;
   return <div className="space-y-6">
     <PageCrumb label={name} />
     <div className="flex flex-wrap items-start gap-4">
@@ -201,8 +215,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       <div className="min-w-0 flex-1"><PageHeader title={name} badge={<span className="flex flex-wrap gap-2">{!away && <Badge label={badge.label} tone={badge.tone} />}{leave && <Badge {...leaveBadge(leave)} />}{existing && <Badge label="Added by hand" tone="neutral" />}{notice && <Badge label={notice.passed ? 'Last day passed' : `Leaving ${new Date(middayIso(notice.lastDay)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`} tone={notice.passed ? 'danger' : 'warning'} />}</span>}
         meta={[support ? (supportOf ? <>{called} for {assists(supportOf)} · {supportOf.wholeTeam ? supportOf.mc : where(supportOf)}</> : leftMeta ? leftMeta : 'No dispatcher')
           : current ? (current.id === undated || !current.mc ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : leftMeta ? leftMeta : noMc ? 'No MC yet' : 'No MC or team',
+          ...(rehired && !notice && !leave ? rehiredMeta(member).slice(1) : []),
           ...(support ? [] : [member.leadOf ? `Team lead of ${member.leadOf.name}` : addedLeft ? lastWorked(member) : member.jobTitle?.name ?? 'Dispatcher']),
-          notice ? <>Last day <LastDay day={notice.lastDay} /></> : leave ? <>Away {shortDay(leave.firstDay)} to <Day day={leave.backOn} /></> : existing ? (startKnown ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : 'Start date not recorded') : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
+          notice ? <>Last day <LastDay day={notice.lastDay} /></> : leave ? <>Away {shortDay(leave.firstDay)} to <Day day={leave.backOn} /></> : rehired ? rehiredMeta(member)[0] : existing ? (startKnown ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : 'Start date not recorded') : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
         action={open ? <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
           <Button className="max-sm:flex-1" variant={main.outline ? 'outline' : 'default'} disabled={catchUp.busy && mainKey === 'link'} onClick={main.onClick}><main.icon aria-hidden="true" className="size-4" />{main.label}</Button>
           {more.length > 0 && <DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={more} />}
@@ -217,7 +232,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     {open && member.signIn?.status === 'WAITING' && member.signIn.request !== 'TURN_OFF' && <Alert tone="info" title={`IT will ${member.signIn.request === 'TURN_ON' ? 'turn' : 'create'} ${member.firstName}’s sign-in${member.signIn.request === 'TURN_ON' ? ' back on' : ''}`}>
       <p>{accounts?.companyEmail ?? existing?.companyEmail ? `They’ll use ${accounts?.companyEmail ?? existing?.companyEmail} and send ${member.firstName} a first password.` : 'IT will add their company email first, then send them a first password.'} You don’t need to do anything.</p></Alert>}
     {open && member.signInOff && member.signIn?.status !== 'WAITING' && !notice?.passed && !removal?.removeNowAt && <Alert tone="warning" title="Their team lead sign-in is off"><p>If they’re still working as a team lead, an administrator can turn it back on in Staff accounts.</p></Alert>}
-    {member.status === 'ONBOARDING' && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
+    <RehiredAlert member={member} />
+    {member.status === 'ONBOARDING' && !rehired && <Alert tone="info" title="Waiting for IT setup"><p>This dispatcher becomes Active when IT finishes their company accounts{accounts?.total ? ` (${accounts.done} of ${accounts.total} tasks done)` : ''}.</p></Alert>}
+    {gone && <UndoWindowAlert member={member} />}
     {member.status === 'LEFT' && (removal && removalOpen ? <Alert tone="warning" title={`IT is removing access: ${removal.done} of ${removal.total} done`}>
       <p>{emailNow ? `Company email ${emailNow}. ` : ''}The record and its history are kept; it can’t be moved or edited.</p></Alert>
       : existing?.addedAsLeft && !removal ? <AddedAsLeftAlert member={member} /> : <Alert tone="info" title="This dispatcher has left"><p>{removal?.completedAt ? <>IT removed their access <LocalTime iso={removal.completedAt} format="date" />. </> : null}The record and its history are kept. It can’t be moved or edited.</p></Alert>)}
@@ -356,7 +373,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           <CardHeader title="IT access" actions={<Badge label="Scheduled" tone="info" />} />
           <CardBody className="text-sm"><DescriptionList layout="rows" items={[
             { label: 'Company email', value: <>Working until <LastDay day={removal.dueOn} /></> }, { label: 'RingCentral', value: <>Working until <LastDay day={removal.dueOn} /></> },
-            { label: 'Email afterwards', value: removal.emailAfter === 'FORWARD' ? `Forward to ${removal.forwardTo ?? 'the manager'}, 30 days` : 'Suspend only' },
+            { label: 'Email afterwards', value: removal.emailHandedOver ? `Kept for ${removal.handedOverTo ?? 'the person staying'}` : removal.emailAction ? emailAfterText(removal.emailAction, removal.emailAfter === 'FORWARD', removal.forwardTo) : removal.emailAfter === 'FORWARD' ? `Forward to ${removal.forwardTo ?? 'the manager'}, 30 days` : 'Suspend only' },
             { label: 'Remove', value: <>End of <LastDay day={removal.dueOn} /></> }]} /></CardBody></Card>}
         {notice && <Card><CardHeader title="On the last day" /><CardBody><p className="text-[13px] leading-5 text-muted-foreground">Once everyone is reassigned, the workspace marks {member.firstName} as left. A team lead sign-in ends then too. The workspace never messages the person leaving.</p></CardBody></Card>}
         {removal && !removal.scheduled && <Card>
@@ -365,7 +382,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             <Progress label="Removal" value={removal.done} max={removal.total} />
             <DescriptionList layout="rows" items={[
               { label: 'Company email', value: emailNow ? emailNow[0].toUpperCase() + emailNow.slice(1) : removal.completedAt ? 'Removed' : 'Being removed' },
-              { label: 'RingCentral', value: removal.tasks.find(task => task.key === 'RINGCENTRAL')?.status === 'COMPLETED' ? 'Removed' : 'Being removed' },
+              { label: 'RingCentral', value: removal.numberHandedOver ? `Kept for ${removal.handedOverTo ?? 'the person staying'}` : removal.tasks.find(task => task.key === 'RINGCENTRAL')?.status === 'COMPLETED' ? (removal.emailAction ? 'User disabled' : 'Removed') : 'Being removed' },
               { label: removal.completedAt ? 'Removed' : 'Remove by', value: <LocalTime iso={removal.completedAt ?? `${removal.dueOn}T12:00:00Z`} format="date" /> }]} />
           </CardBody>
         </Card>}
@@ -394,6 +411,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         <p className="text-xs leading-5 text-muted-foreground">Dispatch managers and administrators see this record. Dispatchers don’t have accounts and never see the workspace.</p>
       </div>
     </div>
+    {bringing === 'undo' && <UndoLeavingDialog member={member} onClose={() => setBringing(null)} />}
+    {bringing === 'rehire' && <RehireDialog member={member} mcs={mcs} teams={teams} jobTitles={jobTitles} dispatchers={dispatchers} onClose={() => setBringing(null)} />}
     {leftDialog === 'names' && <NamesDialog member={member} mcs={mcs} onClose={() => setLeftDialog(null)} />}
     {leftDialog === 'lastDay' && <LeftDayDialog member={member} onClose={() => setLeftDialog(null)} />}
     {leftDialog === 'close' && <CloseAccountsDialog member={member} onClose={() => setLeftDialog(null)} />}
@@ -452,9 +471,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               { label: 'RingCentral number', value: accounts?.workPhone ?? recordedAccounts?.ringCentralNumber, mono: true, emptyLabel: recordedAccounts ? 'Not recorded' : 'None recorded' },
               ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : []),
               { label: noticeDay ? 'Remove' : 'Remove by', value: noticeDay ? <>At the end of <LastDay day={lastDay} />, not before</> : 'End of their last day' }]} />
-              {(accounts?.companyEmail || recordedAccounts?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) && <RadioGroup name="emailAfter" label="Their company email" cards value={emailAfter} onChange={value => setEmailAfter(value as 'FORWARD' | 'SUSPEND')} options={[
-                { value: 'FORWARD', label: 'Forward new email to me', description: 'IT suspends the account and forwards new email to you for 30 days.' },
-                { value: 'SUSPEND', label: 'Just suspend it', description: 'New email bounces. IT keeps the mailbox until the retention rules say otherwise.' }]} />}
+              {(accounts?.companyEmail || recordedAccounts?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) && <EmailAfterFields email={(accounts?.companyEmail || recordedAccounts?.companyEmail)!} value={emailChoice} onChange={setEmailChoice} />}
+              {(accounts?.workPhone || recordedAccounts?.ringCentralNumber) && <p className="text-[13px] leading-5 text-muted-foreground">IT disables their RingCentral user. The number stays with it and isn’t given to anyone else.</p>}
             </CardBody></Card>}
           <HandOverChoice member={member} value={handOverTo} onChange={setHandOverTo} />
           {handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL') && <p className="text-[13px] leading-5 text-muted-foreground">Their email goes to {member.sharing.usedBy.flatMap(item => item.users).find(user => user.id === handOverTo)?.name} with the mailbox, so there’s nothing to forward.</p>}

@@ -4,7 +4,7 @@ import { askForMoveAccounts } from '../company-accounts/account-requests';
 import { memberCompanyAccounts } from '../company-accounts/accounts';
 import { memberSeats, seatEmailsSql } from '../load-boards/seats';
 import { memberHistory } from './history';
-import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
+import { DataSource, EntityManager, IsNull, MoreThanOrEqual, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
 import { JobTitle, listNameKey, Mc } from '../lists/lists.entity';
 import { Role } from '../users/user.entity';
@@ -17,7 +17,7 @@ import { addDays, usDay } from '../safety/screening-rules';
 import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, removalScheduled } from '../it/it.entity';
 import { DriverAssignment } from '../safety/safety.entity';
 import { NotificationsService } from '../updates/notifications.service';
-import { createRemoval, lockSetupRequests, removalTaskKeys, sameSetups, setupAccounts } from '../it/removal';
+import { checkEmailChoice, createRemoval, lockSetupRequests, removalTaskKeys, sameSetups, setupAccounts } from '../it/removal';
 import { createSupportItRequest } from '../it/support-setup';
 import { SupportItItem } from '../it/it.entity';
 import { User as UserEntity, UserStatus } from '../users/user.entity';
@@ -27,6 +27,7 @@ import { LeaveService } from './leave.service';
 import { PaperScansService } from './paper-scans';
 import { memberRowsSql } from './member-list';
 import { checkHandOver, memberSharing, sharingOnLeft } from './shared-accounts';
+import { BringBackService, memberReturns, WITH_LEAVING_MS } from './bring-back';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
 /** Who last corrected each field, and when, for "Corrected by … on …". */
@@ -60,7 +61,7 @@ export function day(value: string) {
 @Injectable()
 export class DispatchService {
  private readonly logger = new Logger('Dispatch');
- constructor(private readonly db: DataSource, private readonly alerts: NotificationsService, private readonly details: MemberDetailsService, private readonly leaves: LeaveService, private readonly scans: PaperScansService) {}
+ constructor(private readonly db: DataSource, private readonly alerts: NotificationsService, private readonly details: MemberDetailsService, private readonly leaves: LeaveService, private readonly scans: PaperScansService, private readonly bringBack: BringBackService) {}
 
  async teams(status: 'ACTIVE' | 'ARCHIVED' | 'ALL' = 'ALL') {
   const items: Record<string, unknown>[] = await this.db.query(`SELECT t.id, t.name, t.version, t."archivedAt" IS NOT NULL AS archived,
@@ -186,7 +187,7 @@ export class DispatchService {
   const application = member.applicationId ? (await this.db.query(`SELECT a.id, a."invitationId", a."assignedManagerId", a."submittedAt", i.email,
     coalesce((SELECT s.fields FROM application_submissions s WHERE s."applicationId" = a.id ORDER BY s.version DESC LIMIT 1), a.fields) AS fields
    FROM dispatcher_applications a JOIN invitations i ON i.id = a."invitationId" WHERE a.id = $1 AND a.status = 'APPROVED'`, [member.applicationId]))[0] ?? null : null;
-  const [history, jobTitle, leadOf, it, documents, photo, contacts, activity] = await Promise.all([
+  const [history, jobTitle, leadOf, it, documents, photo, contacts, activity, returnRows] = await Promise.all([
    this.db.query(`SELECT a.id, a."startedAt", a."endedAt", a.reason, m.id AS "mcId", m.name AS mc, m."mcNumber", t.id AS "teamId", t.name AS team,
      CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "movedBy"
     FROM member_assignments a LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId" LEFT JOIN users u ON u.id = a."actorId"
@@ -194,7 +195,7 @@ export class DispatchService {
    member.jobTitleId ? this.db.getRepository(JobTitle).findOneBy({ id: member.jobTitleId }) : null,
    this.db.getRepository(Team).findOneBy({ leadMemberId: id }),
    // The company accounts IT recorded and how far setup is; never IT notes or verification metadata.
-   member.position === 'SUPPORT' ? this.supportSetups(id) : application ? this.db.query(`SELECT r."companyEmail", r."assignedRingCentralPhoneNumber" AS "workPhone", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."cancelledAt",
+   member.position === 'SUPPORT' ? this.supportSetups(id) : application ? this.db.query(`SELECT r.id, r."companyEmail", r."assignedRingCentralPhoneNumber" AS "workPhone", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."cancelledAt", r."createdAt",
      count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total
     FROM it_onboarding_requests r LEFT JOIN it_onboarding_tasks t ON t."requestId" = r.id WHERE r."applicationId" = $1 AND r.purpose = 'DISPATCHER' GROUP BY r.id`, [application.id]) : [],
    application ? this.db.query(`SELECT DISTINCT ON (d.id) d.id, d.kind, d.title, d.version, s."signedAt" FROM document_signatures s JOIN company_documents d ON d.id = s."documentId"
@@ -207,11 +208,17 @@ export class DispatchService {
    this.db.query(`SELECT c.id, c.kind, c.value, c.label, c."createdAt", CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "addedBy"
     FROM member_contacts c LEFT JOIN users u ON u.id = c."addedBy" WHERE c."memberId" = $1 AND c."removedAt" IS NULL ORDER BY c."createdAt"`, [id]),
    application ? this.db.query(`SELECT id, event, "createdAt" FROM application_activity WHERE "invitationId" = $1 ORDER BY "createdAt"`, [application.invitationId]) : [],
+   // A dispatcher coming back (section 41) has a setup that names them too.
+   member.position === 'SUPPORT' ? [] : this.supportSetups(id),
   ]);
   const canOpenApplication = !!application && (user.role === Role.SYSTEM_ADMIN || application.assignedManagerId === user.id);
   const existing = await this.existingRecord(user, id);
   // On notice or after they left: IT's removal progress (never IT notes) and what happens to their company email.
-  const [removalRow] = await this.db.query(`SELECT r.id, r."dueOn"::text AS "dueOn", r."completedAt", r."emailAfter", r."numberOutcome", r."removeNowAt", r."removeNowReason",
+  const [removalRow] = await this.db.query(`SELECT r.id, r."dueOn"::text AS "dueOn", r."completedAt", r."emailAfter", r."emailAction", r."emailDone", r."numberOutcome", r."removeNowAt", r."removeNowReason",
+    -- Handed over to someone staying (section 35): kept open for them, so nothing was archived or turned off.
+    CASE WHEN r.profile->'shared'->>'handOverToId' IS NULL THEN NULL ELSE r.profile->'shared'->>'handOverTo' END AS "handedOverTo",
+    coalesce(r.profile->'shared'->>'handOverToId' IS NOT NULL AND r.profile->'shared'->'usedBy' @> '[{"kind":"EMAIL"}]', false) AS "emailHandedOver",
+    coalesce(r.profile->'shared'->>'handOverToId' IS NOT NULL AND r.profile->'shared'->'usedBy' @> '[{"kind":"RINGCENTRAL"}]', false) AS "numberHandedOver",
     CASE WHEN f.id IS NULL THEN NULL ELSE f."firstName" || ' ' || f."lastName" END AS "forwardTo",
     count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total,
     coalesce(json_agg(json_build_object('key', t.key, 'status', t.status)) FILTER (WHERE t.id IS NOT NULL), '[]') AS tasks
@@ -264,11 +271,15 @@ export class DispatchService {
    FROM dispatch_events e LEFT JOIN users u ON u.id = e."actorId" WHERE e."memberId" = $1 AND e.event = 'SUPPORT_TYPE_CHANGED' ORDER BY e."createdAt" DESC`, [id]) : [];
   // Anyone else using their load board sign-ins, so nobody closes the wrong account.
   // A support's setups: the accounts IT recorded across them (as one row, like a new dispatcher's) and the request IT is working on.
-  const supportRows = member.position === 'SUPPORT' ? it as SupportSetupRow[] : [];
+  // A dispatcher coming back (section 41): their accounts and progress read across both kinds of setup, newest first.
+  const supportRows = member.position === 'SUPPORT' ? it as SupportSetupRow[] : returnRows.length ? [...returnRows, ...(it as (SupportSetupRow & { workPhone: string | null; cancelledAt: Date | null })[])
+   .filter(row => !row.cancelledAt).map(row => ({ ...row, assignedRingCentralPhoneNumber: row.workPhone, items: [], requestedBy: null }))].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()) : [];
   const supportOpen = supportRows.find(row => !row.completedAt) ?? null;
   const supportAccounts = setupAccounts(supportRows);
+  // Setup isn't finished while IT sets someone up again after they came back; a support's later request leaves earlier setups finished.
+  const returning = supportRows.some(row => !row.completedAt && (row.purpose === 'REHIRE' || row.purpose === 'RESTORE'));
   if (supportRows.length) it.splice(0, it.length, { companyEmail: supportAccounts.companyEmail, workPhone: supportAccounts.ringCentralNumber, ringCentralExtension: supportAccounts.ringCentralExtension,
-   datEmail: supportAccounts.datEmail, truckstopEmail: supportAccounts.truckstopEmail, completedAt: supportRows.find(row => row.completedAt)?.completedAt ?? null, cancelledAt: null,
+   datEmail: supportAccounts.datEmail, truckstopEmail: supportAccounts.truckstopEmail, completedAt: returning ? null : supportRows.find(row => row.completedAt)?.completedAt ?? null, cancelledAt: null,
    done: supportOpen?.done ?? supportRows[0].done, total: supportOpen?.total ?? supportRows[0].total });
   const itSetup = member.position === 'SUPPORT' ? { open: supportOpen ? { id: supportOpen.id, items: supportOpen.items, done: supportOpen.done, total: supportOpen.total, createdAt: supportOpen.createdAt, requestedBy: supportOpen.requestedBy } : null,
    finished: supportRows.filter(row => row.completedAt).length } : null;
@@ -286,7 +297,9 @@ export class DispatchService {
   const accountRequests = await this.db.query(`SELECT id, kind, "accountId", profile->>'toMc' AS "toMc", "createdAt" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL AND "cancelledAt" IS NULL ORDER BY "createdAt"`, [id]);
   // The complete History (section 38): every change, worded, with its filter; the page shows and filters it.
   const timeline = await memberHistory(this.db, id);
-  return { timeline, recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true),
+  // Coming back (section 41): each undone leaving or rehire, and for someone who left whether either is offered now.
+  const returns = await memberReturns(this.db, id), bringBack = member.status === 'LEFT' && member.leftAt ? await this.bringBack.summary(member) : null;
+  return { timeline, returns, bringBack, recordChanges, accountRequests, companyAccounts: await memberCompanyAccounts(this.db.manager, id), loadBoardSeats: await memberSeats(this.db.manager, id, true),
    seatEmails: (await this.db.query(`SELECT ${seatEmailsSql('d', 'e')} AS emails FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $1`, [id]))[0]?.emails ?? [], sharedSignIns: await sharedSignIns(this.db, id, signIns), sharing: await memberSharing(this.db, id), id: member.id, firstName: member.firstName, lastName: member.lastName, position: member.position, supportType: member.supportType, supportTypeChanges, status: member.status, version: member.version,
    joinedAt: member.joinedAt, leftAt: member.leftAt, applicationId: member.applicationId, jobTitle: jobTitle ? { id: jobTitle.id, name: jobTitle.name } : null,
    current, history, leadOf: leadOf ? { id: leadOf.id, name: leadOf.name } : null, accounts: it[0] ?? null, itSetup,
@@ -360,7 +373,7 @@ export class DispatchService {
    const newAccounts = dto.accounts === 'NEW' && current?.mcId !== dto.mcId;
    if (newAccounts) {
     const mcs: { id: string; name: string }[] = await em.query(`SELECT id, name FROM mcs WHERE id = ANY($1)`, [[dto.mcId, current?.mcId].filter(Boolean)]);
-    await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept);
+    await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept, dto.emailAction);
    }
    member.version += 1; await em.save(member);
    await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared, ...(newAccounts ? { newAccounts: true } : {}) });
@@ -424,13 +437,18 @@ export class DispatchService {
    const previousOn = record.startDateKnown ? member.joinedAt.toISOString().slice(0, 10) : null, corrected = previousOn !== null;
    if (previousOn === dto.startedOn) return { id, version: member.version };
    if (corrected && !dto.reason) throw new BadRequestException('Say why the start date changed.');
-   // Their first period of either kind: someone promoted began as a support, whatever they are now.
-   const link = await em.getRepository(MemberSupportLink).findOne({ where: { supportId: id }, order: { startedAt: 'ASC', createdAt: 'ASC' }, lock: { mode: 'pessimistic_write' } });
-   const placed = await em.getRepository(MemberAssignment).findOne({ where: { memberId: id }, order: { startedAt: 'ASC', createdAt: 'ASC' }, lock: { mode: 'pessimistic_write' } });
+   // Someone rehired (section 41): the start date is their first day back, so it corrects this stay only, after the day they left.
+   const [rehire]: { leftAt: Date }[] = await em.query(`SELECT "leftAt" FROM member_returns WHERE "memberId" = $1 AND kind = 'REHIRE' ORDER BY "createdAt" DESC LIMIT 1`, [id]);
+   if (rehire && startedAt.getTime() <= rehire.leftAt.getTime()) throw new BadRequestException(`Their first day back must be after ${rehire.leftAt.toISOString().slice(0, 10)}, when they left.`);
+   const since = rehire ? MoreThanOrEqual(new Date(member.joinedAt.getTime() - WITH_LEAVING_MS)) : undefined;
+   // Their first period of either kind (of this stay): someone promoted began as a support, whatever they are now.
+   const link = await em.getRepository(MemberSupportLink).findOne({ where: { supportId: id, ...(since ? { startedAt: since } : {}) }, order: { startedAt: 'ASC', createdAt: 'ASC' }, lock: { mode: 'pessimistic_write' } });
+   const placed = await em.getRepository(MemberAssignment).findOne({ where: { memberId: id, ...(since ? { startedAt: since } : {}) }, order: { startedAt: 'ASC', createdAt: 'ASC' }, lock: { mode: 'pessimistic_write' } });
    const first = link && placed ? (link.startedAt <= placed.startedAt ? link : placed) : link ?? placed;
    let periodMoved = false;
    if (first) {
-    const follows = !record.periodDateKnown || (record.startDateKnown && first.startedAt.toISOString().slice(0, 10) === previousOn);
+    // An undated period belongs to their first stay, so after a rehire only a period that began on the start date moves.
+    const follows = (!record.periodDateKnown && !rehire) || (record.startDateKnown && first.startedAt.toISOString().slice(0, 10) === previousOn);
     if (first.endedAt && startedAt >= first.endedAt) throw new BadRequestException(`This must be before ${first.endedAt.toISOString().slice(0, 10)}, when their first period ended.`);
     if (follows) { first.startedAt = startedAt; await em.save(first); record.periodDateKnown = true; periodMoved = true; }
     else if (startedAt > first.startedAt) throw new BadRequestException(`This can’t be after ${first.startedAt.toISOString().slice(0, 10)}, when their first period began.`);
@@ -443,13 +461,13 @@ export class DispatchService {
   });
  }
 
- /** A support's or updater's IT setups (none cancelled), newest first, with what was asked for and how far IT got; never IT notes. */
+ /** The IT setups that name the person (a support's or updater's, and any for coming back; none cancelled), newest first, with what was asked for and how far IT got; never IT notes. */
  private supportSetups(memberId: string): Promise<SupportSetupRow[]> {
-  return this.db.query(`SELECT r.id, r."companyEmail", r."assignedRingCentralPhoneNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."createdAt",
+  return this.db.query(`SELECT r.id, r.purpose, r."companyEmail", r."assignedRingCentralPhoneNumber", r."ringCentralExtension", r."datEmail", r."truckstopEmail", r."completedAt", r."createdAt",
     CASE WHEN u.id IS NULL THEN NULL ELSE u."firstName" || ' ' || u."lastName" END AS "requestedBy", coalesce(array_agg(t.key ORDER BY t.key) FILTER (WHERE t.id IS NOT NULL), '{}') AS items,
     count(t.id) FILTER (WHERE t.status IN ('COMPLETED','NOT_NEEDED'))::integer AS done, count(t.id)::integer AS total
    FROM it_onboarding_requests r LEFT JOIN users u ON u.id = r."requestedBy" LEFT JOIN it_onboarding_tasks t ON t."requestId" = r.id
-   WHERE r."memberId" = $1 AND r.purpose = 'SUPPORT' AND r."cancelledAt" IS NULL GROUP BY r.id, u.id ORDER BY r."createdAt" DESC`, [memberId]);
+   WHERE r."memberId" = $1 AND r.purpose <> 'DISPATCHER' AND r."cancelledAt" IS NULL GROUP BY r.id, u.id ORDER BY r."createdAt" DESC`, [memberId]);
  }
 
  /**
@@ -474,6 +492,7 @@ export class DispatchService {
   * locked before the member, the order IT completion uses.
   */
  async leave(user: User, id: string, dto: LeaveMemberDto) {
+  checkEmailChoice(dto.emailAfter, dto.emailAction);
   let alerts: string[] = [];
   const result = await this.write(async em => {
    // The newest setup is the one an unfinished request is cancelled from; accounts come from all of them, then what a manager recorded.
@@ -503,7 +522,7 @@ export class DispatchService {
     if (setups.some(item => !item.completedAt)) throw new BadRequestException(`${member.position === 'SUPPORT' ? 'IT is still setting things up for them' : 'This dispatcher is still in IT setup'}, so their last day can’t be in the future. Choose today to cancel the setup.`);
     await em.getRepository(MemberNotice).save({ memberId: id, lastDay, reason: dto.reason, recordedBy: user.id, changes: [] });
     member.version += 1; await em.save(member);
-    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
+    if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: lastDay, scheduled: true, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', emailAction: dto.emailAction, actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
     await this.event(em, user, 'NOTICE_RECORDED', { memberId: id }, { itRemoval: removes });
     await syncSignIns(em, [id], user.id);
     return { id, version: member.version };
@@ -512,7 +531,7 @@ export class DispatchService {
    const leftAt = day(dto.leftAt);
    // The removal cancels the newest unfinished setup; any other unfinished one leaves the queue with it.
    for (const other of setups.slice(1).filter(item => !item.completedAt)) { other.cancelledAt = new Date(); other.version += 1; await em.save(other); }
-   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
+   if (removes) alerts = await createRemoval(em, this.alerts, { setup, taskKeys: await taskKeys(), accounts, position: positionLabel(member), memberId: id, name, dueOn: leftAt.toISOString().slice(0, 10), scheduled: false, suspendedOnLeave, emailAfter: dto.emailAfter ?? 'SUSPEND', emailAction: dto.emailAction, actorId: user.id, handOverToId: dto.handOverTo ?? null, ...place });
    await this.finishLeaving(em, user, member, leftAt, dto.reason, removes, dto.handOverTo ?? null);
    return { id, version: member.version };
   });
@@ -807,5 +826,5 @@ export class DispatchService {
  }
 }
 
-interface SupportSetupRow { id: string; companyEmail: string | null; assignedRingCentralPhoneNumber: string | null; ringCentralExtension: string | null; datEmail: string | null; truckstopEmail: string | null;
+interface SupportSetupRow { id: string; purpose?: string;companyEmail: string | null; assignedRingCentralPhoneNumber: string | null; ringCentralExtension: string | null; datEmail: string | null; truckstopEmail: string | null;
  completedAt: Date | null; createdAt: Date; requestedBy: string | null; items: string[]; done: number; total: number }

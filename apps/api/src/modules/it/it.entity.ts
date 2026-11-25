@@ -22,7 +22,23 @@ export function isOptionalTask(key:string){return IT_CHECKLIST.some(task=>task.k
 export const SUPPORT_IT_ITEMS={COMPANY_EMAIL:['GOOGLE_WORKSPACE'],RINGCENTRAL:['RINGCENTRAL','SMS','CALL_RECORDING'],BUSINESS_SOFTWARE:['BUSINESS_SOFTWARE'],EQUIPMENT:['EQUIPMENT']} as const;
 export type SupportItItem=keyof typeof SUPPORT_IT_ITEMS;
 export const SUPPORT_IT_ITEM_KEYS=Object.keys(SUPPORT_IT_ITEMS) as SupportItItem[];
-export type SetupPurpose='DISPATCHER'|'SUPPORT';
+// REHIRE and RESTORE (section 41): bringing back someone who left. Like a support's setup they name the member, not an
+// application, and hold only the tasks needed; REHIRE makes them Active when IT finishes, RESTORE follows an undone leaving.
+export type SetupPurpose='DISPATCHER'|'SUPPORT'|'REHIRE'|'RESTORE';
+/** A setup that names the person, not an application: a support's, or one for someone coming back. */
+export const memberSetup=(request:Pick<ItOnboardingRequest,'purpose'>)=>request.purpose!=='DISPATCHER';
+/** What a returning person's checklist asks IT to bring back rather than create (section 41), by task. */
+export const RESTORE_TASKS:Record<string,string>={
+ GOOGLE_WORKSPACE:'Restore their company email: give it a full license again and set a new password for them.',
+ DISPATCH_GROUP:'Add them back to the Dispatch group.',
+ RINGCENTRAL:'Enable their RingCentral user again, with the same number.',
+ SMS:'Turn SMS back on for their RingCentral user.',
+ CALL_RECORDING:'Turn call recording back on, inbound and outbound.',
+ BUSINESS_SOFTWARE:'Give them back their business apps and load board seats. List the apps in notes; never store credentials.',
+ EQUIPMENT:'Give them a laptop and headset, or mark Not needed when they use their own.',
+};
+/** Who is coming back, kept on their checklist's profile so IT sees it without reading the dispatcher record. */
+export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:EmailDone|null;emailDeletedOn:string|null;by:string;}
 /** Completed, or Not needed for an optional task. Setup completes when every task is done. */
 export function taskDone(task:Pick<ItOnboardingTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&isOptionalTask(task.key));}
 export interface ItProfile {
@@ -32,6 +48,8 @@ export interface ItProfile {
  mcName:string;teamLead:string;jobTitle:string;
  // A support's or updater's setup: who they assist ("Updater for Riley Santos"), shown where a dispatcher's job title would be.
  assists?:string|null;
+ // Someone coming back (section 41): what IT restores and why.
+ returning?:ReturningProfile;
 }
 @Entity('it_onboarding_requests')
 export class ItOnboardingRequest {
@@ -44,6 +62,8 @@ export class ItOnboardingRequest {
  @Column('uuid',{nullable:true}) memberId!:string|null;
  @Column('uuid',{nullable:true}) requestedBy!:string|null;
  @Column('varchar',{length:1000,nullable:true}) note!:string|null;
+ // Section 41: the tasks that bring an old account back rather than create one.
+ @Column('text',{array:true,default:()=>"'{}'"}) restoreKeys!:string[];
  @Column('uuid') managerId!:string;
  @Column('jsonb') profile!:ItProfile;
  @Column('integer',{default:0}) version!:number;
@@ -53,6 +73,11 @@ export class ItOnboardingRequest {
  @Column('varchar',{length:6,nullable:true}) ringCentralExtension!:string|null;
  @Column('varchar',{length:254,nullable:true}) datEmail!:string|null;
  @Column('varchar',{length:254,nullable:true}) truckstopEmail!:string|null;
+ // Replaced when they came back with a new one or none (section 41): kept here for IT, and no longer read as theirs.
+ @Column('varchar',{length:254,nullable:true}) retiredCompanyEmail!:string|null;
+ @Column('varchar',{nullable:true}) retiredRingCentralNumber!:string|null;
+ @Column('varchar',{length:6,nullable:true}) retiredRingCentralExtension!:string|null;
+ @Column('timestamptz',{nullable:true}) accountsRetiredAt!:Date|null;
  @Column('timestamptz',{nullable:true}) workPhoneVerifiedAt!:Date|null;
  @Column('uuid',{nullable:true}) workPhoneVerifiedBy!:string|null;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
@@ -115,16 +140,34 @@ export function itStatusSql(alias:string,tasks:'it_onboarding_tasks'|'it_removal
 
 // Removal: the reverse of setup, opened when a dispatcher who had IT setup is marked as left. Same task rules as setup.
 export const REMOVAL_CHECKLIST: readonly {key:string;label:string;description:string;optional?:boolean}[] = [
- {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Suspend the account and sign it out everywhere.'},
+ {key:'GOOGLE_WORKSPACE',label:'Google Workspace',description:'Archive, suspend or delete the account as the manager chose, and sign it out everywhere. Record what you did.'},
  {key:'DISPATCH_GROUP',label:'Dispatch group membership',description:'Remove them from the Dispatch group.'},
- {key:'RINGCENTRAL',label:'RingCentral',description:'Remove the user, including SMS and call recording. Record what happens to the number.'},
+ {key:'RINGCENTRAL',label:'RingCentral',description:'Disable the user, with SMS and call recording (inbound and outbound) turned off. Don’t delete it: the number stays with the disabled user.'},
  {key:'BUSINESS_SOFTWARE',label:'Business software',description:'Remove their access to every business app they had, including any load board sign-ins listed here. List the apps in notes; never store credentials.'},
  {key:'SHARED_PASSWORDS',label:'Shared passwords',description:'Change any shared password they knew, such as load board or carrier portal logins.'},
  {key:'EQUIPMENT',label:'Equipment',description:'Record the laptop and headset as returned, or Not needed when they used their own.',optional:true},
 ];
 export function removalTaskDone(task:Pick<ItRemovalTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&REMOVAL_CHECKLIST.some(item=>item.key===task.key&&item.optional));}
+// Before section 40 IT recorded what happened to the number; finished removals keep it, nothing new records it.
 export const NUMBER_OUTCOMES=['KEPT','FORWARDED','RELEASED'] as const;
 export type NumberOutcome=typeof NUMBER_OUTCOMES[number];
+// Section 40 (approved 2026-11-23): the manager chooses what happens to the company email, IT records what it did, and a
+// RingCentral user is disabled with these turned off. SUSPEND is what every earlier request meant.
+export const EMAIL_ACTIONS=['ARCHIVE','SUSPEND','DELETE'] as const;
+export type EmailAction=typeof EMAIL_ACTIONS[number];
+export const EMAIL_DONE=['ARCHIVED','SUSPENDED','DELETED'] as const;
+export type EmailDone=typeof EMAIL_DONE[number];
+export const RINGCENTRAL_OFF=['USER','SMS','INBOUND_RECORDING','OUTBOUND_RECORDING'] as const;
+export type RingCentralOff=typeof RINGCENTRAL_OFF[number];
+/** Their email or number goes to someone staying (section 35): IT keeps it open, so there's nothing to archive or turn off. */
+export function handedOver(profile:Pick<RemovalProfile,'shared'>,kind:'EMAIL'|'RINGCENTRAL'){return !!profile.shared?.handOverToId&&profile.shared.usedBy.some(item=>item.kind===kind);}
+/** A step opened again for an account IT wasn't told about: what IT recorded was for the others, so it records again. */
+export function forgetDone(removal:Pick<ItRemovalRequest,'emailDone'|'ringCentralOff'>,steps:string[]){
+ let changed=false;
+ if(steps.includes('GOOGLE_WORKSPACE')&&removal.emailDone){removal.emailDone=null;changed=true;}
+ if(steps.includes('RINGCENTRAL')&&removal.ringCentralOff.length){removal.ringCentralOff=[];changed=true;}
+ return changed;
+}
 /** What IT removes, copied from the setup request and the dispatcher record when they left. */
 export interface RemovalProfile {displayName:string;position?:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;setUpAt:string|null;noSetupRecord?:boolean;suspendedOnLeave?:boolean;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;seats?:RemovalSeat[];companyAccounts?:RemovalCompanyAccount[];shared?:RemovalSharing;}
 /** An account at another of our companies, as IT's removal lists it (section 33). */
@@ -144,6 +187,9 @@ export class ItRemovalRequest {
  @Column('jsonb') profile!:RemovalProfile;
  @Column('varchar') emailAfter!:'FORWARD'|'SUSPEND';
  @Column('uuid',{nullable:true}) forwardTo!:string|null;
+ @Column('varchar',{default:'SUSPEND'}) emailAction!:EmailAction;
+ @Column('varchar',{nullable:true}) emailDone!:EmailDone|null;
+ @Column('text',{array:true,default:()=>"'{}'"}) ringCentralOff!:RingCentralOff[];
  @Column('date') dueOn!:string;
  @Column('varchar',{nullable:true}) numberOutcome!:NumberOutcome|null;
  @Column('integer',{default:0}) version!:number;
@@ -159,6 +205,8 @@ export class ItRemovalRequest {
  @Column('timestamptz',{nullable:true}) dueAlertedAt!:Date|null;
  // The notice was cancelled before IT started. Kept for the history; out of every list.
  @Column('timestamptz',{nullable:true}) cancelledAt!:Date|null;
+ // A finished removal undone or reversed by a rehire (section 41): cancelledAt too, so a later leaving opens a new one, but IT keeps it as finished.
+ @Column('timestamptz',{nullable:true}) reversedAt!:Date|null;
 }
 /** Scheduled until the last day has begun (the Eastern date reaches it) or access must go now: IT plans, but can't mark tasks completed. */
 export function removalScheduled(removal:Pick<ItRemovalRequest,'dueOn'|'removeNowAt'|'completedAt'>,today:string){return !removal.completedAt&&!removal.removeNowAt&&removal.dueOn>today;}

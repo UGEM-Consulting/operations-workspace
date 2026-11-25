@@ -6,10 +6,10 @@ import { usDay } from '../safety/screening-rules';
 import type { User } from '../users/user.entity';
 import { checkEmailFree, memberCompanyAccounts, refreshRemovalAccounts } from './accounts';
 import { AddCompanyAccountDto, UpdateCompanyAccountDto } from './company-accounts.dto';
-import { CompanyAccount } from './company-accounts.entity';
+import { CompanyAccount, type AccountPosition } from './company-accounts.entity';
 
 const midday = (date: string) => new Date(`${date}T12:00:00Z`);
-const FIELDS = ['nameUsed', 'companyEmail', 'ringCentralNumber', 'ringCentralExtension'] as const;
+const FIELDS = ['position', 'nameUsed', 'companyEmail', 'ringCentralNumber', 'ringCentralExtension'] as const;
 
 /**
  * Accounts at other companies (section 33, approved 2026-11-13). Managers record them from a file when adding people; after
@@ -28,7 +28,7 @@ export class CompanyAccountsService {
   return this.write(async em => {
    const member = await em.getRepository(DispatchMember).findOne({ where: { id: dto.memberId }, lock: { mode: 'pessimistic_write' } });
    if (!member) throw new NotFoundException('This dispatcher record no longer exists.');
-   const account = await addCompanyAccount(em, user.id, member.id, { mcId: dto.mcId ?? null, companyName: dto.companyName ?? null, nameUsed: dto.nameUsed || null, companyEmail: dto.companyEmail || null,
+   const account = await addCompanyAccount(em, user.id, member.id, { mcId: dto.mcId ?? null, companyName: dto.companyName ?? null, position: dto.position || null, nameUsed: dto.nameUsed || null, companyEmail: dto.companyEmail || null,
     ringCentralNumber: dto.ringCentralNumber || null, ringCentralExtension: dto.ringCentralExtension || null, status: dto.status ?? 'ACTIVE', closedOn: dto.closedOn ?? null, sourceName: null, note: dto.note || null });
    member.version += 1; await em.save(member);
    await refreshRemovalAccounts(em, member.id, user.id);
@@ -50,13 +50,13 @@ export class CompanyAccountsService {
    const fields: string[] = [];
    for (const field of FIELDS) {
     const value = dto[field] === undefined ? undefined : dto[field] || null;
-    if (value !== undefined && value !== account[field]) { account[field] = value; fields.push(field); }
+    if (value !== undefined && value !== account[field]) { Object.assign(account, { [field]: value }); fields.push(field); }
    }
    // A note records who wrote it and when; the event says only that it changed.
    const note = dto.note === undefined ? undefined : dto.note || null;
    if (note !== undefined && note !== account.note) { Object.assign(account, { note, noteBy: note ? user.id : null, noteAt: note ? new Date() : null }); fields.push('note'); }
-   // A closed account is kept as history: only its note changes, unless it's opened again.
-   if (account.status === 'CLOSED' && !reopening && fields.some(field => field !== 'note')) throw new ConflictException('This account is closed. It’s kept as history; only its note can change.');
+   // A closed account is kept as history: only its note and the position held there change, unless it's opened again.
+   if (account.status === 'CLOSED' && !reopening && fields.some(field => field !== 'note' && field !== 'position')) throw new ConflictException('This account is closed. It’s kept as history; only its note and the position held there can change.');
    if (!account.companyEmail && !account.ringCentralNumber) throw new BadRequestException('An account needs its company email or RingCentral number.');
    if (fields.includes('companyEmail') && account.companyEmail && account.status !== 'CLOSED') await checkEmailFree(em, account.companyEmail, member.id);
    const status = dto.status && dto.status !== account.status ? dto.status : null;
@@ -91,7 +91,7 @@ export class CompanyAccountsService {
  }
 }
 
-export interface NewCompanyAccount { mcId: string | null; companyName: string | null; nameUsed: string | null; companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension: string | null;
+export interface NewCompanyAccount { mcId: string | null; companyName: string | null; position?: AccountPosition | null; nameUsed: string | null; companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension: string | null;
  status: 'ACTIVE' | 'KEPT_FOR_LOAD_BOARDS' | 'CLOSED'; closedOn: string | null; sourceName: string | null; note?: string | null }
 /**
  * Records an account at another company for someone (the caller locked their member row), from an administrator's form or a
@@ -103,7 +103,7 @@ export async function addCompanyAccount(em: EntityManager, actorId: string, memb
  if (input.mcId && !(await em.query(`SELECT 1 FROM mcs WHERE id = $1`, [input.mcId])).length) throw new BadRequestException('Choose an MC from the list.');
  if (input.status === 'CLOSED' && (!input.closedOn || input.closedOn > usDay('latest'))) throw new BadRequestException('Enter the day it closed, today or earlier.');
  if (input.companyEmail && input.status !== 'CLOSED') await checkEmailFree(em, input.companyEmail, memberId);
- const account = await em.getRepository(CompanyAccount).save({ memberId, mcId: input.mcId, companyName: input.companyName, nameUsed: input.nameUsed, companyEmail: input.companyEmail, ringCentralNumber: input.ringCentralNumber,
+ const account = await em.getRepository(CompanyAccount).save({ memberId, mcId: input.mcId, companyName: input.companyName, position: input.position ?? null, nameUsed: input.nameUsed, companyEmail: input.companyEmail, ringCentralNumber: input.ringCentralNumber,
   ringCentralExtension: input.ringCentralExtension, status: input.status, closedAt: input.status === 'CLOSED' ? midday(input.closedOn!) : null, closedBy: input.status === 'CLOSED' ? actorId : null, sourceName: input.sourceName, createdBy: actorId,
   note: input.note ?? null, noteBy: input.note ? actorId : null, noteAt: input.note ? new Date() : null });
  await em.getRepository(DispatchEvent).save({ memberId, teamId: null, event: 'COMPANY_ACCOUNT_ADDED', actorId,

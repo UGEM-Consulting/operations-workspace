@@ -41,6 +41,8 @@ export enum SecurityEventType {
   TRUSTED_DEVICE_ADDED = 'TRUSTED_DEVICE_ADDED', TRUSTED_DEVICE_FORGOTTEN = 'TRUSTED_DEVICE_FORGOTTEN',
   // A sign-in that skipped the code on a trusted device. Kept after the device is forgotten, for looking back after an incident.
   TRUSTED_DEVICE_USED = 'TRUSTED_DEVICE_USED',
+  // View-only access given, taken away or changed (section 39): departments added and removed, and where files changed.
+  USER_VIEW_ACCESS_CHANGED = 'USER_VIEW_ACCESS_CHANGED',
 }
 // Metadata only: never codes, secrets, session identifiers or addresses.
 @Entity('staff_security_events')

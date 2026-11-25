@@ -115,6 +115,8 @@ export function searchTerms(search: string): { text: string; digits: string | nu
  return { text, digits: numberLike && digits.length >= 3 ? digits : null };
 }
 export const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${match}`);
+/** What a viewer may search by (section 39): work details only, never personal contacts, legal names or contacts staff added. */
+const WORK_POINTS = `p.label NOT IN ('Personal email', 'Personal phone', 'Legal name', 'Added email', 'Added phone')`;
 
 /**
  * Dispatch › Dispatchers on the server (designed as the Dispatchers table group and approved
@@ -126,7 +128,7 @@ export class MemberListService {
  constructor(private readonly db: DataSource) {}
 
  /** The WHERE clause for every filter but the tab, and its parameters ($1 and $2 are the Eastern dates memberRowsSql uses). */
- private filters(query: MemberFilters) {
+ private filters(query: MemberFilters, viewer = false) {
   const params: unknown[] = [usDay('earliest'), usDay('latest')], where: string[] = [];
   const add = (value: unknown) => { params.push(value); return `$${params.length}`; };
   if (query.mcId) where.push(`b."mcId" = ${add(query.mcId)}`);
@@ -147,7 +149,7 @@ export class MemberListService {
    // People, not groups (section 35): their name, other and legal names and contact details. MC, team, team lead and job title are filters.
    const own = `lower(concat_ws(' ', b."firstName", b."lastName")) LIKE ${like}`;
    // Which contact detail matched, unless the name or place did: worked out once per row, in base(), and filtered on here.
-   matched = `CASE WHEN ${own} THEN NULL ELSE (SELECT json_build_object('label', p.label, 'value', p.value) FROM ${CONTACT_POINTS} AND ${pointMatch} LIMIT 1) END`;
+   matched = `CASE WHEN ${own} THEN NULL ELSE (SELECT json_build_object('label', p.label, 'value', p.value) FROM ${CONTACT_POINTS} AND ${pointMatch}${viewer ? ` AND ${WORK_POINTS}` : ''} LIMIT 1) END`;
    where.push(`(${own} OR b.matched IS NOT NULL)`);
   }
   return { params, add, where: where.length ? where.join(' AND ') : 'true', matched };
@@ -166,8 +168,8 @@ export class MemberListService {
   return sort === 'name' ? `lower(b."firstName") ${direction}, lower(b."lastName") ${direction}, b.id` : `${SORTS[sort]} ${direction} NULLS LAST, ${name}`;
  }
 
- async list(query: MemberListQueryDto) {
-  const tab = memberTab(query.status), { params, add, where, matched } = this.filters(query), base = this.base(matched);
+ async list(query: MemberListQueryDto, viewer = false) {
+  const tab = memberTab(query.status), { params, add, where, matched } = this.filters(query, viewer), base = this.base(matched);
   const [counts] = await this.db.query(`${base}SELECT ${MEMBER_TABS.map(key => `count(*) FILTER (WHERE ${TAB_SQL[key]})::integer AS "${COUNT_KEYS[key]}"`).join(', ')}, count(*) FILTER (WHERE ${PAPERWORK_SQL})::integer AS paperwork FROM b WHERE ${where}`, params);
   const total: number = counts[COUNT_KEYS[tab]];
   if (query.only === 'counts') return { counts, total };
@@ -177,6 +179,12 @@ export class MemberListService {
    this.db.query(`${base}SELECT b.*, ${GLANCE} FROM b WHERE ${where} AND ${TAB_SQL[tab]} ORDER BY ${this.order(query, tab)} LIMIT ${limit} OFFSET ${offset}`, params), this.options(),
    query.search ? this.leadOf(query.search) : null]);
   return { items, counts, total, page, pageSize, options, leadOf };
+ }
+
+ /** One person's row as the table shows it, with what it shows at a glance (the view-only page reads it, section 39). */
+ async row(id: string): Promise<Record<string, unknown> | null> {
+  const [row] = await this.db.query(`WITH b AS (${memberRowsSql('$1', '$2')}) SELECT b.*, ${GLANCE} FROM b WHERE b.id = $3`, [usDay('earliest'), usDay('latest'), id]);
+  return row ?? null;
  }
 
  /** A search that is a team lead's whole name (section 35): their team, offered as the Team lead filter above the table. */
@@ -201,10 +209,10 @@ export class MemberListService {
   * included, each with what matched; and the teams and team leads whose name matches, offered as filters. Names and what each
   * matched only, as the table shows them.
   */
- async suggest(search: string, limit = 8, forTable = true) {
+ async suggest(search: string, limit = 8, forTable = true, viewer = false) {
   const { text, digits } = searchTerms(search);
   if (text.replace(/\s/g, '').length < 3 && !digits) return { people: [], teams: [], leads: [], total: 0 };
-  const { params, add, where, matched } = this.filters({ search }), base = this.base(matched), name = `lower(b."firstName" || ' ' || b."lastName")`;
+  const { params, add, where, matched } = this.filters({ search }, viewer), base = this.base(matched), name = `lower(b."firstName" || ' ' || b."lastName")`;
   const prefix = add(`${escapeLike(text)}%`), first = add(`% ${escapeLike(text)}%`);
   // The total (See all) and team lead filters are for the Dispatchers box only; the top bar asks for neither.
   const [people, totals] = await Promise.all([

@@ -41,7 +41,8 @@ export async function requirePage(key: string) {
   const identity = await requireIdentity();
   const response = await apiRequest(`access/${encodeURIComponent(key)}`);
   if (response.status === 401) redirect('/login');
-  if (response.status === 403) redirect('/access-denied');
+  // Someone with view-only access gets the page that says what they can view instead (ViewOnlyNoAccessScreen).
+  if (response.status === 403) redirect(identity.navigation.some(item => item.href.startsWith('/view/')) ? '/view/no-access' : '/access-denied');
   if (!response.ok) throw new Error('The authorization service is unavailable. Please try again.');
   return identity;
 }

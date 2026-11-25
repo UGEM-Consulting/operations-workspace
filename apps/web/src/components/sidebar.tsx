@@ -15,7 +15,9 @@ import { useToast } from './ui/toast';
 import { Tooltip } from './ui/tooltip';
 import { useGuardedLink, useShell } from './shell-context';
 
-const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, teams: UsersRound, myteam: UsersRound, dispatchers: Headset, promotions: TrendingUp, drivers: Truck, teamdrivers: Truck, announcements: Megaphone, teamannouncements: Megaphone, dispatchdrivers: Truck, consents: FileSignature, expiring: CalendarClock, trucks: Container, units: Container, it: Monitor, lists: ListChecks, users: Users, settings: Settings, security: ShieldCheck };
+const icons: Record<string, typeof LayoutDashboard> = { dashboard: LayoutDashboard, onboarding: UserPlus, invitations: Mail, applications: Files, documents: FileSignature, teams: UsersRound, myteam: UsersRound, dispatchers: Headset, promotions: TrendingUp, drivers: Truck, teamdrivers: Truck, announcements: Megaphone, teamannouncements: Megaphone, dispatchdrivers: Truck, consents: FileSignature, expiring: CalendarClock, trucks: Container, units: Container, it: Monitor, lists: ListChecks, users: Users, settings: Settings, security: ShieldCheck,
+  // View-only access (section 39): the same icons as each department's own pages.
+  viewteams: UsersRound, viewdispatchers: Headset, viewdispatchdrivers: Truck, viewdrivers: Truck, viewunits: Container, viewexpiring: CalendarClock };
 const wide = '(min-width: 1280px)';
 function useWide() {
   return useSyncExternalStore(change => { const media = window.matchMedia(wide); media.addEventListener('change', change); return () => media.removeEventListener('change', change); },

@@ -150,6 +150,15 @@ describe('offboarding and manager hand-over through the BFF', () => {
     // Drivers while their dispatcher is away (section 34): the dialog reads who may cover, and Change who covers.
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/cover-options`), true);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/cover-options`), false);
+    // Returning applicants (section 42): more time and resetting the code limit; the status is read by the server page only.
+    assert.equal(allowedEndpoint('POST', `onboarding/applications/${ID}/more-time`), true);
+    assert.equal(allowedEndpoint('POST', `onboarding/applications/${ID}/reset-code-limit`), true);
+    assert.equal(allowedEndpoint('GET', `onboarding/applications/${ID}/returning`), false);
+    // Bringing back someone who left (section 41): what the dialogs show, Undo leaving and Rehire.
+    assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/bring-back`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/undo-leaving`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/rehire`), true);
+    assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/bring-back`), false);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/on-leave/covers`), true);
     assert.equal(allowedEndpoint('GET', `it/leave/${ID}`), true);
     assert.equal(allowedEndpoint('PATCH', `it/leave/${ID}/tasks/GOOGLE_WORKSPACE`), true);
@@ -242,5 +251,16 @@ describe('the Dispatchers list through the BFF', () => {
     assert.deepEqual(forwardedQuery('dispatch/members/suggest'), ['q']);
     assert.deepEqual(forwardedQuery('search'), ['q']);
     assert.deepEqual(forwardedQuery('dispatch/teams'), []);
+  });
+});
+
+describe('view-only access through the BFF (section 39)', () => {
+  it('opens only the files a viewer may be given, and never a view route that writes', () => {
+    for (const path of [`view/dispatch/members/${ID}/documents/${ID}/signed`, `view/dispatch/members/${ID}/paper-scans/${ID}/file`, `view/safety/drivers/${ID}/documents/${ID}/file`,
+      `view/safety/drivers/${ID}/consents/${ID}/signed`, `view/safety/units/${ID}/files/${ID}/file`]) assert.equal(isFileEndpoint(path), true, path);
+    assert.equal(isFileEndpoint(`view/safety/drivers/${ID}/reports/${ID}/file`), false);
+    // The pages read on the server; the browser reaches no view route except these files.
+    assert.equal(allowedEndpoint('GET', 'view/dispatch/members'), false);
+    assert.equal(allowedEndpoint('POST', `view/dispatch/members/${ID}`), false);
   });
 });

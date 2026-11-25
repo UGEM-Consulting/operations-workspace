@@ -44,6 +44,12 @@ export const staffTelegramSchema = z.looseObject({ available: z.boolean(), conne
 export const STAFF_ALERTS = ['REVIEW_WAITING', 'IT_SETUP_WAITING', 'IT_REMOVAL_WAITING', 'SAFETY_REMINDER', 'SAFETY_WEEKLY'] as const;
 export type StaffAlert = typeof STAFF_ALERTS[number];
 
+/** GET /onboarding/applications/:id/returning (section 42) */
+export const returningStatusSchema = z.looseObject({ applicationId: text, status: text, email: text, startedAt: nullableText, invitedBy: nullableText, catchUp: z.boolean(), revoked: z.boolean().optional(),
+  accessUntil: text, ended: z.boolean(), codes: z.number(), limit: z.number(), limited: z.boolean(), countResetsAt: nullableText.optional(), nextCodeAt: nullableText, canGiveTime: z.boolean(), canReset: z.boolean(),
+  admin: z.boolean().optional(), resetWhy: nullableText.optional(), returnLink: text.optional(), moreTimeDays: z.array(z.number()),
+  activity: z.array(z.looseObject({ id: text, event: text, createdAt: text })).nullable() });
+
 /** GET /onboarding/applications/:id */
 export const reviewDetailSchema = z.looseObject({
   application: z.looseObject({ id: text, status: text, fields, version: z.number(), submittedAt: nullableText }),
@@ -252,7 +258,9 @@ export const expiringSchema = z.looseObject({ today: text, warningDays: z.number
 /** GET /it/tasks: setups and removals together, with the counts for each view. */
 export const itTasksSchema = z.looseObject({ items: z.array(z.looseObject({ kind: z.enum(['SETUP', 'REMOVAL', 'SIGN_IN', 'SUSPEND', 'RESTORE', 'CLOSE_ACCOUNT', 'MOVE_ACCOUNTS']), id: text,
   // A team lead's sign-in: what IT is asked to do, whose record and their team.
-  signIn: z.enum(['CREATE', 'TURN_ON', 'TURN_OFF']).nullable().optional(), memberId: nullableText.optional(), team: nullableText.optional(), assists: nullableText.optional().catch(undefined), name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
+  signIn: z.enum(['CREATE', 'TURN_ON', 'TURN_OFF']).nullable().optional(), memberId: nullableText.optional(), team: nullableText.optional(), assists: nullableText.optional().catch(undefined),
+  // A setup for someone coming back (section 41): RESTORE after an undone leaving, REHIRE for a rehire.
+  purpose: z.enum(['DISPATCHER', 'SUPPORT', 'REHIRE', 'RESTORE']).nullable().optional().catch(undefined), name: nullableText, email: nullableText, mc: nullableText, status: text, done: z.number(), total: z.number(),
   dueOn: nullableText, scheduled: z.boolean(), updatedAt: text, completedAt: nullableText })), total: z.number(), page: z.number(), pageCount: z.number(), pageSize: z.number(),
   stats: z.looseObject({ open: z.number(), setup: z.number(), removal: z.number(), scheduled: z.number(), nextScheduled: nullableText, finished: z.number(), all: z.number(), removalsDue: z.number(), setupsWaiting: z.number(), blocked: z.number(), finishedThisMonth: z.number(), signIns: z.number().optional(), leave: z.number().optional() }) });
 /** GET /it/accounts/:id (section 33): closing an account at another company, or a move's new accounts. */

@@ -6,6 +6,7 @@ import { DispatcherApplication } from '../onboarding/entities';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { memberPhotoKey, photoKey, StorageService } from '../storage/storage.service';
 import { Role, User, UserStatus } from '../users/user.entity';
+import { viewGrants } from '../users/view-access';
 import { cleanJpeg } from './images';
 import { photoFor } from './requirements';
 
@@ -33,10 +34,15 @@ const STAFF = [Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER, Role.IT_SPECIALIST, R
 export class MemberPhotosService {
  constructor(private readonly db: DataSource, private readonly storage: StorageService) {}
 
- /** Whether this person can see this member, by role (sees). */
- private async sees(em: Pick<EntityManager, 'query'>, user: User, memberId: string) {
+ /**
+  * Whether this person can see this member's photo of this kind, by role (sees). View-only access to Dispatch (section 39)
+  * shows every profile photo, and the ID photo only when an administrator also gave its photos and documents.
+  */
+ private async sees(em: Pick<EntityManager, 'query'>, user: User, memberId: string, kind: MemberPhotoKind) {
   if (user.status !== UserStatus.ACTIVE || !STAFF.includes(user.role)) return false;
   if ([Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER, Role.IT_SPECIALIST].includes(user.role)) return true;
+  const view = (await viewGrants(em, user)).find(grant => grant.department === 'DISPATCH');
+  if (view && (kind === 'PROFILE' || view.withFiles)) return true;
   if (user.role === Role.TEAM_LEAD) {
    // Their teams' dispatchers, and supports and updaters assisting one of them or the whole team.
    const [row] = await em.query(`WITH led AS (SELECT t.id FROM teams t JOIN dispatch_members l ON l.id = t."leadMemberId" WHERE l."accountUserId" = $1 AND l.status <> 'LEFT' AND t."archivedAt" IS NULL)
@@ -51,7 +57,7 @@ export class MemberPhotosService {
 
  /** The photo to show: their application's (as of submission) when they have one, else what an administrator added. */
  async photo(user: User, memberId: string, kind: MemberPhotoKind) {
-  if (!(await this.sees(this.db, user, memberId))) throw new NotFoundException();
+  if (!(await this.sees(this.db, user, memberId, kind))) throw new NotFoundException();
   const member = await this.db.getRepository(DispatchMember).findOneBy({ id: memberId });
   if (!member) throw new NotFoundException();
   if (kind === 'ID') await onboardingLimit(this.db, 'id-photo:' + user.id, 60, 900);

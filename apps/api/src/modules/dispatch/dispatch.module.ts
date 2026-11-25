@@ -2,6 +2,7 @@ import { Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Patch, Pos
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
+import { RehireDto, UndoLeavingDto } from './dispatch.dto';
 import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, AccountOwnersDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto, SuggestQueryDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
@@ -11,6 +12,7 @@ import { PromotionsService } from './promotions.service';
 import { UpdatesModule } from '../updates/updates.module';
 import { LeavingSweeper } from './leaving-sweeper';
 import { LeaveService } from './leave.service';
+import { BringBackService } from './bring-back';
 import { MemberDetailsService } from './corrections';
 import { PaperScansService } from './paper-scans';
 import { StorageModule } from '../storage/storage.module';
@@ -47,6 +49,15 @@ class DispatchController {
  @Post('members/:id/last-day') changeLastDay(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ChangeLastDayDto) { return this.dispatch.changeLastDay(req.currentUser, id, dto); }
  @Post('members/:id/cancel-notice') cancelNotice(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NoticeActionDto) { return this.dispatch.cancelNotice(req.currentUser, id, dto); }
  @Post('members/:id/remove-access') removeAccess(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: NoticeActionDto) { return this.dispatch.removeAccessNow(req.currentUser, id, dto); }
+}
+// Bringing back someone who left (section 41): what the dialogs show, Undo leaving and Rehire.
+@Controller('dispatch/members')
+@Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
+class BringBackController {
+ constructor(private readonly bringBack: BringBackService) {}
+ @Get(':id/bring-back') options(@Param('id', ParseUUIDPipe) id: string) { return this.bringBack.options(id); }
+ @Post(':id/undo-leaving') undo(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UndoLeavingDto) { return this.bringBack.undo(req.currentUser, id, dto); }
+ @Post(':id/rehire') rehire(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RehireDto) { return this.bringBack.rehire(req.currentUser, id, dto); }
 }
 // Leave (section 35) and an administrator's corrections (section 36). Who may correct is checked in the service.
 @Controller('dispatch/members')
@@ -122,5 +133,5 @@ class TeamLeadController {
  @Post('promotions') async request(@Req() req: AuthRequest, @Body() dto: CreatePromotionDto) { await this.promotions.requireLead(req.currentUser); return this.promotions.request(req.currentUser, dto); }
  @Post('promotions/:id/cancel') cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.promotions.cancel(req.currentUser, id); }
 }
-@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, MemberListService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService, MemberListService] })
+@Module({ imports: [UpdatesModule, StorageModule], controllers: [DispatchController, BringBackController, LeaveController, ExistingDispatchersController, PaperScansController, DispatchDriversController, PromotionsController, TeamLeadController], providers: [DispatchService, BringBackService, MemberListService, LeaveService, MemberDetailsService, ExistingDispatchersService, PaperScansService, PromotionsService, DriverAssignmentsService, LeavingSweeper], exports: [PromotionsService, MemberListService, DispatchService, DriverAssignmentsService, PaperScansService] })
 export class DispatchModule {}

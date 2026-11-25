@@ -117,6 +117,8 @@ integration('Shared accounts and search (disposable PostgreSQL)', () => {
     await leave({ handOverTo: drew }, 201);
     const [removal] = await db.query(`SELECT profile FROM it_removal_requests WHERE "memberId" = $1`, [riley]);
     expect(removal.profile.shared).toEqual({ uses: [], usedBy: [{ kind: 'EMAIL', value: 'riley.santos@example.test', users: ['Drew Calloway'] }, { kind: 'RINGCENTRAL', value: '+1 469 555 0142', users: ['Morgan Pike'] }], handOverToId: drew, handOverTo: 'Drew Calloway' });
+    // Handed over: kept open for Drew, which the profile says instead of what IT would otherwise have done (section 40).
+    expect((await profile(riley)).removal).toMatchObject({ handedOverTo: 'Drew Calloway', emailHandedOver: true, numberHandedOver: true });
     // Drew owns both now; Morgan uses the number as Drew's.
     const drewPage = await profile(drew);
     expect(drewPage.sharing.uses.map((use: Row) => [use.kind, use.handedOver])).toEqual([['EMAIL', true], ['RINGCENTRAL', true]]);
@@ -128,6 +130,29 @@ integration('Shared accounts and search (disposable PostgreSQL)', () => {
     expect((await profile(morgan)).sharing.uses).toEqual([]);
     expect(await db.query(`SELECT "endedHow" FROM member_shared_accounts WHERE "memberId" = $1`, [morgan])).toEqual([{ endedHow: 'OWNER_LEFT' }]);
     expect(JSON.stringify(await db.query(`SELECT metadata FROM dispatch_events`))).not.toMatch(/@|555/);
+  });
+
+  it('drops a hand-over that no longer applies, so IT records what it did with that account', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
+    const drew = await addOne('Drew', 'Calloway');
+    await edit(drew, { companyEmail: 'riley.santos@example.test', shareCompanyEmail: true });
+    const { version } = await profile(riley);
+    await agents.manager.post(`/api/dispatch/members/${riley}/leave`).set(headers).send({ version, leftAt: `${addDays(usDay('latest'), 7)}T12:00:00.000Z`, reason: 'Moving.', handOverTo: drew }).expect(201);
+    const step = `SELECT t.status, r.profile->'shared'->>'handOverToId' AS "handOverToId", r."emailDone" FROM it_removal_tasks t JOIN it_removal_requests r ON r.id = t."requestId" WHERE t.key = 'GOOGLE_WORKSPACE' AND r."memberId" = $1`;
+    // As if IT had completed it on the understanding that Drew keeps the email.
+    await db.query(`UPDATE it_removal_tasks SET status = 'COMPLETED' WHERE key = 'GOOGLE_WORKSPACE' AND "requestId" = (SELECT id FROM it_removal_requests WHERE "memberId" = $1)`, [riley]);
+    await db.query(`UPDATE it_removal_requests SET "emailDone" = 'ARCHIVED' WHERE "memberId" = $1`, [riley]);
+    // Drew leaves first: it closes with Riley, so the step opens again and what IT recorded is forgotten.
+    const drewVersion = (await profile(drew)).version;
+    await agents.manager.post(`/api/dispatch/members/${drew}/leave`).set(headers).send({ version: drewVersion, leftAt: usDay('latest'), reason: 'Left.' }).expect(201);
+    expect(await db.query(step, [riley])).toEqual([{ status: 'PENDING', handOverToId: null, emailDone: null }]);
+    // The same when someone chosen stops using it while still here.
+    const sky = await addOne('Sky', 'Martin');
+    await edit(sky, { companyEmail: 'riley.santos@example.test', shareCompanyEmail: true });
+    await db.query(`UPDATE it_removal_requests SET profile = jsonb_set(profile, '{shared,handOverToId}', to_jsonb($2::text)) WHERE "memberId" = $1`, [riley, sky]);
+    await db.query(`UPDATE it_removal_tasks SET status = 'COMPLETED' WHERE key = 'GOOGLE_WORKSPACE' AND "requestId" = (SELECT id FROM it_removal_requests WHERE "memberId" = $1)`, [riley]);
+    await edit(sky, { companyEmail: '' });
+    expect(await db.query(step, [riley])).toEqual([{ status: 'PENDING', handOverToId: null, emailDone: null }]);
   });
 
   it('gives IT a removal for shared accounts only, adds steps for a later one, and leaves an unchanged value alone', async () => {

@@ -19,6 +19,8 @@ const expired = (d: string) => `EXISTS(SELECT 1 FROM (VALUES ('LICENSE'), ('MEDI
  * kind, a later Qualified review or a newer checked document lifts it.
  */
 export const onHoldSql = (d = 'd') => `(${failedTest(d)} OR ${notQualified(d)} OR ${expired(d)})`;
+/** The hold as someone who may not see test results is shown it: a test never counts, so a hold always has a visible reason (49 CFR 40.321). */
+export const onHoldWithoutTestsSql = (d = 'd') => `(${notQualified(d)} OR ${expired(d)})`;
 
 /** Why a driver is on hold, for Safety: which reasons apply. */
 export async function holdReasons(em: EntityManager, driverId: string) {

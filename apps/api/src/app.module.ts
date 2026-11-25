@@ -17,6 +17,7 @@ import { SafetyModule } from './modules/safety/safety.module';
 import { RetentionModule } from './modules/retention/retention.module';
 import { SearchModule } from './modules/search/search.module';
 import { AnnouncementsModule } from './modules/announcements/announcements.module';
+import { ViewModule } from './modules/view/view.module';
 @Module({ imports: [
   ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
   TypeOrmModule.forRootAsync({ inject: [ConfigService], useFactory: (config: ConfigService) => ({
@@ -24,6 +25,6 @@ import { AnnouncementsModule } from './modules/announcements/announcements.modul
       DATABASE_URL: config.get('DATABASE_URL'), DATABASE_SSL: config.get('DATABASE_SSL'),
       CORS_ORIGINS: config.get('CORS_ORIGINS'), SESSION_SECRET: config.get('SESSION_SECRET'), BFF_SHARED_SECRET: config.get('BFF_SHARED_SECRET'), WEB_ORIGIN: config.get('WEB_ORIGIN'), SESSION_TTL_SECONDS: config.get('SESSION_TTL_SECONDS'),
       DEPLOYMENT_PURPOSE: config.get('DEPLOYMENT_PURPOSE') })), retryAttempts: 3,
-  }) }), HealthModule, AuthModule, OnboardingModule, ItModule, DocumentsModule, WorkspaceModule, ListsModule, LoadBoardsModule, CompanyAccountsModule, DispatchModule, SafetyModule, RetentionModule, SearchModule, AnnouncementsModule,
+  }) }), HealthModule, AuthModule, OnboardingModule, ItModule, DocumentsModule, WorkspaceModule, ListsModule, LoadBoardsModule, CompanyAccountsModule, DispatchModule, SafetyModule, RetentionModule, SearchModule, AnnouncementsModule, ViewModule,
 ] })
 export class AppModule {}

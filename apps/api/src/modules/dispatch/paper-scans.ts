@@ -72,12 +72,12 @@ export class PaperScansService {
  }
 
  /** Opens a scan, current or replaced, for any dispatch manager or administrator; every open is recorded and rate-limited. */
- async file(user: User, memberId: string, scanId: string): Promise<FileResult> {
+ async file(user: User, memberId: string, scanId: string, viewer = false): Promise<FileResult> {
   await onboardingLimit(this.db, `paper-scan-view:${user.id}`, 60, 900);
   const [scan] = await this.db.query(`SELECT id, kind, "memberId" FROM member_paper_scans WHERE id = $1 AND "memberId" = $2`, [scanId, memberId]) as { id: string; kind: 'NDA' | 'SOP'; memberId: string }[];
   if (!scan) throw new NotFoundException('This scan no longer exists.');
   const body = await this.storage.get(paperScanKey(scan));
-  await this.db.getRepository(DispatchEvent).save({ memberId, teamId: null, event: 'PAPER_SCAN_VIEWED', actorId: user.id, metadata: { kind: scan.kind } });
+  await this.db.getRepository(DispatchEvent).save({ memberId, teamId: null, event: 'PAPER_SCAN_VIEWED', actorId: user.id, metadata: { kind: scan.kind, ...(viewer ? { role: user.role } : {}) } });
   return { body, type: 'application/pdf', filename: `${scan.kind.toLowerCase()}-paper-scan.pdf` };
  }
 

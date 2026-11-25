@@ -1,11 +1,14 @@
+import type { EmailAction, EmailDone } from './email-words';
 export const taskStatuses=['PENDING','IN_PROGRESS','BLOCKED','COMPLETED'] as const;
 export type TaskStatus=typeof taskStatuses[number];
 // Not needed is a task outcome for optional tasks only; request progress never uses it.
 export const taskOutcomes=[...taskStatuses,'NOT_NEEDED'] as const;
 export type TaskOutcome=typeof taskOutcomes[number];
-export interface ItProfile {assists?:string|null;legalFirstName:string|null;legalLastName:string|null;preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;personalPhoneNumber:string|null;workPhoneNumber:string|null;personalEmail:string|null;mcName:string;teamLead:string;jobTitle:string;}
+// Someone coming back (section 41): what IT restores and why.
+export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:'ARCHIVED'|'SUSPENDED'|'DELETED'|null;emailDeletedOn:string|null;by:string;}
+export interface ItProfile {returning?:ReturningProfile;assists?:string|null;legalFirstName:string|null;legalLastName:string|null;preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;personalPhoneNumber:string|null;workPhoneNumber:string|null;personalEmail:string|null;mcName:string;teamLead:string;jobTitle:string;}
 // purpose SUPPORT: a support's or updater's setup (section 32), with only the tasks asked for, who asked and their note.
-export interface ItRequest {id:string;applicationId:string|null;purpose?:'DISPATCHER'|'SUPPORT';note?:string|null;requestedByName?:string|null;profile:ItProfile;version:number;status:TaskStatus;assignedRingCentralPhoneNumber:string|null;companyEmail:string|null;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;profilePhoto?:boolean;workPhoneVerifiedAt:string|null;completedAt:string|null;cancelledAt?:string|null;updatedAt:string;}
+export interface ItRequest {id:string;applicationId:string|null;purpose?:'DISPATCHER'|'SUPPORT'|'REHIRE'|'RESTORE';restoreKeys?:string[];retiredCompanyEmail?:string|null;retiredRingCentralNumber?:string|null;note?:string|null;requestedByName?:string|null;profile:ItProfile;version:number;status:TaskStatus;assignedRingCentralPhoneNumber:string|null;companyEmail:string|null;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;profilePhoto?:boolean;workPhoneVerifiedAt:string|null;completedAt:string|null;cancelledAt?:string|null;updatedAt:string;}
 export interface ItTask {id:string;key:string;label:string;description:string;optional:boolean;status:TaskOutcome;notes:string;updatedAt:string;}
 export function taskDone(task:Pick<ItTask,'status'>){return task.status==='COMPLETED'||task.status==='NOT_NEEDED';}
 export interface ItDetail {request:ItRequest;tasks:ItTask[];activity:{id:string;event:string;createdAt:string;metadata:Record<string,string|boolean|null>}[];}
@@ -32,7 +35,14 @@ export interface RemovalProfile {displayName:string;position?:string;companyEmai
 /** Shared company email and RingCentral number (section 35): what they used of someone else's, who uses theirs, and who gets them. An older API sends none. */
 export interface RemovalSharing {uses:{kind:'EMAIL'|'RINGCENTRAL';value:string;owner:string|null;handedOver:boolean}[];usedBy:{kind:'EMAIL'|'RINGCENTRAL';value:string;users:string[]}[];handOverToId:string|null;handOverTo:string|null}
 export type NumberOutcome='KEPT'|'FORWARDED'|'RELEASED';
-export interface RemovalRequest {id:string;memberId:string;version:number;status:TaskStatus;scheduled:boolean;removeNowAt:string|null;cancelledAt:string|null;dueOn:string;emailAfter:'FORWARD'|'SUSPEND';forwardToName:string|null;managerName:string|null;recordedByName?:string|null;leftAt:string|null;note?:string|null;numberOutcome:NumberOutcome|null;profile:RemovalProfile;completedAt:string|null;}
+/** Turned off when a RingCentral user is disabled (section 40). */
+export type RingCentralOff='USER'|'SMS'|'INBOUND_RECORDING'|'OUTBOUND_RECORDING';
+export const RINGCENTRAL_OFF:{value:RingCentralOff;label:string}[]=[{value:'USER',label:'User disabled'},{value:'SMS',label:'SMS'},{value:'INBOUND_RECORDING',label:'Inbound call recording'},{value:'OUTBOUND_RECORDING',label:'Outbound call recording'}];
+export interface RemovalRequest {id:string;memberId:string;version:number;status:TaskStatus;scheduled:boolean;removeNowAt:string|null;cancelledAt:string|null;dueOn:string;emailAfter:'FORWARD'|'SUSPEND';forwardToName:string|null;managerName:string|null;recordedByName?:string|null;leftAt:string|null;note?:string|null;numberOutcome:NumberOutcome|null;profile:RemovalProfile;completedAt:string|null;
+ /** Section 40; an older API sends none of these. */
+ emailAction?:EmailAction;emailDone?:EmailDone|null;ringCentralOff?:RingCentralOff[];
+ /** Their email or number goes to someone staying, so IT keeps it open: the API's rule (handedOver), never worked out here. */
+ handedOver?:{email:boolean;number:boolean};}
 /** Leave (section 35): suspending accounts while someone is away (SUSPEND), and restoring them (RESTORE). */
 export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;}
 export interface LeaveRequest {id:string;memberId:string;kind:'SUSPEND'|'RESTORE';version:number;status:TaskStatus;scheduled:boolean;dueOn:string;completedAt:string|null;cancelledAt:string|null;managerName:string|null;profile:LeaveProfile;suspended?:{by:string|null;at:string}|null;signInWaiting?:boolean;leaveEnded?:'RETURNED'|'CANCELLED'|'LEAVING'|null;}

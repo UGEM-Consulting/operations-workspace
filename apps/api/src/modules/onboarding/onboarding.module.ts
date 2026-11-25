@@ -10,12 +10,13 @@ import { Request } from 'express';
 import { Roles, Public } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { ApplicationQueryDto, ChangeManagerDto, ReviewDto, BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, UpdatePreferencesDto, VerifyApplicantDto } from './dto';
+import { ApplicationQueryDto, ChangeManagerDto, ReviewDto, BeginVerificationDto, CreateInvitationDto, DraftDto, SubmitDto, UpdatePreferencesDto, VerifyApplicantDto, MoreTimeDto, ResetCodeLimitDto } from './dto';
 import { OnboardingService } from './onboarding.service';
+import { ReturningService } from './returning';
 @Controller('onboarding')
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class OnboardingController {
- constructor(private readonly service: OnboardingService, private readonly reviews: ReviewService) {}
+ constructor(private readonly service: OnboardingService, private readonly reviews: ReviewService, private readonly returning: ReturningService) {}
  @Post('invitations') create(@Req() req: AuthRequest, @Body() dto: CreateInvitationDto) { return this.service.create(req.currentUser,dto); }
  @Get('invitations') invitations(@Req() req: AuthRequest) { return this.service.invitations(req.currentUser); }
  @Post('invitations/:id/revoke') revoke(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string) { return this.service.revoke(req.currentUser,id); }
@@ -24,6 +25,10 @@ class OnboardingController {
  @Get('review-queue') queue(@Req() req: AuthRequest, @Query() query: ApplicationQueryDto) { return this.reviews.queue(req.currentUser,query); }
  @Post('applications/:id/reviews') review(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ReviewDto) { return this.reviews.decide(req.currentUser,id,dto,clientContext(req)); }
  @Get('applications/:id') detail(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string) { return this.reviews.detail(req.currentUser,id); }
+ // A returning applicant (section 42): until when they can return and today's codes; more time; resetting the code limit (administrators, checked in the service).
+ @Get('applications/:id/returning') returningStatus(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string) { return this.returning.status(req.currentUser,id); }
+ @Post('applications/:id/more-time') moreTime(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: MoreTimeDto) { return this.returning.moreTime(req.currentUser,id,dto.days); }
+ @Post('applications/:id/reset-code-limit') resetCodeLimit(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ResetCodeLimitDto) { return this.returning.resetCodeLimit(req.currentUser,id,dto.confirmed); }
  @Post('applications/:id/manager') changeManager(@Req() req: AuthRequest,@Param('id',ParseUUIDPipe) id: string,@Body() dto: ChangeManagerDto) { return this.reviews.changeManager(req.currentUser,id,dto); }
 }
 // Public to the STAFF guard only. Each record operation verifies a restricted applicant session in the service.
@@ -57,5 +62,5 @@ class ApplicantUpdatesController {
   return this.db.transaction(async em => { const {application,invitation} = await this.applicants.applicant(em,req,true); return this.updates.disconnect(em,application,invitation); });
  }
 }
-@Module({ imports: [EmailModule,StorageModule,UpdatesModule],controllers: [OnboardingController,ApplicantController,ApplicantUpdatesController], providers: [OnboardingService, ReviewService], exports: [OnboardingService, ReviewService] })
+@Module({ imports: [EmailModule,StorageModule,UpdatesModule],controllers: [OnboardingController,ApplicantController,ApplicantUpdatesController], providers: [ReturningService, OnboardingService, ReviewService], exports: [OnboardingService, ReviewService] })
 export class OnboardingModule {}

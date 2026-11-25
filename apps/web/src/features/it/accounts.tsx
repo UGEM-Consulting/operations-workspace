@@ -6,7 +6,7 @@ import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Checklist, type ChecklistItem } from '@/components/ui/checklist';
-import { Input, Select, Textarea } from '@/components/ui/field';
+import { Input, RadioGroup, Select, Textarea } from '@/components/ui/field';
 import { Progress } from '@/components/ui/feedback';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Timeline } from '@/components/ui/timeline';
@@ -18,10 +18,13 @@ import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
+import { actionWord, doneFor, EMAIL_DONE_OPTIONS, emailStepText, type EmailAction, type EmailDone } from './email-words';
 
 // IT requests about company accounts (Design System section 33: ItCloseAccountTaskScreen, and a move's new accounts).
 export interface AccountRequestDetail {
   request: { id: string; memberId: string; kind: 'CLOSE' | 'MOVE'; version: number; status: string; note: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardToName: string | null; managerName: string | null;
+    /** Section 40; an older API sends neither. */
+    emailAction?: EmailAction; emailDone?: EmailDone | null;
     newCompanyEmail: string | null; newRingCentralNumber: string | null; newRingCentralExtension: string | null; createdAt: string; completedAt: string | null; cancelledAt: string | null;
     profile: { displayName: string; fromMc: string | null; toMc: string | null; close: { label: string; value: string }[]; keep: { value: string; reason: string }[]; create: string[] } };
   tasks: { id: string; key: string; label: string; description: string; status: string; notes: string; updatedAt: string }[];
@@ -36,17 +39,21 @@ const OUTCOMES = ['PENDING', 'IN_PROGRESS', 'BLOCKED', 'COMPLETED'] as const;
 export function ItAccountRequestView({ initial }: { initial: AccountRequestDetail }) {
   const toast = useToast(), router = useRouter();
   const [data, setData] = useState(initial), [pending, setPending] = useState<'refresh' | 'task' | 'contact' | null>(null);
-  const [editing, setEditing] = useState<AccountRequestDetail['tasks'][number] | null>(null), [status, setStatus] = useState('PENDING'), [error, setError] = useState(''), [contactError, setContactError] = useState('');
+  const [editing, setEditing] = useState<AccountRequestDetail['tasks'][number] | null>(null), [status, setStatus] = useState('PENDING'), [emailDone, setEmailDone] = useState<EmailDone | ''>(''), [error, setError] = useState(''), [contactError, setContactError] = useState('');
   const { request, tasks } = data, profile = request.profile, closed = !!request.completedAt || !!request.cancelledAt, busy = !!pending, move = request.kind === 'MOVE';
   const completed = tasks.filter(task => task.status === 'COMPLETED').length;
+  // Closing an email records what IT did with it (section 40), starting at what was asked; an older API doesn't ask.
+  const needsEmailDone = editing?.key === 'CLOSE_EMAIL' && request.emailAction !== undefined;
+  const closedEmail = profile.close.find(item => item.label === 'Company email')?.value;
   async function refresh() { setPending('refresh'); try { setData(await readApi<AccountRequestDetail>(`it/accounts/${request.id}`)); } catch (failure) { toast({ tone: 'danger', title: 'Not refreshed', description: errorMessage(failure, 'Unable to refresh.') }); } finally { setPending(null); } }
   async function update(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!editing || busy) return;
     const notes = String(new FormData(event.currentTarget).get('notes') ?? '');
     if (status === 'BLOCKED' && !notes.trim()) { setError('Describe what is blocking this task.'); return; }
+    if (needsEmailDone && status === 'COMPLETED' && !emailDone) { setError('Choose what you did with the email.'); return; }
     setPending('task'); setError('');
     try {
-      const updated = await mutate<AccountRequestDetail>(`it/accounts/${request.id}/tasks/${editing.key}`, 'PATCH', { version: request.version, status, notes });
+      const updated = await mutate<AccountRequestDetail>(`it/accounts/${request.id}/tasks/${editing.key}`, 'PATCH', { version: request.version, status, notes, ...(needsEmailDone && emailDone ? { emailDone } : {}) });
       setData(updated); setEditing(null); if (updated.request.completedAt) router.refresh();
       toast(updated.request.completedAt ? { title: 'Finished', description: `${request.managerName ?? 'The manager'} has been notified.` } : { title: 'Checklist task updated' });
     } catch (failure) { setError(errorMessage(failure, 'Unable to update. Your entries have been kept.')); } finally { setPending(null); }
@@ -59,9 +66,10 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
     catch (failure) { setContactError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); } finally { setPending(null); }
   }
   const items = tasks.map((task): ChecklistItem => ({ id: task.key, title: task.label, status: task.status as ChecklistItem['status'], note: task.notes || undefined,
-    description: task.key === 'CLOSE_EMAIL' && request.emailAfter === 'FORWARD' ? `${task.description} Forward new email to ${request.forwardToName ?? 'the manager'} for 30 days.` : task.description,
+    description: task.key === 'CLOSE_EMAIL' && request.emailAction && closedEmail ? emailStepText(closedEmail, request.emailAction, request.emailAfter === 'FORWARD', request.forwardToName)
+      : task.key === 'CLOSE_EMAIL' && request.emailAfter === 'FORWARD' ? `${task.description} Forward new email to ${request.forwardToName ?? 'the manager'} for 30 days.` : task.description,
     meta: task.status !== 'PENDING' && <>Updated <LocalTime iso={task.updatedAt} /></>,
-    action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setEditing(task); setStatus(task.status); setError(''); }}>Update<span className="sr-only">: {task.label}</span></Button> }));
+    action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setEditing(task); setStatus(task.status); setEmailDone(request.emailDone ?? (request.emailAction ? doneFor(request.emailAction) : '')); setError(''); }}>Update<span className="sr-only">: {task.label}</span></Button> }));
   const title = move ? `New accounts for ${profile.displayName}` : `Close ${profile.displayName}’s ${profile.fromMc ?? ''} account`.replace('  ', ' ');
   return <div className="space-y-6">
     <PageCrumb label={profile.displayName} />
@@ -95,6 +103,8 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
     {editing && <Dialog open onClose={() => setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual work." busy={pending === 'task'} actions={<Button form="it-account-editor" type="submit">{pending === 'task' ? 'Saving…' : 'Save task'}</Button>}>
       <form id="it-account-editor" onSubmit={update} className="space-y-4">
         <Select label="Status" name="status" value={status} onChange={event => setStatus(event.target.value)} width="sm" options={OUTCOMES.map(value => ({ value, label: statusLabel(value) }))} />
+        {needsEmailDone && request.emailAction && <RadioGroup name="emailDone" label="What you did with the email" value={emailDone} onChange={value => setEmailDone(value as EmailDone)} options={EMAIL_DONE_OPTIONS}
+          hint={`${request.managerName ?? 'The manager'} chose ${actionWord(request.emailAction)}. Needed to mark the task completed.`} />}
         <Textarea label="Notes" name="notes" optional defaultValue={editing.notes} rows={3} hint="Never passwords." />
         <Notice message={error} error />
       </form>

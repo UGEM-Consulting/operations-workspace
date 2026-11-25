@@ -35,7 +35,7 @@ integration('IT requests about company accounts (disposable PostgreSQL)', () => 
   async function finish(id: string, record?: Row) {
     let page = await detail(id);
     if (record) page = (await agents.it.patch(`/api/it/accounts/${id}/contact`).set(headers).send({ version: page.request.version, ...record }).expect(200)).body;
-    for (const task of page.tasks) page = (await agents.it.patch(`/api/it/accounts/${id}/tasks/${task.key}`).set(headers).send({ version: page.request.version, status: 'COMPLETED' }).expect(200)).body;
+    for (const task of page.tasks) page = (await agents.it.patch(`/api/it/accounts/${id}/tasks/${task.key}`).set(headers).send({ version: page.request.version, status: 'COMPLETED', ...(task.key === 'CLOSE_EMAIL' ? { emailDone: 'ARCHIVED' } : {}) }).expect(200)).body;
     return page;
   }
 
@@ -69,22 +69,25 @@ integration('IT requests about company accounts (disposable PostgreSQL)', () => 
     const { id: accountId } = (await agents.it.post('/api/company-accounts').set(headers).send({ memberId: riley, companyName: 'YouPro', companyEmail: 'ryan@example.test' }).expect(201)).body;
     const [youpro] = (await agents.it.post('/api/lists/load-board-accounts').set(headers).send({ provider: 'DAT', name: 'YouPro DAT' }).expect(201)).body.id ? [(await db.query(`SELECT id FROM load_board_accounts WHERE name = 'YouPro DAT'`))[0].id] : [];
     const seat = (await agents.it.post('/api/load-board-seats').set(headers).send({ memberId: riley, accountId: youpro, signInEmail: 'ryan@example.test', startedOn: '2025-02-01' }).expect(201)).body;
-    const close = async (status: number) => { const [account] = (await profile(riley)).companyAccounts; return agents.manager.post(`/api/company-accounts/${accountId}/close`).set(headers).send({ version: account.version, emailAfter: 'FORWARD', note: 'Not used since the move.' }).expect(status); };
+    const close = async (status: number) => { const [account] = (await profile(riley)).companyAccounts; return agents.manager.post(`/api/company-accounts/${accountId}/close`).set(headers).send({ version: account.version, emailAfter: 'FORWARD', emailAction: 'ARCHIVE', note: 'Not used since the move.' }).expect(status); };
     await agents.it.post(`/api/company-accounts/${accountId}/close`).set(headers).send({ version: 1, emailAfter: 'SUSPEND' }).expect(403);
     expect((await close(409)).body.message).toMatch(/still signs in to YouPro DAT/);
     await agents.it.post(`/api/load-board-seats/${seat.id}`).set(headers).send({ version: 1, action: 'END', on: usDay('latest') }).expect(201);
     const { id } = (await close(201)).body;
     await close(409);
     const page = await detail(id);
-    expect(page.request).toMatchObject({ kind: 'CLOSE', emailAfter: 'FORWARD', note: 'Not used since the move.', profile: { fromMc: 'YouPro', close: [{ label: 'Company email', value: 'ryan@example.test' }] } });
+    expect(page.request).toMatchObject({ kind: 'CLOSE', emailAfter: 'FORWARD', emailAction: 'ARCHIVE', emailDone: null, note: 'Not used since the move.', profile: { fromMc: 'YouPro', close: [{ label: 'Company email', value: 'ryan@example.test' }] } });
     expect(page.tasks.map((task: Row) => task.key)).toEqual(['CLOSE_EMAIL', 'SHARED_PASSWORDS']);
     expect((await profile(riley)).accountRequests).toEqual([expect.objectContaining({ id, kind: 'CLOSE', accountId })]);
     const tasks = (await agents.it.get('/api/it/tasks?accounts=1').set(headers).expect(200)).body;
     expect(tasks.items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'CLOSE_ACCOUNT', id })]));
     expect(tasks.stats.accounts).toBe(1);
     await agents.it.patch(`/api/it/accounts/${id}/tasks/CLOSE_EMAIL`).set(headers).send({ version: page.request.version, status: 'BLOCKED' }).expect(400);
+    // Closing the email records what IT did with it (section 40); only that task takes it.
+    expect((await agents.it.patch(`/api/it/accounts/${id}/tasks/CLOSE_EMAIL`).set(headers).send({ version: page.request.version, status: 'COMPLETED' }).expect(400)).body.message).toMatch(/what you did with the email/);
+    await agents.it.patch(`/api/it/accounts/${id}/tasks/SHARED_PASSWORDS`).set(headers).send({ version: page.request.version, status: 'COMPLETED', emailDone: 'ARCHIVED' }).expect(400);
     const done = await finish(id);
-    expect(done.request.completedAt).not.toBeNull();
+    expect(done.request).toMatchObject({ completedAt: expect.any(String), emailDone: 'ARCHIVED' });
     expect((await profile(riley)).companyAccounts[0]).toMatchObject({ status: 'CLOSED' });
     const [notice] = await db.query(`SELECT kind, "recipientId" FROM portal_notifications WHERE "accountRequestId" = $1`, [id]);
     expect(notice).toEqual({ kind: 'IT_ACCOUNT_COMPLETED', recipientId: users.manager.id });
@@ -95,8 +98,10 @@ integration('IT requests about company accounts (disposable PostgreSQL)', () => 
   it('asks IT for accounts at the new MC on a move, keeps an email a seat still uses, and swaps them when IT finishes', async () => {
     const casey = await addOne('Casey', { companyEmail: 'casey@example.test', ringCentralNumber: '+1 469 555 0131', datEmail: 'casey@example.test' });
     const move = async (extra: Row, status: number) => { const { version } = await profile(casey); return agents.manager.post(`/api/dispatch/members/${casey}/move`).set(headers).send({ version, mcId: northwind, teamId: red, startedAt: usDay('latest'), reason: 'Northwind needs help.', ...extra }).expect(status); };
-    await move({ accounts: 'NEW' }, 201);
-    const [request] = await db.query(`SELECT id FROM it_account_requests WHERE "memberId" = $1`, [casey]);
+    await move({ accounts: 'NEW', emailAction: 'DELETE' }, 201);
+    // The email a seat still uses is kept, so the choice for closing it doesn't apply.
+    const [request] = await db.query(`SELECT id, "emailAction" FROM it_account_requests WHERE "memberId" = $1`, [casey]);
+    expect(request.emailAction).toBe('SUSPEND');
     const page = await detail(request.id);
     expect(page.request.profile).toMatchObject({ fromMc: 'Lakeside Carriers', toMc: 'Northwind Freight', close: [{ label: 'RingCentral number', value: '+1 469 555 0131' }],
       keep: [{ value: 'casey@example.test', reason: 'Signs in to DAT account not recorded' }] });

@@ -7,6 +7,10 @@ export const CORRECTION_FIELDS = ['firstName', 'lastName', 'personalPhoneNumber'
 export type CorrectionField = typeof CORRECTION_FIELDS[number];
 // Photos and document signatures are not answer fields, but managers can request them in a correction.
 export const DOCUMENT_ITEMS = ['selfiePhoto', 'idPhoto', 'documents'] as const;
+/** Returning applicants (section 42): applications not decided yet, which they may come back to while their time lasts. */
+export const UNDECIDED_STATUSES = ['DRAFT', 'SUBMITTED', 'RESUBMITTED', 'CHANGES_REQUESTED'] as const;
+/** The days Give more time offers (section 42). */
+export const MORE_TIME_DAYS = [7, 14, 30] as const;
 export type DocumentItem = typeof DOCUMENT_ITEMS[number];
 export const REQUESTABLE_ITEMS = [...CORRECTION_FIELDS, ...DOCUMENT_ITEMS] as const;
 export type RequestableItem = CorrectionField | DocumentItem;

@@ -10,8 +10,8 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { digest } from '../onboarding/verification-code';
 import { usDay } from '../safety/screening-rules';
 import { Role, type User } from '../users/user.entity';
-import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask } from '../it/it.entity';
-import { createRemoval, memberSetups, removalTaskKeys, setupAccounts } from '../it/removal';
+import { ItRemovalActivity, ItRemovalRequest, ItRemovalTask, type EmailAction } from '../it/it.entity';
+import { checkEmailChoice, createRemoval, memberSetups, removalTaskKeys, setupAccounts } from '../it/removal';
 import { alreadyHere, type HereMatch } from '../onboarding/already-here';
 import { NotificationsService } from '../updates/notifications.service';
 import { EXTENSION, signInsInUse, telegramUsername } from './account-details';
@@ -417,7 +417,8 @@ export class ExistingDispatchersService {
     // A team and no dispatcher means the whole team. With a dispatcher named, any team in the row is ignored: they work where their dispatcher works.
     // Someone who left assisted somebody once; nothing about whom is needed now.
     const noMcText = listNameKey(text(row.mc)) === listNameKey(NO_MC), teamText = text(row.team), namesDispatcher = !!text(row.supports) || !!row.supportsMemberId;
-    if ((text(row.mc) && !noMcText) || text(row.jobTitle)) problems.push(`${capitalized(aSupport(supportType))} has no MC or job title of their own. Leave them empty.`);
+    // A row about someone here now isn't added: its MC can be where they have an account (section 40 records their position there).
+    if ((text(row.mc) && !noMcText && !hereNow) || text(row.jobTitle)) problems.push(`${capitalized(aSupport(supportType))} has no MC or job title of their own. Leave them empty.`);
     if (!left) {
      if (row.supportsTeamId && namesDispatcher) problems.push('Choose a dispatcher or a team, not both.');
      if (row.supportsTeamId) {
@@ -580,7 +581,7 @@ export class ExistingDispatchersService {
     await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_ADDED', actorId: user.id, metadata: { source: sourceName ? 'file' : 'form', paper, noStartDate: !result.startedOn, noMc: result.noMc,
      ...(result.left ? { left: true, noLastDay: !result.leftOn, askIt: result.askIt } : {}), ...(result.previousMemberId ? { cameBack: true } : {}) } });
     // Someone who left whose accounts may still be open: IT closes what the row records, due today. Nothing is sent to the person.
-    if (result.askIt) alerts.push(...await this.askItToClose(em, user, member, record, 'SUSPEND', null));
+    if (result.askIt) alerts.push(...await this.askItToClose(em, user, member, record, 'SUSPEND', undefined, null));
     added.set(result.row, member.id);
    }
    let filled = 0;
@@ -637,7 +638,9 @@ export class ExistingDispatchersService {
   const email = text(row.companyEmail).toLowerCase() || null;
   const theirs = email ? (await alreadyHere(em, [{ key: 'own', email, phone: null, applicationId: null, skipMemberId: null }])).get('own')?.some(item => item.memberId === member.id) : false;
   const used = listNameKey(result.name) !== listNameKey(`${member.firstName} ${member.lastName}`) ? result.name : null;
-  await addCompanyAccount(em, user.id, member.id, { mcId: at.mcId, companyName: null, nameUsed: used, companyEmail: theirs ? null : email, ringCentralNumber: text(row.ringCentralNumber) || null,
+  // The row's position column says what they were there (section 40); a blank one records nothing.
+  const position = text(row.position) ? (result.position === 'SUPPORT' ? result.supportType : 'DISPATCHER') : null;
+  await addCompanyAccount(em, user.id, member.id, { mcId: at.mcId, companyName: null, position, nameUsed: used, companyEmail: theirs ? null : email, ringCentralNumber: text(row.ringCentralNumber) || null,
    ringCentralExtension: text(row.ringCentralExtension) || null, status: 'ACTIVE', closedOn: null, sourceName: sourceName?.trim().slice(0, 200) || 'file' });
   const fields = ['companyAccount'];
   if (used && !(await em.getRepository(MemberOtherName).existsBy({ memberId: member.id, name: used }))) { await saveOtherNames(em, member.id, [{ name: used, mcId: at.mcId }], user.id); fields.push('otherNames'); }
@@ -696,11 +699,11 @@ export class ExistingDispatchersService {
   * IT closes the accounts recorded for someone added as Left: a removal checklist due today from what the manager recorded,
   * and IT's usual alert. Returns the alerts to send after the transaction.
   */
- async askItToClose(em: EntityManager, user: User, member: DispatchMember, record: ExistingMemberRecord, emailAfter: 'FORWARD' | 'SUSPEND', note: string | null) {
+ async askItToClose(em: EntityManager, user: User, member: DispatchMember, record: ExistingMemberRecord, emailAfter: 'FORWARD' | 'SUSPEND', emailAction: EmailAction | undefined, note: string | null) {
   const { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail } = record;
   const accounts = { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail };
   const alerts = await createRemoval(em, this.alerts, { setup: null, taskKeys: await removalTaskKeys(em, member.position, [], accounts), accounts, position: positionLabel(member), memberId: member.id, name: `${member.firstName} ${member.lastName}`,
-   dueOn: usDay('latest'), scheduled: false, emailAfter, actorId: user.id, ...await lastPlace(em, member.id) });
+   dueOn: usDay('latest'), scheduled: false, emailAfter, emailAction, actorId: user.id, ...await lastPlace(em, member.id) });
   if (note) await em.query(`UPDATE it_removal_requests SET note = $2 WHERE "memberId" = $1 AND "cancelledAt" IS NULL`, [member.id, note]);
   return alerts;
  }
@@ -798,6 +801,7 @@ export class ExistingDispatchersService {
   * was signed here. A corrected personal email moves an unused link with it, and corrected accounts reach IT's open removal.
   */
  async update(user: User, id: string, dto: UpdateExistingDto) {
+  checkEmailChoice(dto.emailAfter, dto.emailAction);
   let alerts: string[] = [];
   const result = await this.db.transaction(async em => {
    await em.query('SELECT pg_advisory_xact_lock($1)', [IMPORT_LOCK]);
@@ -873,7 +877,7 @@ export class ExistingDispatchersService {
    if (changed.includes('personalEmail')) await this.moveUnusedLink(em, user, id, record.personalEmail);
    if (changed.includes('datEmail') || changed.includes('truckstopEmail')) { await syncRecordedSeats(em, id, user.id); await refreshRemovalSeats(em, id, user.id); }
    const accounts = changed.filter(field => ['companyEmail', 'ringCentralNumber', 'ringCentralExtension', 'datEmail', 'truckstopEmail'].includes(field));
-   if (accounts.length) alerts = await this.correctRemoval(em, user, member, record, accounts);
+   if (accounts.length) alerts = await this.correctRemoval(em, user, member, record, accounts, dto);
    await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields: changed } });
    return { id, version: member.version };
   });
@@ -900,13 +904,13 @@ export class ExistingDispatchersService {
   * IT's removal copied the recorded accounts when the notice was recorded, so a correction during the notice goes there too.
   * A support who had no accounts then gets their removal now. A step IT already finished opens again for a new account.
   */
- private async correctRemoval(em: EntityManager, user: User, member: DispatchMember, record: ExistingMemberRecord, fields: string[]) {
+ private async correctRemoval(em: EntityManager, user: User, member: DispatchMember, record: ExistingMemberRecord, fields: string[], choice: { emailAction?: EmailAction; emailAfter?: 'FORWARD' | 'SUSPEND' } = {}) {
   const removal = await em.getRepository(ItRemovalRequest).findOne({ where: { memberId: member.id, cancelledAt: IsNull() }, lock: { mode: 'pessimistic_write' } });
   const { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail } = record;
   if (!removal) {
    const notice = await em.getRepository(MemberNotice).findOneBy({ memberId: member.id, cancelledAt: IsNull(), finishedAt: IsNull() });
    if (!notice || (!companyEmail && !ringCentralNumber && !datEmail && !truckstopEmail)) return [];
-   return createRemoval(em, this.alerts, { setup: null, taskKeys: await removalTaskKeys(em, member.position, [], { companyEmail, ringCentralNumber, datEmail, truckstopEmail }), accounts: { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail }, position: positionLabel(member), memberId: member.id, name: `${member.firstName} ${member.lastName}`, dueOn: notice.lastDay, scheduled: true, emailAfter: 'SUSPEND', actorId: user.id, ...await memberPlace(em, member.id) });
+   return createRemoval(em, this.alerts, { setup: null, taskKeys: await removalTaskKeys(em, member.position, [], { companyEmail, ringCentralNumber, datEmail, truckstopEmail }), accounts: { companyEmail, ringCentralNumber, ringCentralExtension, datEmail, truckstopEmail }, position: positionLabel(member), memberId: member.id, name: `${member.firstName} ${member.lastName}`, dueOn: notice.lastDay, scheduled: true, emailAfter: choice.emailAfter ?? 'SUSPEND', emailAction: choice.emailAction, actorId: user.id, ...await memberPlace(em, member.id) });
   }
   // Someone with IT setup: what IT recorded on any of their setups comes first, so a correction only reaches IT where IT recorded nothing.
   const setups = await memberSetups(em, member.id, removal.setupRequestId), fromIt = setupAccounts(setups);
@@ -916,9 +920,15 @@ export class ExistingDispatchersService {
   // Someone who left: once IT finished, the record still takes the account and IT is told directly, as the dialog says.
   if (removal.completedAt) { if (member.status === 'LEFT') return []; throw new ConflictException('IT has already finished removing their access. Tell IT about this account directly.'); }
   removal.profile = { ...removal.profile, ...next };
-  // Forwarding needs a mailbox, and what happens to a number is decided for that number.
-  if (!next.companyEmail) { removal.emailAfter = 'SUSPEND'; removal.forwardTo = null; }
-  if (changed.includes('ringCentralNumber')) removal.numberOutcome = null;
+  // Forwarding needs a mailbox, and what IT did (section 40) is recorded for that email and that number.
+  if (!next.companyEmail) { removal.emailAfter = 'SUSPEND'; removal.forwardTo = null; removal.emailAction = 'SUSPEND'; }
+  // Their first company email on this removal: the manager chooses what happens to it, as when marking them as leaving.
+  else if (!profile.companyEmail && choice.emailAction) {
+   const forward = choice.emailAfter === 'FORWARD';
+   Object.assign(removal, { emailAction: choice.emailAction, emailAfter: forward ? 'FORWARD' : 'SUSPEND', forwardTo: forward ? user.id : null });
+  }
+  if (changed.includes('companyEmail')) removal.emailDone = null;
+  if (changed.includes('ringCentralNumber')) { removal.numberOutcome = null; removal.ringCentralOff = []; }
   removal.version += 1; await em.save(removal);
   const steps = [...(changed.includes('companyEmail') && next.companyEmail ? ['GOOGLE_WORKSPACE'] : []), ...(changed.includes('ringCentralNumber') && next.ringCentralNumber ? ['RINGCENTRAL'] : []),
    ...((changed.includes('datEmail') && next.datEmail) || (changed.includes('truckstopEmail') && next.truckstopEmail) ? ['BUSINESS_SOFTWARE'] : [])];
@@ -964,15 +974,16 @@ export class ExistingDispatchersService {
   * recorded, due today, and the asker a portal notice when it's done. Nothing is sent to the person.
   */
  async closeAccounts(user: User, id: string, dto: CloseAccountsDto) {
+  checkEmailChoice(dto.emailAfter, dto.emailAction);
   const alerts: string[] = [];
   const result = await this.db.transaction(async em => {
    const { member, record } = await this.lockRecord(em, id, dto.version);
    if (member.status !== 'LEFT' || !record) throw new ConflictException('Only someone added by hand as Left is asked for here. For someone leaving now, use Mark as leaving.');
    if (await em.getRepository(ItRemovalRequest).existsBy({ memberId: id, cancelledAt: IsNull() })) throw new ConflictException('IT has already been asked to close their accounts.');
    if (!record.companyEmail && !record.ringCentralNumber && !record.datEmail && !record.truckstopEmail && !(await removalSeats(em, id)).length) throw new BadRequestException('No accounts are recorded for them, so there is nothing for IT to close.');
-   alerts.push(...await this.askItToClose(em, user, member, record, dto.emailAfter, dto.note || null));
+   alerts.push(...await this.askItToClose(em, user, member, record, dto.emailAfter, dto.emailAction, dto.note || null));
    member.version += 1; await em.save(member);
-   await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'CLOSE_ACCOUNTS_ASKED', actorId: user.id, metadata: { forward: dto.emailAfter === 'FORWARD' && !!record.companyEmail, note: !!dto.note } });
+   await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'CLOSE_ACCOUNTS_ASKED', actorId: user.id, metadata: { forward: dto.emailAfter === 'FORWARD' && !!record.companyEmail, ...(record.companyEmail && dto.emailAction ? { emailAction: dto.emailAction } : {}), note: !!dto.note } });
    return { id, version: member.version };
   });
   this.alerts.dispatch(alerts);

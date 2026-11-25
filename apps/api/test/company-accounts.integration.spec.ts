@@ -90,15 +90,24 @@ integration('Company accounts at other MCs (disposable PostgreSQL)', () => {
     expect(JSON.stringify(events)).not.toContain('@');
   });
 
+  it('records what they were at the other company from the row, an updater too', async () => {
+    const sam = await addOne('Sam', { companyEmail: 'sam@example.test' });
+    // An updater has no MC of their own, but a row about someone here now names the company where the account is.
+    const row = base(2, 'Sam', { mc: 'Lakeside Carriers', team: '', jobTitle: '', position: 'Updater', companyEmail: 'sam.lakeside@example.test' });
+    expect((await check([row])).rows[0]).toMatchObject({ status: 'ALREADY', match: { id: sam, options: expect.arrayContaining(['ACCOUNT']) } });
+    await add([{ ...row, alreadyAction: 'ACCOUNT' }], 'lakeside.csv');
+    expect((await profile(sam)).companyAccounts).toEqual([expect.objectContaining({ mc: 'Lakeside Carriers', position: 'UPDATER', companyEmail: 'sam.lakeside@example.test' })]);
+  });
+
   it('records a row from another company as an account of someone already here, not a second record', async () => {
     const riley = await addOne('Riley', { companyEmail: 'riley@example.test' });
-    const row = base(2, 'Ryan', { lastName: 'Sands', mc: 'Lakeside Carriers', team: '', personalEmail: 'riley.home@example.test', companyEmail: 'ryan@example.test', ringCentralNumber: '+1 469 555 0131', datEmail: 'ryan@example.test' });
+    const row = base(2, 'Ryan', { lastName: 'Sands', mc: 'Lakeside Carriers', team: '', position: 'Dispatcher', personalEmail: 'riley.home@example.test', companyEmail: 'ryan@example.test', ringCentralNumber: '+1 469 555 0131', datEmail: 'ryan@example.test' });
     const checked = (await check([row])).rows[0];
     expect(checked).toMatchObject({ status: 'ALREADY', match: { id: riley, options: expect.arrayContaining(['ACCOUNT']), account: { mc: 'Lakeside Carriers', adds: ['company email', 'RingCentral number', 'other name', 'DAT seat'] } } });
     const done = await add([{ ...row, alreadyAction: 'ACCOUNT' }], 'lakeside.csv');
     expect(done).toMatchObject({ added: 0, accounts: 1, left: [] });
     const page = await profile(riley);
-    expect(page.companyAccounts).toEqual([expect.objectContaining({ mc: 'Lakeside Carriers', nameUsed: 'Ryan Sands', companyEmail: 'ryan@example.test', sourceName: 'lakeside.csv', keptFor: ['DAT account not recorded'] })]);
+    expect(page.companyAccounts).toEqual([expect.objectContaining({ mc: 'Lakeside Carriers', position: 'DISPATCHER', nameUsed: 'Ryan Sands', companyEmail: 'ryan@example.test', sourceName: 'lakeside.csv', keptFor: ['DAT account not recorded'] })]);
     expect(page.otherNames).toEqual([expect.objectContaining({ name: 'Ryan Sands', mc: 'Lakeside Carriers' })]);
     expect(page.loadBoardSeats).toEqual([expect.objectContaining({ signInEmail: 'ryan@example.test', status: 'ACTIVE' })]);
     expect(page.existing.companyEmail).toBe('riley@example.test');
@@ -150,6 +159,26 @@ integration('Company accounts at other MCs (disposable PostgreSQL)', () => {
     const { CompanyAccountNotes1793320000000: Notes } = await import('../src/database/migrations/1793320000000-CompanyAccountNotes');
     await expect(new Notes().down(runner)).rejects.toThrow('Refusing to roll back while notes on company accounts');
     await runner.release();
+  });
+
+  it('records the position held at another company, also on a closed account (section 40)', async () => {
+    const riley = await addOne('Riley');
+    const added = (await account({ memberId: riley, mcId: lakeside, companyEmail: 'ryan@example.test', position: 'SUPPORT' }).expect(201)).body;
+    await account({ memberId: riley, mcId: lakeside, ringCentralNumber: '+1 469 555 0177', position: 'DRIVER' }).expect(400);
+    const shown = async () => (await profile(riley)).companyAccounts.find((item: Row) => item.id === added.id);
+    expect(await shown()).toMatchObject({ position: 'SUPPORT' });
+    // The rollback refuses while a position is recorded.
+    const runner = db.createQueryRunner();
+    const { LeavingEmailRingCentral1793370000000: Migration } = await import('../src/database/migrations/1793370000000-LeavingEmailRingCentral');
+    await expect(new Migration().down(runner)).rejects.toThrow('Refusing to roll back while email choices');
+    await runner.release();
+    const change = (body: Row) => agents.it.patch(`/api/company-accounts/${added.id}`).set(headers).send(body);
+    const closed = (await change({ version: added.version, position: 'UPDATER', status: 'CLOSED', closedOn: usDay('latest') }).expect(200)).body.version;
+    // Kept as history, but the position held there can still be corrected, or cleared.
+    expect((await change({ version: closed, position: '' }).expect(200)).body.version).toBe(closed + 1);
+    expect(await shown()).toMatchObject({ position: null, status: 'CLOSED' });
+    const events = await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event LIKE 'COMPANY_ACCOUNT_%' ORDER BY "createdAt"`, [riley]);
+    expect(events.map((row: { metadata: { fields: string[] } }) => row.metadata.fields)).toEqual([['position', 'companyEmail'], ['position'], ['position']]);
   });
 
   it('refuses a rollback while accounts at other companies are recorded', async () => {

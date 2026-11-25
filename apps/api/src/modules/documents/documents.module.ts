@@ -77,5 +77,5 @@ class ApplicantDocumentsController {
  @Post('documents/:id/acknowledge') acknowledge(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return this.service.acknowledge(req, id, clientContext(req)); }
  @Get('documents/:id/signed') @FileResponse() async signed(@Req() req: Request, @Param('id', ParseUUIDPipe) id: string) { return send(await this.service.applicantSignedCopy(req, id)); }
 }
-@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, MemberPhotosController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService, ApplicantSignedCopies, MemberPhotosService], exports: [MemberPhotosService] })
+@Module({ imports: [StorageModule, OnboardingModule], controllers: [CompanyDocumentsController, SavedSignatureController, ApplicationFilesController, MemberFilesController, MemberPhotosController, ItPhotoController, ApplicantDocumentsController], providers: [DocumentsService, ApplicantSignedCopies, MemberPhotosService], exports: [MemberPhotosService, DocumentsService] })
 export class DocumentsModule {}

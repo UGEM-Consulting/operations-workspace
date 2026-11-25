@@ -1,5 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-import type { TaskStatus } from '../it/it.entity';
+import type { EmailAction, EmailDone, TaskStatus } from '../it/it.entity';
 
 /**
  * What IT is asked to do with company accounts (section 33): CLOSE one account at another company, or, when someone MOVEs to
@@ -9,8 +9,8 @@ export type AccountRequestKind = 'CLOSE' | 'MOVE';
 export const ACCOUNT_TASKS = [
  { key: 'NEW_EMAIL', label: 'New company email', description: 'Create their email at the new MC and record it here.' },
  { key: 'NEW_NUMBER', label: 'New RingCentral number', description: 'Give them a number at the new MC and record it here.' },
- { key: 'CLOSE_EMAIL', label: 'Close the email', description: 'Suspend it and sign it out everywhere.' },
- { key: 'CLOSE_NUMBER', label: 'Close the number', description: 'Remove the RingCentral user, and record what happens to the number in the notes.' },
+ { key: 'CLOSE_EMAIL', label: 'Close the email', description: 'Archive, suspend or delete it as asked, and sign it out everywhere. Record what you did.' },
+ { key: 'CLOSE_NUMBER', label: 'Close the number', description: 'Disable the RingCentral user, with SMS and call recording turned off. Don’t delete it: the number stays with the disabled user.' },
  { key: 'SHARED_PASSWORDS', label: 'Shared passwords', description: 'Change any shared password sent to this email.' },
 ] as const;
 export type AccountTaskKey = typeof ACCOUNT_TASKS[number]['key'];
@@ -32,6 +32,9 @@ export class ItAccountRequest {
  @Column('jsonb') profile!: AccountRequestProfile;
  @Column('varchar', { length: 500, nullable: true }) note!: string | null;
  @Column('varchar', { default: 'SUSPEND' }) emailAfter!: 'FORWARD' | 'SUSPEND';
+ // What happens to the email (section 40): the manager's choice, and what IT did once it closed it.
+ @Column('varchar', { default: 'SUSPEND' }) emailAction!: EmailAction;
+ @Column('varchar', { nullable: true }) emailDone!: EmailDone | null;
  @Column('uuid', { nullable: true }) forwardTo!: string | null;
  // A move's new accounts, as IT records them.
  @Column('varchar', { length: 254, nullable: true }) newCompanyEmail!: string | null;

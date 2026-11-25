@@ -18,6 +18,8 @@ import { Badge } from '@/components/ui/status-badge';
 import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
+import { EmailAfterFields } from '@/features/it/email-choice';
+import type { EmailChoice } from '@/features/it/email-words';
 import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
 import { PaperScanActions } from './paper-scan';
@@ -179,15 +181,19 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
   const owners = useAccountOwners(member.id, typed), [shareAnswer, setShareAnswer] = useState<'yes' | 'no' | ''>('');
   const unchanged = (value: string, use: typeof sharedEmail) => !!use && value.trim().toLowerCase() === use.value.toLowerCase();
   const emailOwner = !unchanged(typed.companyEmail, sharedEmail) ? owners.companyEmail[0] ?? null : null, numberOwner = !unchanged(typed.ringCentralNumber, sharedNumber) ? owners.ringCentralNumber[0] ?? null : null;
+  // Their first company email while IT is removing their access, or during their notice (section 40): what happens to it, as Mark as leaving asks.
+  const removing = member.removal ? !member.removal.completedAt : !!member.notice;
+  const firstEmail = removing && !existing.companyEmail && !member.accounts?.companyEmail && !!typed.companyEmail.trim() && !emailOwner;
+  const [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
-    const { firstName, lastName, nameReason, ...data } = Object.fromEntries([...new FormData(event.currentTarget).entries()].filter(([field]) => field !== 'shareAnswer')) as Record<string, string>;
+    const { firstName, lastName, nameReason, ...data } = Object.fromEntries([...new FormData(event.currentTarget).entries()].filter(([field]) => !['shareAnswer', 'emailAction', 'forward'].includes(field))) as Record<string, string>;
     if ((emailOwner || numberOwner) && shareAnswer !== 'yes') { setError(shareAnswer === 'no' ? 'Change the email or number that’s someone else’s.' : `Say whether ${member.firstName} uses it too.`); return; }
     setBusy(true); setError('');
     try {
       let version = renamedVersion ?? member.version, nameSaved = renamedVersion !== null;
       if (renamed && !nameSaved) { version = (await mutate<{ version: number }>(`dispatch/members/${member.id}/correct`, 'POST', { version, reason: nameReason, ...(firstName.trim() !== member.firstName ? { firstName } : {}), ...(lastName.trim() !== member.lastName ? { lastName } : {}) }))!.version; setRenamedVersion(version); nameSaved = true; }
-      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data, ...(emailOwner ? { shareCompanyEmail: true } : {}), ...(numberOwner ? { shareRingCentral: true } : {}) }); }
+      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data, ...(emailOwner ? { shareCompanyEmail: true } : {}), ...(numberOwner ? { shareRingCentral: true } : {}), ...(firstEmail ? { emailAction: emailChoice.action, emailAfter: emailChoice.forward ? 'FORWARD' : 'SUSPEND' } : {}) }); }
       catch (failure) { if (nameSaved) { setError(errorMessage(failure, 'Their name was saved, but the other details weren’t. Your entries have been kept: try again.')); router.refresh(); return; } throw failure; }
       setRenamedVersion(null); setEditing(false); toast({ title: 'Details saved' }); router.refresh(); }
     catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
@@ -219,6 +225,7 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
           <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" value={typed.companyEmail} onChange={event => { setTyped(current => ({ ...current, companyEmail: event.target.value })); setShareAnswer(''); }} />
           <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" value={typed.ringCentralNumber} onChange={event => { setTyped(current => ({ ...current, ringCentralNumber: event.target.value })); setShareAnswer(''); }} />
           {!gone && <ShareQuestion firstName={member.firstName} email={emailOwner} number={numberOwner} value={shareAnswer} onChange={setShareAnswer} />}
+          {firstEmail && <div className="sm:col-span-2"><EmailAfterFields email={typed.companyEmail.trim()} label={gone ? 'IT is closing their accounts: this email afterwards' : 'IT removes their access when they leave: this email afterwards'} value={emailChoice} onChange={setEmailChoice} /></div>}
           {!gone && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" defaultValue={existing.ringCentralExtension ?? ''} hint="Digits only." /><span className="max-sm:hidden" /></>}
           <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.datEmail ?? ''} hint="The email only. Never a password." />
           <Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.truckstopEmail ?? ''} hint="The email only. Never a password." />

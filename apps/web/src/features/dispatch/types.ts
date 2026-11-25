@@ -1,3 +1,4 @@
+import type { EmailAction, EmailDone } from '@/features/it/email-words';
 import type { RecordChange } from './left-record';
 import { statusLabel } from '@/components/ui/status-badge';
 import type { Seat, SeatEmail } from '@/features/load-boards/seats';
@@ -89,9 +90,12 @@ export interface MemberProfile { /** The complete History (section 38); an older
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
   // After they left (from an API with offboarding): why, who marked them, and IT's removal progress (never IT notes).
   leftReason?: string | null; leftBy?: string | null; signInOff?: boolean;
+  // Coming back (section 41): each undone leaving and rehire, newest first, and for someone who left what's offered now. An older API sends neither.
+  returns?: MemberReturn[]; bringBack?: { undoUntil: string | null; canUndo: boolean; canRehire: boolean; rehireWhy: string | null } | null;
   // Their workspace sign-in as a team lead: waiting for IT (to create, turn on or turn off), on or off; null with none.
   signIn?: { status: 'WAITING' | 'ACTIVE' | 'OFF'; request: 'CREATE' | 'TURN_ON' | 'TURN_OFF' | null } | null;
-  removal?: { id: string; dueOn: string; scheduled?: boolean; removeNowAt?: string | null; removeNowReason?: string | null; completedAt: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardTo: string | null; numberOutcome: string | null; done: number; total: number; tasks: { key: string; status: string }[] } | null;
+  removal?: { id: string; dueOn: string; scheduled?: boolean; removeNowAt?: string | null; removeNowReason?: string | null; completedAt: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardTo: string | null; numberOutcome: string | null; emailAction?: EmailAction; emailDone?: EmailDone | null;
+    /** Handed over to someone staying (section 35): kept open for them. */ handedOverTo?: string | null; emailHandedOver?: boolean; numberHandedOver?: boolean; done: number; total: number; tasks: { key: string; status: string }[] } | null;
   // A notice period in progress, who still needs reassigning, and earlier notices that were cancelled or moved.
   notice?: { id: string; lastDay: string; reason: string; createdAt: string; recordedBy: string | null; passed: boolean } | null;
   driversToReassign?: { id: string; name: string; truck: string | null }[];
@@ -122,3 +126,20 @@ export const statusBadge: Record<MemberStatus, { label: string; tone: 'info' | '
 export const memberBadge = (status: string) => statusBadge[status as MemberStatus] ?? { label: statusLabel(status), tone: 'neutral' as const };
 export interface Choice { id: string; name: string; archived: boolean }
 export const fullName = (member: { firstName: string; lastName: string }) => `${member.firstName} ${member.lastName}`.trim();
+
+/** A time someone came back (section 41): their leaving undone, or rehired from a first day back. */
+export interface MemberReturn { id: string; kind: 'UNDO' | 'REHIRE'; leftAt: string; leftKnown: boolean; leftReason?: string | null; previousJoinedAt: string; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: string; by: string | null }
+/** What the Undo leaving and Rehire dialogs show (GET dispatch/members/:id/bring-back). */
+export interface BringBackOptions {
+  undo: { allowed: boolean; why: string | null; until: string | null;
+    comesBack: { place: { mc: string | null; team: string | null; carriesOn: boolean } | null; jobTitle: string | null; helps: { name: string | null; carriesOn: boolean } | null };
+    notBack: { drivers: { name: string; now: string | null }[]; supports: { name: string; supportType: 'SUPPORT' | 'UPDATER'; status: string; now: string | null }[]; ledTeams: string[];
+      seats?: { provider: string; name: string }[]; sharing?: { kind: 'EMAIL' | 'RINGCENTRAL'; user: string | null; owner: string | null }[] };
+    /** What the undo does, as the API works it out; an older API sends neither. */
+    status?: 'ACTIVE' | 'ONBOARDING'; restore?: string[] };
+  rehire: { allowed: boolean; why: string | null; earliest: string; latest: string;
+    previous: { position: 'DISPATCHER' | 'SUPPORT' | 'UPDATER'; mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null } };
+  removal: { open: boolean; completedAt: string | null } | null;
+  email: { value: string; was: 'ARCHIVED' | 'SUSPENDED' | 'DELETED' | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null } | null;
+  ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null } | null;
+}

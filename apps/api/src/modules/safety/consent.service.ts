@@ -76,9 +76,9 @@ export class ConsentService {
   return { body: await this.storage.get(driverConsentKey(document)), type: 'application/pdf', filename: `${document.kind.toLowerCase().replace(/_/g, '-')}-v${document.version}.pdf` };
  }
 
- async staffSignedCopy(user: User, driverId: string, documentId: string) {
+ async staffSignedCopy(user: User, driverId: string, documentId: string, audience: 'applicant' | 'staff' = 'staff') {
   await onboardingLimit(this.db, `consent-copy:${user.id}`, 60, 900);
-  return this.signedCopy(driverId, documentId);
+  return this.signedCopy(driverId, documentId, audience);
  }
 
  // The driver's side, through their verified link session.
