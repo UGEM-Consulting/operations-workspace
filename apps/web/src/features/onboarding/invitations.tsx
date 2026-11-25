@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { AlreadyHereTag } from './already-here';
 import { Copy, Plus, SlidersHorizontal } from 'lucide-react';
@@ -94,7 +95,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
      :<Person name={row.status==='PENDING'?'Not opened yet':'Not claimed yet'} secondary={row.expectedEmail?`For ${row.expectedEmail}`:'Anyone with the link'} avatar={false}/>},
     // Once they verify their email, the reference they return with, to copy and send them while they fill in the form (InvitationReferenceScreen).
     ...(rows.some(row=>row.applicationReference!==undefined)?[{key:'reference',label:'Application reference',cell:(row:Invitation)=>row.applicationReference
-     ?<span className="inline-flex flex-wrap items-center gap-1"><span className="font-mono text-[13px]" title={row.applicationReference}>{row.applicationReference.slice(0,8)}…{row.applicationReference.slice(-4)}</span>
+     ?<span className="inline-flex flex-wrap items-center gap-1"><Link href={`/onboarding/applications/${row.applicationReference}`} className="font-mono text-[13px] text-primary underline-offset-4 hover:underline" title={`Open the application ${row.applicationReference}`}>{row.applicationReference.slice(0,8)}…{row.applicationReference.slice(-4)}</Link>
       <CopyButton text={row.applicationReference} label="Copy" size="sm" variant="ghost" onCopied={()=>toast({title:'Reference copied',description:`They return with it and a code sent to ${row.email??'their verified email'}.`})}/></span>
      :['PENDING','OPENED'].includes(row.status)?<span className="text-[13px] text-muted-foreground">After they verify their email</span>:<span className="text-muted-foreground">—</span>}]:[]),
     {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>(row.member??row).position==='SUPPORT'?`${supportName(row.member??row)} for ${row.supportsTeam?.name??row.supports?.name??'a dispatcher'}`:[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||(row.member?'Dispatcher':'Applicant provides')},

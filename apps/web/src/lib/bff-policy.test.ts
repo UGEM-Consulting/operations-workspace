@@ -150,6 +150,10 @@ describe('offboarding and manager hand-over through the BFF', () => {
     // Drivers while their dispatcher is away (section 34): the dialog reads who may cover, and Change who covers.
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/cover-options`), true);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/cover-options`), false);
+    // Returning applicants (section 42): more time and resetting the code limit; the status is read by the server page only.
+    assert.equal(allowedEndpoint('POST', `onboarding/applications/${ID}/more-time`), true);
+    assert.equal(allowedEndpoint('POST', `onboarding/applications/${ID}/reset-code-limit`), true);
+    assert.equal(allowedEndpoint('GET', `onboarding/applications/${ID}/returning`), false);
     // Bringing back someone who left (section 41): what the dialogs show, Undo leaving and Rehire.
     assert.equal(allowedEndpoint('GET', `dispatch/members/${ID}/bring-back`), true);
     assert.equal(allowedEndpoint('POST', `dispatch/members/${ID}/undo-leaving`), true);

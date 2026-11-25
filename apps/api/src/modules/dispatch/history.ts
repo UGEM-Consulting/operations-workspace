@@ -37,7 +37,7 @@ const words = (fields: string[]) => fields.map(field => FIELD_WORDS[field] ?? fi
 const ACTIVITY: Record<string, string | null> = { INVITATION_CREATED: 'Invitation created', INVITATION_CLAIMED: 'Invitation opened', APPLICANT_VERIFIED: 'Email verified', APPLICATION_SUBMITTED: 'Application sent',
  APPLICATION_RESUBMITTED: 'Corrections sent', APPLICATION_CHANGES_REQUESTED: 'Changes asked for', APPLICATION_APPROVED: 'Application approved', APPLICATION_REJECTED: 'Application rejected', EMPLOYMENT_CONFIRMED: 'Employment confirmed',
  NDA_COUNTERSIGNED: 'NDA countersigned', INVITATION_REVOKED: 'Link revoked', ACCESS_EXTENDED: 'More time given', MANAGER_CHANGED: 'Responsible manager changed', DRAFT_SAVED: null, VERIFICATION_EMAIL_SENT: null,
- VERIFICATION_EMAIL_FAILED: null, INVITATION_ADDRESS_LIMIT: null, IT_REQUEST_CREATED: null, IT_ONBOARDING_COMPLETED: null };
+ VERIFICATION_EMAIL_FAILED: null, CODE_NOT_SENT_DAILY_LIMIT: null, CODE_NOT_SENT_ACCESS_ENDED: null, CODE_LIMIT_RESET: null, INVITATION_ADDRESS_LIMIT: null, IT_REQUEST_CREATED: null, IT_ONBOARDING_COMPLETED: null };
 const activityTitle = (event: string) => event in ACTIVITY ? ACTIVITY[event] : `${event.charAt(0)}${event.slice(1).toLowerCase().replace(/_/g, ' ')}`;
 const IT_ITEMS: Record<string, string> = { GOOGLE_WORKSPACE: 'company email', RINGCENTRAL: 'RingCentral number', SMS: 'texting', CALL_RECORDING: 'call recording', BUSINESS_SOFTWARE: 'business software', EQUIPMENT: 'equipment' };
 

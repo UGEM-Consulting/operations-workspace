@@ -22,7 +22,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // A team lead's sign-in: create it, turn it back on or turn it off.
     (method === 'POST' && match(`it/sign-ins/${ID}`, path)) ||
     // Handing an application to another manager, and a manager's open records before their account changes.
-    (method === 'POST' && match(`onboarding/applications/${ID}/manager`, path)) || (method === 'GET' && match(`users/${ID}/open-records`, path)) ||
+    (method === 'POST' && match(`onboarding/applications/${ID}/(manager|more-time|reset-code-limit)`, path)) || (method === 'GET' && match(`users/${ID}/open-records`, path)) ||
     (method === 'POST' && ['applicant/begin','applicant/verify','applicant/submit','applicant/logout','onboarding/invitations'].includes(path)) ||
     (method === 'PATCH' && ['applicant/draft','applicant/updates'].includes(path)) ||
     // Applicant status updates: chosen channels and the Telegram connect link.

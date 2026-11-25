@@ -1,6 +1,6 @@
 import { INTERNATIONAL_PHONE_PATTERN } from './application-requirements';
 import { VERIFICATION_CODE_PATTERN } from './verification-code';
-import { APPLICATION_STATUSES, REQUESTABLE_ITEMS, ApplicationStatus, RequestableItem, DecisionType } from './entities';
+import { APPLICATION_STATUSES, MORE_TIME_DAYS, REQUESTABLE_ITEMS, ApplicationStatus, RequestableItem, DecisionType } from './entities';
 import { CountersignatureDto } from '../documents/documents.dto';
 import { SUPPORT_TYPES, type SupportType } from '../dispatch/dispatch.entity';
 import { SUPPORT_IT_ITEM_KEYS, type SupportItItem } from '../it/it.entity';
@@ -97,4 +97,12 @@ export class ApplicationQueryDto {
 export class UpdatePreferencesDto {
  @IsBoolean() email!: boolean;
  @IsBoolean() telegram!: boolean;
+}
+/** Give a returning applicant more time (section 42): days from now. */
+export class MoreTimeDto {
+ @IsIn(MORE_TIME_DAYS) days!: typeof MORE_TIME_DAYS[number];
+}
+/** Reset a returning applicant's daily code limit (section 42, administrators): they confirm the applicant asked. */
+export class ResetCodeLimitDto {
+ @Equals(true, { message: 'Confirm the applicant asked you for a new code.' }) confirmed!: true;
 }
