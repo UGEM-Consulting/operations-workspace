@@ -37,8 +37,13 @@ export const RESTORE_TASKS:Record<string,string>={
  BUSINESS_SOFTWARE:'Give them back their business apps and load board seats. List the apps in notes; never store credentials.',
  EQUIPMENT:'Give them a laptop and headset, or mark Not needed when they use their own.',
 };
+/** The same for an account IT was never asked to close (someone added from a file as Left): it may still be open, or changed outside the workspace. */
+export const RESTORE_UNCLOSED:Record<string,string>={
+ GOOGLE_WORKSPACE:'Their email was never closed through the workspace: check it still exists and is theirs, then make sure it has a full license and set a new password for them.',
+ RINGCENTRAL:'Their RingCentral user was never turned off through the workspace: check it still has this number and isn’t someone else’s, then make sure it’s enabled.',
+};
 /** Who is coming back, kept on their checklist's profile so IT sees it without reading the dispatcher record. */
-export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:EmailDone|null;emailDeletedOn:string|null;by:string;}
+export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:EmailDone|null;emailDeletedOn:string|null;by:string;/** Restored accounts IT was never asked to close, so IT checks them first. */notClosed?:('EMAIL'|'RINGCENTRAL')[];}
 /** Completed, or Not needed for an optional task. Setup completes when every task is done. */
 export function taskDone(task:Pick<ItOnboardingTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&isOptionalTask(task.key));}
 export interface ItProfile {

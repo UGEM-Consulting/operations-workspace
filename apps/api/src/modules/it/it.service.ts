@@ -17,7 +17,7 @@ import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } f
 import { usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { ItLeaveActivity, ItLeaveRequest, ItLeaveTask, LEAVE_CHECKLIST, leaveTaskDone } from './it.entity';
-import { memberSetup, RESTORE_TASKS } from './it.entity';
+import { memberSetup, RESTORE_TASKS, RESTORE_UNCLOSED } from './it.entity';
 import { handedOver, IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, itStatus, itStatusSql, PortalNotification, REMOVAL_CHECKLIST, RINGCENTRAL_OFF, removalScheduled, removalTaskDone, taskDone } from './it.entity';
 
 const statusSql=itStatusSql('r');
@@ -90,13 +90,16 @@ export class ItService {
    .addSelect(`u."firstName" || ' ' || u."lastName"`,'asker').where('t.requestId = :id',{id:request.id}).getRawAndEntities();
   const tasks=loaded.entities;
   this.checklistComplete(request,tasks);
+  // A restored account IT was never asked to close is worded so IT checks it first (RESTORE_UNCLOSED).
+  const notClosed=request.profile.returning?.notClosed??[];
+  const unclosed=(key:string)=>key==='GOOGLE_WORKSPACE'?notClosed.includes('EMAIL'):key==='RINGCENTRAL'&&notClosed.includes('RINGCENTRAL');
   const activity=await em.getRepository(ItOnboardingActivity).find({where:{requestId:request.id},order:{createdAt:'ASC'}});
   // This projection deliberately excludes application revisions, applicant sessions and reviewer comments.
   // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
   const application=await approvedApplication(em,request);
   const profilePhoto=!!application&&!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
   return {request:{...request,status:itStatus(request,tasks),profilePhoto,requestedByName:(loaded.raw[0]?.asker as string|null|undefined)??null},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);// Someone coming back (section 41): a task that restores an old account says so.
-   return task?[{...task,label:template.label,description:request.restoreKeys?.includes(template.key)?RESTORE_TASKS[template.key]:template.description,optional:!!template.optional}]:[];}),activity};
+   return task?[{...task,label:template.label,description:request.restoreKeys?.includes(template.key)?(unclosed(template.key)?RESTORE_UNCLOSED[template.key]:RESTORE_TASKS[template.key]):template.description,optional:!!template.optional}]:[];}),activity};
  }
   // Every required task must exist on a new dispatcher's setup. An optional task added later is missing only on requests created
  // before it existed. A setup that names the person has only the tasks asked for.

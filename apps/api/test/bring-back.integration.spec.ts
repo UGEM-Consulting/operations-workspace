@@ -276,11 +276,41 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect(offered.email).toMatchObject({ value: 'rowan.work@example.test', restorable: true, notClosed: true });
     expect(offered.ringCentral).toMatchObject({ number: '+1 202 555 0177', extension: '177', restorable: true, notClosed: true });
     const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
-    await act(member.id, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: mc.id, jobTitleId: title.id, email: 'RESTORE', ringCentral: 'RESTORE', businessSoftware: false, equipment: false });
+    const rehire = { firstDay: ahead(0), position: 'DISPATCHER', mcId: mc.id, jobTitleId: title.id, businessSoftware: false, equipment: false };
+    // A new email or none would retire one that may still be open, with nothing asking IT to close it.
+    expect((await act(member.id, 'rehire', { ...rehire, email: 'NEW', ringCentral: 'RESTORE' }, 400)).body.message).toMatch(/never asked to close rowan\.work@example\.test/);
+    expect((await act(member.id, 'rehire', { ...rehire, email: 'RESTORE', ringCentral: 'NONE' }, 400)).body.message).toMatch(/never asked to turn off/);
+    await act(member.id, 'rehire', { ...rehire, email: 'RESTORE', ringCentral: 'RESTORE' });
     const setup = await returnSetup(member.id);
     expect(setup).toMatchObject({ purpose: 'REHIRE', companyEmail: 'rowan.work@example.test', assignedRingCentralPhoneNumber: '+1 202 555 0177', ringCentralExtension: '177' });
     expect(setup.restoreKeys).toEqual(expect.arrayContaining(['GOOGLE_WORKSPACE', 'RINGCENTRAL']));
+    expect(setup.profile.returning.notClosed).toEqual(['EMAIL', 'RINGCENTRAL']);
+    // IT is told to check each account rather than assume it closed it.
+    const tasks = (await agents.it.get(`/api/it/onboarding/${setup.id}`).set(headers).expect(200)).body.tasks as { key: string; description: string }[];
+    expect(tasks.find(task => task.key === 'GOOGLE_WORKSPACE')!.description).toMatch(/^Their email was never closed through the workspace/);
+    expect(tasks.find(task => task.key === 'RINGCENTRAL')!.description).toMatch(/^Their RingCentral user was never turned off/);
     expect((await profile(member.id)).accounts).toMatchObject({ companyEmail: 'rowan.work@example.test' });
+  });
+
+  it('reads IT’s setup before the manager’s record, and lets a new email replace one that is someone else’s now', async () => {
+    const taylor = await dispatcher('Taylor');
+    // IT's setup has the number without an extension; the manager's record has an older email and the extension.
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail","ringCentralExtension") VALUES ($1,$2,'taylor.old@example.test','190')`, [taylor.memberId, users.manager.id]);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '10 days' WHERE id = $1`, [taylor.memberId]);
+    await db.query(`UPDATE member_assignments SET "endedAt" = now() - interval '10 days' WHERE "memberId" = $1`, [taylor.memberId]);
+    let offered = await options(taylor.memberId);
+    expect(offered.email).toMatchObject({ value: 'taylor.work@example.test', restorable: true, notClosed: true });
+    expect(offered.ringCentral).toMatchObject({ number: '+1 202 555 0190', extension: '190', notClosed: true });
+    // Their email went to someone else meanwhile: it isn't theirs to restore, and a new one doesn't need IT to close it.
+    const sam = await dispatcher('Sam');
+    await db.query(`UPDATE it_onboarding_requests SET "companyEmail" = 'taylor.work@example.test', "assignedRingCentralPhoneNumber" = '+1 202 555 0191' WHERE id = $1`, [sam.setupId]);
+    offered = await options(taylor.memberId);
+    expect(offered.email).toMatchObject({ restorable: false, why: expect.stringMatching(/taylor\.work@example\.test is someone else’s now \(Sam Fictional\)/) });
+    expect((await act(taylor.memberId, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: (await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`))[0].id,
+      email: 'RESTORE', ringCentral: 'RESTORE', businessSoftware: false, equipment: false }, 400)).body.message).toMatch(/someone else’s now/);
+    await act(taylor.memberId, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: (await db.query(`SELECT id FROM job_titles WHERE "nameKey" = 'dispatcher'`))[0].id,
+      email: 'NEW', ringCentral: 'RESTORE', businessSoftware: false, equipment: false });
+    expect((await returnSetup(taylor.memberId)).profile.returning.notClosed).toEqual(['RINGCENTRAL']);
   });
 
   it('undoes a leaving that interrupted a rehire: the rehire checklist carries on with what IT had removed added to it', async () => {

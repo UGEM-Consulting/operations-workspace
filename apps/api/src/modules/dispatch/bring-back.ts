@@ -4,7 +4,8 @@ import type { User } from '../users/user.entity';
 import { JobTitle, Mc } from '../lists/lists.entity';
 import { addDays, usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
-import { lockSetupRequests, memberSetups, sameSetups, setupAccounts } from '../it/removal';
+import { lockSetupRequests, sameSetups } from '../it/removal';
+import { mainAccounts } from '../company-accounts/account-requests';
 import { createReturnSetup } from '../it/support-setup';
 import { EmailDone, handedOver, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, RemovalProfile } from '../it/it.entity';
 import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberSupportLink, Team } from './dispatch.entity';
@@ -138,6 +139,9 @@ export class BringBackService {
    const accounts = await this.accounts(em, member, state.removal);
    if (dto.email === 'RESTORE' && !accounts.email?.restorable) throw new BadRequestException(accounts.email?.why ?? 'There’s no company email of theirs to restore. Choose a new email or none.');
    if (dto.ringCentral === 'RESTORE' && !accounts.ringCentral?.restorable) throw new BadRequestException(accounts.ringCentral?.why ?? 'There’s no RingCentral user of theirs to enable. Choose a new number or none.');
+   // An account IT never closed would be retired while still open, with nothing asking IT to close it: restore it, or have IT close it first.
+   if (dto.email !== 'RESTORE' && accounts.email?.notClosed && accounts.email.restorable) throw new BadRequestException(`IT was never asked to close ${accounts.email.value}. Restore it, or ask IT to close their accounts first and rehire once IT finishes.`);
+   if (dto.ringCentral !== 'RESTORE' && accounts.ringCentral?.notClosed && accounts.ringCentral.restorable) throw new BadRequestException(`IT was never asked to turn off ${accounts.ringCentral.number}. Restore it, or ask IT to close their accounts first and rehire once IT finishes.`);
    // Placed again: a dispatcher under an MC (and a team of it, or Independent) with a job title; a support or updater with who they help.
    if (dispatcher) {
     // FOR SHARE, as periodCanCarryOn reads it, so the MC can't be archived before this commits.
@@ -173,7 +177,8 @@ export class BringBackService {
    await this.retireOldAccounts(em, id, setups.map(row => row.id), { email: dto.email !== 'RESTORE', number: dto.ringCentral !== 'RESTORE' });
    const setup = keys.length ? await createReturnSetup(em, { purpose: 'REHIRE', member, keys, restoreKeys, managerId: user.id, actorId: user.id,
     accounts: { companyEmail: dto.email === 'RESTORE' ? accounts.email!.value : null, ringCentralNumber: dto.ringCentral === 'RESTORE' ? accounts.ringCentral!.number : null, ringCentralExtension: dto.ringCentral === 'RESTORE' ? accounts.ringCentral!.extension : null },
-    returning: { kind: 'REHIRE', leftOn: state.leftKnown ? day(leftAt) : null, firstDay, emailWas: accounts.email?.was ?? null, emailDeletedOn: accounts.email?.deletedOn ?? null, by: `${user.firstName} ${user.lastName}` } }) : null;
+    returning: { kind: 'REHIRE', leftOn: state.leftKnown ? day(leftAt) : null, firstDay, emailWas: accounts.email?.was ?? null, emailDeletedOn: accounts.email?.deletedOn ?? null, by: `${user.firstName} ${user.lastName}`,
+     notClosed: [...(dto.email === 'RESTORE' && accounts.email?.notClosed ? ['EMAIL' as const] : []), ...(dto.ringCentral === 'RESTORE' && accounts.ringCentral?.notClosed ? ['RINGCENTRAL' as const] : [])] } }) : null;
    if (setup) alerts = await this.alerts.queueItSetupWaiting(em, setup);
    await em.query(`INSERT INTO member_returns ("memberId", kind, "leftAt", "leftKnown", "leftReason", "previousJoinedAt", "previousStartKnown", "firstDay", "removalId", "setupRequestId", "actorId") VALUES ($1, 'REHIRE', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [id, leftAt, state.leftKnown, state.leftReason, previousJoinedAt, record?.startDateKnown !== false, firstDay, removal?.id ?? null, setup?.id ?? null, user.id]);
@@ -242,38 +247,37 @@ export class BringBackService {
   if (!removal) return this.recordedAccounts(em, member);
   const profile = removal.profile, tasks = await em.getRepository(ItRemovalTask).findBy({ requestId: removal.id });
   const task = (key: string) => tasks.find(item => item.key === key);
-  const taken = async (kind: 'EMAIL' | 'RINGCENTRAL', value: string) => (await accountOwners(em, kind, value, member.id)).map(owner => owner.name);
   let email: Accounts['email'] = null, ringCentral: Accounts['ringCentral'] = null;
   if (profile.companyEmail && !handedOver(profile, 'EMAIL')) {
    const google = task('GOOGLE_WORKSPACE'), done = google?.status === 'COMPLETED' ? removal.emailDone ?? 'SUSPENDED' : null;
    // Deleted when IT first recorded Deleted, which can be before the task was completed; the task's own time only when no record says.
    const [recorded]: { at: Date }[] = done === 'DELETED' ? await em.query(`SELECT min("createdAt") AS at FROM it_removal_activity WHERE "requestId" = $1 AND metadata->>'key' = 'GOOGLE_WORKSPACE' AND metadata->>'emailDone' = 'DELETED'`, [removal.id]) : [];
    const deletedOn = done === 'DELETED' ? easternDay(recorded?.at ?? google!.updatedAt) : null, restorableUntil = deletedOn ? addDays(deletedOn, DELETED_EMAIL_DAYS) : null;
-   const owners = await taken('EMAIL', profile.companyEmail);
-   const why = owners.length ? `${profile.companyEmail} is someone else’s now (${owners.join(', ')}).` : restorableUntil && usDay('latest') > restorableUntil ? `${profile.companyEmail} was deleted on ${deletedOn}, so IT can no longer restore it.` : null;
+   const why = await this.takenWhy(em, member, 'EMAIL', profile.companyEmail)
+    ?? (restorableUntil && usDay('latest') > restorableUntil ? `${profile.companyEmail} was deleted on ${deletedOn}, so IT can no longer restore it.` : null);
    email = { value: profile.companyEmail, was: done, deletedOn, restorableUntil, restorable: !why, why };
   }
   if (profile.ringCentralNumber && !handedOver(profile, 'RINGCENTRAL')) {
-   const owners = await taken('RINGCENTRAL', profile.ringCentralNumber);
-   const why = owners.length ? `${profile.ringCentralNumber} is someone else’s now (${owners.join(', ')}).` : null;
+   const why = await this.takenWhy(em, member, 'RINGCENTRAL', profile.ringCentralNumber);
    ringCentral = { number: profile.ringCentralNumber, extension: profile.ringCentralExtension ?? null, restorable: !why, why };
   }
   return { email, ringCentral };
  }
+ /** Why an old email or number can't come back because it is someone else's now, or null when nobody else owns it. */
+ private async takenWhy(em: EntityManager, member: DispatchMember, kind: 'EMAIL' | 'RINGCENTRAL', value: string) {
+  const owners = (await accountOwners(em, kind, value, member.id)).map(owner => owner.name);
+  return owners.length ? `${value} is someone else’s now (${owners.join(', ')}).` : null;
+ }
  /**
-  * IT was never asked to remove their access (someone added from a file as Left, or nothing was recorded when they left): their
-  * email and number are what IT set up, else what a manager recorded, as leave reads them. IT checks each and turns it back on.
+  * IT was never asked to remove their access (someone added from a file as Left): their email and number are their main
+  * accounts as everything else reads them (mainAccounts). Nothing says they were closed, so IT is told to check each.
   */
  private async recordedAccounts(em: EntityManager, member: DispatchMember): Promise<Accounts> {
-  const setups = await memberSetups(em, member.id), fromSetups = setups.length ? setupAccounts(setups) : null;
-  const record = await em.getRepository(ExistingMemberRecord).findOneBy({ memberId: member.id });
-  const companyEmail = fromSetups?.companyEmail ?? record?.companyEmail ?? null, ringCentralNumber = fromSetups?.ringCentralNumber ?? record?.ringCentralNumber ?? null;
-  const ringCentralExtension = fromSetups?.ringCentralNumber ? fromSetups.ringCentralExtension : record?.ringCentralExtension ?? null;
-  const taken = async (kind: 'EMAIL' | 'RINGCENTRAL', value: string) => (await accountOwners(em, kind, value, member.id)).map(owner => owner.name);
-  const emailOwners = companyEmail ? await taken('EMAIL', companyEmail) : [], numberOwners = ringCentralNumber ? await taken('RINGCENTRAL', ringCentralNumber) : [];
-  const emailWhy = emailOwners.length ? `${companyEmail} is someone else’s now (${emailOwners.join(', ')}).` : null, numberWhy = numberOwners.length ? `${ringCentralNumber} is someone else’s now (${numberOwners.join(', ')}).` : null;
-  return { email: companyEmail ? { value: companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true } : null,
-   ringCentral: ringCentralNumber ? { number: ringCentralNumber, extension: ringCentralExtension, restorable: !numberWhy, why: numberWhy, notClosed: true } : null };
+  const main = await mainAccounts(em, member.id);
+  const emailWhy = main.companyEmail ? await this.takenWhy(em, member, 'EMAIL', main.companyEmail) : null;
+  const numberWhy = main.ringCentralNumber ? await this.takenWhy(em, member, 'RINGCENTRAL', main.ringCentralNumber) : null;
+  return { email: main.companyEmail ? { value: main.companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true } : null,
+   ringCentral: main.ringCentralNumber ? { number: main.ringCentralNumber, extension: main.ringCentralExtension, restorable: !numberWhy, why: numberWhy, notClosed: true } : null };
  }
 
  /** The restore checklist for an undone leaving: each step IT did (or started) comes back; an old email or number IT can't restore is made new. */
