@@ -113,7 +113,7 @@ function FiltersDialog({ all, filters, options, onClose, onApply }: { all: boole
       <RadioGroup name="member-source" label="Source" value={draft.source} onChange={source => set({ source })} options={SOURCES} />
       <RadioGroup name="member-drivers" label="Drivers" value={draft.drivers} onChange={drivers => set({ drivers })} options={DRIVERS} />
       {/* Everyone on one DAT or Truckstop account (DispatchersLoadBoardFilterScreen). */}
-      {!!options.loadBoardAccounts?.length && <Select label="Load board account" value={draft.loadBoardAccountId} onChange={event => set({ loadBoardAccountId: event.target.value })} options={[{ value: '', label: 'All accounts' }, ...options.loadBoardAccounts.map(account => ({ value: account.id, label: archived(account) }))]} />}
+      {!!options.loadBoardAccounts?.length && <Select label="Load board account" value={draft.loadBoardAccountId} onChange={event => set({ loadBoardAccountId: event.target.value })} options={[{ value: '', label: 'All accounts' }, ...options.loadBoardAccounts.map(account => ({ value: account.id, label: `${archived(account)} · ${account.provider === 'TRUCKSTOP' ? 'Truckstop' : account.provider}` }))]} />}
       <div><Button variant="ghost" size="sm" onClick={() => setDraft(Object.fromEntries(FILTER_KEYS.map(key => [key, all || key === 'source' || key === 'drivers' || key === 'loadBoardAccountId' ? '' : draft[key]])) as Record<FilterKey, string>)}>Clear all filters</Button></div>
     </div>
   </Dialog>;
