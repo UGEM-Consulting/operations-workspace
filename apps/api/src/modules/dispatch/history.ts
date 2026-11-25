@@ -13,10 +13,11 @@ export type HistoryCategory = 'WORK' | 'ACCOUNTS' | 'AWAY' | 'DETAILS' | 'IT' | 
 /** dateOnly: a day picked in a form (stored at midday UTC), shown as a date with no time. */
 export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null; dateOnly?: boolean }
 /**
- * Days picked in forms are stored at midday UTC, or a few milliseconds after when the same-day rule starts a period just after
- * the one it ends. A click lands in those few milliseconds only by chance, so anything later in that second is a click.
+ * Days picked in forms are stored at midday UTC, or a millisecond after per same-day step when a period starts just after the
+ * one it ends. Only columns that hold a picked day (addDay) are read this way, since some of their rows are clicks instead
+ * (a period an approval opened); clicks in other columns never are.
  */
-const DAY_ONLY = /T12:00:00\.00\dZ$/;
+const DAY_ONLY = /T12:00:00\.\d{3}Z$/;
 const EASTERN_OFFSET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' });
 /** The last moment of a day in US Eastern time (EST or EDT, whichever applies that day), as an ISO string. */
 function easternDayEnd(day: string) {
@@ -60,7 +61,9 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  const [member]: Row[] = await db.query(`SELECT d.id, d.position, d.status, d."applicationId", d."accountUserId", d."leftReason", d."leftAt" FROM dispatch_members d WHERE d.id = $1`, [memberId]);
  if (!member) return { entries: [], counts: { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 } };
  const out: HistoryEntry[] = [];
- const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null) => { if (!at || !title) return; const when = iso(at); out.push({ id, at: when, category, icon, title, by, body, ...(DAY_ONLY.test(when) ? { dateOnly: true } : {}) }); };
+ const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null, picked = false) => { if (!at || !title) return; const when = iso(at); out.push({ id, at: when, category, icon, title, by, body, ...(picked && DAY_ONLY.test(when) ? { dateOnly: true } : {}) }); };
+ // An entry from a column that holds a day picked in a form.
+ const addDay = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null) => add(id, at, category, icon, title, by, body, true);
  // A few queries at a time, so one page never takes the whole connection pool (max 10) from other requests.
  const running = new Set<Promise<unknown>>();
  const q = async (sql: string, params: unknown[] = [memberId]): Promise<Row[]> => {
@@ -99,7 +102,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    FROM driver_assignments a JOIN drivers dr ON dr.id = a."driverId" LEFT JOIN users u ON u.id = a."actorId"
    LEFT JOIN driver_leave_covers c ON c."coverAssignmentId" = a.id LEFT JOIN member_leaves ml ON ml.id = c."leaveId" LEFT JOIN dispatch_members away ON away.id = ml."memberId"
    WHERE a."memberId" = $1 ORDER BY a."startedAt"`),
-  q(`SELECT n.id, n."lastDay"::text AS "lastDay", n.reason, n.changes, n."createdAt", n."cancelledAt", n."cancelReason", ${actor('r')} AS by, ${actor('c')} AS "cancelledBy"
+  q(`SELECT n.id, n."lastDay"::text AS "lastDay", n.reason, n.changes, n."createdAt", n."cancelledAt", n."finishedAt", n."cancelReason", ${actor('r')} AS by, ${actor('c')} AS "cancelledBy"
    FROM member_notices n LEFT JOIN users r ON r.id = n."recordedBy" LEFT JOIN users c ON c.id = n."cancelledBy" WHERE n."memberId" = $1`),
   q(`SELECT r.id, r."dueOn"::text AS "dueOn", r."createdAt", r."completedAt", r."cancelledAt", r."reversedAt", r."removeNowAt", r."removeNowReason", ${actor('u')} AS by FROM it_removal_requests r LEFT JOIN users u ON u.id = r."createdBy" WHERE r."memberId" = $1`),
   q(`SELECT l.id, l."firstDay"::text AS "firstDay", l."backOn"::text AS "backOn", l.reason, l.changes, l."startedAt", l."endedAt", l."endedHow", l."createdAt", ${actor('r')} AS by, ${actor('e')} AS "endedBy"
@@ -156,18 +159,18 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   const previous = assignments[index - 1], startDay = new Date(row.startedAt).toISOString().slice(0, 10);
   // Only the period that ends the time away: a move later that same day ended a period that began that day.
   const again = !!previous?.endedAt && (new Date(row.startedAt).getTime() - new Date(previous.endedAt).getTime() > WITH_LEAVING_MS || (rehireDays.has(startDay) && new Date(previous.endedAt).toISOString().slice(0, 10) < startDay));
-  add(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : again ? `Started again in ${place}` : `Moved to ${place}`, row.by, row.reason ?? null);
+  addDay(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : again ? `Started again in ${place}` : `Moved to ${place}`, row.by, row.reason ?? null);
  });
  links.forEach((row, index) => {
   const who = row.team ? `the whole ${row.team}` : row.dispatcher ?? 'a dispatcher no longer recorded';
-  add(`link-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.team ? `Now helps ${who}` : `Started helping ${who}`}${undated(row)}`, row.by, row.reason ?? null);
+  addDay(`link-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.team ? `Now helps ${who}` : `Started helping ${who}`}${undated(row)}`, row.by, row.reason ?? null);
   // A reassignment ends one link as the next one starts: that reads as the new one only. Leaving says it on its own.
   const next = links[index + 1];
-  if (row.endedAt && !near(row.endedAt, next?.startedAt, 60000) && !near(row.endedAt, member.leftAt, 60000)) add(`link-end-${row.id}`, row.endedAt, 'WORK', 'headset', `Stopped helping ${who}`);
+  if (row.endedAt && !near(row.endedAt, next?.startedAt, 60000) && !near(row.endedAt, member.leftAt, 60000)) addDay(`link-end-${row.id}`, row.endedAt, 'WORK', 'headset', `Stopped helping ${who}`);
  });
  for (const row of helpers) {
-  add(`helper-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.support} started helping them`, row.by, row.reason ?? null);
-  if (row.endedAt) add(`helper-end-${row.id}`, row.endedAt, 'WORK', 'headset', `${row.support} stopped helping them`);
+  addDay(`helper-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.support} started helping them`, row.by, row.reason ?? null);
+  if (row.endedAt) addDay(`helper-end-${row.id}`, row.endedAt, 'WORK', 'headset', `${row.support} stopped helping them`);
  }
  for (const row of promotions) {
   add(`promotion-${row.id}`, row.createdAt, 'WORK', 'trending-up', row.requestedBy ? `Promotion asked by ${row.requestedBy}` : 'Promotion asked');
@@ -177,10 +180,10 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  }
  for (const row of asked) add(`asked-${row.id}`, row.createdAt, 'WORK', 'trending-up', `Asked to promote ${row.support}`);
  for (const row of drivers) {
-  add(`driver-${row.id}`, row.startedAt, 'WORK', 'truck', row.coverId ? `Covering driver ${row.driver} while ${row.awayFrom ?? 'their dispatcher'} is away` : `Driver ${row.driver} assigned`, row.by, row.coverId ? null : row.reason ?? null);
+  addDay(`driver-${row.id}`, row.startedAt, 'WORK', 'truck', row.coverId ? `Covering driver ${row.driver} while ${row.awayFrom ?? 'their dispatcher'} is away` : `Driver ${row.driver} assigned`, row.by, row.coverId ? null : row.reason ?? null);
   if (!row.endedAt) continue;
-  if (row.next && row.next.memberId !== memberId) add(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} moved to ${row.next.name ?? 'another dispatcher'}`, row.next.by);
-  else if (!row.next) add(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} no longer assigned`);
+  if (row.next && row.next.memberId !== memberId) addDay(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} moved to ${row.next.name ?? 'another dispatcher'}`, row.next.by);
+  else if (!row.next) addDay(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} no longer assigned`);
  }
 
  // Leave and leaving: notices, access removal, leaving; leave and who covers.
@@ -218,14 +221,14 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   const createdClosed = row.status === 'CLOSED' && near(row.closedAt, row.createdAt, 5000);
   add(`account-${row.id}`, row.createdAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} added: ${list(what)}${createdClosed ? ' (closed)' : row.status === 'KEPT_FOR_LOAD_BOARDS' ? ' (kept for load boards)' : ''}`,
    row.sourceName ? `From ${row.sourceName}` : row.by);
-  if (row.closedAt && !createdClosed) add(`account-closed-${row.id}`, row.closedAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} closed`, row.closedBy);
+  if (row.closedAt && !createdClosed) addDay(`account-closed-${row.id}`, row.closedAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} closed`, row.closedBy);
  }
  seats.forEach(row => {
   const movedInto = seats.some(other => other.id !== row.id && other.endedHow === 'MOVED' && near(other.endedAt, row.startedAt, 5000));
-  if (!movedInto) add(`seat-${row.id}`, row.startedAt, 'ACCOUNTS', 'layers', `Seat on ${row.account} added`, row.by ?? 'From their recorded sign-in');
+  if (!movedInto) addDay(`seat-${row.id}`, row.startedAt, 'ACCOUNTS', 'layers', `Seat on ${row.account} added`, row.by ?? 'From their recorded sign-in');
   if (!row.endedAt) return;
   const into = row.endedHow === 'MOVED' ? seats.find(other => other.id !== row.id && near(row.endedAt, other.startedAt, 5000)) : null;
-  add(`seat-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'layers', row.endedHow === 'MOVED' ? `Seat on ${row.account} moved to ${into?.account ?? 'another account'}` : row.endedHow === 'LEFT' ? `Seat on ${row.account} ended when IT removed access` : `Seat on ${row.account} ended`,
+  addDay(`seat-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'layers', row.endedHow === 'MOVED' ? `Seat on ${row.account} moved to ${into?.account ?? 'another account'}` : row.endedHow === 'LEFT' ? `Seat on ${row.account} ended when IT removed access` : `Seat on ${row.account} ended`,
    row.endedHow === 'LEFT' ? 'IT removal' : row.endedBy);
  });
  for (const row of shared) {
@@ -269,8 +272,11 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  // The day a removal was scheduled for: the last day of the notice recorded with it, as given (a later change or Remove access
  // now moves dueOn, and has its own entry); without a notice, its due date.
  const scheduledFor = (removal: Row) => {
-  // A notice cancelled before this removal was made had its own removal.
-  const notice = notices.find(row => near(row.createdAt, removal.createdAt, 10000) && (!row.cancelledAt || new Date(row.cancelledAt) >= new Date(removal.createdAt)));
+  // The notice the removal was opened with: the latest given by then (both are written in one transaction, so a second's slack
+  // covers rows saved a moment apart) that was still open then. One cancelled or finished before had its own removal.
+  const made = new Date(removal.createdAt).getTime();
+  const notice = notices.filter(row => new Date(row.createdAt).getTime() <= made + 1000 && (!row.cancelledAt || new Date(row.cancelledAt).getTime() >= made)
+   && (!row.finishedAt || new Date(row.finishedAt).getTime() >= made)).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
   return notice ? notice.changes?.[0]?.from ?? notice.lastDay : removal.dueOn;
  };
  for (const row of removals) {

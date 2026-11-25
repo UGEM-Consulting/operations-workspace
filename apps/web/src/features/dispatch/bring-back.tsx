@@ -163,7 +163,8 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
   const [closeEmail, setCloseEmail] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
   // An old account IT never closed that they don't get back may be one IT is asked to close; the API says whether it was.
   const mayClose = (choice: Account | '', old: { restorable: boolean; notClosed?: boolean } | null) => !!choice && choice !== 'RESTORE' && !!old?.notClosed && old.restorable;
-  const closingEmail = mayClose(email, options.email);
+  // An email that still signs in to a load board seat is kept for it, so IT isn't asked what to do with it.
+  const keptFor = options.email?.keptFor ?? [], closingEmail = mayClose(email, options.email) && !keptFor.length;
   const [software, setSoftware] = useState(member.position === 'DISPATCHER'), [equipment, setEquipment] = useState(false), [firstDay, setFirstDay] = useState(options.rehire.earliest);
   const name = fullName(member), first = member.firstName, dispatcher = position === 'DISPATCHER';
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
@@ -189,7 +190,8 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
   const emailOptions = [...(oldEmail?.restorable ? [{ value: 'RESTORE', label: `Restore ${oldEmail.value}`, description: oldEmail.was === 'DELETED' && oldEmail.restorableUntil ? `Deleted, and IT can still restore it until ${new Date(middayIso(oldEmail.restorableUntil)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}.` : oldEmail.notClosed ? 'IT was never asked to close it, so IT checks it’s still theirs and turns it back on.' : `${oldEmail.was ? EMAIL_WAS[oldEmail.was] : 'Closed'}, so their old email and files come back.` }] : []),
     // An account IT never closed that doesn't come back: IT is asked to close it, so it's never left open untracked.
     ...[{ value: 'NEW', label: 'A new email' }, { value: 'NONE', label: 'No company email' }].map(option => ({ ...option,
-      description: oldEmail?.notClosed && oldEmail.restorable ? `IT is also asked to close ${oldEmail.value}.` : oldEmail && !oldEmail.restorable && option.value === 'NEW' ? oldEmail.why ?? undefined : undefined }))];
+      description: oldEmail?.notClosed && oldEmail.restorable ? (keptFor.length ? `${oldEmail.value} stays open for the load board seat on ${keptFor.join(' and ')}; IT isn’t asked to close it.` : `IT is also asked to close ${oldEmail.value}.`)
+        : oldEmail && !oldEmail.restorable && option.value === 'NEW' ? oldEmail.why ?? undefined : undefined }))];
   const numberOptions = [...(oldNumber?.restorable ? [{ value: 'RESTORE', label: 'Enable their user again', description: `${oldNumber.number}${oldNumber.extension ? `, ext ${oldNumber.extension}` : ''}, with SMS and call recording.${oldNumber.notClosed ? ' IT was never asked to turn it off, so IT checks it’s still theirs first.' : ''}` }] : []),
     ...[{ value: 'NEW', label: 'A new number' }, { value: 'NONE', label: 'No RingCentral number' }].map(option => ({ ...option,
       description: oldNumber?.notClosed && oldNumber.restorable ? `IT is also asked to turn off ${oldNumber.number}.` : oldNumber && !oldNumber.restorable && option.value === 'NEW' ? oldNumber.why ?? undefined : undefined }))];

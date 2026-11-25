@@ -34,7 +34,8 @@ const firstDayAfter = (leftAt: Date) => new Date(`${day(leftAt)}T12:00:00Z`).get
 
 interface Accounts {
  // notClosed: IT has no removal for them, so the account was never closed here: IT checks it before turning it back on, or is asked to close it.
- email: { value: string; was: EmailDone | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
+ // keptFor: the load board accounts an email IT never closed still signs in to; not getting it back keeps it for them, so IT isn't asked to close it.
+ email: { value: string; was: EmailDone | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean; keptFor?: string[] } | null;
  ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
 }
 
@@ -222,8 +223,12 @@ export class BringBackService {
   * of their dispatcher at the time. Read before the rehire places them again; another company's name only when none is known.
   */
  private async lastPlace(em: EntityManager, member: DispatchMember): Promise<{ mcId: string; companyName: null } | { mcId: null; companyName: string }> {
-  const helped: { mcId: string | null }[] = member.position === 'DISPATCHER' ? [] : await em.query(`SELECT coalesce(t."mcId", (SELECT a."mcId" FROM member_assignments a
-    WHERE a."memberId" = l."dispatcherId" AND a."startedAt" <= coalesce(l."endedAt", now()) ORDER BY a."startedAt" DESC, a."createdAt" DESC LIMIT 1)) AS "mcId"
+  // As of when the link ended: a whole team's MC from the MC periods its people had in that team then (a team may change MC
+  // once nobody is in it), else its MC now; a dispatcher's from their own period then.
+  const helped: { mcId: string | null }[] = member.position === 'DISPATCHER' ? [] : await em.query(`SELECT CASE WHEN l."teamId" IS NOT NULL THEN coalesce(
+     (SELECT a."mcId" FROM member_assignments a WHERE a."teamId" = l."teamId" AND a."startedAt" <= coalesce(l."endedAt", now()) AND (a."endedAt" IS NULL OR a."endedAt" >= coalesce(l."endedAt", now()))
+      ORDER BY a."startedAt" DESC LIMIT 1), t."mcId")
+    ELSE (SELECT a."mcId" FROM member_assignments a WHERE a."memberId" = l."dispatcherId" AND a."startedAt" <= coalesce(l."endedAt", now()) ORDER BY a."startedAt" DESC, a."createdAt" DESC LIMIT 1) END AS "mcId"
    FROM member_support_links l LEFT JOIN teams t ON t.id = l."teamId" WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC LIMIT 1`, [member.id]);
   const [own]: { mcId: string | null }[] = helped[0]?.mcId ? [] : await em.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1 ORDER BY "startedAt" DESC, "createdAt" DESC LIMIT 1`, [member.id]);
   const mcId = helped[0]?.mcId ?? own?.mcId ?? null;
@@ -325,9 +330,9 @@ export class BringBackService {
   */
  private async recordedAccounts(em: EntityManager, member: DispatchMember, record?: ExistingMemberRecord | null): Promise<Accounts> {
   const main = await mainAccounts(em, member.id, record);
-  const [emailWhy, numberWhy] = await Promise.all([main.companyEmail ? this.takenWhy(em, member, 'EMAIL', main.companyEmail) : null,
-   main.ringCentralNumber ? this.takenWhy(em, member, 'RINGCENTRAL', main.ringCentralNumber) : null]);
-  return { email: main.companyEmail ? { value: main.companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true } : null,
+  const [emailWhy, numberWhy, keptFor] = await Promise.all([main.companyEmail ? this.takenWhy(em, member, 'EMAIL', main.companyEmail) : null,
+   main.ringCentralNumber ? this.takenWhy(em, member, 'RINGCENTRAL', main.ringCentralNumber) : null, seatsUsing(em, main.companyEmail)]);
+  return { email: main.companyEmail ? { value: main.companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true, keptFor } : null,
    ringCentral: main.ringCentralNumber ? { number: main.ringCentralNumber, extension: main.ringCentralExtension, restorable: !numberWhy, why: numberWhy, notClosed: true } : null };
  }
 

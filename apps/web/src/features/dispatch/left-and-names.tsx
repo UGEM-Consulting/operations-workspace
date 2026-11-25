@@ -63,8 +63,9 @@ export function NamesDialog({ member, mcs, onClose }: { member: MemberProfile; m
     setBusy(true); setError('');
     try {
       await mutate(`dispatch/members/${member.id}/names`, 'POST', { version: member.version, ...(handAdded ? { legalFirstName: form.legalFirstName ?? '', legalLastName: form.legalLastName ?? '' } : {}),
-        otherNames: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId === OTHER ? { companyName: item.companyName.trim() } : item.mcId ? { mcId: item.mcId } : {}),
-          ...(item.note.trim() ? { note: item.note.trim() } : {}) })) });
+        // Company and note always go, '' to clear, since one left out keeps what's recorded (the API reads an older page that way).
+        otherNames: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId && item.mcId !== OTHER ? { mcId: item.mcId } : {}),
+          companyName: item.mcId === OTHER ? item.companyName.trim() : '', note: item.note.trim() })) });
       toast({ title: 'Names saved' }); onClose(); router.refresh();
     } catch (failure) { setError(errorMessage(failure, 'Unable to save the names. Your entries have been kept.')); }
     finally { setBusy(false); }

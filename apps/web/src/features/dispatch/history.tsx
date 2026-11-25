@@ -24,6 +24,10 @@ const PAGE = 50;
 const monthOf = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'America/New_York' });
 
 /** viewOnly (section 39, ViewOnlyHistoryScreen): no IT filter or file views, and a line saying where reasons and notes stay. */
+/** A day picked in a form, from its date: read in UTC, so no viewer's time zone (UTC+12, say) shows it as the next day. */
+function PickedDay({ at }: { at: string }) {
+  return <time dateTime={at.slice(0, 10)}>{new Date(`${at.slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}</time>;
+}
 export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: MemberTimeline; viewOnly?: boolean }) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('ALL'), [views, setViews] = useState(false), [shown, setShown] = useState(PAGE);
   const matching = useMemo(() => timeline.entries.filter(entry => entry.category === 'VIEWS' ? views && (filter === 'ALL' || filter === 'DETAILS') : filter === 'ALL' || entry.category === filter), [timeline.entries, filter, views]);
@@ -50,7 +54,7 @@ export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: Memb
         : months.map(group => <section key={group.month} aria-label={group.month}>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.month}</h3>
           <Timeline items={group.entries.map(entry => { const Icon = ICONS[entry.icon] ?? PenLine; return { id: entry.id, icon: <Icon aria-hidden="true" />, title: entry.title,
-            meta: <>{entry.by ? `${entry.by} · ` : ''}<LocalTime iso={entry.at} format={entry.dateOnly ? 'date' : 'datetime'} /></>, body: entry.body ?? undefined }; })} />
+            meta: <>{entry.by ? `${entry.by} · ` : ''}{entry.dateOnly ? <PickedDay at={entry.at} /> : <LocalTime iso={entry.at} />}</>, body: entry.body ?? undefined }; })} />
         </section>)}
       {matching.length > shown && <div className="flex justify-center"><Button variant="outline" className={cn('max-sm:w-full')} onClick={() => setShown(count => count + PAGE)}>Show older ({matching.length - shown})</Button></div>}
     </CardBody>

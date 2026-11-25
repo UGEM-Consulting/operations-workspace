@@ -365,11 +365,30 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect(account).toEqual({ companyName: null, mc: 'Northwind Freight', position: 'SUPPORT' });
   });
 
+  it('keeps the old account of a support who helped a whole team at that team’s MC when they left, not its MC now', async () => {
+    const dana = await dispatcher('Dana');
+    const sky = await supportOf(dana.memberId);
+    const [northwind] = await db.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1`, [dana.memberId]);
+    const [team] = await db.query(`INSERT INTO teams (name, "nameKey", "mcId") VALUES ('Blue team', 'blue team', $1) RETURNING id`, [northwind.mcId]);
+    await db.query(`UPDATE member_assignments SET "teamId" = $2, "endedAt" = now() - interval '2 hours' WHERE "memberId" = $1`, [dana.memberId, team.id]);
+    await db.query(`UPDATE member_support_links SET "dispatcherId" = NULL, "teamId" = $2, "endedAt" = now() - interval '1 day' WHERE "supportId" = $1`, [sky, team.id]);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '1 day' WHERE id = $1`, [sky]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail") VALUES ($1,$2,'sky.work@example.test')`, [sky, users.manager.id]);
+    // Emptied, the team moved to another MC after Sky left.
+    const [lakeside] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`UPDATE teams SET "mcId" = $2 WHERE id = $1`, [team.id, lakeside.id]);
+    await act(sky, 'rehire', { firstDay: ahead(0), position: 'SUPPORT', supportsTeamId: team.id, email: 'NONE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    const [account] = await db.query(`SELECT m.name AS mc FROM member_company_accounts a LEFT JOIN mcs m ON m.id = a."mcId" WHERE a."memberId" = $1`, [sky]);
+    expect(account).toEqual({ mc: 'Northwind Freight' });
+  });
+
   it('keeps an old email that still signs in to a load board seat, and asks IT to close only the number', async () => {
     const rowan = await leftFromFile();
     const dana = await dispatcher('Dana');
     const [dat] = await db.query(`INSERT INTO load_board_accounts (provider, name, "nameKey") VALUES ('DAT', 'Lakeside DAT', 'lakeside dat') RETURNING id`);
     await db.query(`INSERT INTO member_load_board_seats ("memberId","accountId","signInEmail","startedAt") VALUES ($1,$2,'rowan.work@example.test',now() - interval '5 days')`, [dana.memberId, dat.id]);
+    // The dialog is told, so it doesn't ask what IT does with an email IT won't be asked to close.
+    expect((await options(rowan.memberId)).email.keptFor).toEqual(['Lakeside DAT']);
     const body = (await act(rowan.memberId, 'rehire', rowan.rehire)).body;
     expect(body.closeAsked).toBe(true);
     expect(await db.query(`SELECT "companyEmail", "ringCentralNumber", status FROM member_company_accounts WHERE "memberId" = $1 ORDER BY status`, [rowan.memberId])).toEqual([

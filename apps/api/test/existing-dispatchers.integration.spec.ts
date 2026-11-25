@@ -1436,6 +1436,16 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
         expect.objectContaining({ name: 'Riley Stone', mc: null, companyName: 'Lakeside Logistics', note: 'Brokers still ask for Riley Stone.' })]);
       const atCompany = (await agents.manager.get('/api/dispatch/members?page=1&status=ALL&search=Riley%20Stone').set(headers).expect(200)).body;
       expect(atCompany.items[0].matched).toEqual({ label: 'Other name', value: 'Riley Stone at Lakeside Logistics' });
+      // An older page sends names and MCs only: what's recorded for each name stays, and nothing is written.
+      const before = (await profile(id)).version;
+      await names(before, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id }, { name: 'Riley Stone' }] }).expect(201);
+      expect((await profile(id)).version).toBe(before);
+      expect((await profile(id)).otherNames).toEqual(placed.otherNames);
+      // '' clears; an MC chosen instead replaces a company.
+      await names(before, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id, companyName: '', note: '' }, { name: 'Riley Stone', mcId: mc.id }] }).expect(201);
+      expect((await profile(id)).otherNames).toEqual([expect.objectContaining({ name: 'Ryan Sands', note: null }), expect.objectContaining({ name: 'Riley Stone', mc: 'Lakeside Carriers', companyName: null, note: 'Brokers still ask for Riley Stone.' })]);
+      // A file row or Add one person takes names and MCs only: a company or note there is refused, never dropped.
+      await agents.manager.post('/api/dispatch/existing/check').set(headers).send({ rows: [{ row: 1, firstName: 'Jo', lastName: 'Fictional', position: 'Dispatcher', otherNameList: [{ name: 'Joe Field', companyName: 'Lakeside Logistics' }] }] }).expect(400);
       // The event names the field only, never a company or a note.
       const latestEvent = (await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event = 'NAMES_CHANGED' ORDER BY "createdAt" DESC LIMIT 1`, [id]))[0];
       expect(latestEvent.metadata).toEqual({ fields: ['otherNames'] });

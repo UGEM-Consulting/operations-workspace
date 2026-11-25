@@ -318,8 +318,14 @@ export class PaperScanDto extends ScanUploadDto {
 export class OtherNameDto {
  @text() @IsString() @MinLength(1, { message: 'Enter the name.' }) @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) name!: string;
  @IsOptional() @IsUUID() mcId?: string;
- // Section 43: a company that isn't one of our MCs, typed in (never with mcId), and why the name is needed (staff text).
- @IsOptional() @text() @IsString() @MinLength(1, { message: 'Enter the company’s name.' }) @MaxLength(100) @Matches(/^[A-Za-z0-9][A-Za-z0-9 .,&'()/-]*$/, { message: 'Company names use Latin letters, digits and common punctuation.' }) companyName?: string;
+}
+/**
+ * One other name on Edit names (section 43): also a company that isn't one of our MCs, typed in (never with mcId), and why the
+ * name is needed (staff text). '' clears either; left out, an older page's, keeps what's recorded for that name. A file row or
+ * Add one person takes OtherNameDto only, so a company or note there is refused, never dropped.
+ */
+export class MemberOtherNameDto extends OtherNameDto {
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z0-9][A-Za-z0-9 .,&'()/-]*$/, { message: 'Company names use Latin letters, digits and common punctuation.' }) companyName?: string;
  @IsOptional() @text() @IsString() @MaxLength(200, { message: 'Keep the note to 200 characters.' }) note?: string;
 }
 /** Edit names: the legal name of someone added by hand ('' clears it), and the whole list of other names. */
@@ -327,7 +333,7 @@ export class MemberNamesDto {
  @IsInt() @Min(1) version!: number;
  @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalFirstName?: string;
  @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalLastName?: string;
- @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => OtherNameDto) otherNames!: OtherNameDto[];
+ @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => MemberOtherNameDto) otherNames!: MemberOtherNameDto[];
 }
 /** The last day of someone added as Left without one. */
 export class LeftDayDto {
