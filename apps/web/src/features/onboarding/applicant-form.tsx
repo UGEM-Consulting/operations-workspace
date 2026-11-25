@@ -22,6 +22,7 @@ import { ApplicantEmployment, startingJobTitle } from './applicant-employment';
 import { ApplicantRecord, fieldLabels, FieldName, itemLabels } from './types';
 import { emptyMemory, type SigningMemory } from '@/features/documents/signing-modal';
 import { ApplicantDocuments, ReviewAttachments } from './applicant-documents';
+import { photoStillRequested } from './photo-correction';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { ApplicantUpdates } from './applicant-updates';
 import { VerifyAccess } from './applicant-access';
@@ -107,6 +108,8 @@ function Form({ initial }: { initial: ApplicantRecord }) {
   if(index===reviewStep)return null;
   if(DOCUMENTS_STEP.includes(steps[index])){
    const items=['selfiePhoto','idPhoto','documents'] as const;
+   // A photo asked to be corrected needs attention until it's replaced, even though the old one still counts as uploaded.
+   if(photoStillRequested(record,'selfiePhoto')||photoStillRequested(record,'idPhoto'))return 'attention';
    if(items.some(item=>record.correction?.requestedFields.includes(item))&&record.documents.missing.length)return 'attention';
    return record.documents.missing.length?(submitAttempted?'attention':null):'complete';
   }
@@ -191,7 +194,10 @@ function Form({ initial }: { initial: ApplicantRecord }) {
  {sessionWarning&&<Alert tone="warning" role="status" title={minutes===0?'Your session has ended':`Your session ends in ${minutes} minute${minutes===1?'':'s'}`} action={minutes===0?<Button size="sm" variant="outline" onClick={()=>setReverify(true)}>Verify email</Button>:undefined}><p>{minutes===0?'Verify your email again, then save. Your entries are still on this page.':'Save your draft now. If the session ends, you can verify your email again without losing what is on this page.'}</p></Alert>}
  <div className="sm:hidden"><Progress label={`Step ${step+1} of ${steps.length}: ${steps[step]}`} value={step+1} max={steps.length} valueLabel={`Step ${step+1} of ${steps.length}`}/></div>
  <ol className={`hidden gap-2 sm:grid ${steps.length===4?'sm:grid-cols-4':'sm:grid-cols-3'}`} aria-label="Application steps">{steps.map((label,index)=>{const state=stepState(index);return <li key={label}><button type="button" aria-current={step===index?'step':undefined} disabled={busy} onClick={()=>goTo(index)} className={`h-full w-full rounded-md border p-3 text-left text-xs ${step===index?'border-primary bg-brand-subtle font-semibold text-brand-subtle-foreground':'border-border text-muted-foreground'}`}>{index+1}. {label}<StepState state={state}/></button></li>;})}</ol>
- {record.correction&&<Alert tone="warning" title="Corrections requested"><p className="whitespace-pre-wrap break-words">{record.correction.reason}</p><p>Items to update: {record.correction.requestedFields.map(field=>itemLabels[field]).join(', ')}.</p><p className="text-[13px] text-muted-foreground">Only the items marked Needs correction can change. Save your progress, then resubmit for review. Access expires <LocalTime iso={record.accessUntil} format="date"/>.</p></Alert>}
+ {record.correction&&<Alert tone="warning" title="Corrections requested"><p className="whitespace-pre-wrap break-words">{record.correction.reason}</p><p>Items to update: {record.correction.requestedFields.map(field=>itemLabels[field]).join(', ')}.</p>{(()=>{const docsStep=steps.findIndex(label=>DOCUMENTS_STEP.includes(label));
+  // Photos and documents are on their own step, so the notice says where and takes them there.
+  return docsStep>=0&&step!==docsStep&&record.correction.requestedFields.some(field=>['selfiePhoto','idPhoto','documents'].includes(field))
+   ?<p>Photos and documents are on the <span className="font-medium">{steps[docsStep]}</span> step. <Button type="button" size="sm" variant="outline" className="ml-1" onClick={()=>goTo(docsStep)}>Go to {steps[docsStep]}</Button></p>:null;})()}<p className="text-[13px] text-muted-foreground">Only the items marked Needs correction can change. Save your progress, then resubmit for review. Access expires <LocalTime iso={record.accessUntil} format="date"/>.</p></Alert>}
  {catchUp&&<Alert tone="info" title="You already work here"><p>This is only to bring your records up to date. Your job doesn’t depend on a new application.</p></Alert>}
  {catchUp&&<Card className="space-y-3 p-5"><h2 className="text-[15px] font-semibold">What your manager has on file</h2><DescriptionList layout="rows" items={[...(catchUp.dispatcher?[{label:'You support',value:catchUp.dispatcher}]:[]),{label:'MC',value:catchUp.mc??'No MC yet'},...(underMc(catchUp.mc)?[{label:'Team',value:catchUp.team??'Independent'}]:[]),...(catchUp.jobTitle?[{label:'Job title',value:catchUp.jobTitle}]:[]),...catchUp.paper.map(item=>({label:item.kind,value:<>Signed on paper, <LocalTime iso={`${item.signedOn}T12:00:00Z`} format="date"/></>}))]}/><p className="text-[13px] text-muted-foreground">Something wrong? Tell your manager.</p></Card>}
  <form noValidate onSubmit={handleSubmit(values=>save(values,true),invalidForm)}><fieldset disabled={busy} className="min-w-0"><Card className="space-y-5 p-6 sm:p-8"><h2 ref={stepHeading} tabIndex={-1} className="text-lg font-semibold outline-none">{steps[step]}</h2><p className="text-sm text-muted-foreground">Step {step+1} of {steps.length}. All fields are required unless marked optional.</p>
