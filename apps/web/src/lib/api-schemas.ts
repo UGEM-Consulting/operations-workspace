@@ -44,6 +44,12 @@ export const staffTelegramSchema = z.looseObject({ available: z.boolean(), conne
 export const STAFF_ALERTS = ['REVIEW_WAITING', 'IT_SETUP_WAITING', 'IT_REMOVAL_WAITING', 'SAFETY_REMINDER', 'SAFETY_WEEKLY'] as const;
 export type StaffAlert = typeof STAFF_ALERTS[number];
 
+/** GET /onboarding/applications/:id/returning (section 42) */
+export const returningStatusSchema = z.looseObject({ applicationId: text, status: text, email: text, startedAt: nullableText, invitedBy: nullableText, catchUp: z.boolean(), revoked: z.boolean().optional(),
+  accessUntil: text, ended: z.boolean(), codes: z.number(), limit: z.number(), limited: z.boolean(), countResetsAt: nullableText.optional(), nextCodeAt: nullableText, canGiveTime: z.boolean(), canReset: z.boolean(),
+  admin: z.boolean().optional(), resetWhy: nullableText.optional(), returnLink: text.optional(), moreTimeDays: z.array(z.number()),
+  activity: z.array(z.looseObject({ id: text, event: text, createdAt: text })).nullable() });
+
 /** GET /onboarding/applications/:id */
 export const reviewDetailSchema = z.looseObject({
   application: z.looseObject({ id: text, status: text, fields, version: z.number(), submittedAt: nullableText }),

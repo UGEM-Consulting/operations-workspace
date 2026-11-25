@@ -7,7 +7,7 @@ export { digest } from './verification-code';
 import { EmailService } from '../email/email.service';
 import { askedAs, requiredApplicantFields } from './application-requirements';
 import { applicantEmploymentOptions, settleApplicantEmployment } from './applicant-employment';
-import { activeAttempts, clientBucket, countAttempt, onboardingLimit } from './rate-limit';
+import { accessEndedKey, activeAttempts, clientBucket, countAttempt, onboardingLimit, sendsKey } from './rate-limit';
 import { requireTransition } from './transitions';
 import { alreadyHere, refuseSecondApplication } from './already-here';
 import { randomBytes } from 'node:crypto';
@@ -20,7 +20,7 @@ import type {} from '../auth/session';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { User, Role } from '../users/user.entity';
 import { canAccessAssignedApplication } from '../auth/policy';
-import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
+import { ApplicationReview, ApplicationSubmission, CORRECTION_FIELDS, DOCUMENT_ITEMS, UNDECIDED_STATUSES, ApplicationFields, ApplicantChallenge, ApplicationActivity, DispatcherApplication, Invitation, type RequestableItem } from './entities';
 import { StorageService } from '../storage/storage.service';
 import { NotificationsService } from '../updates/notifications.service';
 import { applicantDocuments, currentDocuments, documentStatus } from '../documents/requirements';
@@ -130,9 +130,9 @@ export class OnboardingService {
   const inv = input.token
    ? await this.db.getRepository(Invitation).findOneBy({ tokenHash: digest(input.token) })
    : await this.db.getRepository(Invitation).findOneBy({ id: app?.invitationId ?? '00000000-0000-0000-0000-000000000000', email: input.email });
-  const valid = !!inv && !inv.revokedAt && (!inv.expectedEmail || inv.expectedEmail === input.email) && (input.token
-   ? !inv.consumedAt && inv.expiresAt.getTime() > Date.now()
-   : !!inv.consumedAt && !!app && app.applicantAccessUntil.getTime() > Date.now());
+  // Their invitation (or reference and verified email), apart from whether there is still time.
+  const known = !!inv && !inv.revokedAt && (!inv.expectedEmail || inv.expectedEmail === input.email);
+  const valid = known && (input.token ? !inv.consumedAt && inv.expiresAt.getTime() > Date.now() : !!inv.consumedAt && !!app && app.applicantAccessUntil.getTime() > Date.now());
   await this.db.query('DELETE FROM applicant_challenges WHERE "expiresAt" < now()');
   // Only matched challenges get a code. Unmatched challenges stay unusable and receive no email.
   const code = valid && this.email.enabled ? generateVerificationCode() : null;
@@ -146,8 +146,14 @@ export class OnboardingService {
     if (!code) return;
     const refused = await this.sendRefusal(invitationId, to, open);
     if (refused) this.logger.warn(`Verification email not sent: ${refused}`);
-    await this.activity(this.db.manager, invitationId, !refused && await this.email.sendVerificationCode(to, code) ? 'VERIFICATION_EMAIL_SENT' : 'VERIFICATION_EMAIL_FAILED');
+    // Staff see why a code didn't go (section 42): the daily limit for this email apart from the mail server refusing it.
+    await this.activity(this.db.manager, invitationId, refused === 'ADDRESS_DAILY_LIMIT' ? 'CODE_NOT_SENT_DAILY_LIMIT' : !refused && await this.email.sendVerificationCode(to, code) ? 'VERIFICATION_EMAIL_SENT' : 'VERIFICATION_EMAIL_FAILED');
    });
+  } else if (known && !input.token && inv!.consumedAt && app && (UNDECIDED_STATUSES as readonly string[]).includes(app.status) && this.email.enabled) {
+   // Their own reference and verified email, but their time to return has ended: nothing is sent, and after the response staff
+   // can see why (section 42), at most once a day per application so nobody can fill its activity.
+   const invitationId = inv!.id;
+   this.email.runInBackground(async () => { if (await countAttempt(this.db, accessEndedKey(invitationId), 86400) === 1) await this.activity(this.db.manager, invitationId, 'CODE_NOT_SENT_ACCESS_ENDED'); });
   }
   // Identical response for unknown, mismatched, expired and matched requests.
   return this.email.enabled
@@ -157,7 +163,7 @@ export class OnboardingService {
  /** Mail-quota guards, run after the response for matched requests only. Returns a safe code when the send is skipped. */
  private async sendRefusal(invitationId: string, to: string, open: boolean): Promise<string | null> {
   // Nobody can make the API mail one address (for example a resume victim) more than a few times a day.
-  if (await countAttempt(this.db,'sends-to:'+to,86400) > SEND_LIMITS.perAddressDaily) return 'ADDRESS_DAILY_LIMIT';
+  if (await countAttempt(this.db,sendsKey(to),86400) > SEND_LIMITS.perAddressDaily) return 'ADDRESS_DAILY_LIMIT';
   // An open link may be tried with a few addresses (typos), never used to mail many people.
   const admitted = 'invitation-address:'+invitationId+':'+to;
   if (open && !await activeAttempts(this.db,admitted)) {

@@ -3,7 +3,7 @@ import { FileText } from 'lucide-react';
 import { ViewDocumentButton } from '@/features/documents/document-modal';
 import { signedDocuments } from '@/features/documents/signed-documents';
 import { apiRequest, requirePage } from '@/lib/auth';
-import { readResponse, reviewDetailSchema, savedSignatureSchema } from '@/lib/api-schemas';
+import { readResponse, returningStatusSchema, reviewDetailSchema, savedSignatureSchema } from '@/lib/api-schemas';
 import type { SavedSignature } from '@/features/auth/saved-signature';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -26,6 +26,8 @@ import { PageCrumb } from '@/components/shell-context';
 import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { fieldLabels, FieldName, itemLabels, ReviewDetail } from '@/features/onboarding/types';
 import { aSupport, supportName } from '@/features/dispatch/types';
+import { ReturningActions, ReturningAlert, ReturningCard } from '@/features/onboarding/returning';
+import { activityTitle, type ReturningStatus } from '@/features/onboarding/returning-words';
 
 export const metadata = { title: 'Application' };
 /**
@@ -34,7 +36,13 @@ export const metadata = { title: 'Application' };
  */
 export default async function Page({params}:{params:Promise<{id:string}>}) {
  const identity=await requirePage('applications');const {id}=await params;if(!/^[0-9a-f-]{36}$/.test(id))notFound();
- const response=await apiRequest(`onboarding/applications/${id}`);if([404,409].includes(response.status))notFound();if(!response.ok)throw new Error('Unable to load application');
+ // Both start together, so the page waits once; the returning answer is read only when the page shows it (section 42).
+ const returningRequest=apiRequest(`onboarding/applications/${id}/returning`).catch(()=>null);
+ const response=await apiRequest(`onboarding/applications/${id}`);if(response.status===404)notFound();
+ const returningResponse=async()=>(await returningRequest)??new Response(null,{status:503});
+ // Not sent yet (section 42): its answers stay private, so the page shows only whether they can come back, and its activity.
+ if(response.status===409){const unsent=await returningStatus(await returningResponse());if(!unsent||unsent.catchUp)notFound();return <UnsentApplication status={unsent}/>;}
+ if(!response.ok)throw new Error('Unable to load application');
  const data=await readResponse<ReviewDetail>(response,'application review',reviewDetailSchema),app=data.application;
  // Someone already working here: their paperwork is checked from their dispatcher page, with no job decision to make.
  if(data.catchUp&&data.invitation.catchUpMemberId)redirect(`/dispatch/dispatchers/${data.invitation.catchUpMemberId}/paperwork`);
@@ -53,9 +61,12 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
  const photos=[{path:'selfie',label:'Selfie',caption:'Becomes the profile photo',present:data.documents.photos.selfie},{path:'id-selfie',label:'Selfie holding ID',caption:'Managers and admins only',present:data.documents.photos.idSelfie,meta:'Check that the face and name match the ID.'}].map(photo=>({...photo,src:`/api/backend/onboarding/applications/${id}/photos/${photo.path}`,title:photo.label,alt:photo.label}));
  const viewablePhotos=photos.filter(photo=>photo.present);
 
+ // Returning to their application (section 42): while it isn't decided, from an API with the route.
+ const returning=['APPROVED','REJECTED'].includes(app.status)||data.catchUp?null:await returningStatus(await returningResponse());
  // Already here (section 37): from an API with the check, while nothing has been decided.
  const here=data.alreadyHere??[],question=approvalQuestion(here);
  const overview=<div className="space-y-6">
+  {returning&&<ReturningAlert status={returning} name={name}/>}
   {app.status==='RESUBMITTED'&&<Alert tone="info" title="Resubmitted after your change request"><p>See <span className="font-medium">What changed</span> for the updated answers.</p></Alert>}
   {app.status==='CHANGES_REQUESTED'&&<Alert tone="info" title="Waiting for corrections"><p>These are the last submitted answers. The applicant’s saved correction drafts stay private until they resubmit.</p></Alert>}
   {data.requiredFields.length>0&&<Alert tone="warning" title={data.readyForIt?'Historical approval preserved':'Completion required before approval'}><p>{data.requiredFields.map(field=>itemLabels[field]).join(', ')}</p>{data.canReview&&<p className="text-muted-foreground">Request corrections so the applicant can complete these.</p>}</Alert>}
@@ -93,7 +104,7 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
   {!!data.managerChanges?.length&&<Card><CardHeader title="Responsible manager" description="Every hand-over, with the note left for the new manager."/><CardBody><Timeline items={[...data.managerChanges].reverse().map(change=>({id:change.id,
    title:change.reason==='HANDED_OVER'?`Handed over to ${change.to}`:`${change.from} handed it to ${change.to}`,
    meta:<><LocalTime iso={change.createdAt}/>{change.reason==='HANDED_OVER'?` · ${change.from}’s account changed, by ${change.by}`:change.by!==change.from?` · by ${change.by}`:''}</>,body:change.note??undefined}))}/></CardBody></Card>}
-  <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(item=>({id:item.id,title:statusLabel(item.event),meta:<LocalTime iso={item.createdAt}/>}))}/></CardBody></Card>
+  <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...data.activity].reverse().map(item=>({id:item.id,title:activityTitle(item.event),meta:<LocalTime iso={item.createdAt}/>}))}/></CardBody></Card>
  </div>;
 
  const outcome=decided&&<Card><CardHeader title="Decision" actions={<StatusBadge status={app.status}/>}/><CardBody className="space-y-3 text-sm">
@@ -114,11 +125,34 @@ export default async function Page({params}:{params:Promise<{id:string}>}) {
    <aside aria-label="Decision" className="space-y-4 xl:sticky xl:top-20 xl:-mx-1 xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain xl:px-1 xl:pb-1">
     {(data.canReview||data.canReject)&&<ReviewActions id={id} version={app.version} status={app.status} requiredFields={data.requiredFields} documentsRequired={data.documents.required} countersign={data.documents.countersign} documentItems={data.documents.items} savedSignature={savedSignature} options={data.employmentOptions??null} supports={data.supports??null} alreadyHere={data.alreadyHere??null} applicantName={name} employment={{mcName:data.invitation.mcName??app.fields.mcName??'',teamLead:data.invitation.teamLead??app.fields.teamLead??'',jobTitle:data.invitation.jobTitle??app.fields.jobTitle??''}}/>}
     {outcome}
+    {returning&&<ReturningCard status={returning} name={name}/>}
     {(data.canReview||data.canReject)&&<Card><CardHeader title="What happens next"/><CardBody className="space-y-2 text-[13px] leading-5 text-muted-foreground">
      <p>{data.invitation.position==='SUPPORT'?`Approving adds them as ${aSupport(data.invitation)} for the dispatcher or team you confirm. Supports and updaters need no IT setup.`:'Approving creates an IT setup checklist. You get a notification here when the dispatcher’s accounts are ready.'}</p>
      <p>The applicant gets a short email or Telegram update with the outcome only; your reasons and notes are never included.</p>
     </CardBody></Card>}
    </aside>
+  </div>
+ </div>;
+}
+
+/** A returning applicant's status (section 42), or null from an older API or when there's nobody to return yet. */
+async function returningStatus(response:Response):Promise<ReturningStatus|null>{
+ return response.ok?await readResponse<ReturningStatus>(response,'returning status',returningStatusSchema).catch(()=>null):null;
+}
+/** An application not sent yet (ReturningAccessScreen): no answers, only whether they can come back and what happened. */
+function UnsentApplication({status}:{status:ReturningStatus}){
+ // Their answers, names included, stay private until they send it: the page and its dialogs say the applicant.
+ const name='the applicant';
+ return <div className="space-y-6"><PageCrumb label={status.email}/>
+  <PageHeader title={status.email} badge={<StatusBadge status={status.status}/>} meta={[<span key="ref" className="font-mono">{status.applicationId}</span>,...(status.startedAt?[<span key="started">Started <LocalTime iso={status.startedAt} format="date"/></span>]:[]),...(status.invitedBy?[<span key="by">Invited by {status.invitedBy}</span>]:[])]}
+   action={<span className="flex flex-wrap items-center gap-2"><CopyButton text={status.applicationId} label="Copy reference"/><ReturningActions status={status} name={name}/></span>}/>
+  <ReturningAlert status={status} name={name}/>
+  <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
+   <div className="min-w-0 space-y-6">
+    <Card><CardHeader title="Application details" description="Answers they saved so far. Managers see them once the application is sent."/><CardBody><p className="text-sm text-muted-foreground">Not sent yet.</p></CardBody></Card>
+    <Card><CardHeader title="Activity"/><CardBody><Timeline items={[...(status.activity??[])].reverse().map(item=>({id:item.id,title:activityTitle(item.event),meta:<LocalTime iso={item.createdAt}/>}))}/></CardBody></Card>
+   </div>
+   <aside aria-label="Returning" className="space-y-4"><ReturningCard status={status} name={name} actions={false}/></aside>
   </div>
  </div>;
 }
