@@ -1,6 +1,6 @@
 'use client';
 import { useId, useRef, useState } from 'react';
-import { Download } from 'lucide-react';
+import { CheckCircle2, Download, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { LocalTime } from '@/components/ui/local-time';
 import { PrivateImage } from '@/components/ui/private-image';
@@ -11,6 +11,7 @@ import { PhotoButton, type ViewablePhoto } from '@/features/documents/photo-moda
 import { SigningModal, type SignableDocument, type SigningMemory } from '@/features/documents/signing-modal';
 import { photoForUpload } from './photo';
 import { ApplicantRecord } from './types';
+import { photoStillRequested } from './photo-correction';
 const PHOTOS = [
  { item: 'selfiePhoto', path: 'selfie', key: 'selfie', title: 'Selfie', help: 'A clear, recent photo of your face looking at the camera in good light, without sunglasses or a hat. It becomes your profile photo.' },
  { item: 'idPhoto', path: 'id-selfie', key: 'idSelfie', title: 'Selfie holding your ID', help: 'Hold your government-issued photo ID next to your face so your face, the ID photo and your name are clearly readable. Only your manager and administrators can see this photo; it is checked by a person, never by face recognition.' },
@@ -84,7 +85,9 @@ function PhotoCard({ photo, record, onRecord, disabled, setWorking, version, onU
  }
  const pick = (event: React.ChangeEvent<HTMLInputElement>) => { void upload(event.target.files?.[0]); event.target.value = ''; };
  return <div role="group" aria-labelledby={`${id}-title`} aria-describedby={`${id}-help`} className={`space-y-3 rounded-md border p-4 ${record.correction?.requestedFields.includes(photo.item) ? 'border-warning/50' : 'border-border'}`}>
-  <p id={`${id}-title`} className="font-medium">{photo.title}</p><p id={`${id}-help`} className="text-sm text-muted-foreground">{photo.help}</p>
+  <p id={`${id}-title`} className="flex flex-wrap items-center gap-x-2 font-medium">{photo.title}{photoStillRequested(record, photo.item)
+   ? <span className="inline-flex items-center gap-1 text-[13px] font-medium text-warning"><TriangleAlert aria-hidden="true" className="size-3.5"/>Needs correction</span>
+   : record.correction?.requestedFields.includes(photo.item) && <span className="inline-flex items-center gap-1 text-[13px] font-medium text-success"><CheckCircle2 aria-hidden="true" className="size-3.5"/>Replaced</span>}</p><p id={`${id}-help`} className="text-sm text-muted-foreground">{photo.help}</p>
   {uploaded ? <PhotoButton photos={ownPhotos(record).map(item => item.title === photo.title ? { ...item, src: `/api/backend/applicant/photos/${photo.path}?v=${version}-${uploaded}` } : item)} src={`/api/backend/applicant/photos/${photo.path}?v=${version}-${uploaded}`} label={`Open your ${photo.title.toLowerCase()}`}><PrivateImage src={`/api/backend/applicant/photos/${photo.path}?v=${version}-${uploaded}`} alt={`Your ${photo.title.toLowerCase()}`} className="max-h-60 rounded-md border object-contain"/></PhotoButton>
    : <p className="text-sm text-warning">Not uploaded yet.</p>}
   {editable && <>
