@@ -27,7 +27,7 @@ export async function mainAccounts(em: EntityManager, memberId: string, loaded?:
   setup: setups.find(setup => setup.companyEmail || setup.assignedRingCentralPhoneNumber) ?? null, record };
 }
 /** The load board accounts an email still signs in to (open seats). */
-async function seatsUsing(em: Pick<EntityManager, 'query'>, email: string | null): Promise<string[]> {
+export async function seatsUsing(em: Pick<EntityManager, 'query'>, email: string | null): Promise<string[]> {
  if (!email) return [];
  return (await em.query(`SELECT DISTINCT a.name FROM member_load_board_seats s JOIN load_board_accounts a ON a.id = s."accountId" WHERE s.status <> 'ENDED' AND s."signInEmail" = lower($1) ORDER BY a.name`, [email])).map((row: { name: string }) => row.name);
 }

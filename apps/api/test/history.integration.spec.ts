@@ -110,6 +110,16 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
     expect(JSON.stringify(history)).not.toMatch(/@|Used for YouPro/);
   });
 
+  it('keeps a removal scheduled for the last day after Remove access now makes it due today', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
+    const lastDay = addDays(usDay('latest'), 10);
+    await post('manager', `dispatch/members/${riley}/leave`, { version: await version(riley), leftAt: `${lastDay}T12:00:00.000Z`, reason: 'Moving to another company.' });
+    await post('manager', `dispatch/members/${riley}/remove-access`, { version: await version(riley), reason: 'Asked to stop working today.' });
+    const shown = new Date(`${lastDay}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    expect(await titles(riley)).toEqual(expect.arrayContaining([`IT removal scheduled for ${shown}`]));
+    expect(await titles(riley)).not.toContain('IT asked to remove access');
+  });
+
   it('records a hand-over on everyone it touches, and keeps the whole notice after they leave', async () => {
     const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
     const drew = await addOne('Drew', 'Calloway'), morgan = await addOne('Morgan', 'Pike');

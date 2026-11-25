@@ -12,15 +12,19 @@ import { WITH_LEAVING_MS } from './bring-back';
 export type HistoryCategory = 'WORK' | 'ACCOUNTS' | 'AWAY' | 'DETAILS' | 'IT' | 'VIEWS';
 /** dateOnly: a day picked in a form (stored at midday UTC), shown as a date with no time. */
 export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null; dateOnly?: boolean }
-/** Days picked in forms are stored at midday UTC; nothing recorded by a click lands on it to the millisecond. */
-const DAY_ONLY = /T12:00:00\.\d{3}Z$/;
-/** A day sorts after what was clicked that day (US Eastern), since it's usually recorded later the same day or for an earlier one. */
-const sortKey = (entry: HistoryEntry) => entry.dateOnly ? easternDayEnd(entry.at.slice(0, 10)) : entry.at;
+/**
+ * Days picked in forms are stored at midday UTC, or a few milliseconds after when the same-day rule starts a period just after
+ * the one it ends. A click lands in those few milliseconds only by chance, so anything later in that second is a click.
+ */
+const DAY_ONLY = /T12:00:00\.00\dZ$/;
+const EASTERN_OFFSET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' });
 /** The last moment of a day in US Eastern time (EST or EDT, whichever applies that day), as an ISO string. */
 function easternDayEnd(day: string) {
- const offset = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' }).formatToParts(new Date(`${day}T12:00:00Z`)).find(part => part.type === 'timeZoneName')?.value.replace('GMT', '') || '-05:00';
+ const offset = EASTERN_OFFSET.formatToParts(new Date(`${day}T12:00:00Z`)).find(part => part.type === 'timeZoneName')?.value.replace('GMT', '') || '-05:00';
  return new Date(`${day}T23:59:59.999${offset}`).toISOString();
 }
+/** A day sorts after what was clicked that day (US Eastern), since it's usually recorded later the same day or for an earlier one. */
+const sortKey = (entry: HistoryEntry) => entry.dateOnly ? easternDayEnd(entry.at.slice(0, 10)) : entry.at;
 type Q = Pick<EntityManager, 'query'>;
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -265,11 +269,14 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  // The day a removal was scheduled for: the last day of the notice recorded with it, as given (a later change or Remove access
  // now moves dueOn, and has its own entry); without a notice, its due date.
  const scheduledFor = (removal: Row) => {
-  const notice = notices.find(row => near(row.createdAt, removal.createdAt, 10000));
+  // A notice cancelled before this removal was made had its own removal.
+  const notice = notices.find(row => near(row.createdAt, removal.createdAt, 10000) && (!row.cancelledAt || new Date(row.cancelledAt) >= new Date(removal.createdAt)));
   return notice ? notice.changes?.[0]?.from ?? notice.lastDay : removal.dueOn;
  };
  for (const row of removals) {
-  add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', row.dueOn && row.dueOn > usDay('latest', new Date(row.createdAt)) ? `IT removal scheduled for ${day(scheduledFor(row))}` : 'IT asked to remove access', row.by);
+  // Scheduled or not by the day it was scheduled for, not dueOn now, which Remove access now may have moved to that same day.
+  const due = scheduledFor(row);
+  add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', due && due > usDay('latest', new Date(row.createdAt)) ? `IT removal scheduled for ${day(due)}` : 'IT asked to remove access', row.by);
   if (row.completedAt) add(`removal-done-${row.id}`, row.completedAt, 'IT', 'monitor', 'IT finished removing access');
   if (row.cancelledAt) add(`removal-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', row.reversedAt ? 'IT’s removal reversed: they came back' : 'IT removal cancelled');
  }
@@ -337,7 +344,9 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    case 'SIGNED_COPY_VIEWED': add(id, at, 'VIEWS', 'eye', `Signed ${m.kind === 'CONTACT_LIST' ? 'contact list' : m.kind ?? 'document'} opened (view only)`, row.by); break;
   }
  }
- out.sort((a, b) => sortKey(b).localeCompare(sortKey(a)) || b.id.localeCompare(a.id));
+ // Each entry's key is worked out once, not on every comparison.
+ const keys = new Map(out.map(entry => [entry, sortKey(entry)]));
+ out.sort((a, b) => keys.get(b)!.localeCompare(keys.get(a)!) || b.id.localeCompare(a.id));
  const counts = { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 };
  for (const entry of out) { counts[entry.category] += 1; if (entry.category !== 'VIEWS') counts.ALL += 1; }
  return { entries: out, counts };

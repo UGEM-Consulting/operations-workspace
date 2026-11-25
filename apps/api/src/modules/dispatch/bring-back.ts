@@ -5,7 +5,7 @@ import { JobTitle, Mc } from '../lists/lists.entity';
 import { addDays, usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { lockSetupRequests, sameSetups } from '../it/removal';
-import { askToCloseAccount, mainAccounts } from '../company-accounts/account-requests';
+import { askToCloseAccount, mainAccounts, seatsUsing } from '../company-accounts/account-requests';
 import { CompanyAccount } from '../company-accounts/company-accounts.entity';
 import { createReturnSetup } from '../it/support-setup';
 import { EmailDone, handedOver, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, RemovalProfile } from '../it/it.entity';
@@ -147,8 +147,8 @@ export class BringBackService {
    // An account IT never closed, and nobody else owns, that they don't get back: IT is asked to close it (below), so it's never left open untracked.
    const close = { email: dto.email !== 'RESTORE' && accounts.email?.notClosed && accounts.email.restorable ? accounts.email.value : null,
     number: dto.ringCentral !== 'RESTORE' && accounts.ringCentral?.notClosed && accounts.ringCentral.restorable ? accounts.ringCentral : null };
-   // Where those accounts were: the MC of their last period before this rehire.
-   const [lastPeriod]: { mcId: string | null }[] = close.email || close.number ? await em.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1 ORDER BY "startedAt" DESC, "createdAt" DESC LIMIT 1`, [id]) : [];
+   // Where those accounts were, read before this rehire places them again.
+   const place = close.email || close.number ? await this.lastPlace(em, member) : null;
    const wasPosition = member.position === 'DISPATCHER' ? 'DISPATCHER' as const : member.supportType;
    // Placed again: a dispatcher under an MC (and a team of it, or Independent) with a job title; a support or updater with who they help.
    if (dispatcher) {
@@ -183,13 +183,7 @@ export class BringBackService {
    }
    // An old email or number they don't get back stops being theirs, on every earlier setup and the manager's record (kept as retired).
    await this.retireOldAccounts(em, id, setups.map(row => row.id), { email: dto.email !== 'RESTORE', number: dto.ringCentral !== 'RESTORE' });
-   // One IT never closed stays on record as their account at the MC they left, with IT asked to close it (CLOSE request).
-   if (close.email || close.number) {
-    const account = await em.getRepository(CompanyAccount).save({ memberId: id, mcId: lastPeriod?.mcId ?? null, companyName: lastPeriod?.mcId ? null : 'Earlier company', nameUsed: null, position: wasPosition,
-     companyEmail: close.email, ringCentralNumber: close.number?.number ?? null, ringCentralExtension: close.number?.extension ?? null, status: 'ACTIVE', createdBy: user.id, sourceName: null });
-    await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'COMPANY_ACCOUNT_ADDED', actorId: user.id, metadata: { accountId: account.id, status: 'ACTIVE', fields: [], from: 'rehire' } });
-    await askToCloseAccount(em, user.id, member, account, { emailAfter: 'SUSPEND', emailAction: close.email ? dto.closeEmailAction : undefined, note: null }, 'rehire');
-   }
+   const closeAsked = place ? await this.keepOldAccounts(em, user, member, place, wasPosition, close, dto.closeEmailAction) : false;
    const setup = keys.length ? await createReturnSetup(em, { purpose: 'REHIRE', member, keys, restoreKeys, managerId: user.id, actorId: user.id,
     accounts: { companyEmail: dto.email === 'RESTORE' ? accounts.email!.value : null, ringCentralNumber: dto.ringCentral === 'RESTORE' ? accounts.ringCentral!.number : null, ringCentralExtension: dto.ringCentral === 'RESTORE' ? accounts.ringCentral!.extension : null },
     returning: { kind: 'REHIRE', leftOn: state.leftKnown ? day(leftAt) : null, firstDay, emailWas: accounts.email?.was ?? null, emailDeletedOn: accounts.email?.deletedOn ?? null, by: `${user.firstName} ${user.lastName}`,
@@ -197,9 +191,9 @@ export class BringBackService {
    if (setup) alerts = await this.alerts.queueItSetupWaiting(em, setup);
    await em.query(`INSERT INTO member_returns ("memberId", kind, "leftAt", "leftKnown", "leftReason", "previousJoinedAt", "previousStartKnown", "firstDay", "removalId", "setupRequestId", "actorId") VALUES ($1, 'REHIRE', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [id, leftAt, state.leftKnown, state.leftReason, previousJoinedAt, record?.startDateKnown !== false, firstDay, removal?.id ?? null, setup?.id ?? null, user.id]);
-   await this.event(em, user, 'REHIRED', id, { position: dto.position, itSetup: !!setup, restored: restoreKeys.length > 0, ...(close.email || close.number ? { closeAsked: true } : {}), assists: dispatcher ? null : dto.supportsTeamId ? 'TEAM' : 'DISPATCHER' });
+   await this.event(em, user, 'REHIRED', id, { position: dto.position, itSetup: !!setup, restored: restoreKeys.length > 0, ...(closeAsked ? { closeAsked: true } : {}), assists: dispatcher ? null : dto.supportsTeamId ? 'TEAM' : 'DISPATCHER' });
    await syncSignIns(em, [id], user.id);
-   return { id, version: member.version };
+   return { id, version: member.version, closeAsked };
   });
   this.alerts.dispatch(alerts);
   return result;
@@ -222,6 +216,43 @@ export class BringBackService {
  async summary(member: DispatchMember) {
   const state = await this.state(this.db.manager, member);
   return { undoUntil: state.undoUntil, canUndo: !state.undoRefusal, canRehire: !state.rehireRefusal, rehireWhy: state.rehireRefusal };
+ }
+ /**
+  * Where their old accounts were: the MC of their last period or, for a support or updater, of the team they last helped or
+  * of their dispatcher at the time. Read before the rehire places them again; another company's name only when none is known.
+  */
+ private async lastPlace(em: EntityManager, member: DispatchMember): Promise<{ mcId: string; companyName: null } | { mcId: null; companyName: string }> {
+  const helped: { mcId: string | null }[] = member.position === 'DISPATCHER' ? [] : await em.query(`SELECT coalesce(t."mcId", (SELECT a."mcId" FROM member_assignments a
+    WHERE a."memberId" = l."dispatcherId" AND a."startedAt" <= coalesce(l."endedAt", now()) ORDER BY a."startedAt" DESC, a."createdAt" DESC LIMIT 1)) AS "mcId"
+   FROM member_support_links l LEFT JOIN teams t ON t.id = l."teamId" WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC LIMIT 1`, [member.id]);
+  const [own]: { mcId: string | null }[] = helped[0]?.mcId ? [] : await em.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1 ORDER BY "startedAt" DESC, "createdAt" DESC LIMIT 1`, [member.id]);
+  const mcId = helped[0]?.mcId ?? own?.mcId ?? null;
+  return mcId ? { mcId, companyName: null } : { mcId: null, companyName: 'Earlier company' };
+ }
+ /**
+  * An email or number IT never closed that a rehire doesn't get back stays on record as their account where they were, with IT
+  * asked to close it (CLOSE request), so it's never left open untracked. One already on an open account of theirs at another
+  * company stays there. An email that still signs in to an open load board seat is kept for it, as a move keeps one, on its own
+  * row so closing the number leaves it. Returns whether IT was asked to close anything.
+  */
+ private async keepOldAccounts(em: EntityManager, user: User, member: DispatchMember, place: { mcId: string | null; companyName: string | null }, position: 'DISPATCHER' | 'SUPPORT' | 'UPDATER',
+  old: { email: string | null; number: { number: string; extension: string | null } | null }, emailAction: RehireDto['closeEmailAction']) {
+  const [held]: { email: boolean | null; number: boolean | null }[] = await em.query(`SELECT bool_or(lower("companyEmail") = lower($2)) AS email,
+    bool_or(regexp_replace("ringCentralNumber", '\\D', '', 'g') = regexp_replace($3, '\\D', '', 'g')) AS number
+   FROM member_company_accounts WHERE "memberId" = $1 AND status <> 'CLOSED'`, [member.id, old.email ?? '', old.number?.number ?? '']);
+  const email = old.email && !held?.email ? old.email : null, number = old.number && !held?.number ? old.number : null;
+  const kept = !!email && (await seatsUsing(em, email)).length > 0;
+  const add = async (fields: Pick<CompanyAccount, 'companyEmail' | 'ringCentralNumber' | 'ringCentralExtension' | 'status'>) => {
+   const account = await em.getRepository(CompanyAccount).save({ memberId: member.id, ...place, nameUsed: null, position, ...fields, createdBy: user.id, sourceName: null });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_ADDED', actorId: user.id, metadata: { accountId: account.id, status: fields.status, fields: [], from: 'rehire' } });
+   return account;
+  };
+  if (kept) await add({ companyEmail: email, ringCentralNumber: null, ringCentralExtension: null, status: 'KEPT_FOR_LOAD_BOARDS' });
+  const closing = { email: kept ? null : email, number };
+  if (!closing.email && !closing.number) return false;
+  const account = await add({ companyEmail: closing.email, ringCentralNumber: closing.number?.number ?? null, ringCentralExtension: closing.number?.extension ?? null, status: 'ACTIVE' });
+  await askToCloseAccount(em, user.id, member, account, { emailAfter: 'SUSPEND', emailAction: closing.email ? emailAction : undefined, note: null }, 'rehire');
+  return true;
  }
  /**
   * A rehire that doesn't restore their old company email or RingCentral number (a new one, or none): the old value moves to the

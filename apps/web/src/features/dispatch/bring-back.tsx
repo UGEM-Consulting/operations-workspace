@@ -161,7 +161,9 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
   const [email, setEmail] = useState<Account | ''>(start(options.email)), [ringCentral, setRingCentral] = useState<Account | ''>(start(options.ringCentral));
   // What IT does with an old email it never closed that they don't get back; IT usually archives.
   const [closeEmail, setCloseEmail] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
-  const closingEmail = !!email && email !== 'RESTORE' && !!options.email?.notClosed && options.email.restorable;
+  // An old account IT never closed that they don't get back may be one IT is asked to close; the API says whether it was.
+  const mayClose = (choice: Account | '', old: { restorable: boolean; notClosed?: boolean } | null) => !!choice && choice !== 'RESTORE' && !!old?.notClosed && old.restorable;
+  const closingEmail = mayClose(email, options.email);
   const [software, setSoftware] = useState(member.position === 'DISPATCHER'), [equipment, setEquipment] = useState(false), [firstDay, setFirstDay] = useState(options.rehire.earliest);
   const name = fullName(member), first = member.firstName, dispatcher = position === 'DISPATCHER';
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
@@ -173,11 +175,12 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
     if (!email || !ringCentral) { setError(`Choose what happens to their ${!email ? 'company email' : 'RingCentral number'}.`); return; }
     setPending(true); setError('');
     try {
-      await mutate(`dispatch/members/${member.id}/rehire`, 'POST', { version: member.version, firstDay, position, email, ringCentral, businessSoftware: software, equipment,
+      const result = await mutate<{ closeAsked?: boolean }>(`dispatch/members/${member.id}/rehire`, 'POST', { version: member.version, firstDay, position, email, ringCentral, businessSoftware: software, equipment,
         ...(closingEmail ? { closeEmailAction: closeEmail.action } : {}),
         ...(dispatcher ? { mcId, teamId: teamId === INDEPENDENT ? null : teamId, jobTitleId: titleId } : assisting === 'TEAM' ? { supportsTeamId: helpsTeamId } : { supportsMemberId: helpsId }) });
       const asked = email !== 'NONE' || ringCentral !== 'NONE' || software || equipment || dispatcher;
-      const closing = (email !== 'RESTORE' && options.email?.notClosed && options.email.restorable) || (ringCentral !== 'RESTORE' && options.ringCentral?.notClosed && options.ringCentral.restorable);
+      // An older API doesn't say, so the dialog's own reading stands in.
+      const closing = result?.closeAsked ?? (closingEmail || mayClose(ringCentral, options.ringCentral));
       toast({ title: `${name} rehired`, description: asked ? `IT got a setup checklist${closing ? ' and a request to close their old accounts' : ''}.` : closing ? 'IT was asked to close their old accounts.' : 'Nothing was asked of IT.' }); onClose(); router.refresh();
     } catch (caught) { setError(errorMessage(caught, 'Unable to rehire them. Your entries have been kept.')); }
     finally { setPending(false); }
