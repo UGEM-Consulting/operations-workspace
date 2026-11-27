@@ -4,6 +4,7 @@ import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord } from '../dispatch/dispatch.entity';
 import { ItOnboardingActivity, ItOnboardingRequest, PortalNotification, itStatus, type EmailAction, type EmailDone } from '../it/it.entity';
 import { checkEmailChoice, memberSetups, setupAccounts } from '../it/removal';
+import { phoneKey } from '../onboarding/already-here';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, UserStatus, type User } from '../users/user.entity';
 import { checkEmailFree, refreshRemovalAccounts } from './accounts';
@@ -13,14 +14,14 @@ import { CompanyAccount } from './company-accounts.entity';
 const done = (task: Pick<ItAccountTask, 'status'>) => task.status === 'COMPLETED';
 /**
  * Someone's main accounts: what IT recorded on their setups (newest first), else what a manager recorded by hand. The
- * extension comes with its number: the record's only when the record holds that same number. `loaded` is their record when
+ * extension comes with its number: the record's only when the record holds that same number (by its digits, however typed). `loaded` is their record when
  * the caller already read it.
  */
 export async function mainAccounts(em: EntityManager, memberId: string, loaded?: ExistingMemberRecord | null) {
  const setups = await memberSetups(em, memberId), fromIt = setups.length ? setupAccounts(setups) : null;
  const record = loaded !== undefined ? loaded : await em.getRepository(ExistingMemberRecord).findOneBy({ memberId });
  const ringCentralNumber = fromIt?.ringCentralNumber ?? record?.ringCentralNumber ?? null;
- const recordExtension = record?.ringCentralNumber && record.ringCentralNumber === ringCentralNumber ? record.ringCentralExtension : null;
+ const recordExtension = record?.ringCentralNumber && phoneKey(record.ringCentralNumber) === phoneKey(ringCentralNumber) ? record.ringCentralExtension : null;
  const ringCentralExtension = !ringCentralNumber ? fromIt?.ringCentralExtension ?? record?.ringCentralExtension ?? null
   : (fromIt?.ringCentralNumber ? fromIt.ringCentralExtension : null) ?? recordExtension ?? null;
  return { companyEmail: fromIt?.companyEmail ?? record?.companyEmail ?? null, ringCentralNumber, ringCentralExtension,

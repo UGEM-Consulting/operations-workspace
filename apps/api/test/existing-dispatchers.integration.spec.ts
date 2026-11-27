@@ -1441,6 +1441,9 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await names(before, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id }, { name: 'Riley Stone' }] }).expect(201);
       expect((await profile(id)).version).toBe(before);
       expect((await profile(id)).otherNames).toEqual(placed.otherNames);
+      // null reads as left out, never a server error.
+      await names(before, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id, note: null }, { name: 'Riley Stone', companyName: null, note: null }] }).expect(201);
+      expect((await profile(id)).otherNames).toEqual(placed.otherNames);
       // '' clears; an MC chosen instead replaces a company.
       await names(before, { otherNames: [{ name: 'Ryan Sands', mcId: mc.id, companyName: '', note: '' }, { name: 'Riley Stone', mcId: mc.id }] }).expect(201);
       expect((await profile(id)).otherNames).toEqual([expect.objectContaining({ name: 'Ryan Sands', note: null }), expect.objectContaining({ name: 'Riley Stone', mc: 'Lakeside Carriers', companyName: null, note: 'Brokers still ask for Riley Stone.' })]);

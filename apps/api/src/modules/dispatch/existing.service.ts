@@ -1009,11 +1009,11 @@ export class ExistingDispatchersService {
     const name = item.name.replace(/\s+/g, ' ').trim();
     if (listNameKey(name) === own || wanted.some(other => listNameKey(other.name) === listNameKey(name))) continue;
     // Used at one of our MCs or at another company typed in (section 43), never both. A company or note the request leaves out
-    // (an older page) keeps what's recorded for that name; an MC chosen instead replaces a company.
+    // (an older page), or sends as null, keeps what's recorded for that name; an MC chosen instead replaces a company.
     const recorded = current.find(row => listNameKey(row.name) === listNameKey(name));
-    const companyName = item.companyName !== undefined ? item.companyName.replace(/\s+/g, ' ').trim() || null : item.mcId ? null : recorded?.companyName ?? null;
+    const companyName = item.companyName != null ? item.companyName.replace(/\s+/g, ' ').trim() || null : item.mcId ? null : recorded?.companyName ?? null;
     if (item.mcId && companyName) throw new BadRequestException('Choose one of our MCs or type another company, not both.');
-    wanted.push({ name, mcId: item.mcId ?? null, companyName, note: item.note !== undefined ? item.note.trim() || null : recorded?.note ?? null });
+    wanted.push({ name, mcId: item.mcId ?? null, companyName, note: item.note != null ? item.note.trim() || null : recorded?.note ?? null });
    }
    const mcIds = [...new Set(wanted.flatMap(item => item.mcId ?? []))];
    if (mcIds.length && (await em.query(`SELECT count(*)::integer AS n FROM mcs WHERE id = ANY($1)`, [mcIds]))[0].n !== mcIds.length) throw new BadRequestException('Choose an MC from the list.');

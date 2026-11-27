@@ -13,8 +13,20 @@ import { DispatchEvent, DispatchEventType, DispatchMember, ExistingMemberRecord,
 import { lockCatchUpLinks, lockTeam, onLeave, onNotice, supportedDispatcher, supportedTeam } from './create-member';
 import { accountOwners } from './shared-accounts';
 import { syncSignIns } from './lead-sign-in';
+import { phoneSqlOf } from '../onboarding/already-here';
 import { RehireDto, UndoLeavingDto } from './dispatch.dto';
 
+/**
+ * Where an email or number is already held on an open account of theirs at another company (its MC's name, or the company
+ * typed), so a rehire leaves it there and asks IT nothing. Numbers compare by digits, without a leading US 1.
+ */
+async function heldAt(em: EntityManager, memberId: string, email: string | null, number: string | null): Promise<{ email: string | null; number: string | null }> {
+ if (!email && !number) return { email: null, number: null };
+ const rows: { email: boolean; number: boolean; company: string }[] = await em.query(`SELECT lower(a."companyEmail") = lower($2) AS email,
+   ${phoneSqlOf('a."ringCentralNumber"')} = ${phoneSqlOf('$3')} AS number, coalesce(m.name, a."companyName") AS company
+  FROM member_company_accounts a LEFT JOIN mcs m ON m.id = a."mcId" WHERE a."memberId" = $1 AND a.status <> 'CLOSED' ORDER BY a."createdAt", a.id`, [memberId, email ?? '', number ?? '']);
+ return { email: email ? rows.find(row => row.email)?.company ?? null : null, number: number ? rows.find(row => row.number)?.company ?? null : null };
+}
 /** Undo leaving is offered until this many days after the last day (US Eastern); Rehire any time. */
 export const UNDO_DAYS = 30;
 /** Google restores a deleted user for this many days; after that IT creates a new email instead. */
@@ -35,8 +47,9 @@ const firstDayAfter = (leftAt: Date) => new Date(`${day(leftAt)}T12:00:00Z`).get
 interface Accounts {
  // notClosed: IT has no removal for them, so the account was never closed here: IT checks it before turning it back on, or is asked to close it.
  // keptFor: the load board accounts an email IT never closed still signs in to; not getting it back keeps it for them, so IT isn't asked to close it.
- email: { value: string; was: EmailDone | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean; keptFor?: string[] } | null;
- ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null; notClosed?: boolean } | null;
+ // heldAt: the company of an open account of theirs at another company that already holds it; it stays there and IT isn't asked.
+ email: { value: string; was: EmailDone | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean; keptFor?: string[]; heldAt?: string | null } | null;
+ ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null; notClosed?: boolean; heldAt?: string | null } | null;
 }
 
 /**
@@ -245,10 +258,8 @@ export class BringBackService {
   */
  private async keepOldAccounts(em: EntityManager, user: User, member: DispatchMember, place: { mcId: string | null; companyName: string | null }, position: 'DISPATCHER' | 'SUPPORT' | 'UPDATER',
   old: { email: string | null; number: { number: string; extension: string | null } | null }, emailAction: RehireDto['closeEmailAction']) {
-  const [held]: { email: boolean | null; number: boolean | null }[] = await em.query(`SELECT bool_or(lower("companyEmail") = lower($2)) AS email,
-    bool_or(regexp_replace("ringCentralNumber", '\\D', '', 'g') = regexp_replace($3, '\\D', '', 'g')) AS number
-   FROM member_company_accounts WHERE "memberId" = $1 AND status <> 'CLOSED'`, [member.id, old.email ?? '', old.number?.number ?? '']);
-  const email = old.email && !held?.email ? old.email : null, number = old.number && !held?.number ? old.number : null;
+  const held = await heldAt(em, member.id, old.email, old.number?.number ?? null);
+  const email = old.email && !held.email ? old.email : null, number = old.number && !held.number ? old.number : null;
   const kept = !!email && (await seatsUsing(em, email)).length > 0;
   const add = async (fields: Pick<CompanyAccount, 'companyEmail' | 'ringCentralNumber' | 'ringCentralExtension' | 'status'>) => {
    const account = await em.getRepository(CompanyAccount).save({ memberId: member.id, ...place, nameUsed: null, position, ...fields, createdBy: user.id, sourceName: null });
@@ -333,10 +344,10 @@ export class BringBackService {
   */
  private async recordedAccounts(em: EntityManager, member: DispatchMember, record?: ExistingMemberRecord | null): Promise<Accounts> {
   const main = await mainAccounts(em, member.id, record);
-  const [emailWhy, numberWhy, keptFor] = await Promise.all([main.companyEmail ? this.takenWhy(em, member, 'EMAIL', main.companyEmail) : null,
-   main.ringCentralNumber ? this.takenWhy(em, member, 'RINGCENTRAL', main.ringCentralNumber) : null, seatsUsing(em, main.companyEmail)]);
-  return { email: main.companyEmail ? { value: main.companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true, keptFor } : null,
-   ringCentral: main.ringCentralNumber ? { number: main.ringCentralNumber, extension: main.ringCentralExtension, restorable: !numberWhy, why: numberWhy, notClosed: true } : null };
+  const [emailWhy, numberWhy, keptFor, held] = await Promise.all([main.companyEmail ? this.takenWhy(em, member, 'EMAIL', main.companyEmail) : null,
+   main.ringCentralNumber ? this.takenWhy(em, member, 'RINGCENTRAL', main.ringCentralNumber) : null, seatsUsing(em, main.companyEmail), heldAt(em, member.id, main.companyEmail, main.ringCentralNumber)]);
+  return { email: main.companyEmail ? { value: main.companyEmail, was: null, deletedOn: null, restorableUntil: null, restorable: !emailWhy, why: emailWhy, notClosed: true, keptFor, heldAt: held.email } : null,
+   ringCentral: main.ringCentralNumber ? { number: main.ringCentralNumber, extension: main.ringCentralExtension, restorable: !numberWhy, why: numberWhy, notClosed: true, heldAt: held.number } : null };
  }
 
  /** The restore checklist for an undone leaving: each step IT did (or started) comes back; an old email or number IT can't restore is made new. */

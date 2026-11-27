@@ -399,6 +399,13 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect(account).toEqual({ mcId: null, companyName: 'Earlier company' });
   });
 
+  it('keeps the extension with its number when IT and the manager typed the number differently', async () => {
+    const rowan = await leftFromFile();
+    await db.query(`INSERT INTO it_onboarding_requests (purpose, "memberId", "managerId", "requestedBy", profile, "assignedRingCentralPhoneNumber", "completedAt") VALUES ('SUPPORT', $1, $2, $2, '{}', '+1 (202) 555-0177', now())`, [rowan.memberId, users.manager.id]);
+    await db.query(`UPDATE existing_member_records SET "ringCentralNumber" = '202-555-0177' WHERE "memberId" = $1`, [rowan.memberId]);
+    expect((await options(rowan.memberId)).ringCentral).toMatchObject({ number: '+1 (202) 555-0177', extension: '177' });
+  });
+
   it('keeps an old email that still signs in to a load board seat, and asks IT to close only the number', async () => {
     const rowan = await leftFromFile();
     const dana = await dispatcher('Dana');
@@ -417,6 +424,9 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
   it('leaves an old email already on one of their accounts at another company where it is, instead of failing the rehire', async () => {
     const rowan = await leftFromFile();
     await db.query(`INSERT INTO member_company_accounts ("memberId","companyName","companyEmail",status,"createdBy") VALUES ($1,'Harbor Logistics','rowan.work@example.test','KEPT_FOR_LOAD_BOARDS',$2)`, [rowan.memberId, users.manager.id]);
+    // The dialog is told where it stays, so it doesn't promise IT closes it.
+    expect((await options(rowan.memberId)).email).toMatchObject({ heldAt: 'Harbor Logistics' });
+    expect((await options(rowan.memberId)).ringCentral).toMatchObject({ heldAt: null });
     await act(rowan.memberId, 'rehire', rowan.rehire);
     expect(await db.query(`SELECT "companyEmail", "ringCentralNumber", status FROM member_company_accounts WHERE "memberId" = $1 ORDER BY "createdAt"`, [rowan.memberId])).toEqual([
       { companyEmail: 'rowan.work@example.test', ringCentralNumber: null, status: 'KEPT_FOR_LOAD_BOARDS' },
