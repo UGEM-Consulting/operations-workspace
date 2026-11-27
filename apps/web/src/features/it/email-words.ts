@@ -23,6 +23,9 @@ const ACTION_WORDS: Record<EmailAction, string> = { ARCHIVE: 'Archive', SUSPEND:
 const DONE_WORDS: Record<EmailDone, string> = { ARCHIVED: 'Archived', SUSPENDED: 'Suspended', DELETED: 'Deleted' };
 /** What IT records to start with: the manager's choice. */
 export const doneFor = (action: EmailAction): EmailDone => ({ ARCHIVE: 'ARCHIVED', SUSPEND: 'SUSPENDED', DELETE: 'DELETED' } as const)[action];
+/** Where IT's choice starts: what's saved while it's still offered, else the manager's choice (a Deleted saved for a forwarded email isn't). */
+export const startDone = (saved: EmailDone | null | undefined, action: EmailAction | null | undefined, forwarding: boolean): EmailDone | '' =>
+  saved && emailDoneOptions(forwarding).some(option => option.value === saved) ? saved : action ? doneFor(action) : '';
 export const actionWord = (action: EmailAction) => ACTION_WORDS[action];
 export const doneWord = (done: EmailDone) => DONE_WORDS[done];
 /** "Archive · forward to Avery Quinn for 30 days", or what IT did once it's recorded. */

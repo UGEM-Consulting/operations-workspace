@@ -27,7 +27,7 @@ export function SharedValue({ use, mono = false }: { use: SharedUse; mono?: bool
     <span className="text-[13px] font-normal text-muted-foreground">{use.handedOver ? <>Handed over{use.owner ? <> from {personLink(use.owner)}</> : null} on {day(use.since)}</>
       : <>{use.owner ? <>{personLink(use.owner)}’s</> : 'Someone else’s'}, shared since {day(use.since)}</>}</span>
     {/* The owner's access is going before they're Left: say so, so nobody counts on it. */}
-    {!use.handedOver && use.ownerRemoval && <span className="text-[13px] font-normal text-warning">{use.ownerRemoval.toThem ? 'Being handed over to them as IT removes the owner’s access.' : use.ownerRemoval.done ? 'IT has removed the owner’s access, so it may no longer work.' : 'IT is removing the owner’s access, so it may stop working.'}</span>}</span>;
+    {!use.handedOver && use.ownerRemoval && <span className="text-[13px] font-normal text-warning">{use.ownerRemoval.toThem ? 'Being handed over to them as IT removes the owner’s access.' : use.ownerRemoval.handOverTo ? `Being handed over to ${use.ownerRemoval.handOverTo}; the password will change.` : use.ownerRemoval.done ? 'IT has removed the owner’s access, so it may no longer work.' : 'IT is removing the owner’s access, so it may stop working.'}</span>}</span>;
 }
 /** Their own value, with who else uses it. */
 export function OwnValue({ value, users, mono = false }: { value: string; users: { id: string; name: string }[]; mono?: boolean }) {

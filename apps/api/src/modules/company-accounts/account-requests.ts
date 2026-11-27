@@ -145,7 +145,8 @@ export class AccountRequestsService {
    if (dto.status === 'BLOCKED' && !notes.trim()) throw new BadRequestException('Provide a reason for a blocked task.');
    if (dto.status === 'COMPLETED' && key === 'NEW_EMAIL' && !request.newCompanyEmail) throw new BadRequestException('Record the new company email first.');
    if (dto.status === 'COMPLETED' && key === 'NEW_NUMBER' && !request.newRingCentralNumber) throw new BadRequestException('Record the new RingCentral number first.');
-   if (dto.emailDone === 'DELETED' && request.emailAfter === 'FORWARD') throw new BadRequestException(FORWARDING_NOT_DELETED);
+   // What's saved too, so one recorded Deleted earlier can't be finished by a page that doesn't send it.
+   if (key === 'CLOSE_EMAIL' && (dto.emailDone ?? request.emailDone) === 'DELETED' && request.emailAfter === 'FORWARD') throw new BadRequestException(FORWARDING_NOT_DELETED);
    if (dto.emailDone) request.emailDone = dto.emailDone;
    if (dto.status === 'COMPLETED' && key === 'CLOSE_EMAIL' && !request.emailDone) throw new BadRequestException('Choose what you did with the email first.');
    const previous = task.status; Object.assign(task, { status: dto.status, notes, updatedBy: user.id }); await em.save(task);

@@ -8,7 +8,7 @@ type Query = Pick<EntityManager, 'query'>;
 /** Someone here now whose record holds a company email or RingCentral number. onRecord: only a manager recorded it by hand (no IT setup, other company's account or hand-over holds it), so it can be moved to someone else. */
 export interface AccountOwner { memberId: string; name: string; onRecord: boolean }
 /** ownerRemoval: IT is removing (or removed) the owner's access now, before they're Left; toThem when it's being handed over to this person. */
-export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean; ownerRemoval: { done: boolean; toThem: boolean } | null }
+export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean; ownerRemoval: { done: boolean; toThem: boolean; handOverTo: string | null } | null }
 export interface SharedUsedBy { kind: SharedKind; value: string; users: { id: string; name: string }[] }
 
 /** The same value for comparing: an email in lower case, a number by its digits (without a leading US 1). */
@@ -38,7 +38,10 @@ export async function accountOwners(em: Query, kind: SharedKind, value: string, 
 export async function memberSharing(em: Query, memberId: string): Promise<{ uses: SharedUse[]; usedBy: SharedUsedBy[] }> {
  const uses: SharedUse[] = await em.query(`SELECT s.id, s.kind, s.value, CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'name', o."firstName" || ' ' || o."lastName") END AS owner,
    coalesce(s."handedOverAt", s."createdAt") AS since, s."handedOverAt" IS NOT NULL AS "handedOver",
-  CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('done', r."completedAt" IS NOT NULL, 'toThem', coalesce(r.profile->'shared'->>'handOverToId' = s."memberId"::text, false)) END AS "ownerRemoval"
+  CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('done', r."completedAt" IS NOT NULL, 'toThem', coalesce(r.profile->'shared'->>'handOverToId' = s."memberId"::text, false),
+   -- Handed to someone else who uses this kind of account: IT keeps it and changes the password, so it carries on as theirs.
+   'handOverTo', (SELECT h."firstName" || ' ' || h."lastName" FROM member_shared_accounts x JOIN dispatch_members h ON h.id = x."memberId"
+    WHERE x."memberId"::text = r.profile->'shared'->>'handOverToId' AND x."memberId" <> s."memberId" AND x."ownerMemberId" = s."ownerMemberId" AND x.kind = s.kind AND x."endedAt" IS NULL LIMIT 1)) END AS "ownerRemoval"
   FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId"
   -- The owner's access is being removed now (asked for now, or their last day has come), while sharing still runs until they're Left.
   LEFT JOIN LATERAL (SELECT r.id, r."completedAt", r.profile FROM it_removal_requests r WHERE r."memberId" = s."ownerMemberId" AND s."handedOverAt" IS NULL AND r."cancelledAt" IS NULL

@@ -64,7 +64,7 @@ export default async function Page({searchParams}:{searchParams:Promise<Record<s
    {key:'status',label:'Status',cell:task=>task.scheduled?<Badge label="Scheduled" tone="info"/>:<StatusBadge status={task.status}/>},
    {key:'when',label:'Due or updated',nowrap:true,muted:true,cell:task=>task.kind==='REMOVAL'&&!task.completedAt&&task.dueOn?<>{task.scheduled?'Remove':'Due'} <LocalTime iso={middayIso(task.dueOn)} format="date"/></>:LEAVE_KINDS.includes(task.kind)&&!task.completedAt&&task.dueOn?<>{task.kind==='SUSPEND'?'From':'Due'} <LocalTime iso={middayIso(task.dueOn)} format="date"/></>:task.completedAt?<>Finished <LocalTime iso={task.completedAt} format="date"/></>:task.kind==='SIGN_IN'?<>Asked <LocalTime iso={task.updatedAt} format="date"/></>:<>Updated <LocalTime iso={task.updatedAt} format="date"/></>},
   ]} empty={<EmptyState compact title={filtered?'Nothing matches these filters':'Nothing waiting for IT'} description={filtered?'Try another view or search.':'Approvals add setups, new team leads add sign-ins, leave adds suspends and restores, and dispatchers who leave add removals here.'}/>}
-  footer={<Pagination label="IT task pages" page={data.page} pageCount={data.pageCount} pageSize={data.pageSize} total={data.total} href={page=>queueHref('/it/tasks',filters,{page:String(page)})}/>}/>
+  footer={data.total>0&&<Pagination label="IT task pages" page={data.page} pageCount={data.pageCount} pageSize={data.pageSize} total={data.total} href={page=>queueHref('/it/tasks',filters,{page:String(page)})}/>}/>
  </Card>
  <p className="text-xs text-muted-foreground">All checklist updates are manual records; this workspace does not create or remove external accounts.</p></div>;
 }

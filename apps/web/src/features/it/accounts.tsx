@@ -18,7 +18,7 @@ import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
-import { actionWord, doneFor, emailDoneOptions, emailStepText, type EmailAction, type EmailDone } from './email-words';
+import { actionWord, emailDoneOptions, startDone, emailStepText, type EmailAction, type EmailDone } from './email-words';
 
 // IT requests about company accounts (Design System section 33: ItCloseAccountTaskScreen, and a move's new accounts).
 export interface AccountRequestDetail {
@@ -69,7 +69,7 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
     description: task.key === 'CLOSE_EMAIL' && request.emailAction && closedEmail ? emailStepText(closedEmail, request.emailAction, request.emailAfter === 'FORWARD', request.forwardToName)
       : task.key === 'CLOSE_EMAIL' && request.emailAfter === 'FORWARD' ? `${task.description} Forward new email to ${request.forwardToName ?? 'the manager'} for 30 days.` : task.description,
     meta: task.status !== 'PENDING' && <>Updated <LocalTime iso={task.updatedAt} /></>,
-    action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setEditing(task); setStatus(task.status); setEmailDone(request.emailDone ?? (request.emailAction ? doneFor(request.emailAction) : '')); setError(''); }}>Update<span className="sr-only">: {task.label}</span></Button> }));
+    action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setEditing(task); setStatus(task.status); setEmailDone(startDone(request.emailDone, request.emailAction, request.emailAfter === 'FORWARD')); setError(''); }}>Update<span className="sr-only">: {task.label}</span></Button> }));
   const title = move ? `New accounts for ${profile.displayName}` : `Close ${profile.displayName}’s ${profile.fromMc ?? ''} account`.replace('  ', ' ');
   return <div className="space-y-6">
     <PageCrumb label={profile.displayName} />
