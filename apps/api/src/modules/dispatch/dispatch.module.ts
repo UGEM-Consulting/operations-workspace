@@ -2,7 +2,7 @@ import { Body, Controller, Get, Header, Module, Param, ParseUUIDPipe, Patch, Pos
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
-import { RehireDto, UndoLeavingDto } from './dispatch.dto';
+import { ChangeNameDto, RehireDto, UndoLeavingDto } from './dispatch.dto';
 import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, AccountOwnersDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, PromoteSupportDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto, SuggestQueryDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
@@ -74,6 +74,8 @@ class LeaveController {
  @Post(':id/on-leave/covers') covers(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CoversDto) { return this.leaves.changeCovers(req.currentUser, id, dto); }
  @Post(':id/on-leave/reason') reason(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: LeaveReasonDto) { return this.leaves.changeReason(req.currentUser, id, dto); }
  @Post(':id/correct') correct(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CorrectDetailsDto) { return this.details.correct(req.currentUser, id, dto); }
+ // Change name (section 45): dispatch managers and administrators; the old name is kept as an other name.
+ @Post(':id/name') changeName(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ChangeNameDto) { return this.details.changeName(req.currentUser, id, dto); }
 }
 // Cleared drivers: dispatch managers and administrators assign any of them to an MC and a dispatcher.
 @Controller('dispatch')

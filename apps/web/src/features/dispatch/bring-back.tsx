@@ -1,4 +1,5 @@
 'use client';
+import { NewNameQuestion, newNamePayload, newNameProblem, noNewName, type NewName } from './change-name';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Alert, Notice } from '@/components/ui/alert';
@@ -172,16 +173,24 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
   const [software, setSoftware] = useState(member.position === 'DISPATCHER'), [equipment, setEquipment] = useState(false), [firstDay, setFirstDay] = useState(options.rehire.earliest);
   const name = fullName(member), first = member.firstName, dispatcher = position === 'DISPATCHER';
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
+  // Section 45: coming back under another MC asks a dispatcher whether they'll use a new name there; a support or updater may give one.
+  const [newName, setNewName] = useState<NewName>(noNewName);
+  const mcName = (id: string | null) => mcs.find(mc => mc.id === id)?.name ?? null;
+  const leftMc = mcName(previous.mcId) ?? dispatchers.find(row => row.id === previous.supportsMemberId)?.mc ?? teams.find(team => team.id === previous.supportsTeamId)?.mc.name ?? null;
+  const backMc = dispatcher ? mcName(mcId) : assisting === 'TEAM' ? teams.find(team => team.id === helpsTeamId)?.mc.name ?? null : dispatchers.find(row => row.id === helpsId)?.mc ?? null;
+  const askMc = leftMc && backMc && backMc !== leftMc ? backMc : null;
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending) return;
     if (dispatcher && (!mcId || !titleId)) { setError('Choose their MC and job title.'); return; }
+    const nameProblem = askMc ? newNameProblem(newName, dispatcher, askMc) : '';
+    if (nameProblem) { setError(nameProblem); return; }
     if (!dispatcher && !(assisting === 'TEAM' ? helpsTeamId : helpsId)) { setError(assisting === 'TEAM' ? 'Choose the team they help.' : 'Choose the dispatcher they help.'); return; }
     if (!email || !ringCentral) { setError(`Choose what happens to their ${!email ? 'company email' : 'RingCentral number'}.`); return; }
     setPending(true); setError('');
     try {
       const result = await mutate<{ closeAsked?: boolean }>(`dispatch/members/${member.id}/rehire`, 'POST', { version: member.version, firstDay, position, email, ringCentral, businessSoftware: software, equipment,
-        ...(sendEmailAction ? { closeEmailAction: closeEmail.action } : {}),
+        ...(sendEmailAction ? { closeEmailAction: closeEmail.action } : {}), ...(askMc ? newNamePayload(newName) : {}),
         ...(dispatcher ? { mcId, teamId: teamId === INDEPENDENT ? null : teamId, jobTitleId: titleId } : assisting === 'TEAM' ? { supportsTeamId: helpsTeamId } : { supportsMemberId: helpsId }) });
       const asked = email !== 'NONE' || ringCentral !== 'NONE' || software || equipment || dispatcher;
       // An older API doesn't say, so the dialog's own reading stands in.
@@ -196,6 +205,8 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
     ...[{ value: 'NEW', label: 'A new email' }, { value: 'NONE', label: 'No company email' }].map(option => ({ ...option,
       description: oldEmail?.notClosed && oldEmail.restorable ? (oldEmail.heldAt ? `${oldEmail.value} stays on their account at ${oldEmail.heldAt}; IT isn’t asked to close it.` : keptFor.length ? `${oldEmail.value} stays open for ${seats}; IT isn’t asked to close it.` : `IT is also asked to close ${oldEmail.value}.`)
         : oldEmail && !oldEmail.restorable && option.value === 'NEW' ? oldEmail.why ?? undefined : undefined }))];
+  // A new email for a new name says whose it is (RehireNewNameScreen).
+  const shownEmailOptions = newName.answer === 'yes' && newName.firstName.trim() && newName.lastName.trim() ? emailOptions.map(option => option.value === 'NEW' && !option.description ? { ...option, description: `IT makes it for ${newName.firstName.trim()} ${newName.lastName.trim()}${askMc ? ` at ${askMc}` : ''}.` } : option) : emailOptions;
   const numberOptions = [...(oldNumber?.restorable ? [{ value: 'RESTORE', label: 'Enable their user again', description: `${oldNumber.number}${oldNumber.extension ? `, ext ${oldNumber.extension}` : ''}, with SMS and call recording.${oldNumber.notClosed ? ' IT was never asked to turn it off, so IT checks it’s still theirs first.' : ''}` }] : []),
     ...[{ value: 'NEW', label: 'A new number' }, { value: 'NONE', label: 'No RingCentral number' }].map(option => ({ ...option,
       description: oldNumber?.notClosed && oldNumber.restorable ? (oldNumber.heldAt ? `${oldNumber.number} stays on their account at ${oldNumber.heldAt}; IT isn’t asked to turn it off.` : `IT is also asked to turn off ${oldNumber.number}.`) : oldNumber && !oldNumber.restorable && option.value === 'NEW' ? oldNumber.why ?? undefined : undefined }))];
@@ -219,8 +230,9 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
           {assisting === 'TEAM' ? <Select label="Team" name="supportsTeamId" required value={helpsTeamId} placeholder="Choose a team" onChange={event => setHelpsTeamId(event.target.value)} options={teams.filter(team => !team.archived).map(team => ({ value: team.id, label: `${team.name} · ${team.mc.name}` }))} />
             : <Select label="Dispatcher" name="supportsMemberId" required value={helpsId} placeholder="Choose a dispatcher" onChange={event => setHelpsId(event.target.value)} options={dispatchers.map(row => ({ value: row.id, label: [row.name, row.mc, row.team].filter(Boolean).join(' · ') }))} />}
         </>}
+        {askMc && <NewNameQuestion optional={!dispatcher} value={newName} onChange={setNewName} oldName={name} mc={askMc} fromMc={leftMc} />}
         <Card><CardHeader title="Accounts" description="IT gets a setup checklist with what you choose." /><CardBody className="space-y-4">
-          <RadioGroup name="email" label="Company email" cards value={email} onChange={value => setEmail(value as Account)} options={emailOptions} />
+          <RadioGroup name="email" label="Company email" cards value={email} onChange={value => setEmail(value as Account)} options={shownEmailOptions} />
           {closingEmail && options.email && <EmailAfterFields email={options.email.value} value={closeEmail} onChange={setCloseEmail} forwarding={false} label={`What IT does with ${options.email.value}`} />}
           <RadioGroup name="ringCentral" label="RingCentral" cards value={ringCentral} onChange={value => setRingCentral(value as Account)} options={numberOptions} />
           <Checkbox label="Business software and load boards" checked={software} onChange={event => setSoftware(event.target.checked)} />

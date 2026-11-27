@@ -113,11 +113,57 @@ integration('IT requests about company accounts (disposable PostgreSQL)', () => 
     expect(done.request.completedAt).not.toBeNull();
     const after = await profile(casey);
     expect(after.existing).toMatchObject({ companyEmail: 'casey.hart@example.test', ringCentralNumber: '+1 469 555 0177' });
-    expect(after.companyAccounts).toEqual([expect.objectContaining({ mc: 'Lakeside Carriers', companyEmail: 'casey@example.test', ringCentralNumber: '+1 469 555 0131', status: 'KEPT_FOR_LOAD_BOARDS', keptFor: ['DAT account not recorded'] })]);
+    // The kept email and the number IT closed are separate rows, so the closed number never shows as open.
+    expect(after.companyAccounts).toEqual(expect.arrayContaining([expect.objectContaining({ mc: 'Lakeside Carriers', companyEmail: 'casey@example.test', ringCentralNumber: null, status: 'KEPT_FOR_LOAD_BOARDS', keptFor: ['DAT account not recorded'] }),
+      expect.objectContaining({ mc: 'Lakeside Carriers', companyEmail: null, ringCentralNumber: '+1 469 555 0131', status: 'CLOSED' })]));
+    expect(after.companyAccounts).toHaveLength(2);
     // Keep the same accounts (the default) asks IT for nothing.
     const { version } = await profile(casey);
     await agents.manager.post(`/api/dispatch/members/${casey}/move`).set(headers).send({ version, mcId: lakeside, teamId: null, startedAt: usDay('latest'), reason: 'Back.' }).expect(201);
     expect((await db.query(`SELECT count(*)::integer AS n FROM it_account_requests WHERE "memberId" = $1`, [casey]))[0].n).toBe(1);
+  });
+
+  it('never records an account as closed that IT wasn’t asked to close: one recorded after the move gets its own close request', async () => {
+    const drew = await addOne('Drew', { ringCentralNumber: '+1 469 555 0140' });
+    let { version } = await profile(drew);
+    await agents.manager.post(`/api/dispatch/members/${drew}/move`).set(headers).send({ version, mcId: northwind, teamId: red, startedAt: usDay('latest'), reason: 'Northwind needs help.', accounts: 'NEW', emailAction: 'ARCHIVE' }).expect(201);
+    const [move] = await db.query(`SELECT id FROM it_account_requests WHERE "memberId" = $1`, [drew]);
+    expect((await detail(move.id)).tasks.map((task: Row) => task.key)).toEqual(['NEW_EMAIL', 'NEW_NUMBER', 'CLOSE_NUMBER']);
+    // Their old company email is recorded only now, after IT was asked: it's on no checklist (and no email choice was asked, so Suspend).
+    ({ version } = await profile(drew));
+    await agents.manager.patch(`/api/dispatch/members/${drew}/existing`).set(headers).send({ version, companyEmail: 'drew@example.test' }).expect(200);
+    await finish(move.id, { companyEmail: 'drew.c@example.test', ringCentralNumber: '+1 469 555 0178' });
+    const accounts = (await profile(drew)).companyAccounts;
+    expect(accounts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mc: 'Lakeside Carriers', companyEmail: null, ringCentralNumber: '+1 469 555 0140', status: 'CLOSED' }),
+      expect.objectContaining({ mc: 'Lakeside Carriers', companyEmail: 'drew@example.test', ringCentralNumber: null, status: 'ACTIVE' })]));
+    const open = accounts.find((account: Row) => account.companyEmail === 'drew@example.test');
+    const [close] = await db.query(`SELECT kind, "accountId", "managerId", "emailAction" FROM it_account_requests WHERE "memberId" = $1 AND "completedAt" IS NULL`, [drew]);
+    expect(close).toEqual({ kind: 'CLOSE', accountId: open.id, managerId: users.manager.id, emailAction: 'SUSPEND' });
+  });
+
+  it('keeps an email recorded after the move for the load board seat that signs in with it, and asks IT to close nothing more', async () => {
+    const sam = await addOne('Sam', { ringCentralNumber: '+1 469 555 0150' });
+    let { version } = await profile(sam);
+    await agents.manager.post(`/api/dispatch/members/${sam}/move`).set(headers).send({ version, mcId: northwind, teamId: red, startedAt: usDay('latest'), reason: 'Northwind needs help.', accounts: 'NEW' }).expect(201);
+    const [move] = await db.query(`SELECT id FROM it_account_requests WHERE "memberId" = $1`, [sam]);
+    ({ version } = await profile(sam));
+    await agents.manager.patch(`/api/dispatch/members/${sam}/existing`).set(headers).send({ version, companyEmail: 'sam@example.test', datEmail: 'sam@example.test' }).expect(200);
+    await finish(move.id, { companyEmail: 'sam.n@example.test', ringCentralNumber: '+1 469 555 0179' });
+    expect((await profile(sam)).companyAccounts).toEqual(expect.arrayContaining([expect.objectContaining({ companyEmail: 'sam@example.test', status: 'KEPT_FOR_LOAD_BOARDS' }),
+      expect.objectContaining({ ringCentralNumber: '+1 469 555 0150', status: 'CLOSED' })]));
+    expect((await db.query(`SELECT count(*)::integer AS n FROM it_account_requests WHERE "memberId" = $1 AND kind = 'CLOSE'`, [sam]))[0].n).toBe(0);
+  });
+
+  it('counts a number IT closed as closed however it was typed since', async () => {
+    const lee = await addOne('Lee', { ringCentralNumber: '+1 469 555 0160' });
+    const { version } = await profile(lee);
+    await agents.manager.post(`/api/dispatch/members/${lee}/move`).set(headers).send({ version, mcId: northwind, teamId: red, startedAt: usDay('latest'), reason: 'Northwind needs help.', accounts: 'NEW' }).expect(201);
+    const [move] = await db.query(`SELECT id FROM it_account_requests WHERE "memberId" = $1`, [lee]);
+    await db.query(`UPDATE existing_member_records SET "ringCentralNumber" = '(469) 555-0160' WHERE "memberId" = $1`, [lee]);
+    await finish(move.id, { companyEmail: 'lee.n@example.test', ringCentralNumber: '+1 469 555 0180' });
+    expect((await profile(lee)).companyAccounts).toEqual([expect.objectContaining({ ringCentralNumber: '(469) 555-0160', status: 'CLOSED' })]);
+    expect((await db.query(`SELECT count(*)::integer AS n FROM it_account_requests WHERE "memberId" = $1 AND kind = 'CLOSE'`, [lee]))[0].n).toBe(0);
   });
 
   it('refuses a rollback while account requests exist', async () => {

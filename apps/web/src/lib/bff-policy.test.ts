@@ -242,6 +242,14 @@ describe('people who left and other names through the BFF', () => {
   });
 });
 
+describe('changing a name through the BFF (section 45)', () => {
+  it('lets the dispatcher page change a name, by POST only', () => {
+    assert.equal(allowedEndpoint('POST', 'dispatch/members/2c3c0529-044c-450f-901f-201b8d17aa00/name'), true);
+    assert.equal(allowedEndpoint('GET', 'dispatch/members/2c3c0529-044c-450f-901f-201b8d17aa00/name'), false);
+    assert.equal(allowedEndpoint('POST', 'dispatch/members/not-an-id/name'), false);
+  });
+});
+
 describe('the Dispatchers list through the BFF', () => {
   it('reads the list with its filters, so the filter sheet can say how many match, and nothing else under it', () => {
     assert.equal(allowedEndpoint('GET', 'dispatch/members'), true);

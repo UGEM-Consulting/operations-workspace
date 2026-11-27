@@ -2,7 +2,7 @@
 import { useRouter } from 'next/navigation';
 import { phoneLabel } from '@/lib/phone';
 import { useState } from 'react';
-import { Pencil, Plus, X } from 'lucide-react';
+import { Pencil, PenLine, Plus, X } from 'lucide-react';
 import { Alert, Notice } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -15,6 +15,7 @@ import { LocalTime } from '@/components/ui/local-time';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import type { Choice, MemberProfile } from './types';
+import { lastNameChange } from './change-name';
 
 // People who left and other names (Design System section 33, approved 2026-11-13).
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
@@ -35,12 +36,17 @@ export function AddedAsLeftAlert({ member }: { member: MemberProfile }) {
 }
 
 /** Names (OtherNamesProfileScreen): the legal name of someone added by hand, and other names with where they were used. */
-export function NamesCard({ member, onEdit }: { member: MemberProfile; onEdit?: () => void }) {
+export function NamesCard({ member, onEdit, onChangeName }: { member: MemberProfile; onEdit?: () => void; onChangeName?: () => void }) {
   const others = member.otherNames ?? [], handAdded = !!member.existing;
   if (!handAdded && !others.length && !onEdit) return null;
-  return <Card><CardHeader title="Names" actions={onEdit && <Button size="sm" variant="ghost" onClick={onEdit}><Pencil aria-hidden="true" className="size-4" />Edit names</Button>} />
+  // Since when, and who changed it (NameChangedProfileScreen).
+  const changed = lastNameChange(member);
+  return <Card><CardHeader title="Names" actions={(onChangeName || onEdit) && <span className="flex flex-wrap gap-1">
+      {onChangeName && <Button size="sm" variant="ghost" onClick={onChangeName}><PenLine aria-hidden="true" className="size-4" />Change name</Button>}
+      {onEdit && <Button size="sm" variant="ghost" onClick={onEdit}><Pencil aria-hidden="true" className="size-4" />Edit names</Button>}</span>} />
     <CardBody><DescriptionList layout="rows" items={[
-      { label: 'American name', value: `${member.firstName} ${member.lastName}` },
+      { label: 'American name', value: <span className="grid gap-0.5"><span>{member.firstName} {member.lastName}</span>
+        {changed && <span className="text-[13px] text-muted-foreground">Since <LocalTime iso={changed.createdAt} format="date" /> · {changed.correctedBy}</span>}</span> },
       ...(handAdded ? [{ label: 'Legal name', value: legalName(member) || null, emptyLabel: 'Not recorded' }] : []),
       // Where each was used (OtherNamesWhereScreen): many are still in use, so a name with no place isn't called an earlier one.
       { label: 'Other names', value: others.length ? <ul className="grid gap-2.5">{others.map(item => <li key={item.id} className="grid gap-0.5">

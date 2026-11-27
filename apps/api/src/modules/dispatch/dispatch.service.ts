@@ -22,7 +22,7 @@ import { createSupportItRequest } from '../it/support-setup';
 import { SupportItItem } from '../it/it.entity';
 import { User as UserEntity, UserStatus } from '../users/user.entity';
 import { companyEmailSql, lockAccount, syncSignIns, turnOffAccount } from './lead-sign-in';
-import { applicationDetails, currentDetails, MemberDetailsService } from './corrections';
+import { applicationDetails, currentDetails, lockForRename, MemberDetailsService, renameMember } from './corrections';
 import { LeaveService } from './leave.service';
 import { PaperScansService } from './paper-scans';
 import { memberRowsSql } from './member-list';
@@ -30,10 +30,16 @@ import { checkHandOver, memberSharing, sharingOnLeft } from './shared-accounts';
 import { BringBackService, memberReturns, WITH_LEAVING_MS } from './bring-back';
 
 const STALE = 'Someone else changed this record. Reload and try again.';
-/** Who last corrected each field, and when, for "Corrected by … on …". */
-function correctedFields(corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string }[]) {
- const latest: Record<string, { by: string; at: Date }> = {};
- for (const correction of corrections) for (const { field } of correction.changes) latest[field] ??= { by: correction.correctedBy, at: correction.createdAt };
+/**
+ * Who last corrected each field, and when, for "Corrected by … on …". A name change (section 45) isn't a correction of what they
+ * sent: the Names card says since when and by whom instead, and the earlier corrections of the name stay as they were.
+ */
+function correctedFields(corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string; kind?: string | null }[]) {
+ const latest: Record<string, { by: string; at: Date }> = {}, renamed = new Set<string>();
+ for (const correction of corrections) for (const { field } of correction.changes) {
+  if (correction.kind) { renamed.add(field); continue; }
+  if (!renamed.has(field)) latest[field] ??= { by: correction.correctedBy, at: correction.createdAt };
+ }
  return latest;
 }
 const NOTICE_MAX_DAYS = 90, LEAVING_LOCK = 42002036;
@@ -285,7 +291,7 @@ export class DispatchService {
    finished: supportRows.filter(row => row.completedAt).length } : null;
   const signIns = { dat: it[0]?.datEmail ?? existing?.datEmail ?? null, truckstop: it[0]?.truckstopEmail ?? existing?.truckstopEmail ?? null };
   // Corrections with their values (staff only), and the record they left before coming back, or the one they came back as (section 37).
-  const corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string }[] = await this.details.history(this.db, id);
+  const corrections: { changes: { field: string }[]; createdAt: Date; correctedBy: string; kind: string | null }[] = await this.details.history(this.db, id);
   const [previousRecord] = member.previousMemberId ? await this.db.query(`SELECT d.id, d."firstName" || ' ' || d."lastName" AS name, CASE WHEN e."leftDateKnown" IS FALSE THEN NULL ELSE d."leftAt" END AS "leftAt" FROM dispatch_members d LEFT JOIN existing_member_records e ON e."memberId" = d.id WHERE d.id = $1`, [member.previousMemberId]) : [];
   // Other names (section 33), each with where it was used when known: an MC, or another company typed in, and why it's kept (section 43).
   const otherNames = await this.db.query(`SELECT o.id, o.name, m.id AS "mcId", m.name AS mc, o."companyName", o.note FROM member_other_names o LEFT JOIN mcs m ON m.id = o."mcId" WHERE o."memberId" = $1 ORDER BY o."createdAt", lower(o.name), o.id`, [id]);
@@ -344,7 +350,11 @@ export class DispatchService {
 
  async move(user: User, id: string, dto: MoveMemberDto) {
   return this.write(async em => {
+   // A new name (section 45) reaches their unfinished IT setups, which are locked before the member, as corrections do.
+   if (dto.newName) await lockForRename(em);
+   const locked = dto.newName ? await lockSetupRequests(em, id) : [];
    const member = await this.lockMember(em, id, dto.version);
+   if (dto.newName) await sameSetups(em, id, locked);
    if (member.position === 'SUPPORT') throw new BadRequestException('Supports and updaters work where their dispatcher works. Change their dispatcher instead.');
    if (await onLeave(em, id)) throw new ConflictException('They’re on leave. Record their return before moving them.');
    let startedAt = day(dto.startedAt);
@@ -369,6 +379,11 @@ export class DispatchService {
    await em.getRepository(MemberAssignment).save({ memberId: id, mcId: dto.mcId, teamId, startedAt, reason: dto.reason, actorId: user.id });
    const leadCleared = await this.clearLead(em, user, id, teamId, 'moved');
    if (leadCleared) await syncSignIns(em, [id], user.id);
+   // Their new name at the new MC, before IT is asked for accounts there: the old one is kept as an other name at the MC they leave.
+   if (dto.newName) {
+    if (current?.mcId === dto.mcId) throw new BadRequestException('A new name comes with a move to another MC. Use Change name instead.');
+    await renameMember(em, member, { ...dto.newName, kind: 'NEW', place: { mcId: current?.mcId ?? null, companyName: null }, reason: dto.reason, context: 'MOVE', on: startedAt }, user.id, locked.filter(setup => !setup.completedAt));
+   }
    // New accounts at the new MC go to IT; nothing on the record changes until IT finishes.
    const newAccounts = dto.accounts === 'NEW' && current?.mcId !== dto.mcId;
    if (newAccounts) {
@@ -376,7 +391,7 @@ export class DispatchService {
     await askForMoveAccounts(em, user.id, member, mcs.find(mc => mc.id === current?.mcId) ?? null, mcs.find(mc => mc.id === dto.mcId)!, !!dto.closeKept, dto.emailAction);
    }
    member.version += 1; await em.save(member);
-   await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared, ...(newAccounts ? { newAccounts: true } : {}) });
+   await this.event(em, user, 'MEMBER_MOVED', { memberId: id }, { fields: ['mcId', 'teamId'], leadCleared, ...(newAccounts ? { newAccounts: true } : {}), ...(dto.newName ? { newName: true } : {}) });
    return { id, version: member.version };
   });
  }
@@ -727,7 +742,10 @@ export class DispatchService {
  async reassignSupport(user: User, id: string, dto: ReassignSupportDto) {
   if (!!dto.dispatcherId === !!dto.teamId) throw new BadRequestException('Choose a dispatcher or a team.');
   return this.write(async em => {
+   if (dto.newName) await lockForRename(em);
+   const locked = dto.newName ? await lockSetupRequests(em, id) : [];
    const member = await this.lockMember(em, id, dto.version);
+   if (dto.newName) await sameSetups(em, id, locked);
    if (member.position !== 'SUPPORT') throw new BadRequestException('Only a support or an updater has someone to assist.');
    let startedAt = day(dto.startedAt);
    if (dto.dispatcherId) await supportedDispatcher(em, dto.dispatcherId); else await supportedTeam(em, dto.teamId!);
@@ -735,8 +753,11 @@ export class DispatchService {
    if (dto.dispatcherId && current?.dispatcherId === dto.dispatcherId) throw new BadRequestException('They already assist this dispatcher.');
    if (dto.teamId && current?.teamId === dto.teamId) throw new BadRequestException('They already assist this team.');
    if (current) startedAt = notBefore(startedAt, current.startedAt, 'The change can’t start before their current one did.');
+   // A new name (optional for supports and updaters, section 45): the old one is kept at the MC of whoever they assisted until now.
+   const formerMc = dto.newName && current ? await assistedMc(em, current, startedAt) : null;
    if (current) { current.endedAt = startedAt; await em.save(current); }
    await em.getRepository(MemberSupportLink).save({ supportId: id, dispatcherId: dto.dispatcherId ?? null, teamId: dto.teamId ?? null, startedAt, reason: dto.reason, actorId: user.id });
+   if (dto.newName) await renameMember(em, member, { ...dto.newName, kind: 'NEW', place: { mcId: formerMc, companyName: null }, reason: dto.reason, context: 'REASSIGN', on: startedAt }, user.id, locked.filter(setup => !setup.completedAt));
    member.version += 1; await em.save(member);
    await this.event(em, user, 'SUPPORT_REASSIGNED', { memberId: id }, { fields: [dto.teamId ? 'teamId' : 'dispatcherId'], assists: dto.teamId ? 'TEAM' : 'DISPATCHER' });
    return { id, version: member.version };
@@ -828,3 +849,16 @@ export class DispatchService {
 
 interface SupportSetupRow { id: string; purpose?: string;companyEmail: string | null; assignedRingCentralPhoneNumber: string | null; ringCentralExtension: string | null; datEmail: string | null; truckstopEmail: string | null;
  completedAt: Date | null; createdAt: Date; requestedBy: string | null; items: string[]; done: number; total: number }
+
+/**
+ * The MC a support or updater worked under through a link as of a day (the day it ends): their dispatcher's MC period then, or a
+ * whole team's from its people's MC periods then, else its MC now unless it changed since (then the place isn't known), as
+ * BringBackService.lastPlace reads it.
+ */
+async function assistedMc(em: EntityManager, link: MemberSupportLink, at: Date): Promise<string | null> {
+ const [row] = link.teamId ? await em.query(`SELECT coalesce(
+    (SELECT a."mcId" FROM member_assignments a WHERE a."teamId" = $1 AND a."startedAt" <= $2 AND (a."endedAt" IS NULL OR a."endedAt" >= $2) ORDER BY a."startedAt" DESC, a."createdAt" DESC LIMIT 1),
+    CASE WHEN NOT EXISTS (SELECT 1 FROM dispatch_events e WHERE e."teamId" = $1 AND e.event = 'TEAM_UPDATED' AND e.metadata->'fields' ? 'mcId' AND e."createdAt" >= $2) THEN (SELECT "mcId" FROM teams WHERE id = $1) END) AS "mcId"`, [link.teamId, at])
+  : await em.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1 AND "startedAt" <= $2 ORDER BY "startedAt" DESC, "createdAt" DESC LIMIT 1`, [link.dispatcherId, at]);
+ return row?.mcId ?? null;
+}

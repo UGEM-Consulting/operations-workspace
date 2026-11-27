@@ -89,6 +89,26 @@ export class UpdateExistingDto {
  @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
  @IsOptional() @IsIn(['FORWARD', 'SUSPEND']) emailAfter?: 'FORWARD' | 'SUSPEND';
 }
+/**
+ * A new American name (section 45, approved 2026-11-27): with Change name, and asked with a move or rehire to another MC, or a
+ * support's change of who they assist. Each part alone, Latin letters, so one letter is allowed.
+ */
+const NAME_PART = /^[A-Za-z][A-Za-z .,'-]*$/;
+export class NewNameDto {
+ @text() @IsString() @MinLength(1, { message: 'Enter the American first name.' }) @MaxLength(100) @Matches(NAME_PART, { message: 'Use Latin letters for the American first name.' }) firstName!: string;
+ @text() @IsString() @MinLength(1, { message: 'Enter the American last name.' }) @MaxLength(100) @Matches(NAME_PART, { message: 'Use Latin letters for the American last name.' }) lastName!: string;
+}
+/**
+ * Change name (section 45): NEW keeps the old name as an other name, at the MC (mcId) or company (companyName) where it was used,
+ * or with neither, Place not recorded; FIX corrects a mistake and keeps nothing. A reason either way.
+ */
+export class ChangeNameDto extends NewNameDto {
+ @IsInt() @Min(1) version!: number;
+ @IsIn(['NEW', 'FIX']) kind!: 'NEW' | 'FIX';
+ @IsOptional() @IsUUID() mcId?: string;
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z0-9][A-Za-z0-9 .,&'()/-]*$/, { message: 'Company names use Latin letters, digits and common punctuation.' }) companyName?: string;
+ @text() @IsString() @MinLength(1, { message: 'Say why the name changes.' }) @MaxLength(500) reason!: string;
+}
 /** What the search box sends as you type (section 35). */
 export class SuggestQueryDto {
  @text() @IsString() @MaxLength(100) q!: string;
@@ -157,6 +177,8 @@ export class MoveMemberDto {
  @IsOptional() @IsBoolean() closeKept?: boolean;
  // With NEW: what happens to the old email IT closes (section 40). An older page sends nothing, which suspends it.
  @IsOptional() @IsIn(EMAIL_ACTIONS) emailAction?: EmailAction;
+ /** A new name they use from now on (section 45); the old one is kept as an other name where it was used. */
+ @IsOptional() @ValidateNested() @Type(() => NewNameDto) newName?: NewNameDto;
 }
 /** Their first MC and team, for someone added with none. startedAt is optional: left out, the period follows their start date. */
 export class PlaceMemberDto {
@@ -188,6 +210,8 @@ export class ReassignSupportDto {
  @IsOptional() @IsUUID() teamId?: string;
  @IsDateString({ strict: true }) startedAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why who they assist is changing.' }) @MaxLength(500) reason!: string;
+ /** A new name they use from now on (section 45); the old one is kept as an other name where it was used. */
+ @IsOptional() @ValidateNested() @Type(() => NewNameDto) newName?: NewNameDto;
 }
 /** Notice for a future last day: a new date, and why it changed. */
 export class ChangeLastDayDto {
@@ -384,4 +408,6 @@ export class RehireDto {
  @IsOptional() @IsIn(EMAIL_ACTIONS) closeEmailAction?: EmailAction;
  @IsBoolean() businessSoftware!: boolean;
  @IsBoolean() equipment!: boolean;
+ /** A new name they use from now on (section 45); the old one is kept as an other name where it was used. */
+ @IsOptional() @ValidateNested() @Type(() => NewNameDto) newName?: NewNameDto;
 }

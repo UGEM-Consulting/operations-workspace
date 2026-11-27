@@ -16,9 +16,9 @@ import { fullName, type MemberCorrection, type MemberProfile } from './types';
  * CorrectNameByHandScreen, approved 2026-11-11). Administrators only. The application keeps what was sent and signed
  * documents keep the name they were signed with; the workspace shows the corrected details everywhere else.
  */
-const FIELDS = [['legalFirstName', 'Legal first name'], ['legalLastName', 'Legal last name'], ['preferredAmericanFirstName', 'American first name'], ['preferredAmericanLastName', 'American last name'],
- ['personalEmail', 'Personal email'], ['personalPhoneNumber', 'Personal phone'], ['telegram', 'Telegram']] as const;
-export const correctionLabels: Record<string, string> = { ...Object.fromEntries(FIELDS), firstName: 'First name', lastName: 'Last name' };
+// The American name changes with Change name (section 45), so it isn't a field here; earlier corrections of it still show by label.
+const FIELDS = [['legalFirstName', 'Legal first name'], ['legalLastName', 'Legal last name'], ['personalEmail', 'Personal email'], ['personalPhoneNumber', 'Personal phone'], ['telegram', 'Telegram']] as const;
+export const correctionLabels: Record<string, string> = { ...Object.fromEntries(FIELDS), preferredAmericanFirstName: 'American first name', preferredAmericanLastName: 'American last name', firstName: 'First name', lastName: 'Last name' };
 type Field = typeof FIELDS[number][0];
 
 /** What the application said for a field that was corrected: the earliest correction's earlier value. */
@@ -56,7 +56,7 @@ export function CorrectDetailsDialog({ member, onClose }: { member: MemberProfil
    {details ? <>
     <Card><CardHeader title="Names"/><CardBody className="space-y-4">
      <div className="grid gap-4 sm:grid-cols-2">{input('legalFirstName', 'Legal first name', { required: true })}{input('legalLastName', 'Legal last name', { required: true })}</div>
-     <div className="grid gap-4 sm:grid-cols-2">{input('preferredAmericanFirstName', 'American first name', { required: true, pattern: "[A-Za-z][A-Za-z .,'\\-]*" })}{input('preferredAmericanLastName', 'American last name', { required: true, pattern: "[A-Za-z][A-Za-z .,'\\-]*" })}</div>
+     <p className="text-[13px] text-muted-foreground">Their American name changes with Change name in More actions.</p>
     </CardBody></Card>
     <Card><CardHeader title="Contact"/><CardBody className="space-y-4">
      <div className="grid gap-4 sm:grid-cols-2">{input('personalEmail', 'Personal email', { type: 'email', required: true })}{input('personalPhoneNumber', 'Personal phone', { type: 'tel', required: true })}</div>
