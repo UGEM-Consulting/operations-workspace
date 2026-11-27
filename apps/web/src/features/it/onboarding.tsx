@@ -152,7 +152,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
   <p className="text-[13px] leading-5 text-muted-foreground">The email only. Never a password, here or in notes.</p></>}
  <Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Don’t put passwords in notes."/>
  {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager is notified. It needs the company email and RingCentral number recorded in their tasks.</p><Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
- {formerAsked&&<Checkbox name="formerOk" checked={formerOk} onChange={event=>setFormerOk(event.target.checked)} label={`IT confirmed it’s ${name.split(' ')[0]}’s now`} description="Recorded on this setup’s activity."/>}
+ {formerAsked&&<Checkbox name="formerOk" checked={formerOk} onChange={event=>setFormerOk(event.target.checked)} label={`IT confirmed it’s ${profile.proposedDisplayName?.trim()?`${profile.proposedDisplayName.trim().split(' ')[0]}’s`:'theirs'} now`} description="Recorded on this setup’s activity."/>}
  <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>{taskError&&<p className="text-sm text-muted-foreground">If someone else updated this request, close this dialog and refresh its status before trying again.</p>}</form>
  </Dialog>}
 

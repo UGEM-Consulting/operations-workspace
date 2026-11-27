@@ -41,6 +41,14 @@ const near = (a: Date | string | null, b: Date | string | null, ms = 2000) => !!
 const kindWords = (kind: string) => kind === 'EMAIL' ? 'company email' : 'RingCentral number';
 const list = (words: string[]) => words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
 const sentence = (words: string[]) => { const text = words.join(', '); return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}.` : null; };
+/**
+ * Section 44: an email or number IT confirmed is theirs now. Worded neutrally, because the one who had it may still work here
+ * (a value retired at a rehire, or a closed account at another company).
+ */
+const previousOwnerNote = (m: Record<string, unknown>) => {
+ const confirmed = (Array.isArray(m.previousOwnerConfirmed) ? m.previousOwnerConfirmed as string[] : []).map(field => FIELD_WORDS[field] ?? field);
+ return confirmed.length ? `IT confirmed the ${confirmed.join(' and ')} that was someone else’s is theirs now.` : null;
+};
 
 // Field names on recorded-details changes and corrections.
 const FIELD_WORDS: Record<string, string> = { companyEmail: 'company email', ringCentralNumber: 'RingCentral number', ringCentralExtension: 'extension', personalEmail: 'personal email', personalPhone: 'personal phone',
@@ -217,11 +225,17 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  for (const row of activity) { const title = activityTitle(row.event); if (title) add(`activity-${row.id}`, row.createdAt, 'DETAILS', 'user-check', title, row.by); }
 
  // Accounts: other companies, load board seats, shared email or number.
+ // IT's confirmation of a value someone else had (section 44) shows on the account's own entry, not as a second one.
+ const confirmedOn = new Map<string, string>();
+ for (const row of events as { event: string; metadata: Record<string, unknown> }[]) {
+  const note = row.event === 'EXISTING_UPDATED' && typeof row.metadata?.accountId === 'string' ? previousOwnerNote(row.metadata) : null;
+  if (note) confirmedOn.set(row.metadata.accountId as string, note);
+ }
  for (const row of accounts) {
   const what = [row.email ? 'company email' : null, row.number ? 'RingCentral number' : null].filter(Boolean) as string[];
   const createdClosed = row.status === 'CLOSED' && near(row.closedAt, row.createdAt, 5000);
   add(`account-${row.id}`, row.createdAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} added: ${list(what)}${createdClosed ? ' (closed)' : row.status === 'KEPT_FOR_LOAD_BOARDS' ? ' (kept for load boards)' : ''}`,
-   row.sourceName ? `From ${row.sourceName}` : row.by);
+   row.sourceName ? `From ${row.sourceName}` : row.by, confirmedOn.get(row.id) ?? null);
   if (row.closedAt && !createdClosed) addDay(`account-closed-${row.id}`, row.closedAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} closed`, row.closedBy);
  }
  seats.forEach(row => {
@@ -324,10 +338,10 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    case 'EXISTING_UPDATED': {
     const count = m.otherNames, fields = (m.fields ?? []) as string[];
     const said = fields.map(field => field === 'otherNames' && count ? `${count} other ${count === 1 ? 'name' : 'names'}` : FIELD_WORDS[field] ?? field);
+    // One made with an account at another company is shown on that account's entry.
+    if (m.accountId) break;
     const title = m.reason === 'team-lead-sign-in' ? 'Company email recorded for their team lead sign-in' : m.from === 'file' ? (m.source ? `Details added from ${m.source}` : 'Details added from a file') : 'Recorded details changed';
-    // Section 44: an email or number that was someone's who left, saved because IT confirmed it's theirs now.
-    const confirmed = ((m.previousOwnerConfirmed ?? []) as string[]).map(field => FIELD_WORDS[field] ?? field);
-    add(id, at, 'DETAILS', 'pen-line', title, row.by, [sentence(said), confirmed.length ? `IT confirmed the ${confirmed.join(' and ')} someone who left had is theirs now.` : ''].filter(Boolean).join(' ') || null); break;
+    add(id, at, 'DETAILS', 'pen-line', title, row.by, [sentence(said), previousOwnerNote(m)].filter(Boolean).join(' ') || null); break;
    }
    case 'NAMES_CHANGED': add(id, at, 'DETAILS', 'pen-line', 'Names changed', row.by); break;
    case 'LEFT_DAY_RECORDED': add(id, at, 'AWAY', 'calendar', 'Last day added', row.by, m.reasonChanged ? 'With the reason they left.' : null); break;
@@ -348,7 +362,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
     const reopened = m.status && m.status !== 'CLOSED';
     if (!said.length && !reopened) break;
     const on = `Account at ${row.company ?? 'another company'}`;
-    add(id, at, 'ACCOUNTS', 'building-2', reopened && !said.length ? `${on} opened again` : `${on} changed: ${list(said)}${reopened ? ', opened again' : ''}`, row.by); break;
+    add(id, at, 'ACCOUNTS', 'building-2', reopened && !said.length ? `${on} opened again` : `${on} changed: ${list(said)}${reopened ? ', opened again' : ''}`, row.by, previousOwnerNote(m)); break;
    }
    case 'ACCOUNT_MOVED': add(id, at, 'ACCOUNTS', 'users', `Their ${list(((m.fields ?? []) as string[]).map(field => FIELD_WORDS[field] ?? field))} moved to ${row.toPerson ?? 'the right record'}`, row.by, m.stillUses ? 'They still use it.' : null); break;
    case 'ACCOUNTS_HANDED_OVER': add(id, at, 'ACCOUNTS', 'users', `Their ${list(((m.kinds ?? []) as string[]).map(kindWords))} handed over to ${row.toPerson ?? 'someone using it'}`, row.by); break;

@@ -156,7 +156,8 @@ export class ItService {
    if(workspace?.status==='COMPLETED'&&!companyEmail)throw new BadRequestException('A completed Google Workspace task requires the company email.');
    // Section 44: a new email or number that was someone's who left (or retired, or closed) needs IT's confirmation it's theirs now.
    const [owner]=await em.query(`SELECT id FROM dispatch_members WHERE id = $1 OR "applicationId" = $2 LIMIT 1`,[request.memberId,request.applicationId]) as {id:string}[];
-   const firstName=String((request.profile as {proposedDisplayName?:string|null;displayName?:string|null}).proposedDisplayName??(request.profile as {displayName?:string|null}).displayName??'them').split(' ')[0];
+   const shownName=(request.profile as {proposedDisplayName?:string|null;displayName?:string|null}).proposedDisplayName??(request.profile as {displayName?:string|null}).displayName;
+   const firstName=shownName?.trim().split(' ')[0]||null;
    const confirmedPrevious:string[]=[];
    for(const [field,kind,value,before,label] of [['companyEmail','EMAIL',companyEmail,request.companyEmail,'company email'],['ringCentralNumber','RINGCENTRAL',assigned,request.assignedRingCentralPhoneNumber,'RingCentral number']] as const){
     if(!value||sharedKey(kind,value)===sharedKey(kind,before??''))continue;
@@ -176,7 +177,7 @@ export class ItService {
    request.version+=1;await em.save(request);
    // A load board sign-in IT records becomes a seat until IT moves it to its real account (section 33).
    if(input.datEmail!==undefined||input.truckstopEmail!==undefined){const [member]=await em.query(`SELECT id FROM dispatch_members WHERE id = $1 OR "applicationId" = $2 LIMIT 1`,[request.memberId,request.applicationId]);if(member)await syncRecordedSeats(em,member.id,user.id);}
-   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail,...(confirmedPrevious.length?{previousOwnerConfirmed:confirmedPrevious.join(',')}:{})}});
+   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail,...(confirmedPrevious.length?{previousOwnerConfirmed:confirmedPrevious}:{})}});
    return this.detail(em,request);
   });
  }

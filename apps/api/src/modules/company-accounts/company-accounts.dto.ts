@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min, ValidateIf } from 'class-validator';
 import { INTERNATIONAL_PHONE_PATTERN } from '../onboarding/application-requirements';
 import { EMAIL_ACTIONS, type EmailAction } from '../it/it.entity';
 import { ACCOUNT_POSITIONS, type AccountPosition } from './company-accounts.entity';
@@ -26,6 +26,8 @@ export class AddCompanyAccountDto {
  @ValidateIf((dto: AddCompanyAccountDto) => dto.status === 'CLOSED') @IsDateString({ strict: true }) @Matches(/^\d{4}-\d{2}-\d{2}$/) closedOn?: string;
  // What staff should know about the account (section 36). Never passwords.
  @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
+ // An email or number that was someone's who left (section 44): IT confirmed it's theirs now. Sent only after the API asked.
+ @IsOptional() @IsBoolean() previousOwnerConfirmed?: boolean;
 }
 /** Only what changed; '' clears a field. Closing it here records that it's closed (Ask IT to close it is a separate request). */
 export class UpdateCompanyAccountDto {
@@ -40,6 +42,8 @@ export class UpdateCompanyAccountDto {
  @ValidateIf((dto: UpdateCompanyAccountDto) => dto.status === 'CLOSED') @IsDateString({ strict: true }) @Matches(/^\d{4}-\d{2}-\d{2}$/) closedOn?: string;
  // Omitted keeps the note; '' clears it.
  @IsOptional() @text() @IsString() @MaxLength(500) note?: string;
+ // An email or number that was someone's who left (section 44): IT confirmed it's theirs now. Sent only after the API asked.
+ @IsOptional() @IsBoolean() previousOwnerConfirmed?: boolean;
 }
 /** Ask IT to close an account (CloseCompanyAccountScreen): what happens to the email and new email, and a note (never passwords). */
 export class CloseCompanyAccountDto {

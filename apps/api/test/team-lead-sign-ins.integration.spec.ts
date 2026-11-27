@@ -108,6 +108,19 @@ integration('Team lead sign-ins and team pages (disposable PostgreSQL)', () => {
     await agents.manager.patch(`/api/dispatch/members/${riley}/existing`).set(headers).send({ version, companyEmail: '' }).expect(409);
   });
 
+  it('asks for IT’s confirmation before a sign-in takes the company email of someone who left (section 44)', async () => {
+    const jordan = await dispatcher('Jordan', 'jordan.old@example.test');
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '10 days' WHERE id = $1`, [jordan]);
+    const riley = await dispatcher('Riley', null);
+    await lead(riley);
+    const [request] = await open();
+    const refused = await complete(request.id, { companyEmail: 'jordan.old@example.test' }).expect(409);
+    expect(refused.body).toMatchObject({ reason: 'PREVIOUS_OWNER', message: expect.stringMatching(/was Jordan Fictional’s.*IT confirmed it’s Riley’s now/) });
+    await complete(request.id, { companyEmail: 'jordan.old@example.test', previousOwnerConfirmed: true }).expect(201);
+    const events = await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event = 'EXISTING_UPDATED'`, [riley]);
+    expect(events).toEqual([{ metadata: { fields: ['companyEmail'], reason: 'team-lead-sign-in', previousOwnerConfirmed: ['companyEmail'] } }]);
+  });
+
   it('waits for a dispatch change holding the dispatcher’s record instead of failing', async () => {
     const jordan = await dispatcher('Jordan', 'jordan.work@example.test');
     await lead(jordan);

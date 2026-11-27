@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
 import { DispatchEvent, DispatchMember } from '../dispatch/dispatch.entity';
+import { checkPreviousOwners } from '../dispatch/shared-accounts';
 import { usDay } from '../safety/screening-rules';
 import type { User } from '../users/user.entity';
 import { checkEmailFree, memberCompanyAccounts, refreshRemovalAccounts } from './accounts';
@@ -28,8 +29,11 @@ export class CompanyAccountsService {
   return this.write(async em => {
    const member = await em.getRepository(DispatchMember).findOne({ where: { id: dto.memberId }, lock: { mode: 'pessimistic_write' } });
    if (!member) throw new NotFoundException('This dispatcher record no longer exists.');
+   // An open account's email or number that was someone's who left needs IT's confirmation (section 44); a closed one is history.
+   const confirmed = dto.status === 'CLOSED' ? [] : await checkPreviousOwners(em, member.id, member.firstName, dto.previousOwnerConfirmed, { companyEmail: dto.companyEmail, ringCentralNumber: dto.ringCentralNumber });
    const account = await addCompanyAccount(em, user.id, member.id, { mcId: dto.mcId ?? null, companyName: dto.companyName ?? null, position: dto.position || null, nameUsed: dto.nameUsed || null, companyEmail: dto.companyEmail || null,
     ringCentralNumber: dto.ringCentralNumber || null, ringCentralExtension: dto.ringCentralExtension || null, status: dto.status ?? 'ACTIVE', closedOn: dto.closedOn ?? null, sourceName: null, note: dto.note || null });
+   if (confirmed.length) await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields: confirmed, from: 'form', previousOwnerConfirmed: confirmed, accountId: account.id } });
    member.version += 1; await em.save(member);
    await refreshRemovalAccounts(em, member.id, user.id);
    return { id: account.id, version: account.version };
@@ -60,6 +64,11 @@ export class CompanyAccountsService {
    if (!account.companyEmail && !account.ringCentralNumber) throw new BadRequestException('An account needs its company email or RingCentral number.');
    if (fields.includes('companyEmail') && account.companyEmail && account.status !== 'CLOSED') await checkEmailFree(em, account.companyEmail, member.id);
    const status = dto.status && dto.status !== account.status ? dto.status : null;
+   // A new email or number on an open account (or one opened again) that was someone's who left needs IT's confirmation (section 44).
+   const open = status ? status !== 'CLOSED' : account.status !== 'CLOSED';
+   const confirmed = !open ? [] : await checkPreviousOwners(em, member.id, member.firstName, dto.previousOwnerConfirmed, {
+    companyEmail: fields.includes('companyEmail') || (status && account.status === 'CLOSED') ? account.companyEmail : null,
+    ringCentralNumber: fields.includes('ringCentralNumber') || (status && account.status === 'CLOSED') ? account.ringCentralNumber : null });
    if (status === 'CLOSED') { this.closedDay(dto.closedOn!); Object.assign(account, { status, closedAt: midday(dto.closedOn!), closedBy: user.id }); }
    else if (status) {
     if (account.status === 'CLOSED' && account.companyEmail) await checkEmailFree(em, account.companyEmail, member.id);
@@ -68,7 +77,7 @@ export class CompanyAccountsService {
    if (!fields.length && !status) return { id, version: account.version };
    account.version += 1; await em.save(account);
    member.version += 1; await em.save(member);
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields, ...(status ? { status } : {}) } });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_CHANGED', actorId: user.id, metadata: { accountId: account.id, fields, ...(status ? { status } : {}), ...(confirmed.length ? { previousOwnerConfirmed: confirmed } : {}) } });
    await refreshRemovalAccounts(em, member.id, user.id);
    return { id, version: account.version };
   });

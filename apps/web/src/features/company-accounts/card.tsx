@@ -13,7 +13,7 @@ import { Checkbox, Input, RadioGroup, Select, Textarea } from '@/components/ui/f
 import { LocalTime } from '@/components/ui/local-time';
 import { Badge } from '@/components/ui/status-badge';
 import { useToast } from '@/components/ui/toast';
-import { errorMessage, mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { EmailAfterFields } from '@/features/it/email-choice';
 import type { EmailChoice } from '@/features/it/email-words';
 
@@ -78,6 +78,9 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [company, setCompany] = useState(account?.mcId ?? (account?.companyName ? 'OTHER' : ''));
   const [state, setState] = useState<'ACTIVE' | 'CLOSED'>('ACTIVE'), [position, setPosition] = useState<string>(account?.position ?? '');
   const closed = account?.status === 'CLOSED';
+  // Section 44: an email or number that was someone's who left asks for IT's confirmation; changing either asks again.
+  const [formerAsked, setFormerAsked] = useState(false), [formerOk, setFormerOk] = useState(false);
+  const typedAgain = () => { setFormerAsked(false); setFormerOk(false); };
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
@@ -89,11 +92,15 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
       ...(position !== (account?.position ?? '') ? { position } : {}), ...(note !== (account?.note ?? '') ? { note } : {}) };
     setBusy(true); setError('');
     try {
-      await (account ? mutate(`company-accounts/${account.id}`, 'PATCH', { version: account.version, ...fields })
-        : mutate('company-accounts', 'POST', { memberId, ...(company === 'OTHER' ? { companyName: form.companyName } : { mcId: company }), ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value)),
+      const confirmed = formerAsked && formerOk ? { previousOwnerConfirmed: true } : {};
+      await (account ? mutate(`company-accounts/${account.id}`, 'PATCH', { version: account.version, ...fields, ...confirmed })
+        : mutate('company-accounts', 'POST', { memberId, ...confirmed, ...(company === 'OTHER' ? { companyName: form.companyName } : { mcId: company }), ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value)),
           ...(state === 'CLOSED' ? { status: 'CLOSED', closedOn: form.closedOn } : {}) }));
       toast({ title: account ? 'Account updated' : 'Account added' }); onClose(); router.refresh();
-    } catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.reason?.code === 'PREVIOUS_OWNER') setFormerAsked(true);
+      setError(errorMessage(failure, 'Unable to save. Your entries have been kept.'));
+    }
     finally { setBusy(false); }
   }
   return <Dialog open onClose={onClose} busy={busy} title={closed ? `The closed account at ${companyOf(account)}` : account ? `Edit the account at ${companyOf(account)}` : 'Add an account at another company'} description="Never a password. Nobody is messaged."
@@ -107,13 +114,14 @@ function AccountDialog({ memberId, account, mcs, onClose }: { memberId: string; 
         options={[{ value: 'DISPATCHER', label: 'Dispatcher' }, { value: 'SUPPORT', label: 'Support' }, { value: 'UPDATER', label: 'Updater' }, { value: '', label: 'Not known' }]} />
       {!closed && <><Input label="Name used there" name="nameUsed" optional maxLength={100} defaultValue={account?.nameUsed ?? ''} width="full" hint="The American name they use or used at this company. Latin letters." />
       <div className="grid gap-4 sm:grid-cols-2">
-        <Input label="Company email" name="companyEmail" optional type="email" maxLength={254} defaultValue={account?.companyEmail ?? ''} width="full" />
-        <Input label="RingCentral number" name="ringCentralNumber" optional type="tel" maxLength={40} defaultValue={account?.ringCentralNumber ?? ''} width="full" />
+        <Input label="Company email" name="companyEmail" optional type="email" maxLength={254} defaultValue={account?.companyEmail ?? ''} width="full" onChange={typedAgain} />
+        <Input label="RingCentral number" name="ringCentralNumber" optional type="tel" maxLength={40} defaultValue={account?.ringCentralNumber ?? ''} width="full" onChange={typedAgain} />
       </div>
       <Input label="Extension" name="ringCentralExtension" optional inputMode="numeric" maxLength={6} defaultValue={account?.ringCentralExtension ?? ''} width="sm" /></>}
       {!account && <RadioGroup name="state" label="Is it still open?" value={state} onChange={value => setState(value as 'ACTIVE' | 'CLOSED')} options={[{ value: 'ACTIVE', label: 'Yes, it’s open' }, { value: 'CLOSED', label: 'No, it’s closed', description: 'Recorded for history.' }]} />}
       {!account && state === 'CLOSED' && <Input label="Closed on" name="closedOn" type="date" required max={today()} min="1980-01-01" width="sm" />}
       <Textarea label="Note" name="note" optional rows={3} maxLength={500} defaultValue={account?.note ?? ''} hint="What staff should know about this account. Never passwords. Up to 500 characters." />
+      {formerAsked && <Checkbox name="formerOk" checked={formerOk} onChange={event => setFormerOk(event.target.checked)} label="IT confirmed it’s theirs now" description="Recorded on their history." />}
       <Notice message={error} error />
     </fieldset></form>
   </Dialog>;

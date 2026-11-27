@@ -46,7 +46,8 @@ export async function formerOwners(em: Query, kind: SharedKind, value: string, e
 }
 /**
  * formerOwners for many values at once (a file's rows): one query per kind, keyed by sharedKey. The people in exceptMemberIds and
- * the earlier records they came back from (previousMemberId, all the way back) are left out, so nobody is warned about their own.
+ * the other records of the same person (those they came back from and those made when they came back, through previousMemberId
+ * both ways, all the way) are left out, so nobody is warned about their own.
  */
 export async function formerOwnersOf(em: Query, kind: SharedKind, values: string[], exceptMemberIds: string[] = []): Promise<Map<string, FormerOwner[]>> {
  const keys = [...new Set(values.map(value => sharedKey(kind, value)).filter((key): key is string => !!key))], found = new Map<string, FormerOwner[]>();
@@ -56,7 +57,8 @@ export async function formerOwnersOf(em: Query, kind: SharedKind, values: string
  const email = kind === 'EMAIL';
  const [recorded, setup, account, retired] = email ? ['e."companyEmail"', 'r."companyEmail"', 'x."companyEmail"', '"retiredCompanyEmail"'] : ['e."ringCentralNumber"', 'r."assignedRingCentralPhoneNumber"', 'x."ringCentralNumber"', '"retiredRingCentralNumber"'];
  const rows: { key: string; memberId: string; name: string; until: string | null }[] = await em.query(`WITH RECURSIVE self(id) AS (SELECT unnest($2::uuid[])
-   UNION SELECT d."previousMemberId" FROM dispatch_members d JOIN self ON d.id = self.id WHERE d."previousMemberId" IS NOT NULL)
+   UNION SELECT x.id FROM self JOIN dispatch_members d ON d.id = self.id OR d."previousMemberId" = self.id
+    CROSS JOIN LATERAL (VALUES (d.id), (d."previousMemberId")) x(id) WHERE x.id IS NOT NULL)
   SELECT o.key, d.id AS "memberId", d."firstName" || ' ' || d."lastName" AS name,
    -- Until their last day (never one that wasn't recorded), or until it was retired or closed.
    -- ISO in UTC (Postgres text form is not read by every browser).
@@ -77,15 +79,36 @@ export async function formerOwnersOf(em: Query, kind: SharedKind, values: string
  return found;
 }
 
-/** Why an email or number that was someone's who left isn't saved yet (section 44): whose, until when, and what to tick. */
-export function previousOwnerMessage(label: string, former: FormerOwner, firstName: string) {
+/**
+ * Why an email or number that was someone's who left isn't saved yet (section 44): whose, until when, and what to tick.
+ * firstName null (a setup with no name recorded) words the tick as “theirs”, as the page's checkbox does.
+ */
+export function previousOwnerMessage(label: string, former: FormerOwner, firstName: string | null) {
  const until = former.until ? ` until ${new Date(former.until).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })}` : '';
- return `This ${label} was ${former.name}’s${until}. Check with IT, then tick “IT confirmed it’s ${firstName}’s now” to save it.`;
+ return `This ${label} was ${former.name}’s${until}. Check with IT, then tick “IT confirmed it’s ${firstName ? `${firstName}’s` : 'theirs'} now” to save it.`;
 }
 
 /** The 409 for it, with reason PREVIOUS_OWNER so a page asks for the tick on that answer, never by reading its words. */
-export function previousOwnerConflict(label: string, former: FormerOwner, firstName: string) {
+export function previousOwnerConflict(label: string, former: FormerOwner, firstName: string | null) {
  return new ConflictException({ message: previousOwnerMessage(label, former, firstName), reason: 'PREVIOUS_OWNER', error: 'Conflict', statusCode: 409 });
+}
+
+/**
+ * The section 44 check for a form that saves a company email or RingCentral number on someone (team lead sign-ins, accounts at
+ * other companies): a value nobody here holds now that was someone's who left (or retired, or closed) needs IT's confirmation.
+ * Refuses with previousOwnerConflict until confirmed is true; returns the fields that were confirmed, for the event.
+ */
+export async function checkPreviousOwners(em: Query, memberId: string, firstName: string | null, confirmed: boolean | undefined,
+ values: { companyEmail?: string | null; ringCentralNumber?: string | null }): Promise<('companyEmail' | 'ringCentralNumber')[]> {
+ const done: ('companyEmail' | 'ringCentralNumber')[] = [];
+ for (const [field, kind, label] of [['companyEmail', 'EMAIL', 'company email'], ['ringCentralNumber', 'RINGCENTRAL', 'RingCentral number']] as const) {
+  const value = values[field];
+  if (!value || (await accountOwners(em, kind, value)).length) continue;
+  const [former] = await formerOwners(em, kind, value, memberId);
+  if (former && !confirmed) throw previousOwnerConflict(label, former, firstName);
+  if (former) done.push(field);
+ }
+ return done;
 }
 
 /** What someone uses that is another person's, and who uses what is theirs, for their page. */

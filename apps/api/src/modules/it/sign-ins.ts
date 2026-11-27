@@ -1,13 +1,14 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Transform } from 'class-transformer';
-import { IsEmail, MaxLength, ValidateIf } from 'class-validator';
+import { IsBoolean, IsEmail, IsOptional, MaxLength, ValidateIf } from 'class-validator';
 import { DataSource, EntityManager, QueryFailedError } from 'typeorm';
 import { generatePassword, hashPassword } from '../auth/password';
 import { revokeUserSessions } from '../auth/revoke';
 import { SecurityEventType, StaffSecurityEvent } from '../auth/mfa.entity';
 import { companyEmailOf, companyEmailSql, lockAccount, syncSignIns, TeamLeadSignIn, turnOffAccount, wantedSignIn } from '../dispatch/lead-sign-in';
 import { DispatchEvent, DispatchMember } from '../dispatch/dispatch.entity';
+import { checkPreviousOwners } from '../dispatch/shared-accounts';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, User, UserStatus } from '../users/user.entity';
 
@@ -15,6 +16,8 @@ export class SignInDto {
  // Only when no company email is recorded: IT adds it here and it's saved on their record too.
  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim().toLowerCase() : value)
  @ValidateIf((_object: unknown, value: unknown) => value !== undefined && value !== '') @IsEmail() @MaxLength(254) companyEmail?: string;
+ // An email that was someone's who left (section 44): IT confirmed it's theirs now. Sent only after the API asked.
+ @IsOptional() @IsBoolean() previousOwnerConfirmed?: boolean;
 }
 
 /** Same advisory lock as user administration, so this and an administrator's edit can't change one account at once. */
@@ -61,7 +64,7 @@ export class SignInsService {
     if (await wantedSignIn(em, member.id) !== request.kind) { await syncSignIns(em, [member.id], null); return { stale: true as const }; }
     let account: User | null = null;
     if (request.kind === 'CREATE') {
-     const email = await this.signInEmail(em, member, dto.companyEmail, user.id);
+     const email = await this.signInEmail(em, member, dto.companyEmail, user.id, dto.previousOwnerConfirmed);
      const repo = em.getRepository(User);
      account = await repo.save(repo.create({ firstName: member.firstName, lastName: member.lastName, email, role: Role.TEAM_LEAD, status: UserStatus.ACTIVE, passwordHash: passwordHash!, mustChangePassword: true }));
      await em.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [account.id, member.id]);
@@ -100,7 +103,7 @@ export class SignInsService {
   * One IT adds is kept where a manager recorded their details. Someone with IT setup always has one, because setup can't
   * finish without it, and a finished setup is never changed here.
   */
- private async signInEmail(em: EntityManager, member: DispatchMember, given: string | undefined, actorId: string) {
+ private async signInEmail(em: EntityManager, member: DispatchMember, given: string | undefined, actorId: string, previousOwnerConfirmed?: boolean) {
   const recorded = await companyEmailOf(em, member.id);
   if (recorded.email && given && given !== recorded.email) throw new BadRequestException('To use a different email, correct it on their dispatcher record first.');
   const email = recorded.email ?? given;
@@ -114,11 +117,12 @@ export class SignInsService {
      WHERE d.id <> $1 AND d.status <> 'LEFT' AND (lower(${companyEmailSql()}) = $2 OR EXISTS(SELECT 1 FROM member_contacts c WHERE c."memberId" = d.id AND c.kind = 'EMAIL' AND c."removedAt" IS NULL AND lower(c.value) = $2))
      LIMIT 1`, [member.id, email]);
    if (used) throw new ConflictException('Someone in the workspace already has this company email. Use their own company email.');
+   const confirmed = await checkPreviousOwners(em, member.id, member.firstName, previousOwnerConfirmed, { companyEmail: email });
    await em.query(`UPDATE existing_member_records SET "companyEmail" = $1 WHERE "memberId" = $2`, [email, member.id]);
    // A manager with their record open has to reload before saving, so this email isn't wiped by an older copy.
    member.version += 1; await em.save(member);
    // In the record's history like a manager's edit: the field name only, never the email.
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId, metadata: { fields: ['companyEmail'], reason: 'team-lead-sign-in' } });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId, metadata: { fields: ['companyEmail'], reason: 'team-lead-sign-in', ...(confirmed.length ? { previousOwnerConfirmed: confirmed } : {}) } });
   }
   return email;
  }

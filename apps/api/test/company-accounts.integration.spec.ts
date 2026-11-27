@@ -80,8 +80,9 @@ integration('Company accounts at other MCs (disposable PostgreSQL)', () => {
     await change({ version: 1, status: 'CLOSED', closedOn: '2099-01-01' }).expect(400);
     await change({ version: 1, status: 'KEPT_FOR_LOAD_BOARDS' }).expect(200);
     await change({ version: 2, status: 'CLOSED', closedOn: usDay('latest') }).expect(200);
-    // Closed, its email is free again.
-    await account({ memberId: sky, companyName: 'YouPro', companyEmail: 'ryan@example.test' }).expect(201);
+    // Closed, its email is free again, once IT confirmed it's Sky's now (section 44).
+    expect((await account({ memberId: sky, companyName: 'YouPro', companyEmail: 'ryan@example.test' }).expect(409)).body.reason).toBe('PREVIOUS_OWNER');
+    await account({ memberId: sky, companyName: 'YouPro', companyEmail: 'ryan@example.test', previousOwnerConfirmed: true }).expect(201);
     const events = await db.query(`SELECT event, metadata FROM dispatch_events WHERE event LIKE 'COMPANY_ACCOUNT_%' ORDER BY "createdAt"`);
     expect(events.map((row: Row) => [row.event, row.metadata])).toEqual([
       ['COMPANY_ACCOUNT_ADDED', { status: 'ACTIVE', fields: ['nameUsed', 'companyEmail', 'ringCentralNumber', 'ringCentralExtension'], from: 'form' }],
@@ -179,6 +180,22 @@ integration('Company accounts at other MCs (disposable PostgreSQL)', () => {
     expect(await shown()).toMatchObject({ position: null, status: 'CLOSED' });
     const events = await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event LIKE 'COMPANY_ACCOUNT_%' ORDER BY "createdAt"`, [riley]);
     expect(events.map((row: { metadata: { fields: string[] } }) => row.metadata.fields)).toEqual([['position', 'companyEmail'], ['position'], ['position']]);
+  });
+
+  it('asks for IT’s confirmation before an open account takes an email or number someone else had (section 44)', async () => {
+    const riley = await addOne('Riley'), morgan = await addOne('Morgan');
+    // Riley's closed account held the number; nobody holds it now.
+    await account({ memberId: riley, mcId: lakeside, ringCentralNumber: '+1 469 555 0177', status: 'CLOSED', closedOn: usDay('latest') }).expect(201);
+    const refused = await account({ memberId: morgan, mcId: lakeside, ringCentralNumber: '(469) 555-0177', ringCentralExtension: '204' }).expect(409);
+    expect(refused.body).toMatchObject({ reason: 'PREVIOUS_OWNER', message: expect.stringMatching(/was Riley Fictional’s.*IT confirmed it’s Morgan’s now/) });
+    // A closed account is history and isn't asked about.
+    await account({ memberId: morgan, mcId: lakeside, companyEmail: 'old@example.test', ringCentralNumber: '(469) 555-0177', status: 'CLOSED', closedOn: usDay('latest') }).expect(201);
+    const added = (await account({ memberId: morgan, mcId: lakeside, ringCentralNumber: '(469) 555-0177', previousOwnerConfirmed: true }).expect(201)).body;
+    const confirmed = await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event = 'EXISTING_UPDATED'`, [morgan]);
+    expect(confirmed.map((row: { metadata: Row }) => row.metadata)).toEqual([expect.objectContaining({ previousOwnerConfirmed: ['ringCentralNumber'], accountId: added.id })]);
+    expect((await profile(morgan)).timeline.entries.find((entry: { title: string; body: string | null }) => entry.title === 'Account at Lakeside Carriers added: RingCentral number' && !!entry.body)).toMatchObject({ body: expect.stringMatching(/that was someone else’s is theirs now/) });
+    // One entry per account: the confirmation isn't a second one.
+    expect((await profile(morgan)).timeline.entries.filter((entry: { title: string }) => entry.title.startsWith('Account at Lakeside Carriers recorded'))).toEqual([]);
   });
 
   it('refuses a rollback while accounts at other companies are recorded', async () => {

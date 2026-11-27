@@ -9,7 +9,7 @@ import { carrySupportSetups, lockSetupRequests, sameSetups } from '../it/removal
 import { NotificationsService } from '../updates/notifications.service';
 import { CreatePromotionDto, DecidePromotionDto, PromoteSupportDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
-import { lastDayPassedSql, lastDaySql, leaveRecorded, ledTeams, lockTeam, onLeave, onNotice } from './create-member';
+import { lastDayPassedSql, lastDaySql, leaveRecorded, ledTeams, lockTeam, onNotice } from './create-member';
 import { usDay } from '../safety/screening-rules';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
@@ -61,7 +61,7 @@ export class PromotionsService {
    const support = await this.supportInScope(em, user, dto.supportId);
    if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support or updater can be promoted.');
    if (await onNotice(em, dto.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted.');
-   if (await onLeave(em, dto.supportId)) throw new ConflictException('This person is on leave. Ask once they’re back.');
+   if (await leaveRecorded(em, dto.supportId)) throw new ConflictException('This person has leave recorded. Ask once they’re back.');
    // Refused here rather than at the decision, which needs the application for IT setup and could only decline.
    if (!support.applicationId) throw new ConflictException('Their paperwork isn’t accepted yet, so they can’t be promoted. Ask a dispatch manager to send their catch-up link.');
    const request = await em.getRepository(PromotionRequest).save({ supportId: dto.supportId, requestedBy: user.id, reason: dto.reason });

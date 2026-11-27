@@ -109,7 +109,7 @@ export class ItOnboardingActivity {
  @Column('uuid') requestId!:string;
  @Column('uuid') actorId!:string;
  @Column('varchar') event!:string;
- @Column('jsonb',{default:{}}) metadata!:Record<string,string|boolean|null>;
+ @Column('jsonb',{default:{}}) metadata!:Record<string,string|string[]|boolean|null>;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
 }
 @Entity('portal_notifications')
@@ -233,7 +233,7 @@ export class ItRemovalActivity {
  @Column('uuid') requestId!:string;
  @Column('uuid') actorId!:string;
  @Column('varchar') event!:string;
- @Column('jsonb',{default:{}}) metadata!:Record<string,string|boolean|null>;
+ @Column('jsonb',{default:{}}) metadata!:Record<string,string|string[]|boolean|null>;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
 }
 
@@ -280,6 +280,6 @@ export class ItLeaveActivity {
  @Column('uuid') requestId!:string;
  @Column('uuid',{nullable:true}) actorId!:string|null;
  @Column('varchar') event!:string;
- @Column('jsonb',{default:{}}) metadata!:Record<string,string|boolean|null>;
+ @Column('jsonb',{default:{}}) metadata!:Record<string,string|string[]|boolean|null>;
  @CreateDateColumn({type:'timestamptz'}) createdAt!:Date;
 }

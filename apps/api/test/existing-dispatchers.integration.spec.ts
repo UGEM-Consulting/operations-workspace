@@ -1548,10 +1548,15 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       expect((await check([fillRow])).body.rows[0]).toMatchObject({ previous: [{ field: 'companyEmail', name: 'Riley Fictional' }], previousAction: null });
       expect((await add([fillRow])).body.filled).toBe(0);
       expect((await add([{ ...fillRow, previousOwnerAction: 'WITHOUT' }])).body.filled).toBe(0);
+      // With its only fill left off, Fill isn't offered any more.
+      expect((await check([{ ...fillRow, previousOwnerAction: 'WITHOUT' }])).body.rows[0].match.options).not.toContain('FILL');
+      // A number left off takes its extension with it.
+      const pat = (await add([base(2, 'Pat', { ringCentralNumber: '(469) 555-0177', ringCentralExtension: '204', personalEmail: 'pat.home@example.test', differentPerson: true, previousOwnerAction: 'WITHOUT' })])).body.members[0].id as string;
+      expect((await profileOf(pat)).existing).toMatchObject({ ringCentralNumber: null, ringCentralExtension: null });
       expect((await profileOf(morgan)).existing.companyEmail).toBeNull();
       expect((await edit(morgan, { ringCentralNumber: '(469) 555-0177', previousOwnerConfirmed: true })).status).toBe(200);
       const history = (await profileOf(morgan)).timeline.entries.find((entry: { title: string }) => entry.title === 'Recorded details changed');
-      expect(history.body).toMatch(/IT confirmed the RingCentral number someone who left had is theirs now/);
+      expect(history.body).toMatch(/IT confirmed the RingCentral number that was someone else’s is theirs now/);
       // Their own value sent back unchanged isn't asked about again.
       expect((await edit(morgan, { ringCentralNumber: '(469) 555-0177' })).status).toBe(200);
 

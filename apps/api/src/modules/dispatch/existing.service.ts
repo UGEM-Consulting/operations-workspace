@@ -504,11 +504,21 @@ export class ExistingDispatchersService {
    const sharedAction = shared && row.sharedAction && shared.options.includes(row.sharedAction) ? row.sharedAction : null;
    // An email or number that was someone's who left and nobody holds now (section 44): the row asks what to do.
    // Never their own: a row saying they came back leaves out that record and the ones it came back from.
+   // Every record of that person: the ones they came back from and the ones made when they came back.
    const self = new Set<string>();
-   for (let id: string | undefined = previousMemberId ?? undefined; id && !self.has(id); id = known.earlier?.get(id)) self.add(id);
+   const samePerson = (start: string) => {
+    const queue = [start];
+    for (let id = queue.pop(); id; id = queue.pop()) {
+     if (self.has(id)) continue;
+     self.add(id);
+     const before = known.earlier?.get(id); if (before) queue.push(before);
+     for (const [later, prior] of known.earlier ?? []) if (prior === id) queue.push(later);
+    }
+   };
+   if (previousMemberId) samePerson(previousMemberId);
    // A row that fills in a record or adds an account at another company writes its values too, onto the person it matched.
    const acting = fill || account;
-   if (acting && match) for (let id: string | undefined = match.id; id && !self.has(id); id = known.earlier?.get(id)) self.add(id);
+   if (acting && match) samePerson(match.id);
    const previousHits = ([['companyEmail', company ? `EMAIL|${company}` : ''], ['ringCentralNumber', number ? `NUMBER|${digits(number)}` : '']] as const)
     .filter(([field]) => !already || (fill ? match!.fills.includes(field) : account))
     .flatMap(([field, key]) => { const former = key ? known.formers?.get(key)?.find(item => !self.has(item.memberId)) : undefined; return former ? [{ field, name: former.name, until: former.until }] : []; });
@@ -517,7 +527,13 @@ export class ExistingDispatchersService {
    // Until IT confirmed it or the row says without, a fill or an account waits (the row shows under Was someone else's).
    let filling = fill, adding = account;
    if (previous && acting && !previousAction) filling = adding = false;
-   if (fill && dropped.length) { match!.fills = match!.fills.filter(field => !dropped.includes(field as 'companyEmail')); filling = filling && match!.fills.length > 0; }
+   // A dropped number takes its extension with it, so no record keeps an extension with no number.
+   if (fill && dropped.length) {
+    match!.fills = match!.fills.filter(field => !dropped.includes(field as 'companyEmail') && !(field === 'ringCentralExtension' && dropped.includes('ringCentralNumber')));
+    filling = filling && match!.fills.length > 0;
+    // Nothing left to fill in: Fill isn't offered, as for a row that never had anything to fill.
+    if (!match!.fills.length) match!.options = match!.options.filter(option => option !== 'FILL');
+   }
    if (account && dropped.length && !(company && !dropped.includes('companyEmail')) && !(number && !dropped.includes('ringCentralNumber'))) adding = false;
    // What is left to close once a "without" choice took its value off, so Ask IT never asks about nothing.
    const accountsLeft = left && !!((company && !dropped.includes('companyEmail')) || (number && !dropped.includes('ringCentralNumber')) || text(row.datEmail) || text(row.truckstopEmail));
@@ -611,7 +627,7 @@ export class ExistingDispatchersService {
      && !result.dropped.includes(field);
     const record = await em.getRepository(ExistingMemberRecord).save({ memberId: member.id, addedBy: user.id, sourceName: sourceName?.trim().slice(0, 200) || null,
      companyEmail: keepsOwn('companyEmail') ? text(row.companyEmail).toLowerCase() || null : null, ringCentralNumber: keepsOwn('ringCentralNumber') ? text(row.ringCentralNumber) || null : null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null,
-     telegram: telegramUsername(text(row.telegram)), ringCentralExtension: text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null,
+     telegram: telegramUsername(text(row.telegram)), ringCentralExtension: result.dropped.includes('ringCentralNumber') ? null : text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null,
      startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod, leftDateKnown: !result.left || !!result.leftOn,
      legalFirstName: text(row.legalFirstName) || null, legalLastName: text(row.legalLastName) || null });
     if (result.shared && result.sharedAction && result.sharedAction !== 'WITHOUT') await this.settleShared(em, user, member.id, row, result.shared, result.sharedAction);
@@ -691,7 +707,7 @@ export class ExistingDispatchersService {
   // The row's position column says what they were there (section 40); a blank one records nothing.
   const position = text(row.position) ? (result.position === 'SUPPORT' ? result.supportType : 'DISPATCHER') : null;
   await addCompanyAccount(em, user.id, member.id, { mcId: at.mcId, companyName: null, position, nameUsed: used, companyEmail: theirs ? null : email, ringCentralNumber: number,
-   ringCentralExtension: text(row.ringCentralExtension) || null, status: 'ACTIVE', closedOn: null, sourceName: sourceName?.trim().slice(0, 200) || 'file' });
+   ringCentralExtension: number ? text(row.ringCentralExtension) || null : null, status: 'ACTIVE', closedOn: null, sourceName: sourceName?.trim().slice(0, 200) || 'file' });
   const fields = ['companyAccount'];
   if (used && !(await em.getRepository(MemberOtherName).existsBy({ memberId: member.id, name: used }))) { await saveOtherNames(em, member.id, [{ name: used, mcId: at.mcId }], user.id); fields.push('otherNames'); }
   if (text(row.datEmail) || text(row.truckstopEmail)) { await this.fileSeats(em, user, member, row, result, undefined, true); fields.push('seats'); }

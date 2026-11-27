@@ -5,10 +5,10 @@ import { KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DescriptionList } from '@/components/ui/description-list';
 import { Dialog } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/field';
+import { Checkbox, Input } from '@/components/ui/field';
 import { Notice } from '@/components/ui/alert';
 import { useToast } from '@/components/ui/toast';
-import { errorMessage, mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { PasswordReadyDialog, type ReadyPassword } from '@/features/users/password-ready-dialog';
 
 export interface SignInTask { id: string; signIn: 'CREATE' | 'TURN_ON' | 'TURN_OFF'; name: string; email: string | null; team: string | null; mc: string | null }
@@ -26,18 +26,23 @@ export function SignInTaskButton({ task }: { task: SignInTask }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [email, setEmail] = useState('');
+  // Section 44: an email that was someone's who left asks for IT's confirmation, for the value it was asked about only.
+  const [formerAsked, setFormerAsked] = useState(false), [formerOk, setFormerOk] = useState(false);
   const [ready, setReady] = useState<ReadyPassword | null>(null);
   const first = task.name.split(' ')[0];
   async function confirm() {
     if (pending) return;
     setPending(true); setError('');
     try {
-      const result = await mutate<{ email: string; name: string; generatedPassword?: string }>(`it/sign-ins/${task.id}`, 'POST', task.email ? {} : { companyEmail: email });
+      const result = await mutate<{ email: string; name: string; generatedPassword?: string }>(`it/sign-ins/${task.id}`, 'POST', task.email ? {} : { companyEmail: email, ...(formerAsked && formerOk ? { previousOwnerConfirmed: true } : {}) });
       setOpen(false);
       if (result.generatedPassword) setReady({ kind: 'created', name: result.name, firstName: first, email: result.email, password: result.generatedPassword, emailLabel: 'Company email',
         title: task.signIn === 'CREATE' ? `Sign-in created for ${result.name}` : `Sign-in turned back on for ${result.name}` });
       else { toast({ title: `${first}’s sign-in is off` }); router.refresh(); }
-    } catch (error) { setError(errorMessage(error, 'Not done. Reload IT tasks and try again.')); }
+    } catch (error) {
+      if (error instanceof ApiError && error.reason?.code === 'PREVIOUS_OWNER') setFormerAsked(true);
+      setError(errorMessage(error, 'Not done. Reload IT tasks and try again.'));
+    }
     finally { setPending(false); }
   }
   const team = task.team ? `${task.team}${task.mc ? ` · ${task.mc}` : ''}` : 'No team';
@@ -55,7 +60,8 @@ export function SignInTaskButton({ task }: { task: SignInTask }) {
       actions={<Button onClick={() => void confirm()} disabled={!task.email && !email.trim()}><KeyRound aria-hidden="true" className="size-4" />{pending ? 'Saving…' : task.signIn === 'CREATE' ? 'Create sign-in' : 'Turn back on'}</Button>}>
       <div className="space-y-4">
         <DescriptionList layout="rows" items={task.email ? [...who, { label: 'Company email', value: task.email }] : who} />
-        {!task.email && <Input label="Company email" type="email" value={email} onChange={event => setEmail(event.target.value)} autoComplete="off" width="full" error={error || undefined} hint="This is also saved on their dispatcher record." />}
+        {!task.email && <Input label="Company email" type="email" value={email} onChange={event => { setEmail(event.target.value); setFormerAsked(false); setFormerOk(false); }} autoComplete="off" width="full" error={error || undefined} hint="This is also saved on their dispatcher record." />}
+        {!task.email && formerAsked && <Checkbox name="formerOk" checked={formerOk} onChange={event => setFormerOk(event.target.checked)} label={`IT confirmed it’s ${first}’s now`} description="Recorded on their dispatcher record’s history." />}
         {task.signIn === 'CREATE' && task.email && <p className="text-[13px] leading-5 text-muted-foreground">We’ll create a first password for you to send them. They replace it with their own when they first sign in. To use a different email, correct it on their dispatcher record first.</p>}
         {task.email && <Notice message={error} error />}
       </div>
