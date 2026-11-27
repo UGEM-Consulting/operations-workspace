@@ -76,7 +76,7 @@ export interface ExistingRecord { sourceName: string | null; companyEmail: strin
   catchUp: { expiresAt: string; opened: boolean; started: boolean; status: string; signed: { kind: string; signedAt: string }[]; applicationId: string | null; reference: string | null; canReview: boolean; timeEndedAt?: string | null; returnEmail?: string | null } | null }
 /** Shared company email and RingCentral number (section 35): what they use of someone else's, and who uses theirs. Absent from an older API. */
 export type SharedKind = 'EMAIL' | 'RINGCENTRAL';
-export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean }
+export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean; /** IT is removing the owner's access now; an older API sends none. */ ownerRemoval?: { done: boolean; toThem: boolean } | null }
 export interface SharedUsedBy { kind: SharedKind; value: string; users: { id: string; name: string }[] }
 export interface SharedSignIns { dat: { id: string; name: string }[]; truckstop: { id: string; name: string }[] }
 /** A support's or updater's IT setup (section 32): the request IT is working on and how many finished. Absent from an older API. */

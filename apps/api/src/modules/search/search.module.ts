@@ -77,9 +77,8 @@ export class SearchService {
   const meta = support ? `${kind} for ${person.wholeTeam ? `the whole ${person.wholeTeam}` : person.dispatcher ?? 'nobody yet'}` : [person.lead ? 'Dispatcher · team lead' : kind, person.team].filter(Boolean).join(' · ');
   const state: { label: string; tone: Tone } = person.status === 'LEFT' ? { label: 'Left', tone: 'neutral' } : person.lastDay ? { label: 'Leaving', tone: 'warning' }
    : leave?.started ? { label: 'On leave', tone: 'info' } : person.status === 'ONBOARDING' ? { label: 'Onboarding', tone: 'info' } : { label: 'Active', tone: 'success' };
-  // What matched, unless their name did, as the Dispatchers box shows it.
-  const matched = person.matched as { label: string; value: string } | null;
-  return { id: person.id as string, name: `${person.firstName} ${person.lastName}`, meta: matched ? `${matched.label}: ${matched.value}` : meta, status: state, href: `${pages}/dispatchers/${person.id}` };
+  // A name, a page and a status only (SearchEverywhereScreen): never the detail that matched, such as a personal phone.
+  return { id: person.id as string, name: `${person.firstName} ${person.lastName}`, meta, status: state, href: `${pages}/dispatchers/${person.id}` };
  }
 }
 

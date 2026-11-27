@@ -69,9 +69,9 @@ const blankOr = (_object: unknown, value: unknown) => value !== undefined && val
 export class UpdateExistingDto {
  @IsInt() @Min(1) version!: number;
  @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) companyEmail?: string;
- @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) ringCentralNumber?: string;
+ @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN, { message: 'The RingCentral number should have 7 to 15 digits.' }) @MaxLength(40, { message: 'The RingCentral number is too long.' }) ringCentralNumber?: string;
  @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) personalEmail?: string;
- @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) personalPhone?: string;
+ @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN, { message: 'The personal phone should have 7 to 15 digits.' }) @MaxLength(40, { message: 'The personal phone is too long.' }) personalPhone?: string;
  @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) telegram?: string;
  @text() @ValidateIf(blankOr) @Matches(EXTENSION, { message: 'The extension should be digits, up to 6.' }) ringCentralExtension?: string;
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) datEmail?: string;
@@ -93,7 +93,7 @@ export class SuggestQueryDto {
 export class AccountOwnersDto {
  @IsOptional() @IsUUID() memberId?: string;
  @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) companyEmail?: string;
- @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN) @MaxLength(40) ringCentralNumber?: string;
+ @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN, { message: 'The RingCentral number should have 7 to 15 digits.' }) @MaxLength(40, { message: 'The RingCentral number is too long.' }) ringCentralNumber?: string;
 }
 /** Dispatch › Dispatchers' filters (the Dispatchers table group in the Design System). teamId NONE means placed under an MC with no team (Independent). */
 export class MemberFilters {
@@ -246,7 +246,7 @@ export class AssignDriverDto {
  @IsUUID() mcId!: string;
  @IsUUID() memberId!: string;
  @IsDateString({ strict: true }) startsOn!: string;
- @text() @IsOptional() @IsString() @MaxLength(40) truck?: string;
+ @text() @IsOptional() @IsString() @MaxLength(40, { message: 'Keep the truck to 40 characters.' }) truck?: string;
  // From Units (section 34): an owner-operator's own truck or a truck owner's, and a trailer; null clears one. An older page
  // sends truck text instead and neither field, which keeps the unit and trailer it can't show.
  @IsOptional() @IsUUID() unitId?: string | null;

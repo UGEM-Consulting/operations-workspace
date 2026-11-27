@@ -1,5 +1,6 @@
 'use client';
 import { useRouter } from 'next/navigation';
+import { phoneLabel } from '@/lib/phone';
 import { useState } from 'react';
 import { Ellipsis, Pencil, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -61,7 +62,7 @@ export function CompanyAccountsCard({ memberId, accounts, mcs, canChange, canAsk
       {/* The note, with who wrote it and when (CompanyAccountNoteCardScreen). */}
       {account.note && <p className="mt-0.5 rounded-r-md border-l-[3px] border-border-strong bg-muted px-2.5 py-1.5 text-[13px] leading-5 whitespace-pre-line">{account.note}
         <span className="block text-xs leading-4 text-muted-foreground">Note{account.noteBy ? ` by ${account.noteBy}` : ''}{account.noteAt && <> · <LocalTime iso={account.noteAt} format="date" /></>}</span></p>}
-      <DescriptionList layout="rows" stacked items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber, mono: true }] : []),
+      <DescriptionList layout="rows" stacked items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: phoneLabel(account.ringCentralNumber), mono: true }] : []),
         ...(account.ringCentralExtension ? [{ label: 'Extension', value: account.ringCentralExtension, mono: true }] : []), ...(account.closedAt ? [{ label: 'Closed', value: <LocalTime iso={account.closedAt} format="date" /> }] : [])]} />
       {account.status !== 'CLOSED' && account.keptFor.length > 0 && <p className="text-[13px] leading-5 text-muted-foreground">Signs in to {account.keptFor.join(' and ')}.{account.status === 'KEPT_FOR_LOAD_BOARDS' ? ' Close it once no seat uses it.' : ''}</p>}
       {account.status === 'KEPT_FOR_LOAD_BOARDS' && !account.keptFor.length && <p className="text-[13px] leading-5 text-muted-foreground">No load board seat uses it now, so it can be closed.</p>}
@@ -134,7 +135,7 @@ function AskToCloseDialog({ account, onClose }: { account: CompanyAccount; onClo
   return <Dialog open onClose={onClose} busy={busy} tone="danger" title={`Close the account at ${companyOf(account)}`} description={account.companyEmail ? `${account.companyEmail}. IT gets a task to close it.` : 'IT gets a task to close it.'}
     actions={<Button type="submit" form="ask-close" variant="destructive" disabled={busy}>{busy ? 'Sending…' : 'Ask IT to close it'}</Button>}>
     <form id="ask-close" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
-      <DescriptionList layout="rows" items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: account.ringCentralNumber, mono: true }] : []), { label: 'Load board seats using it', value: 'None active' }]} />
+      <DescriptionList layout="rows" items={[...(account.companyEmail ? [{ label: 'Company email', value: account.companyEmail }] : []), ...(account.ringCentralNumber ? [{ label: 'RingCentral number', value: phoneLabel(account.ringCentralNumber), mono: true }] : []), { label: 'Load board seats using it', value: 'None active' }]} />
       {account.companyEmail && <EmailAfterFields email={account.companyEmail} label="The email" value={emailChoice} onChange={setEmailChoice} />}
       <Textarea label="Note for IT" name="note" optional rows={2} maxLength={500} hint="Never passwords." />
       <Notice message={error} error />

@@ -18,7 +18,7 @@ import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
-import { actionWord, doneFor, EMAIL_DONE_OPTIONS, emailStepText, type EmailAction, type EmailDone } from './email-words';
+import { actionWord, doneFor, emailDoneOptions, emailStepText, type EmailAction, type EmailDone } from './email-words';
 
 // IT requests about company accounts (Design System section 33: ItCloseAccountTaskScreen, and a move's new accounts).
 export interface AccountRequestDetail {
@@ -103,7 +103,7 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
     {editing && <Dialog open onClose={() => setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual work." busy={pending === 'task'} actions={<Button form="it-account-editor" type="submit">{pending === 'task' ? 'Saving…' : 'Save task'}</Button>}>
       <form id="it-account-editor" onSubmit={update} className="space-y-4">
         <Select label="Status" name="status" value={status} onChange={event => setStatus(event.target.value)} width="sm" options={OUTCOMES.map(value => ({ value, label: statusLabel(value) }))} />
-        {needsEmailDone && request.emailAction && <RadioGroup name="emailDone" label="What you did with the email" value={emailDone} onChange={value => setEmailDone(value as EmailDone)} options={EMAIL_DONE_OPTIONS}
+        {needsEmailDone && request.emailAction && <RadioGroup name="emailDone" label="What you did with the email" value={emailDone} onChange={value => setEmailDone(value as EmailDone)} options={emailDoneOptions(request.emailAfter === 'FORWARD')}
           hint={`${request.managerName ?? 'The manager'} chose ${actionWord(request.emailAction)}. Needed to mark the task completed.`} />}
         <Textarea label="Notes" name="notes" optional defaultValue={editing.notes} rows={3} hint="Never passwords." />
         <Notice message={error} error />

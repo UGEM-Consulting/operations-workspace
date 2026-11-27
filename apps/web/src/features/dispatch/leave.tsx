@@ -166,6 +166,7 @@ export function LeaveDialog({ action, member, onClose }: { action: LeaveAction; 
      <CardBody className="space-y-4">
       <DescriptionList layout="rows" items={[...(companyEmail ? [{ label: 'Company email', value: companyEmail }] : []), ...(number ? [{ label: 'RingCentral number', value: number, mono: true }] : []),
        ...(member.leadOf ? [{ label: 'Team lead sign-in', value: 'Turned off on the first day, back on when they return' }] : [])]}/>
+      {(member.sharing?.usedBy ?? []).length > 0 && <Alert tone="warning" title="Others use it too"><p>{(member.sharing?.usedBy ?? []).map(item => `${new Intl.ListFormat('en-US', { type: 'conjunction' }).format(item.users.map(user => user.name))} ${item.users.length === 1 ? 'uses' : 'use'} their ${item.kind === 'EMAIL' ? 'company email' : 'RingCentral number'}`).join('. ')}. IT won’t suspend an email others use, and what you choose for email and calls reaches them too, so check with them first.</p></Alert>}
       {companyEmail && <RadioGroup name="emailWhileAway" label="New email while they’re away" cards value={emailWhileAway} onChange={value => setEmail(value as 'FORWARD' | 'AUTO_REPLY')} options={[
        { value: 'FORWARD', label: 'Forward to me', description: 'IT forwards new email to you until they return.' },
        { value: 'AUTO_REPLY', label: 'Auto-reply', description: 'Senders are told they’re away until the return day. Nothing is forwarded.' }]}/>}

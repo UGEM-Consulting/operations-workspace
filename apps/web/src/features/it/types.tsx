@@ -26,7 +26,7 @@ export function notificationView(item:Notifications['items'][number]){
  if(item.kind==='IT_RESTORE_COMPLETED')return {title:'Access restored',text:name?`IT restored ${name}’s accounts.`:'IT restored their accounts.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  // Company accounts (section 33): IT closed an account, or set up their accounts after a move.
  if(item.kind==='IT_ACCOUNT_COMPLETED')return {title:'Company accounts updated',text:name?`IT finished what you asked about ${name}’s company accounts.`:'IT finished what you asked about their company accounts.',href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
- if(item.kind==='IT_REMOVAL_COMPLETED')return {title:'IT access removed',text:`IT removed ${name??'the dispatcher'}’s accounts.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View dispatcher'};
+ if(item.kind==='IT_REMOVAL_COMPLETED')return {title:'IT access removed',text:`IT removed ${name??'the dispatcher'}’s accounts.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  if(!item.applicationId)return {title:'IT setup completed',text:`IT finished what you asked for ${name??'them'}.`,href:item.memberId?`/dispatch/dispatchers/${item.memberId}`:null,link:'View their page'};
  return {title:'IT setup completed',text:`${name??'Dispatcher'} is ready to work.`,href:`/onboarding/applications/${item.applicationId}`,link:'View application'};
 }
@@ -44,7 +44,7 @@ export interface RemovalRequest {id:string;memberId:string;version:number;status
  /** Their email or number goes to someone staying, so IT keeps it open: the API's rule (handedOver), never worked out here. */
  handedOver?:{email:boolean;number:boolean};}
 /** Leave (section 35): suspending accounts while someone is away (SUSPEND), and restoring them (RESTORE). */
-export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;}
+export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;sharedWith?:{email:string[];number:string[]};}
 export interface LeaveRequest {id:string;memberId:string;kind:'SUSPEND'|'RESTORE';version:number;status:TaskStatus;scheduled:boolean;dueOn:string;completedAt:string|null;cancelledAt:string|null;managerName:string|null;profile:LeaveProfile;suspended?:{by:string|null;at:string}|null;signInWaiting?:boolean;leaveEnded?:'RETURNED'|'CANCELLED'|'LEAVING'|null;}
 export interface LeaveDetail {photos?:{profile:boolean;id:boolean};request:LeaveRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};}
 export interface RemovalDetail {photos?:{profile:boolean;id:boolean};request:RemovalRequest;tasks:ItTask[];activity:ItDetail['activity'];sharedSignIns?:{dat:{id:string;name:string}[];truckstop:{id:string;name:string}[]};

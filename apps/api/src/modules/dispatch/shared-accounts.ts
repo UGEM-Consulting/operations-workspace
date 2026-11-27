@@ -7,7 +7,8 @@ import { DispatchEvent, MemberSharedAccount, type SharedKind } from './dispatch.
 type Query = Pick<EntityManager, 'query'>;
 /** Someone here now whose record holds a company email or RingCentral number. onRecord: only a manager recorded it by hand (no IT setup, other company's account or hand-over holds it), so it can be moved to someone else. */
 export interface AccountOwner { memberId: string; name: string; onRecord: boolean }
-export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean }
+/** ownerRemoval: IT is removing (or removed) the owner's access now, before they're Left; toThem when it's being handed over to this person. */
+export interface SharedUse { id: string; kind: SharedKind; value: string; owner: { id: string; name: string } | null; since: string; handedOver: boolean; ownerRemoval: { done: boolean; toThem: boolean } | null }
 export interface SharedUsedBy { kind: SharedKind; value: string; users: { id: string; name: string }[] }
 
 /** The same value for comparing: an email in lower case, a number by its digits (without a leading US 1). */
@@ -36,8 +37,13 @@ export async function accountOwners(em: Query, kind: SharedKind, value: string, 
 /** What someone uses that is another person's, and who uses what is theirs, for their page. */
 export async function memberSharing(em: Query, memberId: string): Promise<{ uses: SharedUse[]; usedBy: SharedUsedBy[] }> {
  const uses: SharedUse[] = await em.query(`SELECT s.id, s.kind, s.value, CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'name', o."firstName" || ' ' || o."lastName") END AS owner,
-   coalesce(s."handedOverAt", s."createdAt") AS since, s."handedOverAt" IS NOT NULL AS "handedOver"
-  FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId" WHERE s."memberId" = $1 AND s."endedAt" IS NULL ORDER BY s.kind`, [memberId]);
+   coalesce(s."handedOverAt", s."createdAt") AS since, s."handedOverAt" IS NOT NULL AS "handedOver",
+  CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('done', r."completedAt" IS NOT NULL, 'toThem', coalesce(r.profile->'shared'->>'handOverToId' = s."memberId"::text, false)) END AS "ownerRemoval"
+  FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId"
+  -- The owner's access is being removed now (asked for now, or their last day has come), while sharing still runs until they're Left.
+  LEFT JOIN LATERAL (SELECT r.id, r."completedAt", r.profile FROM it_removal_requests r WHERE r."memberId" = s."ownerMemberId" AND s."handedOverAt" IS NULL AND r."cancelledAt" IS NULL
+   AND (r."removeNowAt" IS NOT NULL OR r."dueOn" <= (now() AT TIME ZONE 'America/New_York')::date) ORDER BY r."createdAt" DESC LIMIT 1) r ON true
+  WHERE s."memberId" = $1 AND s."endedAt" IS NULL ORDER BY s.kind`, [memberId]);
  const users: { kind: SharedKind; value: string; id: string; name: string }[] = await em.query(`SELECT s.kind, s.value, u.id, u."firstName" || ' ' || u."lastName" AS name
   FROM member_shared_accounts s JOIN dispatch_members u ON u.id = s."memberId" WHERE s."ownerMemberId" = $1 AND s."endedAt" IS NULL AND s."handedOverAt" IS NULL
   ORDER BY s.kind, lower(u."firstName"), lower(u."lastName")`, [memberId]);

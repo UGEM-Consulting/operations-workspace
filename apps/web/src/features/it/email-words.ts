@@ -17,6 +17,8 @@ export const EMAIL_DONE_OPTIONS: { value: EmailDone; label: string; description?
   { value: 'SUSPENDED', label: 'Suspended' },
   { value: 'DELETED', label: 'Deleted' },
 ];
+/** What IT may record: never Deleted when the email is to be forwarded, since a deleted account can't forward (the API refuses it). */
+export const emailDoneOptions = (forwarding: boolean) => forwarding ? EMAIL_DONE_OPTIONS.filter(option => option.value !== 'DELETED') : EMAIL_DONE_OPTIONS;
 const ACTION_WORDS: Record<EmailAction, string> = { ARCHIVE: 'Archive', SUSPEND: 'Suspend', DELETE: 'Delete' };
 const DONE_WORDS: Record<EmailDone, string> = { ARCHIVED: 'Archived', SUSPENDED: 'Suspended', DELETED: 'Deleted' };
 /** What IT records to start with: the manager's choice. */

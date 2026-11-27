@@ -1,5 +1,6 @@
 'use client';
 import Link from 'next/link';
+import { phoneLabel } from '@/lib/phone';
 import { useEffect, useRef, useState } from 'react';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -22,14 +23,18 @@ export const usersOf = (member: Pick<MemberProfile, 'sharing'>, kind: SharedKind
 
 /** "riley.santos@… / Riley Santos’s, shared since Nov 17, 2026", or a handed-over one, which is theirs now. */
 export function SharedValue({ use, mono = false }: { use: SharedUse; mono?: boolean }) {
-  return <span className="grid gap-0.5"><span className={mono ? 'break-all font-mono' : 'break-all'}>{use.value}</span>
+  return <span className="grid gap-0.5"><span className={mono ? 'break-all font-mono' : 'break-all'}>{use.kind === 'RINGCENTRAL' ? phoneLabel(use.value) : use.value}</span>
     <span className="text-[13px] font-normal text-muted-foreground">{use.handedOver ? <>Handed over{use.owner ? <> from {personLink(use.owner)}</> : null} on {day(use.since)}</>
-      : <>{use.owner ? <>{personLink(use.owner)}’s</> : 'Someone else’s'}, shared since {day(use.since)}</>}</span></span>;
+      : <>{use.owner ? <>{personLink(use.owner)}’s</> : 'Someone else’s'}, shared since {day(use.since)}</>}</span>
+    {/* The owner's access is going before they're Left: say so, so nobody counts on it. */}
+    {!use.handedOver && use.ownerRemoval && <span className="text-[13px] font-normal text-warning">{use.ownerRemoval.toThem ? 'Being handed over to them as IT removes the owner’s access.' : use.ownerRemoval.done ? 'IT has removed the owner’s access, so it may no longer work.' : 'IT is removing the owner’s access, so it may stop working.'}</span>}</span>;
 }
 /** Their own value, with who else uses it. */
 export function OwnValue({ value, users, mono = false }: { value: string; users: { id: string; name: string }[]; mono?: boolean }) {
-  if (!users.length) return <span className={mono ? 'font-mono' : undefined}>{value}</span>;
-  return <span className="grid gap-0.5"><span className={mono ? 'break-all font-mono' : 'break-all'}>{value}</span><span className="text-[13px] font-normal text-muted-foreground">Also used by {joined(users)}</span></span>;
+  // mono is a RingCentral number, shown in the one phone format.
+  const shown = mono ? phoneLabel(value) : value;
+  if (!users.length) return <span className={mono ? 'font-mono' : undefined}>{shown}</span>;
+  return <span className="grid gap-0.5"><span className={mono ? 'break-all font-mono' : 'break-all'}>{shown}</span><span className="text-[13px] font-normal text-muted-foreground">Also used by {joined(users)}</span></span>;
 }
 
 export interface Owner { id: string; name: string; onRecord: boolean }

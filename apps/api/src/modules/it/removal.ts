@@ -9,6 +9,8 @@ import { phoneKey } from '../onboarding/already-here';
 import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, REMOVAL_CHECKLIST, type EmailAction } from './it.entity';
 
 /** A deleted Google account can't forward new email (section 40), so the manager's choice never asks for both. */
+/** What IT is told when it records Deleted for an email the manager asked to forward. */
+export const FORWARDING_NOT_DELETED = 'The manager asked for its email to be forwarded, and a deleted account can’t forward. Record Archived or Suspended, or ask the manager to change the choice.';
 export function checkEmailChoice(emailAfter: 'FORWARD' | 'SUSPEND' | undefined, emailAction: EmailAction | undefined) {
  if (emailAction === 'DELETE' && emailAfter === 'FORWARD') throw new BadRequestException('A deleted account can’t forward new email. Choose Archive or Suspend to forward it.');
 }

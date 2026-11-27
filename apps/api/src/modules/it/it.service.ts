@@ -14,6 +14,7 @@ import { onboardingLimit } from '../onboarding/rate-limit';
 import { photoFor } from '../documents/requirements';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } from './it.dto';
+import { FORWARDING_NOT_DELETED } from './removal';
 import { usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { ItLeaveActivity, ItLeaveRequest, ItLeaveTask, LEAVE_CHECKLIST, leaveTaskDone } from './it.entity';
@@ -264,6 +265,8 @@ export class ItService {
    const notes=input.notes??task.notes;
    if(input.status==='BLOCKED'&&!notes.trim())throw new BadRequestException('Provide a reason for a blocked task.');
    // Section 40: what IT did with the email, and what it turned off in RingCentral, kept even when saved part way.
+   // The manager asked for forwarding, and a deleted account can't forward (section 40, the user's decision 2026-11-24).
+   if(input.emailDone==='DELETED'&&removal.emailAfter==='FORWARD')throw new BadRequestException(FORWARDING_NOT_DELETED);
    if(input.emailDone)removal.emailDone=input.emailDone;
    if(input.ringCentralOff)removal.ringCentralOff=RINGCENTRAL_OFF.filter(item=>input.ringCentralOff!.includes(item));
    // An older page (before section 40) completes RingCentral by saying what happened to the number, as it did then.

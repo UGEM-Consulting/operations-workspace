@@ -1,5 +1,6 @@
 'use client';
 import Link from 'next/link';
+import { phoneLabel } from '@/lib/phone';
 import { MemberPhotosCard } from './member-photos';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -61,7 +62,7 @@ const alsoUsed = (users: { name: string }[]) => users.length ? ` · also used by
 function ContactRow({ icon: Icon, value, source, action }: { icon: typeof Mail; value: string; source: string; action?: React.ReactNode }) {
   return <li className="flex items-center gap-3 px-4 py-3 sm:px-5">
     <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
-    <div className="min-w-0 flex-1"><p className="break-all text-sm font-medium">{value}</p><p className="text-[13px] text-muted-foreground">{source}</p></div>
+    <div className="min-w-0 flex-1"><p className="break-all text-sm font-medium">{Icon === Phone ? phoneLabel(value) : value}</p><p className="text-[13px] text-muted-foreground">{source}</p></div>
     <span className="flex shrink-0 items-center gap-1"><CopyButton text={value} label="Copy" size="sm" variant="ghost" />{action}</span>
   </li>;
 }
@@ -473,7 +474,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           {removesAccess && <Card><CardHeader title="IT removes their access" description={noticeDay ? 'IT gets the removal checklist and a Telegram alert now, so it can prepare.' : 'Mark as left starts an IT removal checklist and alerts the IT team on Telegram.'} />
             <CardBody className="space-y-4"><DescriptionList layout="rows" items={[
               { label: 'Company email', value: accounts?.companyEmail ?? recordedAccounts?.companyEmail, emptyLabel: recordedAccounts ? 'Not recorded' : 'None recorded' },
-              { label: 'RingCentral number', value: accounts?.workPhone ?? recordedAccounts?.ringCentralNumber, mono: true, emptyLabel: recordedAccounts ? 'Not recorded' : 'None recorded' },
+              { label: 'RingCentral number', value: phoneLabel(accounts?.workPhone ?? recordedAccounts?.ringCentralNumber), mono: true, emptyLabel: recordedAccounts ? 'Not recorded' : 'None recorded' },
               ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : []),
               { label: noticeDay ? 'Remove' : 'Remove by', value: noticeDay ? <>At the end of <LastDay day={lastDay} />, not before</> : 'End of their last day' }]} />
               {(accounts?.companyEmail || recordedAccounts?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) && <EmailAfterFields email={(accounts?.companyEmail || recordedAccounts?.companyEmail)!} value={emailChoice} onChange={setEmailChoice} />}
