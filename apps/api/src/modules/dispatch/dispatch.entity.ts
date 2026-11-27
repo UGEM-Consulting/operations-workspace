@@ -277,9 +277,14 @@ export class MemberDetailCorrection {
  @Column('uuid') memberId!: string;
  @Column('jsonb') changes!: { field: string; from: string | null; to: string | null }[];
  @Column('varchar', { length: 500 }) reason!: string;
+ /** A name change (section 45): a new name, or a fixed mistake; null for other corrections. */
+ @Column('varchar', { length: 10, nullable: true }) kind!: 'NEW_NAME' | 'NAME_FIX' | null;
+ /** What a name change came with: a move, a rehire or a support's change of who they assist. */
+ @Column('varchar', { length: 10, nullable: true }) context!: NameChangeContext | null;
  @Column('uuid') actorId!: string;
  @CreateDateColumn({ type: 'timestamptz' }) createdAt!: Date;
 }
+export type NameChangeContext = 'MOVE' | 'REHIRE' | 'REASSIGN';
 
 export const SHARED_KINDS = ['EMAIL', 'RINGCENTRAL'] as const;
 export type SharedKind = typeof SHARED_KINDS[number];

@@ -10,6 +10,7 @@ import { Role, UserStatus, type User } from '../users/user.entity';
 import { checkEmailFree, refreshRemovalAccounts } from './accounts';
 import { ACCOUNT_TASKS, ItAccountActivity, ItAccountRequest, ItAccountTask, type AccountRequestProfile, type AccountTaskKey } from './account-requests.entity';
 import { CompanyAccount } from './company-accounts.entity';
+import { nameBefore } from '../dispatch/corrections';
 
 const done = (task: Pick<ItAccountTask, 'status'>) => task.status === 'COMPLETED';
 /**
@@ -111,7 +112,10 @@ export class AccountRequestsService {
   const tasks = await em.getRepository(ItAccountTask).findBy({ requestId: id });
   const activity = await em.getRepository(ItAccountActivity).find({ where: { requestId: id }, order: { createdAt: 'ASC' } });
   const [names] = await em.query(`SELECT (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $1) AS manager, (SELECT "firstName" || ' ' || "lastName" FROM users WHERE id = $2) AS "forwardTo"`, [request.managerId, request.forwardTo]);
-  return { request: { ...request, status: itStatus(request, tasks), managerName: names.manager as string | null, forwardToName: names.forwardTo as string | null },
+  // A new name given with this move (section 45): the name before, from the name change made in the same transaction as the request
+  // (compared in SQL, since a JavaScript date drops the microseconds).
+  const [former]: { changes: { field: string; from: string | null }[] }[] = await em.query(`SELECT c.changes FROM member_detail_corrections c JOIN it_account_requests r ON r.id = $1 AND r."memberId" = c."memberId" AND r."createdAt" = c."createdAt" WHERE c.kind = 'NEW_NAME' LIMIT 1`, [request.id]);
+  return { request: { ...request, status: itStatus(request, tasks), managerName: names.manager as string | null, forwardToName: names.forwardTo as string | null, formerName: former ? nameBefore(former.changes) : null },
    tasks: ACCOUNT_TASKS.flatMap(template => { const task = tasks.find(item => item.key === template.key); return task ? [{ ...task, label: template.label, description: template.description, optional: false }] : []; }), activity };
  }
 
@@ -189,12 +193,34 @@ export class AccountRequestsService {
   if (!member) return;
   const main = await mainAccounts(em, member.id), keptEmail = request.profile.keep[0]?.value ?? null;
   const from = request.profile.fromMcId ? { id: request.profile.fromMcId } : null;
-  // Their old accounts stay on record at the MC they left.
-  if (main.companyEmail || main.ringCentralNumber) {
-   const status = keptEmail && keptEmail === main.companyEmail ? 'KEPT_FOR_LOAD_BOARDS' : 'CLOSED';
-   await em.getRepository(CompanyAccount).save({ memberId: member.id, mcId: from?.id ?? null, companyName: from ? null : request.profile.fromMc ?? 'Earlier company', nameUsed: null,
-    companyEmail: main.companyEmail, ringCentralNumber: main.ringCentralNumber, ringCentralExtension: main.ringCentralExtension, status, closedAt: status === 'CLOSED' ? new Date() : null, closedBy: status === 'CLOSED' ? user.id : null, createdBy: user.id, sourceName: null });
-   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_ADDED', actorId: user.id, metadata: { status, fields: [], from: 'move' } });
+  // Their old accounts stay on record at the MC they left. Only what IT closed on this checklist is recorded as Closed: an email or
+  // number recorded after the move was asked for was never on it, so it stays open there and IT is asked to close it now.
+  const tasks = await em.getRepository(ItAccountTask).findBy({ requestId: request.id });
+  // The same email or number however it was typed: numbers by their digits (phoneKey), emails ignoring capitals.
+  const same = (key: AccountTaskKey, a: string, b: string) => key === 'CLOSE_NUMBER' ? phoneKey(a) === phoneKey(b) : a.trim().toLowerCase() === b.trim().toLowerCase();
+  const asked = (value: string | null, key: AccountTaskKey) => !!value && request.profile.close.some(item => same(key, item.value, value)) && tasks.some(task => task.key === key && done(task));
+  const emailClosed = asked(main.companyEmail, 'CLOSE_EMAIL'), numberClosed = asked(main.ringCentralNumber, 'CLOSE_NUMBER');
+  const emailKept = !emailClosed && !!keptEmail && keptEmail === main.companyEmail;
+  const place = { memberId: member.id, mcId: from?.id ?? null, companyName: from ? null : request.profile.fromMc ?? 'Earlier company', nameUsed: null, createdBy: user.id, sourceName: null };
+  const record = async (fields: Pick<CompanyAccount, 'companyEmail' | 'ringCentralNumber' | 'ringCentralExtension' | 'status'>) => {
+   const closed = fields.status === 'CLOSED';
+   const account = await em.getRepository(CompanyAccount).save({ ...place, ...fields, closedAt: closed ? new Date() : null, closedBy: closed ? user.id : null });
+   await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_ADDED', actorId: user.id, metadata: { accountId: account.id, status: fields.status, fields: [], from: 'move' } });
+   return account;
+  };
+  // One row per state, so the record never shows a closed number as open beside a kept email (as a rehire keeps them):
+  // what IT closed, the email kept for load boards, and anything IT wasn't asked to close.
+  if (emailKept) await record({ companyEmail: main.companyEmail, ringCentralNumber: null, ringCentralExtension: null, status: 'KEPT_FOR_LOAD_BOARDS' });
+  const closedEmail = emailClosed ? main.companyEmail : null, closedNumber = numberClosed ? main.ringCentralNumber : null;
+  if (closedEmail || closedNumber) await record({ companyEmail: closedEmail, ringCentralNumber: closedNumber, ringCentralExtension: closedNumber ? main.ringCentralExtension : null, status: 'CLOSED' });
+  let openEmail = main.companyEmail && !emailClosed && !emailKept ? main.companyEmail : null;
+  const openNumber = main.ringCentralNumber && !numberClosed ? main.ringCentralNumber : null;
+  // An email an open load board seat signs in with is never closed (as Close refuses it): kept for the seat, on its own row.
+  if (openEmail && (await seatsUsing(em, openEmail)).length) { await record({ companyEmail: openEmail, ringCentralNumber: null, ringCentralExtension: null, status: 'KEPT_FOR_LOAD_BOARDS' }); openEmail = null; }
+  if (openEmail || openNumber) {
+   const account = await record({ companyEmail: openEmail, ringCentralNumber: openNumber, ringCentralExtension: openNumber ? main.ringCentralExtension : null, status: 'ACTIVE' });
+   // Asked for by whoever asked for the move, so the notice goes to them; the email is handled as they chose for the move.
+   await askToCloseAccount(em, request.managerId, member, account, { emailAfter: 'SUSPEND', emailAction: request.emailAction, note: null }, 'move');
   }
   // The new ones become their main accounts, where their main accounts are kept: IT's newest setup, else the manager's record.
   const values = { companyEmail: request.newCompanyEmail, ringCentralNumber: request.newRingCentralNumber, ringCentralExtension: request.newRingCentralExtension };

@@ -19,6 +19,7 @@ import { usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { ItLeaveActivity, ItLeaveRequest, ItLeaveTask, LEAVE_CHECKLIST, leaveTaskDone } from './it.entity';
 import { memberSetup, RESTORE_TASKS, RESTORE_UNCLOSED } from './it.entity';
+import { nameBefore } from '../dispatch/corrections';
 import { handedOver, IT_CHECKLIST, isOptionalTask, ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, itStatus, itStatusSql, PortalNotification, REMOVAL_CHECKLIST, RINGCENTRAL_OFF, removalScheduled, removalTaskDone, taskDone } from './it.entity';
 
 const statusSql=itStatusSql('r');
@@ -100,7 +101,9 @@ export class ItService {
   // IT sees only whether a profile photo (the plain selfie) exists; never the ID selfie.
   const application=await approvedApplication(em,request);
   const profilePhoto=!!application&&!!await photoFor(em,application.id,'SELFIE',application.submittedAt);
-  return {request:{...request,status:itStatus(request,tasks),profilePhoto,requestedByName:(loaded.raw[0]?.asker as string|null|undefined)??null},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);// Someone coming back (section 41): a task that restores an old account says so.
+  // A new name given with this rehire (section 45): the name before, from the name change made in the same transaction as the setup.
+  const [former]:{changes:{field:string;from:string|null}[]}[]=request.memberId?await em.query(`SELECT c.changes FROM member_detail_corrections c JOIN it_onboarding_requests r ON r.id = $1 AND r."memberId" = c."memberId" AND r."createdAt" = c."createdAt" WHERE c.kind = 'NEW_NAME' LIMIT 1`,[request.id]):[];
+  return {request:{...request,status:itStatus(request,tasks),profilePhoto,formerName:former?nameBefore(former.changes):null,requestedByName:(loaded.raw[0]?.asker as string|null|undefined)??null},tasks:IT_CHECKLIST.flatMap(template=>{const task=tasks.find(item=>item.key===template.key);// Someone coming back (section 41): a task that restores an old account says so.
    return task?[{...task,label:template.label,description:request.restoreKeys?.includes(template.key)?(unclosed(template.key)?RESTORE_UNCLOSED[template.key]:RESTORE_TASKS[template.key]):template.description,optional:!!template.optional}]:[];}),activity};
  }
   // Every required task must exist on a new dispatcher's setup. An optional task added later is missing only on requests created

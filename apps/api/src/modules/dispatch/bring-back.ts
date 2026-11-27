@@ -15,6 +15,7 @@ import { accountOwners } from './shared-accounts';
 import { syncSignIns } from './lead-sign-in';
 import { phoneSqlOf } from '../onboarding/already-here';
 import { RehireDto, UndoLeavingDto } from './dispatch.dto';
+import { lockForRename, renameMember } from './corrections';
 
 /**
  * Where an email or number is already held on an open account of theirs at another company (its MC's name, or the company
@@ -145,6 +146,8 @@ export class BringBackService {
   if (!dispatcher && !!dto.supportsMemberId === !!dto.supportsTeamId) throw new BadRequestException('Choose the dispatcher or team they help.');
   let alerts: string[] = [];
   const result = await this.write(async em => {
+   // A new name may rename a team lead's sign-in: user administration's lock comes first (section 45).
+   if (dto.newName) await lockForRename(em);
    const setups = await lockSetupRequests(em, id);
    await lockCatchUpLinks(em, id);
    const member = await this.lockLeft(em, id, dto.version);
@@ -163,6 +166,10 @@ export class BringBackService {
     number: dto.ringCentral !== 'RESTORE' && accounts.ringCentral?.notClosed && accounts.ringCentral.restorable ? accounts.ringCentral : null };
    // Where those accounts were, read before this rehire places them again.
    const place = close.email || close.number ? await this.lastPlace(em, member) : null;
+   // A new name (section 45): the old one is kept as an other name at the MC they left, and on an account kept there.
+   const formerName = dto.newName ? `${member.firstName} ${member.lastName}`.trim() : null;
+   // Only a known MC: lastPlace's "Earlier company" stands for a place nobody recorded, which the other name shows as Place not recorded.
+   const formerMc = dto.newName ? (place ?? await this.lastPlace(em, member)).mcId : null;
    const wasPosition = member.position === 'DISPATCHER' ? 'DISPATCHER' as const : member.supportType;
    // Placed again: a dispatcher under an MC (and a team of it, or Independent) with a job title; a support or updater with who they help.
    if (dispatcher) {
@@ -197,7 +204,13 @@ export class BringBackService {
    }
    // An old email or number they don't get back stops being theirs, on every earlier setup and the manager's record (kept as retired).
    await this.retireOldAccounts(em, id, setups.map(row => row.id), { email: dto.email !== 'RESTORE', number: dto.ringCentral !== 'RESTORE' });
-   const closeAsked = place ? await this.keepOldAccounts(em, user, member, place, wasPosition, close, dto.closeEmailAction) : false;
+   const closeAsked = place ? await this.keepOldAccounts(em, user, member, place, wasPosition, close, dto.closeEmailAction, formerName) : false;
+   // Named before IT's checklist is made, so IT sets them up under the new name.
+   if (dto.newName) {
+    await renameMember(em, member, { ...dto.newName, kind: 'NEW', place: { mcId: formerMc, companyName: null }, reason: 'Rehired with a new name.', context: 'REHIRE', on: state.leftKnown ? leftAt : null },
+     user.id, setups.filter(row => !row.completedAt && !row.cancelledAt));
+    await em.save(member);
+   }
    const setup = keys.length ? await createReturnSetup(em, { purpose: 'REHIRE', member, keys, restoreKeys, managerId: user.id, actorId: user.id,
     accounts: { companyEmail: dto.email === 'RESTORE' ? accounts.email!.value : null, ringCentralNumber: dto.ringCentral === 'RESTORE' ? accounts.ringCentral!.number : null, ringCentralExtension: dto.ringCentral === 'RESTORE' ? accounts.ringCentral!.extension : null },
     returning: { kind: 'REHIRE', leftOn: state.leftKnown ? day(leftAt) : null, firstDay, emailWas: accounts.email?.was ?? null, emailDeletedOn: accounts.email?.deletedOn ?? null, by: `${user.firstName} ${user.lastName}`,
@@ -205,7 +218,7 @@ export class BringBackService {
    if (setup) alerts = await this.alerts.queueItSetupWaiting(em, setup);
    await em.query(`INSERT INTO member_returns ("memberId", kind, "leftAt", "leftKnown", "leftReason", "previousJoinedAt", "previousStartKnown", "firstDay", "removalId", "setupRequestId", "actorId") VALUES ($1, 'REHIRE', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [id, leftAt, state.leftKnown, state.leftReason, previousJoinedAt, record?.startDateKnown !== false, firstDay, removal?.id ?? null, setup?.id ?? null, user.id]);
-   await this.event(em, user, 'REHIRED', id, { position: dto.position, itSetup: !!setup, restored: restoreKeys.length > 0, ...(closeAsked ? { closeAsked: true } : {}), assists: dispatcher ? null : dto.supportsTeamId ? 'TEAM' : 'DISPATCHER' });
+   await this.event(em, user, 'REHIRED', id, { position: dto.position, itSetup: !!setup, ...(dto.newName ? { newName: true } : {}), restored: restoreKeys.length > 0, ...(closeAsked ? { closeAsked: true } : {}), assists: dispatcher ? null : dto.supportsTeamId ? 'TEAM' : 'DISPATCHER' });
    await syncSignIns(em, [id], user.id);
    return { id, version: member.version, closeAsked };
   });
@@ -257,12 +270,12 @@ export class BringBackService {
   * row so closing the number leaves it. Returns whether IT was asked to close anything.
   */
  private async keepOldAccounts(em: EntityManager, user: User, member: DispatchMember, place: { mcId: string | null; companyName: string | null }, position: 'DISPATCHER' | 'SUPPORT' | 'UPDATER',
-  old: { email: string | null; number: { number: string; extension: string | null } | null }, emailAction: RehireDto['closeEmailAction']) {
+  old: { email: string | null; number: { number: string; extension: string | null } | null }, emailAction: RehireDto['closeEmailAction'], nameUsed: string | null = null) {
   const held = await heldAt(em, member.id, old.email, old.number?.number ?? null);
   const email = old.email && !held.email ? old.email : null, number = old.number && !held.number ? old.number : null;
   const kept = !!email && (await seatsUsing(em, email)).length > 0;
   const add = async (fields: Pick<CompanyAccount, 'companyEmail' | 'ringCentralNumber' | 'ringCentralExtension' | 'status'>) => {
-   const account = await em.getRepository(CompanyAccount).save({ memberId: member.id, ...place, nameUsed: null, position, ...fields, createdBy: user.id, sourceName: null });
+   const account = await em.getRepository(CompanyAccount).save({ memberId: member.id, ...place, nameUsed, position, ...fields, createdBy: user.id, sourceName: null });
    await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'COMPANY_ACCOUNT_ADDED', actorId: user.id, metadata: { accountId: account.id, status: fields.status, fields: [], from: 'rehire' } });
    return account;
   };

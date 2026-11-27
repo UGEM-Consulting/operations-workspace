@@ -48,6 +48,7 @@ const FIELD_WORDS: Record<string, string> = { companyEmail: 'company email', rin
  leftReason: 'reason for leaving', otherNames: 'other names', companyAccount: 'an account at another company', seats: 'load board seats', sharedEmail: 'shared company email', sharedNumber: 'shared RingCentral number',
  legalFirstName: 'legal first name', legalLastName: 'legal last name', preferredAmericanFirstName: 'American first name', preferredAmericanLastName: 'American last name', firstName: 'first name', lastName: 'last name',
  nameUsed: 'name used there', note: 'note', position: 'position there' };
+const NAME_WITH: Record<string, string> = { MOVE: ', with the move to another MC', REHIRE: ', with the rehire', REASSIGN: ', with the change of who they assist' };
 const words = (fields: string[]) => fields.map(field => FIELD_WORDS[field] ?? field);
 // Onboarding steps worth reading; sends, failures and drafts stay out, and IT's own entries come from its requests.
 const ACTIVITY: Record<string, string | null> = { INVITATION_CREATED: 'Invitation created', INVITATION_CLAIMED: 'Invitation opened', APPLICANT_VERIFIED: 'Email verified', APPLICATION_SUBMITTED: 'Application sent',
@@ -110,7 +111,8 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    FROM member_leaves l LEFT JOIN users r ON r.id = l."recordedBy" LEFT JOIN users e ON e.id = l."endedBy" WHERE l."memberId" = $1`),
   q(`SELECT q.id, q.kind, q."createdAt", q."completedAt", q."cancelledAt" FROM it_leave_requests q WHERE q."memberId" = $1`),
   q(`SELECT c.id, c.kind, c."createdAt", c."removedAt", ${actor('a')} AS by, ${actor('r')} AS "removedBy" FROM member_contacts c LEFT JOIN users a ON a.id = c."addedBy" LEFT JOIN users r ON r.id = c."removedBy" WHERE c."memberId" = $1`),
-  q(`SELECT c.id, c.changes, c.reason, c."createdAt", ${actor('u')} AS by FROM member_detail_corrections c LEFT JOIN users u ON u.id = c."actorId" WHERE c."memberId" = $1`),
+  q(`SELECT c.id, c.changes, c.reason, c.kind, c.context, c."createdAt",
+   (SELECT (e.metadata->>'kept')::boolean FROM dispatch_events e WHERE e."memberId" = c."memberId" AND e.event = 'DETAILS_CORRECTED' AND e."createdAt" = c."createdAt" AND e.metadata ? 'kept' LIMIT 1) AS kept, ${actor('u')} AS by FROM member_detail_corrections c LEFT JOIN users u ON u.id = c."actorId" WHERE c."memberId" = $1`),
   q(`SELECT s.id, s."startedOn"::text AS "startedOn", s."previousOn"::text AS "previousOn", s.reason, s."createdAt", ${actor('u')} AS by,
     (SELECT (e.metadata->>'periodMoved')::boolean FROM dispatch_events e WHERE e."memberId" = s."memberId" AND e.event = 'START_DATE_RECORDED' AND abs(extract(epoch FROM e."createdAt" - s."createdAt")) < 5 LIMIT 1) AS "periodMoved"
    FROM member_start_date_changes s LEFT JOIN users u ON u.id = s."actorId" WHERE s."memberId" = $1`),
@@ -209,7 +211,13 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   add(`contact-${row.id}`, row.createdAt, 'DETAILS', row.kind === 'EMAIL' ? 'mail' : 'phone', `${what} added`, row.by);
   if (row.removedAt) add(`contact-removed-${row.id}`, row.removedAt, 'DETAILS', row.kind === 'EMAIL' ? 'mail' : 'phone', `${what} removed`, row.removedBy);
  }
- for (const row of corrections) add(`correction-${row.id}`, row.createdAt, 'DETAILS', 'pen-line', `Details corrected: ${list(words((row.changes ?? []).map((change: Row) => change.field)))}`, row.by, row.reason ?? null);
+ for (const row of corrections) {
+  // A name change (section 45) names what it came with and, for a new name, that the earlier one is kept; never the names.
+  if (row.kind === 'NEW_NAME') add(`correction-${row.id}`, row.createdAt, 'DETAILS', 'pen-line', `Name changed${NAME_WITH[row.context] ?? ''}`, row.by,
+   `${row.reason && row.context !== 'REHIRE' ? `${row.reason}${/[.!?]$/.test(row.reason) ? '' : '.'} ` : ''}${row.kept === false ? 'The earlier name was already listed as an other name.' : 'The earlier name is kept as an other name.'}`);
+  else if (row.kind === 'NAME_FIX') add(`correction-${row.id}`, row.createdAt, 'DETAILS', 'pen-line', 'Name corrected (a mistake)', row.by, row.reason ?? null);
+  else add(`correction-${row.id}`, row.createdAt, 'DETAILS', 'pen-line', `Details corrected: ${list(words((row.changes ?? []).map((change: Row) => change.field)))}`, row.by, row.reason ?? null);
+ }
  for (const row of startDates) add(`start-${row.id}`, row.createdAt, 'DETAILS', 'calendar', `Start date ${row.previousOn ? 'corrected' : 'added'}: ${day(row.startedOn)}${row.periodMoved ? '. The first MC and team period moved with it' : ''}`, row.by, row.reason ?? null);
  const seenScan = new Set<string>(), seenPhoto = new Set<string>();
  for (const row of scans) { add(`scan-${row.id}`, row.createdAt, 'DETAILS', 'file-text', `${row.kind} paper scan ${seenScan.has(row.kind) ? 'replaced' : 'added'} (${row.pageCount} ${row.pageCount === 1 ? 'page' : 'pages'})`, row.by); seenScan.add(row.kind); }

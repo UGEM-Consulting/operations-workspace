@@ -22,7 +22,7 @@ import { actionWord, emailDoneOptions, startDone, emailStepText, type EmailActio
 
 // IT requests about company accounts (Design System section 33: ItCloseAccountTaskScreen, and a move's new accounts).
 export interface AccountRequestDetail {
-  request: { id: string; memberId: string; kind: 'CLOSE' | 'MOVE'; version: number; status: string; note: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardToName: string | null; managerName: string | null;
+  request: { id: string; memberId: string; kind: 'CLOSE' | 'MOVE'; version: number; status: string; note: string | null; emailAfter: 'FORWARD' | 'SUSPEND'; forwardToName: string | null; /** The name they had before a new one given with this move (section 45); an older API sends none. */ formerName?: string | null; managerName: string | null;
     /** Section 40; an older API sends neither. */
     emailAction?: EmailAction; emailDone?: EmailDone | null;
     newCompanyEmail: string | null; newRingCentralNumber: string | null; newRingCentralExtension: string | null; createdAt: string; completedAt: string | null; cancelledAt: string | null;
@@ -78,6 +78,7 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
       action={!closed && <Button variant="outline" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" />{pending === 'refresh' ? 'Refreshing…' : 'Refresh'}</Button>} />
     {request.cancelledAt && <Alert tone="info" title="Cancelled"><p>They’re leaving, so their removal checklist lists what to close now.</p></Alert>}
     {request.completedAt && <Alert tone="success" title="Finished"><p>Finished <LocalTime iso={request.completedAt} />. {request.managerName ?? 'The manager'} was notified and this checklist is read-only.</p></Alert>}
+    {move && request.formerName && !closed && <Alert tone="info" title={`New name at ${profile.toMc ?? 'the new MC'}`}><p>Make the new email and RingCentral user for {profile.displayName}. Their earlier name was {request.formerName}.</p></Alert>}
     {request.note && !closed && <Alert tone="info" title={`Note from ${request.managerName ?? 'the manager'}`}><p className="whitespace-pre-wrap">{request.note}</p></Alert>}
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div className="min-w-0 space-y-6">

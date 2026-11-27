@@ -537,6 +537,26 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect((await profile(lee.memberId)).joinedAt.slice(0, 10)).toBe(ahead(-3));
   });
 
+  it('rehires under another MC with a new name: the old one is kept there, and IT sets them up under the new one (section 45)', async () => {
+    const taylor = await dispatcher('Taylor');
+    await leave(taylor.memberId, { emailAction: 'ARCHIVE' });
+    await finishRemoval(taylor.memberId);
+    await leftDaysAgo(taylor.memberId, 2);
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    const [lakeside] = await db.query(`INSERT INTO mcs (name, "nameKey") VALUES ('Lakeside Carriers', 'lakeside carriers') RETURNING id`);
+    const { rehire: { previous } } = await options(taylor.memberId);
+    await act(taylor.memberId, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: lakeside.id, jobTitleId: title.id, email: 'NEW', ringCentral: 'NONE', businessSoftware: false, equipment: false,
+      newName: { firstName: 'Tay', lastName: 'Brooks' } });
+    const page = await profile(taylor.memberId);
+    expect(page).toMatchObject({ firstName: 'Tay', lastName: 'Brooks' });
+    expect(page.otherNames).toEqual([expect.objectContaining({ name: 'Taylor Fictional', mcId: previous.mcId })]);
+    expect(page.corrections[0]).toMatchObject({ kind: 'NEW_NAME' });
+    const [setup] = await db.query(`SELECT id, profile->>'proposedDisplayName' AS name FROM it_onboarding_requests WHERE purpose = 'REHIRE'`);
+    expect(setup.name).toBe('Tay Brooks');
+    expect((await agents.it.get(`/api/it/onboarding/${setup.id}`).set(headers).expect(200)).body.request.formerName).toBe('Taylor Fictional');
+    expect((await db.query(`SELECT kind, context FROM member_detail_corrections`))).toEqual([{ kind: 'NEW_NAME', context: 'REHIRE' }]);
+  });
+
   it('refuses a rollback while anyone was brought back', async () => {
     const lee = await dispatcher('Lee');
     await leave(lee.memberId);

@@ -4,7 +4,7 @@ import { phoneLabel } from '@/lib/phone';
 import { MemberPhotosCard } from './member-photos';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, Undo2, UserCheck, UserMinus, UserPlus, Users, type LucideIcon } from 'lucide-react';
+import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, PenLine, Phone, Plus, RotateCcw, Route, Send, Undo2, UserCheck, UserMinus, UserPlus, Users, type LucideIcon } from 'lucide-react';
 import { HistoryTimeline } from './history';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
@@ -39,6 +39,7 @@ import { ChangeCoversDialog, CoveredDriversCard, LeavingCoveredAlert } from './l
 import { HandOverChoice, usersOf } from './shared-accounts';
 import { canCancelLeave, canPutOnLeave, Day, helperWords, LeaveAlert, LeaveCard, LeaveDialog, LeaveHistory, LeaveItCard, leaveBadge, shortDay, WorkingWithCard, type LeaveAction } from './leave';
 import { Corrected, CorrectDetailsDialog, correctionItems } from './correct-details';
+import { ChangeNameDialog, lastNameChange, NewNameQuestion, newNamePayload, newNameProblem, noNewName, type NewName } from './change-name';
 import { AddedAsLeftAlert, canAskItToClose, CloseAccountsDialog, LeftDayDialog, lastDayMissing, NamesCard, NamesDialog } from './left-and-names';
 import { itNotAsked, lastWorked, recordChangeItems } from './left-record';
 import { awayPeriods, lastRehire, RehireDialog, RehiredAlert, rehiredMeta, UndoLeavingDialog, UndoWindowAlert } from './bring-back';
@@ -98,24 +99,36 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const [leftDialog, setLeftDialog] = useState<'names' | 'lastDay' | 'close' | 'record' | null>(null);
   // Bringing back someone who left (section 41).
   const [bringing, setBringing] = useState<'undo' | 'rehire' | null>(null);
+  // Change name (section 45), and the new name a move or a change of who they assist may bring.
+  const [naming, setNaming] = useState(false), [newName, setNewName] = useState<NewName>(noNewName), [target, setTarget] = useState('');
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts, photos = memberPhotos(member.id, !!member.photo, !!member.idPhoto, name);
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
   const support = member.position === 'SUPPORT', supportOf = member.supportOf ?? null, called = supportName(member), otherType = member.supportType === 'UPDATER' ? 'SUPPORT' as const : 'UPDATER' as const, otherName = supportName({ supportType: otherType });
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
-  function start(next: Action) { setAction(next); setError(''); setMcId(member.current?.mcId ?? ''); setLastDay(next === 'lastDay' && member.notice ? member.notice.lastDay : today()); }
+  // Section 45: a move to another MC asks whether they'll use a new name there; a support's change of who they assist offers it
+  // when that someone works under another MC. The MC's name, or null when nothing is asked.
+  const moveMc = current?.mcId && mcId && mcId !== current.mcId ? mcs.find(mc => mc.id === mcId)?.name ?? 'the new MC' : null;
+  const nowMc = supportOf?.mc ?? null;
+  const targetMc = assisting === 'TEAM' ? teams.find(team => team.id === target)?.mc.name ?? null : dispatchers.find(option => option.id === target)?.mc ?? null;
+  const assistMc = support && nowMc && targetMc && targetMc !== nowMc ? targetMc : null;
+  function start(next: Action) { setAction(next); setError(''); setNewName(noNewName); setTarget(''); setMcId(member.current?.mcId ?? ''); setLastDay(next === 'lastDay' && member.notice ? member.notice.lastDay : today()); }
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pending || !action) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     setPending('form'); setError('');
     try {
-      if (action === 'reassign') await mutate(`dispatch/members/${member.id}/reassign`, 'POST', { version: member.version, ...(assisting === 'TEAM' ? { teamId: form.teamId } : { dispatcherId: form.dispatcherId }), startedAt: form.startedAt, reason: form.reason });
+      // A new name goes only when one was asked for, so an older API never sees the field otherwise (section 45).
+      const nameProblem = action === 'move' && moveMc ? newNameProblem(newName, true, moveMc) : action === 'reassign' && assistMc ? newNameProblem(newName, false, assistMc) : '';
+      if (nameProblem) { setError(nameProblem); setPending(null); return; }
+      const named = (action === 'move' && moveMc) || (action === 'reassign' && assistMc) ? newNamePayload(newName) : {};
+      if (action === 'reassign') await mutate(`dispatch/members/${member.id}/reassign`, 'POST', { version: member.version, ...(assisting === 'TEAM' ? { teamId: form.teamId } : { dispatcherId: form.dispatcherId }), startedAt: form.startedAt, reason: form.reason, ...named });
       else if (action === 'supportType') await mutate(`dispatch/members/${member.id}/support-type`, 'POST', { version: member.version, supportType: otherType });
       else if (action === 'place') await mutate(`dispatch/members/${member.id}/place`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, ...(form.startedAt ? { startedAt: form.startedAt } : {}) });
       else if (action === 'startDate') await mutate(`dispatch/members/${member.id}/start-date`, 'POST', { version: member.version, startedOn: form.startedOn, ...(form.reason?.trim() ? { reason: form.reason } : {}) });
       // Their company accounts (section 33): sent only when IT is asked for new ones, so an older API never sees the field otherwise.
-      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason,
+      else if (action === 'move') await mutate(`dispatch/members/${member.id}/move`, 'POST', { version: member.version, mcId: form.mcId, teamId: form.teamId === INDEPENDENT ? null : form.teamId || null, startedAt: form.startedAt, reason: form.reason, ...named,
         ...(moveAccounts === 'NEW' && mcId !== current?.mcId ? { accounts: 'NEW', closeKept: form.closeKept === 'on', ...(form.emailAction ? { emailAction: form.emailAction } : {}) } : {}) });
       // The email choice goes only when IT has accounts to remove, so an older API never sees it otherwise.
       else if (action === 'leave') await mutate(`dispatch/members/${member.id}/leave`, 'POST', { version: member.version, leftAt: form.leftAt, reason: form.reason, ...(removesAccess && (accounts?.companyEmail || member.existing?.companyEmail) && !(handOverTo && member.sharing?.usedBy.some(item => item.kind === 'EMAIL')) ? { emailAfter: emailChoice.forward ? 'FORWARD' : 'SUSPEND', emailAction: emailChoice.action } : {}), ...(handOverTo && member.sharing?.usedBy.length ? { handOverTo } : {}) });
@@ -178,12 +191,14 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   const leaveItems: MenuEntry[] = leave ? [{ label: 'Change return date', icon: Calendar, onSelect: () => setLeaveAction('backOn') },
     ...(leave.covers?.length || leave.uncovered?.length ? [{ label: 'Change who covers', icon: Route, onSelect: () => setLeaveAction('covers') }] : []), { label: 'Edit leave reason', icon: Pencil, onSelect: () => setLeaveAction('leaveReason') },
     ...(canCancelLeave(leave) ? [{ label: 'Cancel leave', icon: RotateCcw, onSelect: () => setLeaveAction('cancelLeave') }] : [])] : canPutOnLeave(member) ? [{ label: 'Put on leave', icon: CalendarClock, onSelect: () => setLeaveAction('putOnLeave') }] : [];
-  const correctItem: MenuEntry[] = [...(admin && open && details ? [{ label: 'Correct details', icon: FilePenLine, onSelect: () => setCorrecting(true) }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }];
+  const correctItem: MenuEntry[] = [...(open ? [{ label: 'Change name', icon: PenLine, onSelect: () => setNaming(true) }] : []), ...(admin && open && details ? [{ label: 'Correct details', icon: FilePenLine, onSelect: () => setCorrecting(true) }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }];
   const leftMeta = lastDayMissing(member) ? 'Left, last day not recorded' : member.leftAt ? <>Left <LocalTime iso={member.leftAt} format="date" /></> : null;
   // Someone who left shows what was: their MC and team history on Overview, ending with the day they left, and no Now card.
   const gone = member.status === 'LEFT', addedLeft = gone && !!existing?.addedAsLeft;
   // Someone who left: the record can't be moved, but a missing last day, their names and (once) closing their accounts still can.
   // Undo leaving waits in More actions for 30 days after the last day; Rehire is the main button (LeftBringBackScreen). An older API offers neither.
+  // The name before their latest new name (NameChangedProfileScreen); a fixed mistake isn't shown.
+  const lastChange = lastNameChange(member), wasName = lastChange?.kind === 'NEW_NAME' && lastChange.was !== name ? lastChange.was : null;
   const bringBack = gone ? member.bringBack ?? null : null, rehired = lastRehire(member);
   // An undone leaving's checklist restores what IT removed; they're already Active, so the IT card says so.
   const latestReturn = member.returns?.[0], restoring = latestReturn?.kind === 'UNDO' && !!latestReturn.setup && !latestReturn.setup.completedAt && !latestReturn.setup.cancelledAt;
@@ -222,6 +237,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
         meta={[support ? (supportOf ? <>{called} for {assists(supportOf)} · {supportOf.wholeTeam ? supportOf.mc : where(supportOf)}</> : leftMeta ? leftMeta : 'No dispatcher')
           : current ? (current.id === undated || !current.mc ? where(current) : <>{where(current)} since <LocalTime iso={current.startedAt} format="date" /></>) : leftMeta ? leftMeta : noMc ? 'No MC yet' : 'No MC or team',
           ...(rehired && !notice && !leave ? rehiredMeta(member).slice(1) : []),
+          ...(wasName ? [`Was ${wasName}`] : []),
           ...(support ? [] : [member.leadOf ? `Team lead of ${member.leadOf.name}` : addedLeft ? lastWorked(member) : member.jobTitle?.name ?? 'Dispatcher']),
           notice ? <>Last day <LastDay day={notice.lastDay} /></> : leave ? <>Away {shortDay(leave.firstDay)} to <Day day={leave.backOn} /></> : rehired ? rehiredMeta(member)[0] : existing ? (startKnown ? <>Started <LocalTime iso={member.joinedAt} format="date" /></> : 'Start date not recorded') : <>Approved <LocalTime iso={member.joinedAt} format="date" /></>]}
         action={open ? <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
@@ -269,7 +285,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             {/* Load boards (section 33): an administrator adds and changes seats here; IT does it from each account's page. */}
             {member.loadBoardSeats && <LoadBoardsCard memberId={member.id} name={name} seats={member.loadBoardSeats} seatEmails={member.seatEmails} accounts={loadBoardAccounts} canChange={admin && !gone}
               companyEmails={[...new Set([accounts?.companyEmail, existing?.companyEmail].filter((email): email is string => !!email))]} />}
-            <NamesCard member={member} onEdit={() => setLeftDialog('names')} />
+            <NamesCard member={member} onEdit={() => setLeftDialog('names')} onChangeName={open ? () => setNaming(true) : undefined} />
             {gone && mcHistory}
             {/* Someone added as Left never had paperwork to do here. */}
             {existing && !addedLeft && <ExistingPaperworkCard member={member} />}
@@ -441,14 +457,15 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
             : current && <Alert tone="info"><p>Their time at {where(current)} starts on this date too.</p></Alert>}
         </>}
         {action === 'reassign' && <>
-          <RadioGroup name="assisting" label="They assist" value={assisting} onChange={setAssisting} options={[{ value: 'DISPATCHER', label: 'One dispatcher' }, { value: 'TEAM', label: 'A whole team', description: 'Everyone on the team, with no one dispatcher.' }]} />
-          {assisting === 'TEAM' ? <Select label="Team" name="teamId" required placeholder="Choose a team" width="full"
+          <RadioGroup name="assisting" label="They assist" value={assisting} onChange={value => { setAssisting(value); setTarget(''); setNewName(noNewName); }} options={[{ value: 'DISPATCHER', label: 'One dispatcher' }, { value: 'TEAM', label: 'A whole team', description: 'Everyone on the team, with no one dispatcher.' }]} />
+          {assisting === 'TEAM' ? <Select label="Team" name="teamId" required placeholder="Choose a team" width="full" value={target} onChange={event => setTarget(event.target.value)}
             options={teams.filter(team => !team.archived && team.name !== supportOf?.wholeTeam).map(team => ({ value: team.id, label: `${team.name} · ${team.mc.name}` }))} />
             : <>{dispatchersFailed && <Alert tone="danger"><p>Couldn’t load dispatchers. Reload the page.</p></Alert>}
-          <Select label="New dispatcher" name="dispatcherId" required placeholder="Choose a dispatcher" width="full"
+          <Select label="New dispatcher" name="dispatcherId" required placeholder="Choose a dispatcher" width="full" value={target} onChange={event => setTarget(event.target.value)}
             options={dispatchers.filter(option => option.id !== supportOf?.dispatcherId).map(option => ({ value: option.id, label: [option.name, option.mc ?? 'No MC yet', underMc(option.mc) ? option.team ?? 'Independent' : null].filter(Boolean).join(' · ') }))} /></>}
           <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
           <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Blake needed help with updates." />
+          {assistMc && <NewNameQuestion optional value={newName} onChange={setNewName} oldName={name} mc={assistMc} fromMc={nowMc} />}
         </>}
         {action === 'move' && <>
           <Select label="MC" name="mcId" required placeholder="Choose an MC" value={mcId} onChange={event => setMcId(event.target.value)} width="full"
@@ -459,6 +476,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
           {member.leadOf && <p className="rounded-md bg-warning-background px-3 py-2 text-sm text-warning">{name} leads {member.leadOf.name}. Moving to another team ends that.</p>}
           <Input label="Starts on" name="startedAt" type="date" required defaultValue={today()} max={today()} width="sm" />
           <Textarea label="Reason" name="reason" required maxLength={500} rows={3} hint="For the history, such as Lakeside needed more dispatchers." />
+          {moveMc && <NewNameQuestion value={newName} onChange={setNewName} oldName={name} mc={moveMc} fromMc={current?.mc ?? null} />}
           {mcId && mcId !== current?.mcId && <MoveAccounts value={moveAccounts} onChange={setMoveAccounts} toMc={mcs.find(mc => mc.id === mcId)?.name ?? 'the new MC'} fromMc={current?.mc ?? null}
             email={accounts?.companyEmail ?? existing?.companyEmail ?? null} number={accounts?.workPhone ?? existing?.ringCentralNumber ?? null}
             keptFor={[...new Set((member.loadBoardSeats ?? []).filter(seat => seat.status !== 'ENDED' && seat.signInEmail === (accounts?.companyEmail ?? existing?.companyEmail)).map(seat => seat.account))]} />}
@@ -516,6 +534,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     {leaveAction === 'covers' && leave ? <ChangeCoversDialog member={member} leave={leave} onClose={() => setLeaveAction(null)} />
       : leaveAction && leaveAction !== 'covers' && <LeaveDialog action={leaveAction} member={member} onClose={() => setLeaveAction(null)} />}
     {correcting && <CorrectDetailsDialog member={member} onClose={() => setCorrecting(false)} />}
+    {naming && <ChangeNameDialog member={member} mcs={mcs} onClose={() => setNaming(false)} />}
     {removing && <Dialog open size="sm" tone="danger" onClose={() => setRemoving(null)} busy={pending === removing.id} protectChanges={false} title="Remove this contact?"
       description="It no longer shows on this record. Who added and removed it, and when, are kept."
       actions={<Button variant="destructive" onClick={() => void removeContact(removing.id)}>{pending === removing.id ? 'Removing…' : 'Remove contact'}</Button>}>

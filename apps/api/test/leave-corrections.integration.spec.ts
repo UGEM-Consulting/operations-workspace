@@ -15,6 +15,7 @@ import { User, Role, UserStatus } from '../src/modules/users/user.entity';
 import { OnboardingModule } from '../src/modules/onboarding/onboarding.module';
 import { ItModule } from '../src/modules/it/it.module';
 import { DispatchModule } from '../src/modules/dispatch/dispatch.module';
+import { CompanyAccountsModule } from '../src/modules/company-accounts/company-accounts.module';
 import { LeaveService } from '../src/modules/dispatch/leave.service';
 import { refuseSecondApplication } from '../src/modules/onboarding/already-here';
 import { addDays, usDay } from '../src/modules/safety/screening-rules';
@@ -73,7 +74,7 @@ integration('Leave, corrections and the already-here check (disposable PostgreSQ
     headers = { 'x-workspace-key': env.BFF_SHARED_SECRET, origin: env.WEB_ORIGIN, 'x-csrf-protection': '1' };
     if (!new URL(env.DATABASE_URL).pathname.endsWith('_test')) throw new Error('Dedicated _test database required');
     db = await new DataSource(databaseOptions(env)).initialize(); await db.runMigrations();
-    const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, OnboardingModule, ItModule, DispatchModule] }).compile();
+    const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => env] }), TypeOrmModule.forRoot(databaseOptions(env)), AuthModule, OnboardingModule, ItModule, DispatchModule, CompanyAccountsModule] }).compile();
     app = module.createNestApplication(); closeSessions = installSessions(app, env); configureApp(app, env.CORS_ORIGINS); await app.init();
   }, 30000);
   beforeEach(async () => {
@@ -183,6 +184,89 @@ integration('Leave, corrections and the already-here check (disposable PostgreSQ
       await act(agents.admin, riley.memberId, 'correct', { reason: 'Spelling.', preferredAmericanFirstName: 'Rylee' });
       expect(await db.query(`SELECT profile->>'displayName' AS name FROM it_leave_requests`)).toEqual([{ name: 'Rylee Fictional' }]);
       expect((await db.query(`SELECT event FROM it_leave_activity ORDER BY "createdAt" DESC LIMIT 1`))[0].event).toBe('DETAILS_CORRECTED');
+    });
+  });
+
+  describe('changing a name (section 45)', () => {
+    const otherNames = async (memberId: string) => db.query(`SELECT o.name, o."mcId", o."companyName", o.note FROM member_other_names o WHERE o."memberId" = $1 ORDER BY o."createdAt"`, [memberId]);
+    it('lets a dispatch manager give a new name, keeping the old one as an other name; a fix keeps nothing', async () => {
+      const riley = await dispatcher('Riley'), northwind = await mcId();
+      await db.query(`UPDATE it_onboarding_requests SET "completedAt" = NULL WHERE id = $1`, [riley.setupId]);
+      await act(agents.it, riley.memberId, 'name', { kind: 'NEW', firstName: 'Casey', lastName: 'Brooks', mcId: northwind, reason: 'Goes by a new name.' }, 403);
+      await act(agents.manager, riley.memberId, 'name', { kind: 'NEW', firstName: 'Riley', lastName: 'Fictional', reason: 'Same.' }, 400);
+      await act(agents.manager, riley.memberId, 'name', { kind: 'NEW', firstName: 'Casey', lastName: 'Brooks', mcId: northwind, reason: 'Goes by a new name.' });
+      const page = (await agents.manager.get(`/api/dispatch/members/${riley.memberId}`).set(headers).expect(200)).body;
+      expect(page).toMatchObject({ firstName: 'Casey', lastName: 'Brooks', details: { preferredAmericanFirstName: 'Casey', preferredAmericanLastName: 'Brooks', legalLastName: 'Riley' } });
+      expect(await otherNames(riley.memberId)).toEqual([expect.objectContaining({ name: 'Riley Fictional', mcId: northwind, companyName: null, note: expect.stringMatching(/^Their name until /) })]);
+      // The application keeps what was sent; IT's open setup follows; History says what it was, never the names.
+      expect((await db.query(`SELECT fields->>'preferredAmericanFirstName' AS first FROM application_submissions WHERE "applicationId" = $1`, [riley.applicationId]))[0].first).toBe('Riley');
+      expect((await db.query(`SELECT profile->>'proposedDisplayName' AS name FROM it_onboarding_requests WHERE id = $1`, [riley.setupId]))[0].name).toBe('Casey Brooks');
+      expect(page.timeline.entries.find((entry: { title: string }) => entry.title.startsWith('Name changed'))).toMatchObject({ title: 'Name changed', body: 'Goes by a new name. The earlier name is kept as an other name.' });
+      // A fix of the spelling replaces it and keeps nothing; a new name differing only in spelling is refused.
+      await act(agents.manager, riley.memberId, 'name', { kind: 'NEW', firstName: 'casey', lastName: 'brooks', reason: 'Lower case.' }, 400);
+      await act(agents.admin, riley.memberId, 'name', { kind: 'FIX', firstName: 'Kasey', lastName: 'Brooks', reason: 'Spelled with a K on their ID.' });
+      expect(await otherNames(riley.memberId)).toHaveLength(1);
+      expect((await db.query(`SELECT kind FROM member_detail_corrections ORDER BY "createdAt"`)).map((row: { kind: string }) => row.kind)).toEqual(['NEW_NAME', 'NAME_FIX']);
+    });
+    it('keeps no more than 10 other names, leaves a new name out of “Corrected by”, and renames a team lead’s sign-in', async () => {
+      const riley = await dispatcher('Riley'), northwind = await mcId();
+      const [lead] = await db.query(`INSERT INTO users ("firstName","lastName",email,role,status,"passwordHash") VALUES ('Riley','Fictional','riley.lead@example.test','TEAM_LEAD','ACTIVE','x') RETURNING id`);
+      await db.query(`UPDATE dispatch_members SET "accountUserId" = $1 WHERE id = $2`, [lead.id, riley.memberId]);
+      await act(agents.manager, riley.memberId, 'name', { kind: 'NEW', firstName: 'Casey', lastName: 'Brooks', mcId: northwind, reason: 'New name.' });
+      expect((await db.query(`SELECT "firstName", "lastName" FROM users WHERE id = $1`, [lead.id]))[0]).toEqual({ firstName: 'Casey', lastName: 'Brooks' });
+      expect((await db.query(`SELECT metadata FROM staff_security_events WHERE "userId" = $1 AND type = 'USER_NAME_CHANGED'`, [lead.id]))[0].metadata).toEqual({ fields: ['firstName', 'lastName'], reason: 'member-renamed' });
+      const page = (await agents.manager.get(`/api/dispatch/members/${riley.memberId}`).set(headers).expect(200)).body;
+      expect(page.correctedFields).toEqual({});
+      expect(page.corrections[0].changes).toEqual([{ field: 'preferredAmericanFirstName', from: 'Riley', to: 'Casey' }, { field: 'preferredAmericanLastName', from: 'Fictional', to: 'Brooks' }]);
+      for (let index = 0; index < 9; index += 1) await db.query(`INSERT INTO member_other_names ("memberId", name, "addedBy") VALUES ($1, $2, $3)`, [riley.memberId, `Name ${String.fromCharCode(65 + index)}`, users.manager.id]);
+      expect((await act(agents.manager, riley.memberId, 'name', { kind: 'NEW', firstName: 'Drew', lastName: 'Brooks', reason: 'Another.' }, 409)).body.message).toContain('10 other names');
+      // A fix keeps no other name, so it still works.
+      await act(agents.manager, riley.memberId, 'name', { kind: 'FIX', firstName: 'Kasey', lastName: 'Brooks', reason: 'Spelling.' });
+    });
+    it('takes a name they used before out of their other names, and words a reason that ends in “!”', async () => {
+      const riley = await dispatcher('Riley'), northwind = await mcId();
+      await db.query(`INSERT INTO member_other_names ("memberId", name, "addedBy") VALUES ($1, 'Casey Brooks', $2)`, [riley.memberId, users.manager.id]);
+      await act(agents.manager, riley.memberId, 'name', { kind: 'NEW', firstName: 'Casey', lastName: 'Brooks', mcId: northwind, reason: 'Back to the name they used!' });
+      expect((await otherNames(riley.memberId)).map((row: { name: string }) => row.name)).toEqual(['Riley Fictional']);
+      const history = (await agents.manager.get(`/api/dispatch/members/${riley.memberId}`).set(headers).expect(200)).body.timeline.entries;
+      expect(history.find((entry: { title: string }) => entry.title === 'Name changed').body).toBe('Back to the name they used! The earlier name is kept as an other name.');
+    });
+    it('keeps a support’s old name at the MC of whoever they helped on the day the change starts', async () => {
+      const dana = await dispatcher('Dana'), evan = await dispatcher('Evan'), northwind = await mcId();
+      const [lakeside] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+      const [kai] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,"joinedAt") VALUES ('Kai','Morgan','SUPPORT',now() - interval '30 days') RETURNING id`);
+      await db.query(`INSERT INTO member_support_links ("supportId","dispatcherId","startedAt") VALUES ($1,$2,now() - interval '30 days')`, [kai.id, dana.memberId]);
+      // Dana moves to Lakeside today; Kai's change of dispatcher is backdated to yesterday, while Dana was still at Northwind.
+      await act(agents.manager, dana.memberId, 'move', { mcId: lakeside.id, teamId: null, startedAt: usDay('latest'), reason: 'Lakeside needed help.' });
+      await act(agents.manager, kai.id, 'reassign', { dispatcherId: evan.memberId, startedAt: addDays(usDay('latest'), -1), reason: 'Evan needs help.', newName: { firstName: 'Kai', lastName: 'Moreno' } });
+      expect(await otherNames(kai.id)).toEqual([expect.objectContaining({ name: 'Kai Morgan', mcId: northwind })]);
+    });
+    it('renames someone added by hand, with the old name at another company, and refuses someone who left', async () => {
+      const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName","joinedAt") VALUES ('Drew','Calloway',now()) RETURNING id`);
+      await db.query(`INSERT INTO existing_member_records ("memberId","addedBy") VALUES ($1,$2)`, [member.id, users.manager.id]);
+      await act(agents.manager, member.id, 'name', { kind: 'NEW', firstName: 'Drew', lastName: 'Collins', companyName: 'Lakeside Logistics', reason: 'Uses a new name now.' });
+      expect((await db.query(`SELECT "firstName", "lastName" FROM dispatch_members WHERE id = $1`, [member.id]))[0]).toEqual({ firstName: 'Drew', lastName: 'Collins' });
+      expect(await otherNames(member.id)).toEqual([expect.objectContaining({ name: 'Drew Calloway', mcId: null, companyName: 'Lakeside Logistics' })]);
+      const gone = await dispatcher('Sky', { status: 'LEFT' });
+      await act(agents.manager, gone.memberId, 'name', { kind: 'NEW', firstName: 'Sky', lastName: 'Rivers', reason: 'New name.' }, 409);
+    });
+    it('gives a new name with a move to another MC, before IT is asked for accounts there', async () => {
+      const riley = await dispatcher('Riley'), northwind = await mcId();
+      const [lakeside] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+      const move = (body: Record<string, unknown>, status = 201) => act(agents.manager, riley.memberId, 'move', { teamId: null, startedAt: usDay('latest'), reason: 'Lakeside needed help.', ...body }, status);
+      await move({ mcId: northwind, teamId: null, newName: { firstName: 'Casey', lastName: 'Brooks' } }, 400);
+      expect((await move({ mcId: lakeside.id, newName: { firstName: 'riley', lastName: 'fictional' } }, 400)).body.message).toContain('Answer No');
+      // Already listed at the MC they leave: not added twice, and IT still learns the name before.
+      await db.query(`INSERT INTO member_other_names ("memberId", name, "mcId", "addedBy") VALUES ($1, 'Riley Fictional', $2, $3)`, [riley.memberId, northwind, users.manager.id]);
+      await move({ mcId: lakeside.id, accounts: 'NEW', newName: { firstName: 'Casey', lastName: 'Brooks' } });
+      expect((await db.query(`SELECT "firstName", "lastName" FROM dispatch_members WHERE id = $1`, [riley.memberId]))[0]).toEqual({ firstName: 'Casey', lastName: 'Brooks' });
+      expect(await otherNames(riley.memberId)).toEqual([expect.objectContaining({ name: 'Riley Fictional', mcId: northwind, note: null })]);
+      const [request] = await db.query(`SELECT id, profile->>'displayName' AS name FROM it_account_requests`);
+      expect(request.name).toBe('Casey Brooks');
+      expect((await agents.it.get(`/api/it/accounts/${request.id}`).set(headers).expect(200)).body.request.formerName).toBe('Riley Fictional');
+      expect(await db.query(`SELECT kind, context FROM member_detail_corrections`)).toEqual([{ kind: 'NEW_NAME', context: 'MOVE' }]);
+      const history = (await agents.manager.get(`/api/dispatch/members/${riley.memberId}`).set(headers).expect(200)).body.timeline.entries;
+      expect(history.find((entry: { title: string }) => entry.title.startsWith('Name changed')).body).toBe('Lakeside needed help. The earlier name was already listed as an other name.');
     });
   });
 

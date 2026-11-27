@@ -119,7 +119,7 @@ export interface MemberLeave { id: string; firstDay: string; backOn: string; rea
 /** One driver covered while their dispatcher is away; stays: reassigned for good meanwhile, so they won't come back. */
 export interface LeaveCover { driverId: string; driver: string; truck: string | null; cover: string; coverTeam: string | null; started: boolean; with: string | null; stays: boolean }
 /** An administrator's correction (section 36): each field's earlier and new value, why, who and when. */
-export interface MemberCorrection { id: string; changes: { field: string; from: string | null; to: string | null }[]; reason: string; createdAt: string; correctedBy: string }
+export interface MemberCorrection { id: string; changes: { field: string; from: string | null; to: string | null }[]; reason: string; /** A name change (section 45); an older API or another correction sends none. */ kind?: 'NEW_NAME' | 'NAME_FIX' | null; createdAt: string; correctedBy: string }
 export interface SupportLink { id: string; startedAt: string; endedAt: string | null; reason: string | null; dispatcherId: string | null; dispatcher: string | null; dispatcherStatus: MemberStatus | null; wholeTeam?: string | null; mc: string | null; team: string | null; changedBy: string | null }
 export const statusBadge: Record<MemberStatus, { label: string; tone: 'info' | 'success' | 'neutral' }> = {
   ONBOARDING: { label: 'Onboarding', tone: 'info' }, ACTIVE: { label: 'Active', tone: 'success' }, LEFT: { label: 'Left', tone: 'neutral' } };
