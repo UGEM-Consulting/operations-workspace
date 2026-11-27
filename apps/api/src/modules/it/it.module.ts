@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Module, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
@@ -48,6 +48,7 @@ class ItSignInsController {
 class NotificationController {
  constructor(private readonly service:ItService){}
  @Get() list(@Req() req:AuthRequest){return this.service.notifications(req.currentUser);}
+ @Post('read-all') @HttpCode(200) readAll(@Req() req:AuthRequest){return this.service.readAllNotifications(req.currentUser);}
  @Post(':id/read') read(@Req() req:AuthRequest,@Param('id',ParseUUIDPipe) id:string){return this.service.readNotification(req.currentUser,id);}
 }
 @Module({imports:[UpdatesModule],controllers:[ItController,ItTasksController,ItRemovalController,ItLeaveController,ItSignInsController,NotificationController],providers:[ItService,SignInsService],exports:[ItService]})

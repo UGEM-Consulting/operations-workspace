@@ -27,8 +27,12 @@ import { supportName, supportWord, underMc } from '@/features/dispatch/types';
 const NO_EMPLOYMENT: Employment = { mcName: '', teamLead: '', jobTitle: '' };
 const PATH='/onboarding/invitations';
 // Invitation states in the manager's words; the badges use the same labels as the tabs.
-const STATUSES=[['PENDING','Not opened','neutral'],['OPENED','In progress','info'],['COMPLETED','Submitted','success'],['EXPIRED','Expired','neutral'],['REVOKED','Revoked','danger']] as const;
+const STATUSES=[['PENDING','Not opened','neutral'],['OPENED','In progress','info'],['COMPLETED','Sent','success'],['EXPIRED','Expired','neutral'],['REVOKED','Revoked','danger']] as const;
 function InvitationBadge({status}:{status:string}){const [,label,tone]=STATUSES.find(([key])=>key===status)??[status,status,'neutral' as const];return <Badge label={label} tone={tone}/>;}
+// Once sent (section 44): the decision, and the word before its date.
+const DECISIONS={WAITING:['Waiting for review','info','Sent'],CHANGES_REQUESTED:['Changes requested','warning','Asked'],APPROVED:['Approved','success','Approved'],REJECTED:['Rejected','danger','Rejected']} as const;
+// A status a newer API adds gets a neutral label, never a broken page.
+const decision=(status:string)=>(DECISIONS as Record<string,readonly [string,'info'|'warning'|'success'|'danger'|'neutral',string]>)[status]??(['Sent','neutral','Sent'] as const);
 const EXPIRY=[3,7,14,30];
 
 /**
@@ -77,7 +81,7 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
   if(revoking.id===linkId){setUrl('');setLinkId('');setLinkOpen(false);}
   setRevoking(null);toast({title:'Invitation revoked',description:'Its link can no longer be used.'});await refreshRows();}catch(error){setRevokeError(errorMessage(error,'Unable to revoke invitation.'));}finally{setPending(null);}}
  const search=filters.search.toLowerCase();
- const matches=(row:Invitation)=>`${row.email??''} ${row.expectedEmail??''} ${row.mcName??''} ${row.teamLead??''} ${row.applicationReference??''}`.toLowerCase().includes(search);
+ const matches=(row:Invitation)=>`${row.sent?.name??''} ${row.email??''} ${row.expectedEmail??''} ${row.mcName??''} ${row.teamLead??''} ${row.applicationReference??''}`.toLowerCase().includes(search);
  const searched=rows.filter(matches),visible=searched.filter(row=>filters.status==='ALL'||row.status===filters.status);
  const filtered=filters.search!==''||filters.status!=='ALL';
  return <div className="space-y-6">
@@ -88,10 +92,10 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
   {error&&<Alert tone="warning"><p>{error}</p></Alert>}
   {url&&!linkOpen&&<Alert tone={copied?'info':'warning'} title={copied?'Latest invitation link':'Your new link has not been copied'} action={<Button size="sm" variant="outline" onClick={()=>setLinkOpen(true)}>Show link</Button>}><p>It expires in {linkDays} days and can’t be shown again after you leave this page.</p></Alert>}
   <Card>
-   <FilterBar path={PATH} filters={filters} defaults={INVITATION_DEFAULTS} searchLabel="Search email, MC or reference" statuses={[
+   <FilterBar path={PATH} filters={filters} defaults={INVITATION_DEFAULTS} searchLabel="Search name, email, MC or reference" statuses={[
     ...STATUSES.map(([key,label])=>({key,label,count:searched.filter(row=>row.status===key).length})),{key:'ALL',label:'All',count:searched.length}]}/>
    <Table caption="Invitations in your scope" className="border-t border-border" rows={visible} rowKey={row=>row.id} columns={[
-    {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<div><Person name={row.email} secondary="Verified email" avatar={false}/>{row.alreadyHere&&<AlreadyHereTag match={row.alreadyHere}/>}</div>
+    {key:'applicant',label:'Applicant',primary:true,cell:row=>row.consumedAt&&row.email?<div><Person name={row.sent?.name??row.email} secondary={row.sent?.name?row.email:'Verified email'} avatar={false}/>{row.alreadyHere&&<AlreadyHereTag match={row.alreadyHere}/>}</div>
      :<Person name={row.status==='PENDING'?'Not opened yet':'Not claimed yet'} secondary={row.expectedEmail?`For ${row.expectedEmail}`:'Anyone with the link'} avatar={false}/>},
     // Once they verify their email, the reference they return with, to copy and send them while they fill in the form (InvitationReferenceScreen).
     ...(rows.some(row=>row.applicationReference!==undefined)?[{key:'reference',label:'Application reference',cell:(row:Invitation)=>row.applicationReference
@@ -99,9 +103,9 @@ export function Invitations({initial,filters,options=null,dispatchers=null,manag
       <CopyButton text={row.applicationReference} label="Copy" size="sm" variant="ghost" onCopied={()=>toast({title:'Reference copied',description:`They return with it and a code sent to ${row.email??'their verified email'}.`})}/></span>
      :['PENDING','OPENED'].includes(row.status)?<span className="text-[13px] text-muted-foreground">After they verify their email</span>:<span className="text-muted-foreground">—</span>}]:[]),
     {key:'employment',label:'Employment',hideBelow:'xl',muted:true,cell:row=>(row.member??row).position==='SUPPORT'?`${supportName(row.member??row)} for ${row.supportsTeam?.name??row.supports?.name??'a dispatcher'}`:[row.jobTitle,row.mcName,row.teamLead].filter(Boolean).join(' · ')||(row.member?'Dispatcher':'Applicant provides')},
-    {key:'status',label:'Status',cell:row=><InvitationBadge status={row.status}/>},
+    {key:'status',label:'Status',cell:row=>row.sent?<Badge label={decision(row.sent.status)[0]} tone={decision(row.sent.status)[1]}/>:<InvitationBadge status={row.status}/>},
     {key:'created',label:'Created',nowrap:true,muted:true,hideBelow:'lg',cell:row=><LocalTime iso={row.createdAt} format="date"/>},
-    {key:'expires',label:'Expires',nowrap:true,muted:true,hideBelow:'md',cell:row=>row.status==='COMPLETED'?'Used':<LocalTime iso={row.expiresAt} format="date"/>},
+    {key:'expires',label:'Expires or decided',nowrap:true,muted:true,hideBelow:'md',cell:row=>row.sent?<>{decision(row.sent.status)[2]} <LocalTime iso={row.sent.at} format="date"/></>:row.status==='COMPLETED'?'Used':<LocalTime iso={row.expiresAt} format="date"/>},
     {key:'action',label:'Action',srOnly:true,action:true,align:'right',cell:row=>['PENDING','OPENED'].includes(row.status)&&<Button variant="ghost" size="sm" className="text-danger" disabled={!!pending} onClick={()=>{setRevoking(row);setRevokeError('');}}>Revoke<span className="sr-only"> invitation created <LocalTime iso={row.createdAt}/></span></Button>},
    ]} empty={filtered?<EmptyState compact title="No matching invitations" description="Try another status or search."/>
     :<EmptyState compact title="Create your first invitation" description="Each link lets one applicant verify their email and fill in their application." action={<Button disabled={!!pending} onClick={()=>void create(false)}><Plus aria-hidden="true" className="size-4"/>Create invitation</Button>}/>}

@@ -1,3 +1,4 @@
+import { LocalTime } from '@/components/ui/local-time';
 import { phoneLabel } from '@/lib/phone';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
@@ -90,7 +91,7 @@ export function LoadBoardsCell({ row }: { row: MemberRow }) {
 
 const shortDay = (day: string) => dayLabel(day, false);
 const FLAG_TONES = { neutral: 'bg-muted text-muted-foreground', warning: 'bg-warning-background text-warning' };
-function Flag({ icon: Icon, label, tone = 'neutral' }: { icon: LucideIcon; label: string; tone?: keyof typeof FLAG_TONES }) {
+function Flag({ icon: Icon, label, tone = 'neutral' }: { icon: LucideIcon; label: ReactNode; tone?: keyof typeof FLAG_TONES }) {
   return <span className={cn('inline-flex items-center gap-1 rounded-full px-2 text-xs leading-5 font-medium whitespace-nowrap', FLAG_TONES[tone])}><Icon aria-hidden="true" className="size-3" />{label}</span>;
 }
 /** What needs doing about someone, under their status: their last day, their return, IT setting them up, paperwork, missing details. */
@@ -99,7 +100,10 @@ export function statusFlags(row: MemberRow) {
   if (row.lastDay && row.status !== 'LEFT') flags.push(<Flag key="last" icon={CalendarClock} label={`Last day ${shortDay(row.lastDay)}`} tone="warning" />);
   if (row.leave?.started) flags.push(<Flag key="back" icon={CalendarDays} label={`Back ${shortDay(row.leave.backOn)}`} />);
   if (row.status === 'ONBOARDING') flags.push(<Flag key="it" icon={Clock3} label="IT setting up" />);
-  if (row.addedByHand && row.paperworkAccepted === false && row.status !== 'LEFT') flags.push(<Flag key="paper" icon={FileWarning} label="Paperwork waiting" />);
+  // Paperwork only when someone has to act (section 44); not started stays on the Paperwork tab. An older API sends no state: as before.
+  const paper = row.paperworkState;
+  if (paper) flags.push(<Flag key="paper" icon={FileWarning} tone={paper.state === 'SENT' ? 'neutral' : 'warning'} label={paper.state === 'REVIEW' ? 'Paperwork to review' : paper.state === 'TIME_ENDED' ? 'Paperwork time ended' : <>Paperwork link sent{paper.until && <> · until <LocalTime iso={paper.until} format="date" /></>}</>} />);
+  else if (paper === undefined && row.addedByHand && row.paperworkAccepted === false && row.status !== 'LEFT') flags.push(<Flag key="paper" icon={FileWarning} label="Paperwork waiting" />);
   if (missingDetails(row)) flags.push(<Flag key="missing" icon={CircleAlert} label="Missing details" />);
   if (row.status === 'LEFT' && row.accountsClosed) flags.push(<Flag key="closed" icon={ShieldCheck} label="Accounts closed" />);
   return flags;

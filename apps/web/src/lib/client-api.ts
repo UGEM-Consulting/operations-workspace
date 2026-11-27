@@ -75,7 +75,7 @@ export function responseError(path: string, status: number, data: unknown, json:
     notify(SESSION_ENDED_EVENT);
     return new ApiError(apiMessages.session, 'session', status);
   }
-  if (status === 409) return new ApiError(message ?? 'This record changed. Reload and try again.', 'conflict', status);
+  if (status === 409) return new ApiError(message ?? 'This record changed. Reload and try again.', 'conflict', status, [], json ? serverReason(data) : undefined);
   if (status === 503) return new ApiError(message ?? apiMessages.unavailable, 'unavailable', status);
   return new ApiError(message ?? apiMessages.generic, 'request', status, json ? serverMissing(data) : []);
 }

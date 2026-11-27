@@ -16,7 +16,7 @@ import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow, type SharedAction } from './existing-csv';
-import { useAccountOwners } from './shared-accounts';
+import { PreviousOwnerWarning, type PreviousOwnerItem, useAccountOwners } from './shared-accounts';
 import { supportName } from './types';
 import { dayLabel } from '@/lib/navigation';
 
@@ -26,7 +26,9 @@ type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
 interface Match { id: string; name: string; status: string; why: string; options: ('FILL' | 'CAME_BACK' | 'DIFFERENT' | 'ACCOUNT')[]; fills: string[]; account?: { mcId: string; mc: string; adds: string[] } }
 /** Someone else's company email or RingCentral number on a row naming a different person (section 35). */
 interface SharedMatch { owners: { id: string; name: string; fields: ('companyEmail' | 'ringCentralNumber')[] }[]; options: SharedAction[] }
-interface CheckedRow { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean; left?: boolean; leftOn?: string | null; hasAccounts?: boolean; match?: Match | null; shared?: SharedMatch | null; sharedAction?: SharedAction | null }
+interface CheckedRow { row: number; name: string; position: string; supportType?: string; status: Status; problems: string[]; sameName: boolean; left?: boolean; leftOn?: string | null; hasAccounts?: boolean; match?: Match | null; shared?: SharedMatch | null; sharedAction?: SharedAction | null;
+  /** Section 44: a company email or number in the row that was someone's who left; an older API sends none. */
+  previous?: { field: 'companyEmail' | 'ringCentralNumber'; name: string; until: string | null }[] | null; previousAction?: 'WITHOUT' | 'CONFIRMED' | null }
 /** "company email and RingCentral number", "company email" or "RingCentral number". */
 const fieldsWord = (fields: string[]) => fields.length > 1 ? 'company email and RingCentral number' : fields[0] === 'companyEmail' ? 'company email' : 'RingCentral number';
 /** What each choice says, from the row's person and the one who has it now (SharedCheckRowsScreen). */
@@ -35,7 +37,7 @@ function sharedLabel(option: SharedAction, person: string, owner: string, both: 
   return option === 'SHARED' ? `Add ${person}, using ${owner}’s (shared)` : option === 'MOVE_SHARED' ? `${person}’s, and ${owner} uses ${them} too` : option === 'MOVE' ? `${person}’s: move ${them} from ${owner}` : `Add ${person} without ${them}`;
 }
 interface Checked { rows: CheckedRow[]; choices: { field: 'mc' | 'team' | 'jobTitle' | 'datAccount' | 'truckstopAccount'; text: string; mc?: string; forSupports?: boolean; rows: number[] }[]; counts: { ready: number; choice: number; problem: number; already: number; noStartDate?: number; noMc?: number; mcFromTeam?: number; wholeTeam?: number; sharedSignIn?: number; left?: number; noLastDay?: number; fill?: number } }
-interface Added { added: number; accounts?: number; filled?: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean }[] }
+interface Added { added: number; accounts?: number; filled?: number; members: { row: number; id: string }[]; left: { row: number; name: string; status: Status; problems: string[]; sameName?: boolean; previous?: { field: 'companyEmail' | 'ringCentralNumber'; name: string; until: string | null }[] | null }[] }
 const STEPS = ['Upload the file', 'Check the rows', 'Add dispatchers'];
 const key = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
 // Independent is a team choice under an MC (no team), never an MC; the API reads it the same in a file's team column.
@@ -102,6 +104,8 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
   /** Someone else's email or number: the row is checked again with the choice, or without one to skip it. */
   function share(row: number, value: string) { void check(rows.map(item => item.row !== row ? item : { ...item, sharedAction: value ? value as SharedAction : undefined })); }
   const sharedRows = (checked?.rows ?? []).flatMap(row => row.shared ? [{ ...row, shared: row.shared }] : []);
+  const previousRows = (checked?.rows ?? []).flatMap(row => row.previous?.length ? [{ ...row, previous: row.previous }] : []);
+  function previousChoice(row: number, value: string) { void check(rows.map(item => item.row !== row ? item : { ...item, previousOwnerAction: value ? value as 'WITHOUT' | 'CONFIRMED' : undefined })); }
   const matched = (checked?.rows ?? []).flatMap(row => { const match = row.match ?? chosen[row.row]; return match ? [{ ...row, match }] : []; });
   const choiceOf = (row: number) => { const item = rows.find(entry => entry.row === row); return item?.alreadyAction ?? (item?.differentPerson && chosen[row] ? 'DIFFERENT' : 'SKIP'); };
   const leaving = checked?.rows.filter(row => row.left && row.status === 'READY' && !chosen[row.row]) ?? [];
@@ -158,6 +162,15 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
           <div className="min-w-0 flex-[1_1_320px]"><Person name={row.name || 'No name'} secondary={`Row ${row.row} · same ${row.shared.owners.map(item => `${fieldsWord(item.fields)} as ${item.name}`).join(', and ')}, Active`} /></div>
           <Select label="What to do" value={rows.find(item => item.row === row.row)?.sharedAction ?? ''} disabled={busy} width="md" onChange={event => share(row.row, event.target.value)}
             options={[{ value: '', label: 'Choose… (skips the row)' }, ...row.shared.options.map(option => ({ value: option, label: sharedLabel(option, first, owner.name.split(' ')[0], both) }))]} />
+        </li>;
+      })}</ul></Card>}
+    {previousRows.length > 0 && <Card><CardHeader title="Was someone else’s" description="An email or number here belonged to someone who left. Choose what to do with each; a row without a choice is skipped." />
+      <ul className="mt-3 divide-y divide-border border-t border-border">{previousRows.map(row => {
+        const first = row.name.split(' ')[0] || 'them', what = row.previous.length > 1 ? 'email and number' : row.previous[0].field === 'companyEmail' ? 'email' : 'number';
+        return <li key={row.row} className="flex flex-wrap items-end justify-between gap-3 px-4 py-3 sm:px-5">
+          <div className="min-w-0 flex-[1_1_320px]"><Person name={row.name || 'No name'} secondary={`Row ${row.row} · ${row.previous.map(item => `${item.field === 'companyEmail' ? 'company email' : 'RingCentral number'} was ${item.name}’s${item.until ? ` until ${new Date(item.until).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })}` : ''}`).join(', and ')}`} /></div>
+          <Select label="What to do" value={rows.find(item => item.row === row.row)?.previousOwnerAction ?? ''} disabled={busy} width="md" onChange={event => previousChoice(row.row, event.target.value)}
+            options={[{ value: '', label: 'Choose… (skips the row)' }, { value: 'WITHOUT', label: `Add without the ${what}` }, { value: 'CONFIRMED', label: `IT confirmed it’s ${first}’s now` }]} />
         </li>;
       })}</ul></Card>}
     {matched.length > 0 && <Card><CardHeader title="Already here" description="These people have a record. Choose what to do with each row; leaving it means the row is skipped." />
@@ -224,6 +237,14 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
   const holder = others[0] ?? null, holderFields = holder ? [...(found.companyEmail.some(item => item.id === holder.id) ? ['companyEmail'] : []), ...(found.ringCentralNumber.some(item => item.id === holder.id) ? ['ringCentralNumber'] : [])] : [];
   const movable = !!holder && [...found.companyEmail, ...found.ringCentralNumber].filter(item => item.id === holder.id).every(item => item.onRecord);
   const typing = (field: keyof typeof typed) => (event: React.ChangeEvent<HTMLInputElement>) => { const value = event.target.value; setTyped(current => ({ ...current, [field]: value })); if (field === 'companyEmail' || field === 'ringCentralNumber') setSharedAction(''); };
+  // Section 44: one that was someone's who left (and nobody holds now) needs IT's confirmation.
+  // The values as typed: a tick, or what the API said about them, holds only while they stay the same.
+  const typedKey = `${typed.companyEmail.trim().toLowerCase()}|${typed.ringCentralNumber.trim()}`;
+  const [checkedPrevious, setCheckedPrevious] = useState<{ key: string; items: PreviousOwnerItem[] } | null>(null), [confirmedFor, setConfirmedFor] = useState<string | null>(null);
+  const lookedUp: PreviousOwnerItem[] = [...(found.former.companyEmail[0] ? [{ kind: 'EMAIL' as const, former: found.former.companyEmail[0] }] : []), ...(found.former.ringCentralNumber[0] ? [{ kind: 'RINGCENTRAL' as const, former: found.former.ringCentralNumber[0] }] : [])];
+  // Added before the lookup answered: the API's answer names them instead.
+  const formerItems = lookedUp.length ? lookedUp : checkedPrevious?.key === typedKey ? checkedPrevious.items : [], former = formerItems.length > 0;
+  const formerConfirmed = confirmedFor === typedKey, setFormerConfirmed = (value: boolean) => setConfirmedFor(value ? typedKey : null);
   const them = holderFields.length > 1 ? 'them' : 'it', person = typed.firstName.trim() || 'this person', holderFirst = holder?.name.split(' ')[0] ?? '';
   // Someone who left may have last worked at an MC or team archived since.
   const allMcs = [...options.mcs.map(item => ({ ...item, archived: false })), ...(options.archivedMcs ?? []).map(item => ({ ...item, archived: true }))];
@@ -235,16 +256,25 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
     const data = Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string>;
     const differentPerson = (event.nativeEvent as SubmitEvent).submitter?.getAttribute('name') === 'differentPerson';
     if (holder && !sharedAction) { setError(`Say whose the ${fieldsWord(holderFields)} ${holderFields.length > 1 ? 'are' : 'is'}.`); return; }
+    if (former && !formerConfirmed) { setError(`Check with IT, then tick that it’s ${person}’s now, or change it.`); return; }
     setBusy(true); setError(''); setSameName(false);
     try {
       const where = support ? (left ? {} : assisting === 'TEAM' ? { supportsTeamId: data.supportsTeam } : { supportsMemberId: data.supports }) : { mc: mc === NO_MC ? '' : mc, team: data.team ?? '', jobTitle: data.jobTitle ?? '' };
       const row: ExistingRow = { row: 1, firstName: data.firstName, lastName: data.lastName, position, startedOn: data.startedOn, companyEmail: data.companyEmail, ringCentralNumber: data.ringCentralNumber, personalEmail: data.personalEmail, personalPhone: data.personalPhone,
         ringCentralExtension: data.ringCentralExtension, datEmail: data.datEmail, truckstopEmail: data.truckstopEmail, telegram: data.telegram, legalFirstName: data.legalFirstName, legalLastName: data.legalLastName,
         otherNameList: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId ? { mcId: item.mcId } : {}) })), ...where,
-        ...(left ? { status: 'Left', leftOn: data.leftOn, leftReason: data.leftReason } : { ...(nda === 'PAPER' ? { ndaSignedOn: data.ndaSignedOn } : {}), ...(sop === 'PAPER' ? { sopSignedOn: data.sopSignedOn } : {}) }), ...(differentPerson ? { differentPerson } : {}), ...(holder && sharedAction ? { sharedAction } : {}) };
+        ...(left ? { status: 'Left', leftOn: data.leftOn, leftReason: data.leftReason } : { ...(nda === 'PAPER' ? { ndaSignedOn: data.ndaSignedOn } : {}), ...(sop === 'PAPER' ? { sopSignedOn: data.sopSignedOn } : {}) }), ...(differentPerson ? { differentPerson } : {}), ...(holder && sharedAction ? { sharedAction } : {}), ...(former && formerConfirmed ? { previousOwnerAction: 'CONFIRMED' as const } : {}) };
       const result = await mutate<Added>('dispatch/existing/add', 'POST', { rows: [row] });
       if (result.members[0]) onAdded(result.members[0].id, left);
-      else { setError(result.left[0]?.problems.join(' ') || 'Check the MC, team and job title against the lists.'); setSameName(!!result.left[0]?.sameName); }
+      else {
+        const skipped = result.left[0], previous = !formerConfirmed && !skipped?.problems.length ? skipped?.previous ?? null : null;
+        if (previous?.length) {
+          // It waits for IT's confirmation of an email or number someone who left had: say so, with the tick.
+          setCheckedPrevious({ key: typedKey, items: previous.map(item => ({ kind: item.field === 'companyEmail' ? 'EMAIL' as const : 'RINGCENTRAL' as const, former: { id: '', name: item.name, until: item.until } })) });
+          setError(`Check with IT, then tick that it’s ${person}’s now, or change it.`);
+        } else setError(skipped?.problems.join(' ') || 'Check the MC, team and job title against the lists.');
+        setSameName(!!skipped?.sameName);
+      }
     } catch (failure) { setError(errorMessage(failure, 'Unable to add them. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
@@ -294,6 +324,7 @@ function AddOne({ options, onClose, onAdded }: { options: ExistingOptions; onClo
             { value: 'WITHOUT', label: `${holderFirst}’s only`, description: `Leave ${them} with ${holderFirst} and add ${person} without ${them}.` }]} />
           <p className="text-[13px] text-muted-foreground">If they’re the same person, close this and use Correct details on {holderFirst}’s page instead.</p>
         </div>}
+        <PreviousOwnerWarning firstName={person} items={formerItems} confirmed={formerConfirmed} onChange={setFormerConfirmed} />
         {!left && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" hint="Digits only." /><span className="max-sm:hidden" />
           <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /><Input name="truckstopEmail" label="Truckstop sign-in email" optional type="email" maxLength={254} width="full" hint="The email only. Never a password." /></>}</CardBody></Card>
       <Card><CardHeader title="Contact" description={left ? undefined : 'The catch-up link is checked against the personal email.'} /><CardBody className="grid gap-4 sm:grid-cols-2"><Input name="personalEmail" label="Personal email" optional type="email" maxLength={254} width="full" /><Input name="personalPhone" label="Personal phone" optional type="tel" maxLength={40} width="full" />{!left && <Input name="telegram" label="Telegram" optional maxLength={100} width="full" autoComplete="off" />}</CardBody></Card>

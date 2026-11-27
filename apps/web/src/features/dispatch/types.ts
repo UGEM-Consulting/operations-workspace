@@ -44,7 +44,9 @@ export interface MemberRow {
   // they use (owner null once handed over), who helps them, load boards and whether IT closed a leaver's accounts.
   ringCentralNumber?: string | null; ringCentralExtension?: string | null; telegram?: string | null; otherName?: string | null;
   shared?: { kind: SharedKind; value: string; owner: string | null }[] | null; helpers?: { id: string; name: string; supportType: SupportType | null; wholeTeam: boolean }[] | null;
-  loadBoards?: string[] | null; accountsClosed?: boolean }
+  loadBoards?: string[] | null; accountsClosed?: boolean;
+  /** Paperwork someone has to act on (section 44); null when not started. An older API sends none (undefined). */
+  paperworkState?: { state: 'REVIEW' | 'SENT' | 'TIME_ENDED'; until?: string } | null }
 /** Someone here who still needs a start date or, for a dispatcher, an MC. */
 export const missingDetails = (member: MemberRow) => member.status !== 'LEFT' && (member.startDateKnown === false || (member.position === 'DISPATCHER' && member.placed === false));
 /** Who a support or updater assists: "Riley Santos", or a team's name when it's everyone on it. */

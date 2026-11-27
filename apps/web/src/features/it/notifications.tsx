@@ -2,13 +2,13 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Bell, CircleCheck, RefreshCw } from 'lucide-react';
+import { Bell, CheckCheck, CircleCheck, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/feedback';
 import { LocalTime } from '@/components/ui/local-time';
 import { useToast } from '@/components/ui/toast';
-import { errorMessage, mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { cn } from '@/lib/utils';
 import { readApi } from '@/features/onboarding/types';
 import { Notifications, notificationView } from './types';
@@ -16,15 +16,17 @@ import { Notifications, notificationView } from './types';
 export function ManagerNotifications({initial}:{initial:Notifications}){
  const toast=useToast();
  const router=useRouter();
- const [data,setData]=useState(initial),[pending,setPending]=useState<string|null>(null),[server,setServer]=useState(initial);
+ const [data,setData]=useState(initial),[pending,setPending]=useState<string|null>(null),[server,setServer]=useState(initial),[readAllMissing,setReadAllMissing]=useState(false);
  // router.refresh() re-renders the dashboard with fresh updates; take them without an effect.
  if(server!==initial){setServer(initial);setData(initial);}
  // The bell and sidebar counts come from the server layout, so refresh it after anything changes the unread count.
  async function refresh(){setPending('refresh');try{setData(await readApi<Notifications>('notifications'));router.refresh();toast({title:'Updates refreshed'});}catch(error){toast({tone:'danger',title:'Updates not refreshed',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
+ // Mark all as read (section 44): only this person's updates. An older API answers 404, and the button says it isn't available yet.
+ async function readAll(){setPending('all');try{const result=await mutate<{marked:number}>('notifications/read-all','POST');const now=new Date().toISOString();setData(current=>({...current,unread:0,items:current.items.map(item=>item.readAt?item:{...item,readAt:now})}));router.refresh();toast({title:`${result?.marked??0} update${result?.marked===1?'':'s'} marked as read`,description:'The bell and sidebar counts are cleared too.'});}catch(error){if(error instanceof ApiError&&error.status===404){setReadAllMissing(true);toast({title:'Not available yet',description:'Mark each update as read for now.'});}else toast({tone:'danger',title:'Updates not marked as read',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
  async function read(id:string){setPending(id);try{await mutate(`notifications/${id}/read`,'POST');setData(current=>({...current,unread:Math.max(0,current.unread-1),items:current.items.map(item=>item.id===id?{...item,readAt:new Date().toISOString()}:item)}));router.refresh();}catch(error){toast({tone:'danger',title:'Notification not updated',description:errorMessage(error,'Please try again.')});}finally{setPending(null);}}
  return <Card id="updates" className="scroll-mt-20">
   <CardHeader title={<span className="flex items-center gap-2">Updates{data.unread>0&&<span className="rounded-full bg-brand-subtle px-2 text-xs font-semibold leading-5 text-brand-subtle-foreground tabular-nums">{data.unread}<span className="sr-only"> unread</span></span>}</span>}
-   actions={<Button variant="ghost" size="sm" disabled={!!pending} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button>}/>
+   actions={<div className="flex flex-wrap items-center gap-1">{data.unread>0&&!readAllMissing&&<Button variant="ghost" size="sm" disabled={!!pending} onClick={()=>void readAll()}><CheckCheck aria-hidden="true" className="size-4"/>{pending==='all'?'Marking…':'Mark all as read'}</Button>}<Button variant="ghost" size="sm" disabled={!!pending} onClick={()=>void refresh()}><RefreshCw aria-hidden="true" className="size-4"/>{pending==='refresh'?'Refreshing…':'Refresh'}</Button></div>}/>
   {data.items.length?<ul className="mt-3 divide-y divide-border border-t border-border">{data.items.map(item=>({item,view:notificationView(item)})).map(({item,view})=><li key={item.id} className="flex items-start gap-3 px-4 py-3 sm:px-5">
    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-success-background text-success"><CircleCheck aria-hidden="true" className="size-4"/></span>
    <div className="min-w-0 flex-1">

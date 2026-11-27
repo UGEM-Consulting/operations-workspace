@@ -24,7 +24,7 @@ import { useLeaveGuard } from '@/components/shell-context';
 import { middayIso } from '@/lib/navigation';
 import { PaperScanActions } from './paper-scan';
 import { SignIn } from './sign-in';
-import { OwnValue, SharedValue, ShareQuestion, useAccountOwners, usedOf, usersOf } from './shared-accounts';
+import { OwnValue, PreviousOwnerWarning, SharedValue, ShareQuestion, useAccountOwners, usedOf, usersOf } from './shared-accounts';
 import { signInItems } from './sign-in-status';
 import { assists, supportName, underMc, type MemberProfile, type PaperworkList, type PaperworkRow } from './types';
 
@@ -185,15 +185,26 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
   const removing = member.removal ? !member.removal.completedAt : !!member.notice;
   const firstEmail = removing && !existing.companyEmail && !member.accounts?.companyEmail && !!typed.companyEmail.trim() && !emailOwner;
   const [emailChoice, setEmailChoice] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
+  // Section 44: a new email or number that was someone's who left needs IT's confirmation (their own value sent back isn't asked about).
+  // Nor one they use or were handed already (the API keeps it as it is). Numbers compare by their digits.
+  const keyOf = (number: boolean, value: string | null | undefined) => number ? (value ?? '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '') : (value ?? '').trim().toLowerCase();
+  const changedFrom = (number: boolean, value: string, ...kept: (string | null | undefined)[]) => !!value.trim() && !kept.some(item => !!item && keyOf(number, item) === keyOf(number, value));
+  const emailFormer = changedFrom(false, typed.companyEmail, existing.companyEmail, sharedEmail?.value) ? owners.former.companyEmail[0] ?? null : null;
+  const numberFormer = changedFrom(true, typed.ringCentralNumber, existing.ringCentralNumber, sharedNumber?.value) ? owners.former.ringCentralNumber[0] ?? null : null;
+  // The tick belongs to the values it was given for: changing either one asks again.
+  const formerKey = `${emailFormer ? typed.companyEmail.trim().toLowerCase() : ''}|${numberFormer ? typed.ringCentralNumber.trim() : ''}`;
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null), formerConfirmed = confirmedFor === formerKey;
+  const setFormerConfirmed = (value: boolean) => setConfirmedFor(value ? formerKey : null);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const { firstName, lastName, nameReason, ...data } = Object.fromEntries([...new FormData(event.currentTarget).entries()].filter(([field]) => !['shareAnswer', 'emailAction', 'forward'].includes(field))) as Record<string, string>;
     if ((emailOwner || numberOwner) && shareAnswer !== 'yes') { setError(shareAnswer === 'no' ? 'Change the email or number that’s someone else’s.' : `Say whether ${member.firstName} uses it too.`); return; }
+    if ((emailFormer || numberFormer) && !formerConfirmed) { setError(`Check with IT, then tick that it’s ${member.firstName}’s now, or change it.`); return; }
     setBusy(true); setError('');
     try {
       let version = renamedVersion ?? member.version, nameSaved = renamedVersion !== null;
       if (renamed && !nameSaved) { version = (await mutate<{ version: number }>(`dispatch/members/${member.id}/correct`, 'POST', { version, reason: nameReason, ...(firstName.trim() !== member.firstName ? { firstName } : {}), ...(lastName.trim() !== member.lastName ? { lastName } : {}) }))!.version; setRenamedVersion(version); nameSaved = true; }
-      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data, ...(emailOwner ? { shareCompanyEmail: true } : {}), ...(numberOwner ? { shareRingCentral: true } : {}), ...(firstEmail ? { emailAction: emailChoice.action, emailAfter: emailChoice.forward ? 'FORWARD' : 'SUSPEND' } : {}) }); }
+      try { await mutate(`dispatch/members/${member.id}/existing`, 'PATCH', { version, ...data, ...(emailOwner ? { shareCompanyEmail: true } : {}), ...(numberOwner ? { shareRingCentral: true } : {}), ...((emailFormer || numberFormer) && formerConfirmed ? { previousOwnerConfirmed: true } : {}), ...(firstEmail ? { emailAction: emailChoice.action, emailAfter: emailChoice.forward ? 'FORWARD' : 'SUSPEND' } : {}) }); }
       catch (failure) { if (nameSaved) { setError(errorMessage(failure, 'Their name was saved, but the other details weren’t. Your entries have been kept: try again.')); router.refresh(); return; } throw failure; }
       setRenamedVersion(null); setEditing(false); toast({ title: 'Details saved' }); router.refresh(); }
     catch (failure) { setError(errorMessage(failure, 'Unable to save. Your entries have been kept.')); }
@@ -225,6 +236,7 @@ export function ExistingAccountsCard({ member, open, admin = false, editing: sho
           <Input name="companyEmail" label="Company email" optional type="email" maxLength={254} width="full" value={typed.companyEmail} onChange={event => { setTyped(current => ({ ...current, companyEmail: event.target.value })); setShareAnswer(''); }} />
           <Input name="ringCentralNumber" label="RingCentral number" optional type="tel" maxLength={40} width="full" value={typed.ringCentralNumber} onChange={event => { setTyped(current => ({ ...current, ringCentralNumber: event.target.value })); setShareAnswer(''); }} />
           {!gone && <ShareQuestion firstName={member.firstName} email={emailOwner} number={numberOwner} value={shareAnswer} onChange={setShareAnswer} />}
+          <PreviousOwnerWarning firstName={member.firstName} items={[...(emailFormer ? [{ kind: 'EMAIL' as const, former: emailFormer }] : []), ...(numberFormer ? [{ kind: 'RINGCENTRAL' as const, former: numberFormer }] : [])]} confirmed={formerConfirmed} onChange={setFormerConfirmed} />
           {firstEmail && <div className="sm:col-span-2"><EmailAfterFields email={typed.companyEmail.trim()} label={gone ? 'IT is closing their accounts: this email afterwards' : 'IT removes their access when they leave: this email afterwards'} value={emailChoice} onChange={setEmailChoice} /></div>}
           {!gone && <><Input name="ringCentralExtension" label="Extension" optional inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} width="full" defaultValue={existing.ringCentralExtension ?? ''} hint="Digits only." /><span className="max-sm:hidden" /></>}
           <Input name="datEmail" label="DAT sign-in email" optional type="email" maxLength={254} width="full" defaultValue={existing.datEmail ?? ''} hint="The email only. Never a password." />

@@ -15,14 +15,24 @@ import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { middayIso } from '@/lib/navigation';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { aSupport, memberBadge, supportName, type MemberStatus } from './types';
+import { aSupport, memberBadge, supportName, type MemberRow, type MemberStatus } from './types';
+import { ContactCell, PhoneDetails } from './glance';
 
+/** Someone's work contacts as Dispatchers shows them: lines with copy buttons, and on a phone Call, Email and Telegram buttons (TeamLeadContactsScreen). */
+function WorkContact({ row }: { row: { status: MemberStatus; contacts?: WorkContacts } }) {
+  if (row.contacts === undefined) return null;
+  const asRow = { ...(row.contacts ?? { companyEmail: null, ringCentralNumber: null, ringCentralExtension: null, telegram: null, shared: null }), status: row.status } as unknown as MemberRow;
+  return <><span className="max-sm:hidden"><ContactCell row={asRow} /></span><span className="sm:hidden"><PhoneDetails row={asRow} where="" /></span></>;
+}
+
+/** Work contacts (section 44): company email, RingCentral number and extension, Telegram, and one they use of someone else's. Never personal ones. An older API sends none. */
+type WorkContacts = { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension: string | null; telegram: string | null; shared: MemberRow['shared'] } | null;
 export interface TeamView {
   teams: { id: string; name: string; mc: string }[];
   // lastDay: on notice. An older API sends neither field, and everyone shows as before.
-  dispatchers: { id: string; name: string; status: MemberStatus; teamId: string; jobTitle: string | null; lead: boolean; lastDay?: string | null; lastDayPassed?: boolean }[];
+  dispatchers: { id: string; name: string; status: MemberStatus; teamId: string; jobTitle: string | null; lead: boolean; lastDay?: string | null; lastDayPassed?: boolean; contacts?: WorkContacts }[];
   supports: { id: string; name: string; status: MemberStatus; dispatcherId: string | null; teamId?: string | null; since: string; sinceKnown?: boolean; supportType?: string; pending: { id: string; createdAt: string } | null;
-    lastDay?: string | null; lastDayPassed?: boolean; hasApplication?: boolean }[];
+    lastDay?: string | null; lastDayPassed?: boolean; hasApplication?: boolean; contacts?: WorkContacts }[];
   requests: { id: string; status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED'; reason: string; note: string | null; createdAt: string; decidedAt: string | null; support: string }[];
 }
 
@@ -78,11 +88,13 @@ export function MyTeam({ data }: { data: TeamView }) {
             {wholeTeam.length > 0 && <Card><CardHeader title="Assist the whole team" description="They work with everyone here, not one dispatcher." />
               <Table className="mt-3 border-t border-border" caption="Whole team supports and updaters" rows={wholeTeam} rowKey={support => support.id} columns={[
                 { key: 'name', label: 'Name', primary: true, cell: support => <Person name={support.name} secondary={supportName(support)} /> },
+                ...(wholeTeam.some(support => support.contacts !== undefined) ? [{ key: 'contact', label: 'Work contact', cell: (support: TeamView['supports'][number]) => <WorkContact row={support} /> }] : []),
                 { key: 'status', label: 'Status', cell: status },
                 { key: 'request', label: 'Promotion', srOnly: true, action: true, align: 'right', cell: promotion }]} /></Card>}
-            <Card><CardHeader title="Dispatchers" />
+            <Card><CardHeader title="Dispatchers" description={data.dispatchers.some(row => row.contacts !== undefined) ? 'Work numbers and company emails. Personal details stay with Dispatch managers.' : undefined} />
               <Table className="mt-3 border-t border-border" caption="Dispatchers and who assists them" rows={data.dispatchers.filter(row => row.teamId === team.id)} rowKey={dispatcher => dispatcher.id} columns={[
                 { key: 'name', label: 'Name', primary: true, cell: dispatcher => <Person name={dispatcher.name} secondary={dispatcher.lead ? 'Dispatcher, team lead' : 'Dispatcher'} /> },
+                ...(data.dispatchers.some(row => row.contacts !== undefined) ? [{ key: 'contact', label: 'Work contact', cell: (dispatcher: TeamView['dispatchers'][number]) => <WorkContact row={dispatcher} /> }] : []),
                 { key: 'assisted', label: 'Assisted by', cell: dispatcher => {
                   const assisting = data.supports.filter(support => support.dispatcherId === dispatcher.id);
                   return assisting.length ? <ul className="space-y-2">{assisting.map(support => <li key={support.id} className="flex flex-wrap items-center gap-2"><span>{support.name}, {supportName(support)}</span>{support.lastDay && status(support)}{promotion(support)}</li>)}</ul> : '—';

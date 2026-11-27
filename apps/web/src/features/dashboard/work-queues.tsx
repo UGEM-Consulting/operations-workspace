@@ -10,7 +10,7 @@ import { StatCard } from '@/components/workspace-ui';
 import { EmptyState } from '@/components/ui/feedback';
 import { Badge, StatusBadge } from '@/components/ui/status-badge';
 import { LocalTime } from '@/components/ui/local-time';
-import { middayIso } from '@/lib/navigation';
+import { dayLabel, middayIso } from '@/lib/navigation';
 import { fullName, toReassign, type MemberList } from '@/features/dispatch/types';
 import type { ApplicationList, ReviewSummary } from '@/features/onboarding/types';
 import { type ItQueue, type ItRequest, type Notifications } from '@/features/it/types';
@@ -72,6 +72,31 @@ export async function ReviewWork({ firstName }: { firstName: string }) {
       {notifications.status === 'fulfilled' ? <ManagerNotifications initial={notifications.value} /> : <Unavailable title="Updates unavailable" />}
     </div>
   </div>;
+}
+
+/** The dashboard's Dispatch row (section 44). */
+interface DispatchSummaryData { leaving: number; onLeave: number; missingDetails: number; onboarding?: number; nextLastDay: string | null; nextBack: string | null; setups: number; removals: number; promotions: number; oldestPromotion: string | null; paperworkToReview: number }
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+/**
+ * Dispatch at a glance for dispatch managers and administrators (DashboardDispatchScreen): leaving, on leave, waiting on IT,
+ * promotions to decide, paperwork to review and missing details, each opening its list. An older API answers 404: nothing shows.
+ */
+export async function DispatchSummary() {
+  const data = await read<DispatchSummaryData>('dispatch/summary').catch(() => null);
+  if (!data) return null;
+  return <section aria-labelledby="dispatch-summary" className="space-y-3">
+    <div className="flex items-center justify-between gap-3"><h2 id="dispatch-summary" className="text-base font-semibold leading-6">Dispatch</h2>
+      <Button asChild size="sm" variant="ghost"><Link href="/dispatch/dispatchers">Dispatchers<ArrowRight aria-hidden="true" className="size-4" /></Link></Button></div>
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+      <StatCard label="Leaving" value={data.leaving} tone="warning" detail={data.nextLastDay ? <>Next last day {dayLabel(data.nextLastDay, false)}</> : 'Nobody on notice'} href="/dispatch/dispatchers?status=LEAVING" />
+      <StatCard label="On leave" value={data.onLeave} tone="info" detail={data.nextBack ? <>Back {dayLabel(data.nextBack, false)}</> : 'Nobody away'} href="/dispatch/dispatchers?status=ON_LEAVE" />
+      {/* The count is who the Onboarding tab lists; removals IT has due are named alongside, since that tab doesn’t show them. */}
+      <StatCard label="Being set up by IT" value={data.onboarding ?? data.setups} tone="info" detail={data.removals ? <>IT also has {plural(data.removals, 'removal')} due</> : 'No removals due'} href="/dispatch/dispatchers?status=ONBOARDING" />
+      <StatCard label="Promotions to decide" value={data.promotions} detail={data.oldestPromotion ? <>Oldest asked {waited(data.oldestPromotion).toLowerCase()} ago</> : 'None waiting'} href="/dispatch/promotions" />
+      <StatCard label="Paperwork to review" value={data.paperworkToReview} detail="Sent back by them" href="/dispatch/dispatchers?status=PAPERWORK" />
+      <StatCard label="Missing details" value={data.missingDetails} detail="No MC or start date" href="/dispatch/dispatchers?status=MISSING" />
+    </div>
+  </section>;
 }
 
 const daysAhead = (days: number) => new Date(Date.now() + days * 86400_000).toISOString().slice(0, 10);

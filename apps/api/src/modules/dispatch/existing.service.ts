@@ -22,7 +22,7 @@ import { LoadBoardSeat, type Provider } from '../load-boards/load-boards.entity'
 import { lockCatchUpLinks, lockTeam, memberPlace, paperworkTimeEnded, supportedDispatcher } from './create-member';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord, MemberAssignment, MemberNotice, MemberOtherName, MemberPaperDocument, MemberSharedAccount, MemberSupportLink, NO_MC, Position, positionLabel, type SharedKind, SupportType, Team } from './dispatch.entity';
 import { AccountOwnersDto, CloseAccountsDto, ExistingRowDto, LeftDayDto, MemberNamesDto, type SharedAction, UpdateExistingDto } from './dispatch.dto';
-import { accountOwners, shareAccount, sharedKey, stopSharing } from './shared-accounts';
+import { accountOwners, formerOwners, formerOwnersOf, previousOwnerConflict, shareAccount, sharedKey, stopSharing, type FormerOwner } from './shared-accounts';
 
 export const IMPORT_LOCK = 42002037;
 const LINK_DAYS = 14, NOT_LISTED_TEAM = 'No team yet', INDEPENDENT = 'Independent';
@@ -91,10 +91,14 @@ export interface AlreadyMatch { id: string; name: string; status: string; why: s
 export interface RowResult { row: number; name: string; position: 'DISPATCHER' | 'SUPPORT'; supportType: SupportType; status: RowStatus; problems: string[]; sameName: boolean;
  mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null; supportsRow: number | null; startedOn: string | null; noMc: boolean; mcFromTeam: boolean; sharesSignIn: boolean;
  left: boolean; leftOn: string | null; hasAccounts: boolean; askIt: boolean; otherNames: string[]; otherNameMcs: (string | null)[]; match: AlreadyMatch | null; fill: boolean; previousMemberId: string | null;
+ // Section 44: a company email or number in the row that was someone's who left, and what to do about it.
+ previous: { field: 'companyEmail' | 'ringCentralNumber'; name: string; until: string | null }[] | null; previousAction: 'WITHOUT' | 'CONFIRMED' | null;
  // The load board account each sign-in is on (section 33); null puts it on "account not recorded".
  seatAccounts: Record<Provider, string | null>;
  // Recorded as their account at another company instead of a second record.
  account: boolean;
+ // The fields a "without" choice leaves off (section 44), for a new record, a fill or an account at another company alike.
+ dropped: ('companyEmail' | 'ringCentralNumber')[];
  // Someone else's company email or RingCentral number on a row naming a different person (section 35), and what was chosen.
  shared: SharedMatch | null; sharedAction: SharedAction | null }
 /** Who holds the email or number a row names. MOVE needs it on a record a manager typed, with IT not removing their accounts. */
@@ -123,6 +127,9 @@ interface Known {
  // Who owns each company email and RingCentral number (section 35): records, IT setups, other companies' accounts and hand-overs,
  // never someone only using it. onRecord: the member whose record a manager typed it on; openRemoval: people IT is removing.
  companyOwners: Map<string, string[]>; numberOwners: Map<string, string[]>; onRecord: Map<string, string>; openRemoval: Set<string>;
+ // Section 44: who had a company email or number in the file before they left (EMAIL|address, NUMBER|digits), when nobody holds it now.
+ // Everyone who had it (a row about someone coming back leaves out their own earlier records, through earlier).
+ formers?: Map<string, FormerOwner[]>; earlier?: Map<string, string>;
 }
 const NAME = /^[A-Za-z][A-Za-z .'-]*$/;
 /** The status column: Active (or blank) or Left. Suspended means on leave, which isn't a status: they're added as Active and put on leave from their page. */
@@ -164,6 +171,24 @@ export class ExistingDispatchersService {
    WHERE d.position = 'DISPATCHER' AND d.status <> 'LEFT' AND NOT EXISTS (SELECT 1 FROM member_notices n WHERE n."memberId" = d.id AND n."cancelledAt" IS NULL AND n."finishedAt" IS NULL)
    ORDER BY lower(d."firstName"), lower(d."lastName")`);
   return { mcs, teams, jobTitles, dispatchers, loadBoardAccounts, archivedMcs, archivedTeams };
+ }
+ /** The company emails and numbers in a file that were someone's who left and that nobody holds now (section 44). */
+ private async withFormers(em: EntityManager, known: Known, rows: ExistingRowDto[]): Promise<Known> {
+  const formers = new Map<string, FormerOwner[]>();
+  // The owner maps include people who left; only someone here now holding it means it isn't asked about (it's shared or already here).
+  const free = (kind: SharedKind, value: string) => !((kind === 'EMAIL' ? known.companyOwners.get(value.toLowerCase()) : known.numberOwners.get(digits(value))) ?? []).some(id => known.byId.get(id)?.status !== 'LEFT');
+  for (const kind of ['EMAIL', 'RINGCENTRAL'] as const) {
+   const values = [...new Set(rows.map(row => ((kind === 'EMAIL' ? row.companyEmail : row.ringCentralNumber) ?? '').trim()).filter(value => value && free(kind, value)))];
+   // One query per kind for the whole file, never one per row.
+   const found = await formerOwnersOf(em, kind, values);
+   for (const value of values) {
+    const list = found.get(sharedKey(kind, value));
+    if (list?.length) formers.set(kind === 'EMAIL' ? `EMAIL|${value.toLowerCase()}` : `NUMBER|${digits(value)}`, list);
+   }
+  }
+  const earlier = new Map<string, string>();
+  if (formers.size) for (const row of await em.query(`SELECT id, "previousMemberId" FROM dispatch_members WHERE "previousMemberId" IS NOT NULL`) as { id: string; previousMemberId: string }[]) earlier.set(row.id, row.previousMemberId);
+  return { ...known, formers, earlier };
  }
  private async known(em: EntityManager): Promise<Known> {
   const mcs: { id: string; name: string; archived: boolean }[] = await em.query(`SELECT id, name, "archivedAt" IS NOT NULL AS archived FROM mcs`);
@@ -465,7 +490,6 @@ export class ExistingDispatchersService {
    const fill = !!match && row.alreadyAction === 'FILL' && match.options.includes('FILL');
    const account = !!match && row.alreadyAction === 'ACCOUNT' && match.options.includes('ACCOUNT');
    if (already) { state = 'ALREADY'; problems.unshift(already); }
-   const hasAccounts = left && !!(company || number || text(row.datEmail) || text(row.truckstopEmail));
    // Someone else's email or number (section 35). Moving it takes it off a record a manager typed, never off IT's records or
    // another company's account, and not while IT is removing that person's accounts.
    let shared: SharedMatch | null = null;
@@ -478,13 +502,33 @@ export class ExistingDispatchersService {
     shared = { owners, options: ['SHARED', ...(movable ? ['MOVE_SHARED', 'MOVE'] as const : []), 'WITHOUT'] };
    }
    const sharedAction = shared && row.sharedAction && shared.options.includes(row.sharedAction) ? row.sharedAction : null;
+   // An email or number that was someone's who left and nobody holds now (section 44): the row asks what to do.
+   // Never their own: a row saying they came back leaves out that record and the ones it came back from.
+   const self = new Set<string>();
+   for (let id: string | undefined = previousMemberId ?? undefined; id && !self.has(id); id = known.earlier?.get(id)) self.add(id);
+   // A row that fills in a record or adds an account at another company writes its values too, onto the person it matched.
+   const acting = fill || account;
+   if (acting && match) for (let id: string | undefined = match.id; id && !self.has(id); id = known.earlier?.get(id)) self.add(id);
+   const previousHits = ([['companyEmail', company ? `EMAIL|${company}` : ''], ['ringCentralNumber', number ? `NUMBER|${digits(number)}` : '']] as const)
+    .filter(([field]) => !already || (fill ? match!.fills.includes(field) : account))
+    .flatMap(([field, key]) => { const former = key ? known.formers?.get(key)?.find(item => !self.has(item.memberId)) : undefined; return former ? [{ field, name: former.name, until: former.until }] : []; });
+   const previous = previousHits.length ? previousHits : null, previousAction = previous ? row.previousOwnerAction ?? null : null;
+   const dropped = previousAction === 'WITHOUT' ? previous!.map(item => item.field) : [];
+   // Until IT confirmed it or the row says without, a fill or an account waits (the row shows under Was someone else's).
+   let filling = fill, adding = account;
+   if (previous && acting && !previousAction) filling = adding = false;
+   if (fill && dropped.length) { match!.fills = match!.fills.filter(field => !dropped.includes(field as 'companyEmail')); filling = filling && match!.fills.length > 0; }
+   if (account && dropped.length && !(company && !dropped.includes('companyEmail')) && !(number && !dropped.includes('ringCentralNumber'))) adding = false;
+   // What is left to close once a "without" choice took its value off, so Ask IT never asks about nothing.
+   const accountsLeft = left && !!((company && !dropped.includes('companyEmail')) || (number && !dropped.includes('ringCentralNumber')) || text(row.datEmail) || text(row.truckstopEmail));
    return { row: row.row, name, position, supportType, status: state, problems, sameName, mcId, teamId, jobTitleId, supportsMemberId: null, supportsTeamId, supportsRow: null, startedOn, noMc, mcFromTeam, sharesSignIn: false,
-    left, leftOn, hasAccounts, askIt: hasAccounts && !!row.askIt, otherNames, otherNameMcs, match, fill, previousMemberId, seatAccounts, account, shared, sharedAction };
+    left, leftOn, hasAccounts: accountsLeft, askIt: accountsLeft && !!row.askIt, otherNames, otherNameMcs, match, fill: filling, previousMemberId, seatAccounts, account: adding, shared, sharedAction, previous, previousAction, dropped };
   });
   for (const result of results) if (result.status === 'READY' && result.problems.length) result.status = 'PROBLEM';
   for (const entry of choices.values()) for (const number of entry.rows) { const result = results.find(item => item.row === number)!; if (result.status === 'READY') result.status = 'CHOICE'; }
   // Someone else's email or number needs a choice for the row (section 35).
   for (const result of results) if (result.status === 'READY' && result.shared && !result.sharedAction) result.status = 'CHOICE';
+  for (const result of results) if (result.status === 'READY' && result.previous && !result.previousAction) result.status = 'CHOICE';
   // Supports last: their dispatcher may be another row in the same file.
   rows.forEach((row, index) => {
    const result = results[index];
@@ -518,8 +562,8 @@ export class ExistingDispatchersService {
   return { results, choices: [...choices.values()] };
  }
  async check(rows: ExistingRowDto[]) {
-  const { results, choices } = this.evaluate(rows, await this.known(this.db.manager), await signInsInUse(this.db.manager));
-  return { rows: results.map(({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, match, shared, sharedAction }) => ({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, shared, sharedAction,
+  const { results, choices } = this.evaluate(rows, await this.withFormers(this.db.manager, await this.known(this.db.manager), rows), await signInsInUse(this.db.manager));
+  return { rows: results.map(({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, match, shared, sharedAction, previous, previousAction }) => ({ row, name, position, supportType, status, problems, sameName, left, leftOn, hasAccounts, shared, sharedAction, previous, previousAction,
    match: match && { id: match.id, name: match.name, status: match.status, why: match.why, options: match.options, ...(match.account ? { account: match.account } : {}), fills: match.fills.map(fill => fill.startsWith('otherNames:') ? `${fill.slice(11)} other ${fill.slice(11) === '1' ? 'name' : 'names'}` : FIELD_LABELS[fill] ?? fill) } })),
    choices, counts: this.counts(results) };
  }
@@ -536,7 +580,7 @@ export class ExistingDispatchersService {
   const alerts: string[] = [];
   const result = await this.db.transaction(async em => {
    await em.query('SELECT pg_advisory_xact_lock($1)', [IMPORT_LOCK]);
-   const known = await this.known(em), { results } = this.evaluate(rows, known, await signInsInUse(em));
+   const known = await this.withFormers(em, await this.known(em), rows), { results } = this.evaluate(rows, known, await signInsInUse(em));
    const ready = results.filter(row => row.status === 'READY'), byRow = new Map(rows.map(row => [row.row, row])), added = new Map<number, string>();
    const locked = new Map<string, Team>(), today = usDay('latest');
    // Read FOR SHARE and checked again, members before teams: leaving doesn't take the import lock, and refuses while supports are linked.
@@ -562,13 +606,17 @@ export class ExistingDispatchersService {
      await em.getRepository(MemberSupportLink).save({ supportId: member.id, dispatcherId, teamId: result.supportsTeamId, startedAt, reason: result.supportType === 'UPDATER' ? 'Added as an existing updater.' : 'Added as an existing support.', actorId: user.id });
     }
     // Someone else's email or number (section 35): used shared or left out stays off this record; moved, it's on it.
-    const keepsOwn = (field: 'companyEmail' | 'ringCentralNumber') => !result.shared?.owners.some(owner => owner.fields.includes(field)) || result.sharedAction === 'MOVE' || result.sharedAction === 'MOVE_SHARED';
+    // One that was someone's who left (section 44) stays off unless IT confirmed it's theirs now.
+    const keepsOwn = (field: 'companyEmail' | 'ringCentralNumber') => (!result.shared?.owners.some(owner => owner.fields.includes(field)) || result.sharedAction === 'MOVE' || result.sharedAction === 'MOVE_SHARED')
+     && !result.dropped.includes(field);
     const record = await em.getRepository(ExistingMemberRecord).save({ memberId: member.id, addedBy: user.id, sourceName: sourceName?.trim().slice(0, 200) || null,
      companyEmail: keepsOwn('companyEmail') ? text(row.companyEmail).toLowerCase() || null : null, ringCentralNumber: keepsOwn('ringCentralNumber') ? text(row.ringCentralNumber) || null : null, personalEmail: text(row.personalEmail).toLowerCase() || null, personalPhone: text(row.personalPhone) || null,
      telegram: telegramUsername(text(row.telegram)), ringCentralExtension: text(row.ringCentralExtension) || null, datEmail: text(row.datEmail).toLowerCase() || null, truckstopEmail: text(row.truckstopEmail).toLowerCase() || null,
      startDateKnown: !!result.startedOn, periodDateKnown: !!result.startedOn || !hasPeriod, leftDateKnown: !result.left || !!result.leftOn,
      legalFirstName: text(row.legalFirstName) || null, legalLastName: text(row.legalLastName) || null });
     if (result.shared && result.sharedAction && result.sharedAction !== 'WITHOUT') await this.settleShared(em, user, member.id, row, result.shared, result.sharedAction);
+    if (result.previous && result.previousAction === 'CONFIRMED') await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id,
+     metadata: { fields: result.previous.map(item => item.field), from: sourceName ? 'file' : 'form', previousOwnerConfirmed: result.previous.map(item => item.field), ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}) } });
     // Load board sign-ins become seats (section 33), on the account the row names, before IT is asked to close anything.
     await this.fileSeats(em, user, member, row, result);
     await syncRecordedSeats(em, member.id, user.id);
@@ -589,7 +637,7 @@ export class ExistingDispatchersService {
    let accounts = 0;
    for (const result of results.filter(row => row.account)) { await this.addAccount(em, user, byRow.get(result.row)!, result, sourceName); accounts += 1; }
    return { added: added.size, filled, accounts, members: [...added.entries()].map(([row, id]) => ({ row, id })),
-    left: results.filter(row => row.status !== 'READY' && !row.fill && !row.account).map(({ row, name, status, problems, sameName }) => ({ row, name, status, problems, sameName })) };
+    left: results.filter(row => row.status !== 'READY' && !row.fill && !row.account).map(({ row, name, status, problems, sameName, previous }) => ({ row, name, status, problems, sameName, previous })) };
   });
   this.alerts.dispatch(alerts);
   return result;
@@ -622,7 +670,8 @@ export class ExistingDispatchersService {
   if (fields.includes('datEmail') || fields.includes('truckstopEmail')) { await this.fileSeats(em, user, member, row, result, fields); await syncRecordedSeats(em, member.id, user.id); }
   const accounts = fields.filter(field => REMOVAL_FIELDS.includes(field));
   const alerts = accounts.length ? await this.correctRemoval(em, user, member, record, accounts) : [];
-  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file', ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}), ...(newNames.length ? { otherNames: newNames.length } : {}) } });
+  const confirmed = result.previousAction === 'CONFIRMED' ? (result.previous ?? []).map(item => item.field).filter(field => fields.includes(field)) : [];
+  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file', ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}), ...(newNames.length ? { otherNames: newNames.length } : {}), ...(confirmed.length ? { previousOwnerConfirmed: confirmed } : {}) } });
   return alerts;
  }
  /** A seat for each sign-in the row puts on a named account; one already open there keeps it. Only fields filled in, when given. */
@@ -635,18 +684,19 @@ export class ExistingDispatchersService {
   const match = result.match!, at = match.account!;
   const member = await em.getRepository(DispatchMember).findOne({ where: { id: match.id }, lock: { mode: 'pessimistic_write' } });
   if (!member || member.status === 'LEFT') throw new ConflictException('A record changed while this was being added. Check the rows again.');
-  const email = text(row.companyEmail).toLowerCase() || null;
+  // Left off when the row said without (section 44); kept when IT confirmed it's theirs now.
+  const email = result.dropped.includes('companyEmail') ? null : text(row.companyEmail).toLowerCase() || null, number = result.dropped.includes('ringCentralNumber') ? null : text(row.ringCentralNumber) || null;
   const theirs = email ? (await alreadyHere(em, [{ key: 'own', email, phone: null, applicationId: null, skipMemberId: null }])).get('own')?.some(item => item.memberId === member.id) : false;
   const used = listNameKey(result.name) !== listNameKey(`${member.firstName} ${member.lastName}`) ? result.name : null;
   // The row's position column says what they were there (section 40); a blank one records nothing.
   const position = text(row.position) ? (result.position === 'SUPPORT' ? result.supportType : 'DISPATCHER') : null;
-  await addCompanyAccount(em, user.id, member.id, { mcId: at.mcId, companyName: null, position, nameUsed: used, companyEmail: theirs ? null : email, ringCentralNumber: text(row.ringCentralNumber) || null,
+  await addCompanyAccount(em, user.id, member.id, { mcId: at.mcId, companyName: null, position, nameUsed: used, companyEmail: theirs ? null : email, ringCentralNumber: number,
    ringCentralExtension: text(row.ringCentralExtension) || null, status: 'ACTIVE', closedOn: null, sourceName: sourceName?.trim().slice(0, 200) || 'file' });
   const fields = ['companyAccount'];
   if (used && !(await em.getRepository(MemberOtherName).existsBy({ memberId: member.id, name: used }))) { await saveOtherNames(em, member.id, [{ name: used, mcId: at.mcId }], user.id); fields.push('otherNames'); }
   if (text(row.datEmail) || text(row.truckstopEmail)) { await this.fileSeats(em, user, member, row, result, undefined, true); fields.push('seats'); }
   member.version += 1; await em.save(member);
-  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file', ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}) } });
+  await em.getRepository(DispatchEvent).save({ memberId: member.id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields, from: 'file', ...(sourceName?.trim() ? { source: sourceName.trim().slice(0, 200) } : {}), ...(result.previousAction === 'CONFIRMED' && result.previous?.length ? { previousOwnerConfirmed: result.previous.map(item => item.field) } : {}) } });
   await refreshRemovalAccounts(em, member.id, user.id); await refreshRemovalSeats(em, member.id, user.id);
  }
  private async fileSeats(em: EntityManager, user: User, member: DispatchMember, row: ExistingRowDto, result: RowResult, fields?: string[], unnamed = false) {
@@ -821,7 +871,7 @@ export class ExistingDispatchersService {
    const set = (field: 'companyEmail' | 'ringCentralNumber' | 'personalEmail' | 'personalPhone' | 'telegram' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail', value: string | undefined) => { if (value !== undefined && value !== (record[field] ?? '')) { record[field] = value || null; changed.push(field); } };
    // Someone else's company email or RingCentral number (section 35): the form asks first, and it's recorded as shared, never
    // on this record. The one they share now, sent back unchanged, stays as it is; anything else ends it.
-   const handled = new Set<string>();
+   const handled = new Set<string>(), confirmedPrevious: string[] = [];
    for (const [field, kind, share, label] of [['companyEmail', 'EMAIL', dto.shareCompanyEmail, 'company email'], ['ringCentralNumber', 'RINGCENTRAL', dto.shareRingCentral, 'RingCentral number']] as const) {
     const value = dto[field];
     if (value === undefined) continue;
@@ -835,7 +885,13 @@ export class ExistingDispatchersService {
      if (!share) throw new ConflictException(`This ${label} is ${owners[0].name}’s. Say whether ${member.firstName} uses it too.`);
      if (await shareAccount(em, user.id, id, kind, value, owners[0].memberId)) changed.push(kind === 'EMAIL' ? 'sharedEmail' : 'sharedNumber');
      set(field, ''); handled.add(field);
-    } else if (open && !open.handedOverAt && await stopSharing(em, user.id, id, kind)) changed.push(kind === 'EMAIL' ? 'sharedEmail' : 'sharedNumber');
+    } else {
+     if (open && !open.handedOverAt && await stopSharing(em, user.id, id, kind)) changed.push(kind === 'EMAIL' ? 'sharedEmail' : 'sharedNumber');
+     // Section 44: one that was someone's who left (or retired, or closed) needs IT's confirmation that it's theirs now.
+     const former = value ? (await formerOwners(em, kind, value, id))[0] : undefined;
+     if (former && !dto.previousOwnerConfirmed) throw previousOwnerConflict(label, former, member.firstName);
+     if (former) confirmedPrevious.push(field);
+    }
    }
    for (const [field, label] of [['companyEmail', 'company email'], ['personalEmail', 'personal email']] as const) {
     if (handled.has(field)) continue;
@@ -878,7 +934,7 @@ export class ExistingDispatchersService {
    if (changed.includes('datEmail') || changed.includes('truckstopEmail')) { await syncRecordedSeats(em, id, user.id); await refreshRemovalSeats(em, id, user.id); }
    const accounts = changed.filter(field => ['companyEmail', 'ringCentralNumber', 'ringCentralExtension', 'datEmail', 'truckstopEmail'].includes(field));
    if (accounts.length) alerts = await this.correctRemoval(em, user, member, record, accounts, dto);
-   await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields: changed } });
+   await em.getRepository(DispatchEvent).save({ memberId: id, teamId: null, event: 'EXISTING_UPDATED', actorId: user.id, metadata: { fields: changed, ...(confirmedPrevious.length ? { previousOwnerConfirmed: confirmedPrevious } : {}) } });
    return { id, version: member.version };
   });
   this.alerts.dispatch(alerts);
@@ -890,7 +946,10 @@ export class ExistingDispatchersService {
   */
  async accountOwners(dto: AccountOwnersDto) {
   const find = async (kind: SharedKind, value?: string) => value ? (await accountOwners(this.db.manager, kind, value, dto.memberId ?? null)).map(({ memberId, name, onRecord }) => ({ id: memberId, name, onRecord })) : [];
-  return { companyEmail: await find('EMAIL', dto.companyEmail), ringCentralNumber: await find('RINGCENTRAL', dto.ringCentralNumber) };
+  // Section 44: with nobody holding it now, who had it before they left (the form warns and asks for IT's confirmation).
+  const before = async (kind: SharedKind, owners: unknown[], value?: string) => value && !owners.length ? (await formerOwners(this.db.manager, kind, value, dto.memberId ?? null)).map(({ memberId, name, until }) => ({ id: memberId, name, until })) : [];
+  const companyEmail = await find('EMAIL', dto.companyEmail), ringCentralNumber = await find('RINGCENTRAL', dto.ringCentralNumber);
+  return { companyEmail, ringCentralNumber, formerOwners: { companyEmail: await before('EMAIL', companyEmail, dto.companyEmail), ringCentralNumber: await before('RINGCENTRAL', ringCentralNumber, dto.ringCentralNumber) } };
  }
  /** An unused link works only with the email on the record: it follows a correction, and stops when the email is cleared. */
  private async moveUnusedLink(em: EntityManager, user: User, memberId: string, email: string | null) {

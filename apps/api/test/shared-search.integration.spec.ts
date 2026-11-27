@@ -64,7 +64,7 @@ integration('Shared accounts and search (disposable PostgreSQL)', () => {
   it('asks before recording someone else’s email or number, then records it as shared on both pages', async () => {
     const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test', ringCentralNumber: '+1 469 555 0142' }), drew = await addOne('Drew', 'Calloway');
     const owners = (await agents.manager.post('/api/dispatch/existing/account-owners').set(headers).send({ memberId: drew, companyEmail: 'Riley.Santos@example.test', ringCentralNumber: '(469) 555-0142' }).expect(201)).body;
-    expect(owners).toEqual({ companyEmail: [{ id: riley, name: 'Riley Santos', onRecord: true }], ringCentralNumber: [{ id: riley, name: 'Riley Santos', onRecord: true }] });
+    expect(owners).toEqual({ companyEmail: [{ id: riley, name: 'Riley Santos', onRecord: true }], ringCentralNumber: [{ id: riley, name: 'Riley Santos', onRecord: true }], formerOwners: { companyEmail: [], ringCentralNumber: [] } });
     // Without the answer it's refused, as before; with it, recorded as shared and never on Drew's own record.
     expect((await edit(drew, { companyEmail: 'riley.santos@example.test' }, 409)).body.message).toContain('Riley Santos');
     await edit(drew, { companyEmail: 'riley.santos@example.test', ringCentralNumber: '+1 469 555 0142', ringCentralExtension: '231', shareCompanyEmail: true, shareRingCentral: true });

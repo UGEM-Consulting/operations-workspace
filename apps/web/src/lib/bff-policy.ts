@@ -14,7 +14,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
   return (method === 'GET' && ['it/onboarding','notifications'].includes(path)) ||
     (method === 'GET' && /^it\/onboarding\/[0-9a-f-]{36}$/.test(path)) ||
     (method === 'PATCH' && /^it\/onboarding\/[0-9a-f-]{36}\/(contact|tasks\/[A-Z_]+)$/.test(path)) ||
-    (method === 'POST' && /^notifications\/[0-9a-f-]{36}\/read$/.test(path)) ||
+    (method === 'POST' && (/^notifications\/[0-9a-f-]{36}\/read$/.test(path) || path === 'notifications/read-all')) ||
     // IT tasks (setups and removals together) and the removal checklist after a dispatcher left.
     (method === 'GET' && match(`it/removals/${ID}`, path)) || (method === 'PATCH' && match(`it/removals/${ID}/tasks/[A-Z_]+`, path)) ||
     // Leave: suspending accounts while someone is away, and restoring them.
@@ -81,7 +81,7 @@ export function allowedEndpoint(method: string, path: string): boolean {
     // Cleared drivers: a dispatch manager (anywhere) or a team lead (in their teams) assigns an MC and a dispatcher.
     (method === 'POST' && match(`(dispatch|team)/drivers/${ID}/assign`, path)) ||
     // Promotions: a team lead's request or cancellation, and a manager's decision.
-    (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path))) ||
+    (method === 'POST' && (path === 'team/promotions' || match(`team/promotions/${ID}/cancel`, path) || match(`dispatch/promotions/${ID}/decide`, path) || match(`dispatch/promotions/members/${ID}`, path))) ||
     // Safety drivers: add and edit a driver, withdraw or reopen them, assign their safety staff owner.
     (method === 'POST' && (path === 'safety/drivers' || match(`safety/drivers/${ID}/(withdraw|reopen|owner|left|link|link/cancel|ssn|annual-reviews|tests|incidents)`, path))) ||
     // A driver filling in their application (driver session cookie; no staff account).

@@ -54,6 +54,8 @@ export class ExistingRowDto {
  // Someone else's company email or RingCentral number on a row naming a different person (section 35): this person uses it
  // too, it's this person's (moved here, the other keeping it shared or not), or add them without it.
  @IsOptional() @IsIn(['SHARED', 'MOVE', 'MOVE_SHARED', 'WITHOUT']) sharedAction?: SharedAction;
+ // A company email or number that was someone's who left (section 44): add the person without it, or IT confirmed it's theirs now.
+ @IsOptional() @IsIn(['WITHOUT', 'CONFIRMED']) previousOwnerAction?: 'WITHOUT' | 'CONFIRMED';
 }
 export type SharedAction = 'SHARED' | 'MOVE' | 'MOVE_SHARED' | 'WITHOUT';
 export class ExistingRowsDto {
@@ -68,6 +70,8 @@ const blankOr = (_object: unknown, value: unknown) => value !== undefined && val
 /** Send only what changed; '' clears a value. */
 export class UpdateExistingDto {
  @IsInt() @Min(1) version!: number;
+ // Section 44: a company email or RingCentral number that was someone's who left is saved only with IT's confirmation.
+ @IsOptional() @IsBoolean() previousOwnerConfirmed?: boolean;
  @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) companyEmail?: string;
  @text() @ValidateIf(blankOr) @IsString() @Matches(INTERNATIONAL_PHONE_PATTERN, { message: 'The RingCentral number should have 7 to 15 digits.' }) @MaxLength(40, { message: 'The RingCentral number is too long.' }) ringCentralNumber?: string;
  @text() @ValidateIf(blankOr) @IsEmail() @MaxLength(254) personalEmail?: string;
@@ -224,6 +228,14 @@ export const validPhone = (value: string) => value.length <= 40 && INTERNATIONAL
 export class CreatePromotionDto {
  @IsUUID() supportId!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why this support is ready to be a dispatcher.' }) @MaxLength(1000) reason!: string;
+}
+/** A manager promotes a support or updater from their page (section 44): their record's version and where they'll work. */
+export class PromoteSupportDto {
+ @IsInt() @Min(1) version!: number;
+ @IsUUID(undefined, { message: 'Choose the MC they will dispatch for.' }) mcId!: string;
+ @ValidateIf((_object: unknown, value: unknown) => value !== null && value !== undefined) @IsUUID() teamId?: string | null;
+ @IsUUID(undefined, { message: 'Choose their job title.' }) jobTitleId!: string;
+ @text() @IsOptional() @IsString() @MaxLength(1000) note?: string;
 }
 export class PromotionQueryDto {
  @IsOptional() @IsIn(['PENDING', 'APPROVED', 'DECLINED', 'CANCELLED', 'ALL']) status?: 'PENDING' | 'APPROVED' | 'DECLINED' | 'CANCELLED' | 'ALL';

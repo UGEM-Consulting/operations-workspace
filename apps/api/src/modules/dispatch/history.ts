@@ -325,7 +325,9 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
     const count = m.otherNames, fields = (m.fields ?? []) as string[];
     const said = fields.map(field => field === 'otherNames' && count ? `${count} other ${count === 1 ? 'name' : 'names'}` : FIELD_WORDS[field] ?? field);
     const title = m.reason === 'team-lead-sign-in' ? 'Company email recorded for their team lead sign-in' : m.from === 'file' ? (m.source ? `Details added from ${m.source}` : 'Details added from a file') : 'Recorded details changed';
-    add(id, at, 'DETAILS', 'pen-line', title, row.by, sentence(said)); break;
+    // Section 44: an email or number that was someone's who left, saved because IT confirmed it's theirs now.
+    const confirmed = ((m.previousOwnerConfirmed ?? []) as string[]).map(field => FIELD_WORDS[field] ?? field);
+    add(id, at, 'DETAILS', 'pen-line', title, row.by, [sentence(said), confirmed.length ? `IT confirmed the ${confirmed.join(' and ')} someone who left had is theirs now.` : ''].filter(Boolean).join(' ') || null); break;
    }
    case 'NAMES_CHANGED': add(id, at, 'DETAILS', 'pen-line', 'Names changed', row.by); break;
    case 'LEFT_DAY_RECORDED': add(id, at, 'AWAY', 'calendar', 'Last day added', row.by, m.reasonChanged ? 'With the reason they left.' : null); break;

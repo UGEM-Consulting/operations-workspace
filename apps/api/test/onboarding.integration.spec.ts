@@ -643,6 +643,9 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect(view.teams.map((row:{name:string})=>row.name)).toEqual(['Lead team']);
   expect(view.dispatchers.map((row:{name:string;lead:boolean})=>[row.name,row.lead])).toEqual([['Helper Dispatcher',false],['Lead Dispatcher',true]]);
   expect(view.supports).toMatchObject([{id:support.id,name:'Sky Support',dispatcherId:helper,pending:null}]);
+  // Section 44: their work contacts as Dispatchers shows them, never personal ones.
+  expect(view.dispatchers.find((row:{id:string})=>row.id===lead).contacts).toMatchObject({companyEmail:'team.lead@example.test'});
+  expect(JSON.stringify(view)).not.toMatch(/personal/i);
 
   // Requests: only for supports in the team, one open at a time; a decline needs a note.
   await teamLead.post('/api/team/promotions').set(headers).send({supportId:outsider,reason:'Not in my team'}).expect(404);
@@ -685,6 +688,46 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   expect((await teamLead.get('/api/team').set(headers).expect(200)).body.teams).toEqual([]);
   await teamLead.post('/api/team/promotions').set(headers).send({supportId:support.id,reason:'Again'}).expect(403);
   await db.query(`UPDATE dispatch_members SET "accountUserId"=NULL`);await db.query(`DELETE FROM users WHERE role::text='TEAM_LEAD'`);
+ });
+ it('lets a manager promote a support from their page, shows the decision on Invitations, and counts Dispatch (section 44)',async()=>{
+  await db.query('TRUNCATE dispatch_members,member_support_links,promotion_requests,mcs,teams,job_titles CASCADE');
+  const [mc]=await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Northwind Freight','northwind freight') RETURNING id`);
+  const [title]=await db.query(`INSERT INTO job_titles (name,"nameKey") VALUES ('Dispatcher','dispatcher') RETURNING id`);
+  const [jordan]=await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Jordan','Hale','DISPATCHER','ACTIVE',now()-interval '30 days') RETURNING id`);
+  await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt") VALUES ($1,$2,now()-interval '30 days')`,[jordan.id,mc.id]);
+  const email='fictional.kai@example.test';
+  const created=await manager.post('/api/onboarding/invitations').set(headers).send({email,position:'SUPPORT',supportsMemberId:jordan.id,expirationDays:7,telegramRequired:false}).expect(201);
+  const applicant=request.agent(app.getHttpServer());const verified=await verify(applicant,created.body.url.split('#').pop(),email);
+  const personal={firstName:answers.firstName,lastName:answers.lastName,personalPhoneNumber:answers.personalPhoneNumber,preferredAmericanFirstName:'Kai',preferredAmericanLastName:'Morgan'};
+  await applicant.patch('/api/applicant/draft').set(headers).send({...personal,version:0}).expect(200);
+  // While it's a draft, Invitations shows no name or decision.
+  const draft=(await manager.get('/api/onboarding/invitations').set(headers).expect(200)).body.find((row:{id:string})=>row.id===created.body.id);
+  expect(draft.sent).toBeNull();
+  await applicant.post('/api/applicant/submit').set(headers).send({...personal,accurate:true,version:1}).expect(201);
+  expect((await manager.get('/api/onboarding/invitations').set(headers).expect(200)).body.find((row:{id:string})=>row.id===created.body.id).sent).toMatchObject({status:'WAITING',name:'Kai Morgan'});
+  await manager.post(`/api/onboarding/applications/${verified.id}/reviews`).set(headers).send({version:2,decisionType:'APPROVE',confirmed:true}).expect(201);
+  expect((await manager.get('/api/onboarding/invitations').set(headers).expect(200)).body.find((row:{id:string})=>row.id===created.body.id).sent).toMatchObject({status:'APPROVED',name:'Kai Morgan',at:expect.any(String)});
+  const [kai]=await db.query('SELECT id,version FROM dispatch_members WHERE "applicationId"=$1',[verified.id]);
+
+  // Refused: a stale version, someone added by hand whose paperwork isn't accepted, and a dispatcher.
+  const promote=(id:string,body:Record<string,unknown>,status:number)=>manager.post(`/api/dispatch/promotions/members/${id}`).set(headers).send(body).expect(status);
+  await promote(kai.id,{version:kai.version+5,mcId:mc.id,jobTitleId:title.id},409);
+  const [byHand]=await db.query(`INSERT INTO dispatch_members ("firstName","lastName",position,status,"joinedAt") VALUES ('Sky','Patel','SUPPORT','ACTIVE',now()) RETURNING id,version`);
+  expect((await promote(byHand.id,{version:byHand.version,mcId:mc.id,jobTitleId:title.id},409)).body.message).toMatch(/paperwork isn’t accepted/);
+  await promote(jordan.id,{version:1,mcId:mc.id,jobTitleId:title.id},409);
+  // Asked and approved at once, recorded like any promotion, and IT setup starts.
+  const done=(await promote(kai.id,{version:kai.version,mcId:mc.id,teamId:null,jobTitleId:title.id,note:'Ready to dispatch on their own.'},201)).body;
+  expect(done).toMatchObject({status:'APPROVED',itRequestId:expect.any(String)});
+  expect(await db.query('SELECT position,status FROM dispatch_members WHERE id=$1',[kai.id])).toEqual([{position:'DISPATCHER',status:'ONBOARDING'}]);
+  expect(await db.query('SELECT status FROM promotion_requests WHERE "supportId"=$1',[kai.id])).toEqual([{status:'APPROVED'}]);
+  expect((await db.query(`SELECT event,metadata FROM dispatch_events WHERE "memberId"=$1 AND event LIKE 'PROMOTION%' ORDER BY "createdAt"`,[kai.id])).map((row:{event:string;metadata:{byManager?:boolean}})=>[row.event,!!row.metadata.byManager])).toEqual([['PROMOTION_REQUESTED',true],['PROMOTION_APPROVED',false]]);
+  await promote(kai.id,{version:kai.version+1,mcId:mc.id,jobTitleId:title.id},409);
+
+  // The dashboard's Dispatch row: counts and dates only.
+  const summary=(await manager.get('/api/dispatch/summary').set(headers).expect(200)).body;
+  expect(summary).toMatchObject({leaving:0,onLeave:0,promotions:0,paperworkToReview:0,setups:expect.any(Number),removals:0});
+  expect(summary.setups).toBeGreaterThanOrEqual(1);
+  await itAgent.get('/api/dispatch/summary').set(headers).expect(403);
  });
  it('enforces IT/admin roles, approval-only projections, session identity and CSRF',async()=>{
   const flow=await approvedItFlow();await admin.get(`/api/it/onboarding/${flow.requestId}`).set(headers).expect(200);
@@ -837,6 +880,10 @@ integration('Dispatcher invitation workflow (disposable PostgreSQL)',()=>{
   await other.post(`/api/notifications/${notices.body.items[0].id}/read`).set(headers).send({}).expect(404);
   await itAgent.get('/api/notifications').set(headers).expect(403);
   await manager.post(`/api/notifications/${notices.body.items[0].id}/read`).set({...headers,'x-csrf-protection':''}).send({}).expect(403);
+  // Mark all as read (section 44): only their own updates.
+  expect((await other.post('/api/notifications/read-all').set(headers).send({}).expect(200)).body).toEqual({marked:0});
+  await itAgent.post('/api/notifications/read-all').set(headers).send({}).expect(403);
+  expect((await manager.post('/api/notifications/read-all').set(headers).send({}).expect(200)).body).toEqual({marked:1});
   await manager.post(`/api/notifications/${notices.body.items[0].id}/read`).set(headers).send({}).expect(201);
   expect((await manager.get('/api/notifications').set(headers)).body.unread).toBe(0);
   const review=await manager.get(`/api/onboarding/applications/${flow.id}`).set(headers).expect(200);expect(review.body.application.status).toBe('APPROVED');expect(review.body.itOnboarding.status).toBe('COMPLETED');

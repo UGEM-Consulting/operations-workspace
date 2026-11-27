@@ -21,7 +21,7 @@ import { useToast } from '@/components/ui/toast';
 import { PrivateImage } from '@/components/ui/private-image';
 import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
-import { errorMessage, mutate } from '@/lib/client-api';
+import { ApiError, errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
 import { ItDetail, ItTask, taskDone, taskOutcomes, TaskOutcome } from './types';
 const RINGCENTRAL=['RINGCENTRAL','SMS','CALL_RECORDING'];
@@ -44,6 +44,8 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const router=useRouter();
  const [data,setData]=useState(initial),[pending,setPending]=useState<'refresh'|'task'|null>(null);
  const [editing,setEditing]=useState<ItTask|null>(null),[taskStatus,setTaskStatus]=useState<TaskOutcome>('PENDING'),[taskError,setTaskError]=useState('');
+ // Section 44: an email or number that was someone's who left is saved once IT ticks that it's theirs now; asked when the API says so.
+ const [formerAsked,setFormerAsked]=useState(false),[formerOk,setFormerOk]=useState(false);
  const [account,setAccount]=useState(''),[verified,setVerified]=useState(false),[extension,setExtension]=useState(''),[dat,setDat]=useState(''),[truckstop,setTruckstop]=useState('');
  // A setup cancelled because the dispatcher left is read-only too; their removal checklist takes over.
  const {request,tasks}=data,profile=request.profile,cancelled=!!request.cancelledAt,closed=!!request.completedAt||cancelled,busy=!!pending;
@@ -55,7 +57,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  const recorded=(key:string)=>key==='GOOGLE_WORKSPACE'?request.companyEmail??'':key==='RINGCENTRAL'?request.assignedRingCentralPhoneNumber??'':'';
  const legacyPhone=!!profile.workPhoneNumber?.trim();
  async function refresh(){setPending('refresh');try{setData(await readApi<ItDetail>(`it/onboarding/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh.')});}finally{setPending(null);}}
- function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setTaskError('');setAccount(recorded(task.key));setVerified(!!request.workPhoneVerifiedAt);setExtension(request.ringCentralExtension??'');setDat(request.datEmail??'');setTruckstop(request.truckstopEmail??'');}
+ function open(task:ItTask){setFormerAsked(false);setFormerOk(false);setEditing(task);setTaskStatus(task.status);setTaskError('');setAccount(recorded(task.key));setVerified(!!request.workPhoneVerifiedAt);setExtension(request.ringCentralExtension??'');setDat(request.datEmail??'');setTruckstop(request.truckstopEmail??'');}
  async function update(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(!editing||busy)return;
   const values=new FormData(event.currentTarget),notes=String(values.get('notes')??'');
@@ -72,7 +74,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
    const extrasChanged=Object.keys(extras).length>0;
    if(accountChanged||extrasChanged){
     const saved=await mutate<ItDetail>(`it/onboarding/${request.id}/contact`,'PATCH',{version,workPhoneVerified:editing.key==='RINGCENTRAL'?verified:!!request.workPhoneVerifiedAt,
-     ...(!accountChanged?{}:editing.key==='GOOGLE_WORKSPACE'?{companyEmail:account.trim()}:{assignedRingCentralPhoneNumber:account.trim()}),...extras});
+     ...(!accountChanged?{}:editing.key==='GOOGLE_WORKSPACE'?{companyEmail:account.trim()}:{assignedRingCentralPhoneNumber:account.trim()}),...extras,...(formerAsked&&formerOk?{previousOwnerConfirmed:true}:{})});
     setData(saved);version=saved.request.version;
    }
    const updated=taskStatus===editing.status&&notes===editing.notes&&(accountChanged||extrasChanged)?null:await mutate<ItDetail>(`it/onboarding/${request.id}/tasks/${editing.key}`,'PATCH',{version,status:taskStatus,notes});
@@ -80,7 +82,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
    // Finishing changes the IT tasks count in the sidebar, which comes from the server layout.
    if(updated?.request.completedAt)router.refresh();
    toast(updated?.request.completedAt?{title:'Onboarding completed',description:'The responsible manager has been notified.'}:{title:accountChanged&&!updated?`${field!.label} saved`:'Checklist task updated'});
-  }catch(error){setTaskError(errorMessage(error,'Unable to update. Your entries have been kept.'));}finally{setPending(null);}
+  }catch(error){const message=errorMessage(error,'Unable to update. Your entries have been kept.');if(error instanceof ApiError&&error.reason?.code==='PREVIOUS_OWNER')setFormerAsked(true);setTaskError(message);}finally{setPending(null);}
  }
  const name=profile.proposedDisplayName??'Approved dispatcher';
  const blocked=tasks.filter(task=>task.status==='BLOCKED');
@@ -140,7 +142,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
  {editing&&<Dialog open onClose={()=>setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual setup work." busy={pending==='task'} actions={<Button form="it-task-editor" type="submit">{pending==='task'?'Saving…':completing?'Complete onboarding':'Save task'}</Button>}>
  <form id="it-task-editor" onSubmit={update} className="space-y-4">
  {field&&<Input label={field.label} name="account" type={field.type} required={!allowed(taskStatus)||!!recorded(editing.key)} optional={allowed(taskStatus)&&!recorded(editing.key)} maxLength={field.max} value={account}
-  onChange={event=>{setAccount(event.target.value);if(!event.target.value.trim()&&!allowed(taskStatus))setTaskStatus(allowed(editing.status)?editing.status:'IN_PROGRESS');}}
+  onChange={event=>{setAccount(event.target.value);setFormerAsked(false);setFormerOk(false);if(!event.target.value.trim()&&!allowed(taskStatus))setTaskStatus(allowed(editing.status)?editing.status:'IN_PROGRESS');}}
   placeholder={field.placeholder} autoComplete="off" width="md" hint={field.hint??'The manager sees it on the employee details.'}/>}
  {editing.key==='RINGCENTRAL'&&<Input label="Extension" optional name="extension" inputMode="numeric" pattern="[0-9]{1,6}" maxLength={6} value={extension} onChange={event=>setExtension(event.target.value)} autoComplete="off" width="sm" hint="Digits only."/>}
  {editing.key==='RINGCENTRAL'&&legacyPhone&&<Checkbox name="verified" checked={verified} onChange={event=>setVerified(event.target.checked)} label={`I verified the older application work phone (${profile.workPhoneNumber}).`}/>}
@@ -150,6 +152,7 @@ export function ItOnboarding({initial}:{initial:ItDetail}){
   <p className="text-[13px] leading-5 text-muted-foreground">The email only. Never a password, here or in notes.</p></>}
  <Textarea label={taskStatus==='BLOCKED'?'Blocked reason':'Notes'} optional={taskStatus!=='BLOCKED'} name="notes" defaultValue={editing.notes} required={taskStatus==='BLOCKED'} maxLength={1000} hint="Visible to IT only. Don’t put passwords in notes."/>
  {completing&&<div className="space-y-3 rounded-md bg-warning-background p-4 text-sm text-warning"><p className="font-semibold">This completes onboarding.</p><p>Every task will be completed or marked not needed. The checklist becomes read-only and the manager is notified. It needs the company email and RingCentral number recorded in their tasks.</p><Checkbox name="confirmCompletion" required label="I confirm setup is complete." className="text-foreground"/></div>}
+ {formerAsked&&<Checkbox name="formerOk" checked={formerOk} onChange={event=>setFormerOk(event.target.checked)} label={`IT confirmed it’s ${name.split(' ')[0]}’s now`} description="Recorded on this setup’s activity."/>}
  <Notice message={taskError} error/><PendingHint pending={pending==='task'}/>{taskError&&<p className="text-sm text-muted-foreground">If someone else updated this request, close this dialog and refresh its status before trying again.</p>}</form>
  </Dialog>}
 

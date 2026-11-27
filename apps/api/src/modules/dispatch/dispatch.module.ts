@@ -3,7 +3,7 @@ import { Roles } from '../auth/policy';
 import { AuthRequest } from '../auth/session';
 import { Role } from '../users/user.entity';
 import { RehireDto, UndoLeavingDto } from './dispatch.dto';
-import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, AccountOwnersDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto, SuggestQueryDto } from './dispatch.dto';
+import { AskItDto, PlaceMemberDto, StartDateDto, SupportTypeDto, AddContactDto, AssignDriverDto, BackOnDto, CorrectDetailsDto, CoversDto, PaperScanDto, LeaveDto, LeaveReasonDto, LeaveVersionDto, CatchUpLinksDto, CloseAccountsDto, ExistingRowsDto, AccountOwnersDto, LeftDayDto, MemberNamesDto, UpdateExistingDto, ChangeLastDayDto, NoticeActionDto, CreatePromotionDto, PromoteSupportDto, CreateTeamDto, DecidePromotionDto, LeaveMemberDto, PromotionQueryDto, ReassignSupportDto, MoveMemberDto, StatusQueryDto, UpdateMemberDto, UpdateTeamDto, MemberListQueryDto, MemberExportDto, SuggestQueryDto } from './dispatch.dto';
 import { DriverAssignmentsService } from './driver-assignments.service';
 import { DispatchService } from './dispatch.service';
 import { MemberListService } from './member-list';
@@ -21,6 +21,8 @@ import { StorageModule } from '../storage/storage.module';
 @Roles(Role.SYSTEM_ADMIN, Role.DISPATCHER_MANAGER)
 class DispatchController {
  constructor(private readonly dispatch: DispatchService, private readonly list: MemberListService) {}
+ // The dashboard's Dispatch row (section 44).
+ @Get('summary') summary() { return this.list.summary(); }
  @Get('teams') teams(@Query() query: StatusQueryDto) { return this.dispatch.teams(query.status === 'LEFT' || query.status === 'ONBOARDING' || query.status === 'ON_LEAVE' ? 'ALL' : query.status); }
  @Get('teams/:id') team(@Param('id', ParseUUIDPipe) id: string) { return this.dispatch.team(id); }
  @Post('teams') createTeam(@Req() req: AuthRequest, @Body() dto: CreateTeamDto) { return this.dispatch.createTeam(req.currentUser, dto); }
@@ -119,6 +121,8 @@ class PromotionsController {
  constructor(private readonly promotions: PromotionsService) {}
  @Get() list(@Query() query: PromotionQueryDto) { return this.promotions.list(query.status); }
  @Post(':id/decide') decide(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: DecidePromotionDto) { return this.promotions.decide(req.currentUser, id, dto); }
+ // A manager promotes a support or updater from their page (section 44): asked and approved at once.
+ @Post('members/:id') promote(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: PromoteSupportDto) { return this.promotions.promote(req.currentUser, id, dto); }
 }
 // A team lead's own team: who is in it, and promotion requests for its supports.
 @Controller('team')

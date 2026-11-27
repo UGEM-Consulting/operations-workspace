@@ -34,6 +34,60 @@ export async function accountOwners(em: Query, kind: SharedKind, value: string, 
   GROUP BY d.id ORDER BY lower(d."firstName"), lower(d."lastName")`, [key, kind, exceptMemberId]);
 }
 
+export interface FormerOwner { memberId: string; name: string; until: string | null }
+/**
+ * Who had a company email or RingCentral number before (section 44): someone who left, whose record, IT setup or account at
+ * another company held it; one IT retired at a rehire; or an account at another company that was closed. Never the person
+ * asked about. Used only while nobody here holds it now (accountOwners), to warn and ask for IT's confirmation.
+ */
+export async function formerOwners(em: Query, kind: SharedKind, value: string, exceptMemberId: string | null = null): Promise<FormerOwner[]> {
+ const key = sharedKey(kind, value);
+ return key ? (await formerOwnersOf(em, kind, [value], exceptMemberId ? [exceptMemberId] : [])).get(key) ?? [] : [];
+}
+/**
+ * formerOwners for many values at once (a file's rows): one query per kind, keyed by sharedKey. The people in exceptMemberIds and
+ * the earlier records they came back from (previousMemberId, all the way back) are left out, so nobody is warned about their own.
+ */
+export async function formerOwnersOf(em: Query, kind: SharedKind, values: string[], exceptMemberIds: string[] = []): Promise<Map<string, FormerOwner[]>> {
+ const keys = [...new Set(values.map(value => sharedKey(kind, value)).filter((key): key is string => !!key))], found = new Map<string, FormerOwner[]>();
+ if (!keys.length) return found;
+ const keyOf = (expr: string) => kind === 'EMAIL' ? `lower(${expr})` : phoneSqlOf(expr);
+ const match = (expr: string) => `${keyOf(expr)} = ANY($1::text[])`;
+ const email = kind === 'EMAIL';
+ const [recorded, setup, account, retired] = email ? ['e."companyEmail"', 'r."companyEmail"', 'x."companyEmail"', '"retiredCompanyEmail"'] : ['e."ringCentralNumber"', 'r."assignedRingCentralPhoneNumber"', 'x."ringCentralNumber"', '"retiredRingCentralNumber"'];
+ const rows: { key: string; memberId: string; name: string; until: string | null }[] = await em.query(`WITH RECURSIVE self(id) AS (SELECT unnest($2::uuid[])
+   UNION SELECT d."previousMemberId" FROM dispatch_members d JOIN self ON d.id = self.id WHERE d."previousMemberId" IS NOT NULL)
+  SELECT o.key, d.id AS "memberId", d."firstName" || ' ' || d."lastName" AS name,
+   -- Until their last day (never one that wasn't recorded), or until it was retired or closed.
+   -- ISO in UTC (Postgres text form is not read by every browser).
+   to_char(max(coalesce(o.until, CASE WHEN o.gone AND coalesce(lr."leftDateKnown", true) THEN d."leftAt" END)) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS until FROM (
+   SELECT ${keyOf(recorded)} AS key, e."memberId", NULL::timestamptz AS until, true AS gone FROM existing_member_records e WHERE ${match(recorded)}
+   UNION ALL SELECT ${keyOf(setup)}, r."memberId", NULL, true FROM it_onboarding_requests r WHERE r."memberId" IS NOT NULL AND ${match(setup)}
+   UNION ALL SELECT ${keyOf(setup)}, d.id, NULL, true FROM it_onboarding_requests r JOIN dispatch_members d ON d."applicationId" = r."applicationId" WHERE ${match(setup)}
+   UNION ALL SELECT ${keyOf(account)}, x."memberId", NULL, true FROM member_company_accounts x WHERE ${match(account)}
+   UNION ALL SELECT ${keyOf(account)}, x."memberId", x."closedAt", false FROM member_company_accounts x WHERE x.status = 'CLOSED' AND ${match(account)}
+   UNION ALL SELECT ${keyOf('e.' + retired)}, e."memberId", e."accountsRetiredAt", false FROM existing_member_records e WHERE ${match('e.' + retired)}
+   UNION ALL SELECT ${keyOf('r.' + retired)}, r."memberId", r."accountsRetiredAt", false FROM it_onboarding_requests r WHERE r."memberId" IS NOT NULL AND ${match('r.' + retired)}
+   UNION ALL SELECT ${keyOf('r.' + retired)}, d.id, r."accountsRetiredAt", false FROM it_onboarding_requests r JOIN dispatch_members d ON d."applicationId" = r."applicationId" WHERE ${match('r.' + retired)}
+  ) o JOIN dispatch_members d ON d.id = o."memberId" LEFT JOIN existing_member_records lr ON lr."memberId" = d.id
+  -- What someone who left held (until their last day); what was retired or closed (until then), whoever it was.
+  WHERE (NOT o.gone OR d.status = 'LEFT') AND d.id NOT IN (SELECT id FROM self)
+  GROUP BY o.key, d.id ORDER BY lower(d."firstName"), lower(d."lastName")`, [keys, exceptMemberIds]);
+ for (const { key, ...former } of rows) found.set(key, [...found.get(key) ?? [], former]);
+ return found;
+}
+
+/** Why an email or number that was someone's who left isn't saved yet (section 44): whose, until when, and what to tick. */
+export function previousOwnerMessage(label: string, former: FormerOwner, firstName: string) {
+ const until = former.until ? ` until ${new Date(former.until).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })}` : '';
+ return `This ${label} was ${former.name}’s${until}. Check with IT, then tick “IT confirmed it’s ${firstName}’s now” to save it.`;
+}
+
+/** The 409 for it, with reason PREVIOUS_OWNER so a page asks for the tick on that answer, never by reading its words. */
+export function previousOwnerConflict(label: string, former: FormerOwner, firstName: string) {
+ return new ConflictException({ message: previousOwnerMessage(label, former, firstName), reason: 'PREVIOUS_OWNER', error: 'Conflict', statusCode: 409 });
+}
+
 /** What someone uses that is another person's, and who uses what is theirs, for their page. */
 export async function memberSharing(em: Query, memberId: string): Promise<{ uses: SharedUse[]; usedBy: SharedUsedBy[] }> {
  const uses: SharedUse[] = await em.query(`SELECT s.id, s.kind, s.value, CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'name', o."firstName" || ' ' || o."lastName") END AS owner,

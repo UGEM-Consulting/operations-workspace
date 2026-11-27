@@ -101,7 +101,21 @@ export class OnboardingService {
   const undecided = applications.filter(row => claimed.has(row.invitationId) && !['APPROVED', 'REJECTED'].includes(row.status));
   const matches = await alreadyHere(this.db, undecided.map(row => ({ key: row.invitationId, email: rows.find(invitation => invitation.id === row.invitationId)?.email ?? null, phone: null, applicationId: row.id, skipMemberId: null })));
   const hereOf = (id: string) => { const match = matches.get(id)?.find(item => item.kind === 'MEMBER'); return match ? { name: match.name, status: match.status, leftAt: match.leftAt, position: match.position, supportType: match.supportType } : null; };
-  return rows.map(row => ({ ...row, status: invitationStatus(row), applicationReference: referenceOf.get(row.id) ?? null, alreadyHere: hereOf(row.id), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
+  // Section 44: once an application was sent, the decision and the applicant's name as they last sent it (never a draft).
+  const sentIds = applications.filter(row => claimed.has(row.invitationId) && ['SUBMITTED', 'RESUBMITTED', 'CHANGES_REQUESTED', 'APPROVED', 'REJECTED'].includes(row.status)).map(row => row.id);
+  const sentRows: { invitationId: string; status: string; first: string | null; last: string | null; at: Date }[] = sentIds.length ? await this.db.query(`SELECT a."invitationId", a.status,
+     -- The American pair only when both parts were given, else the legal pair: never half of each.
+     CASE WHEN nullif(trim(s.fields->>'preferredAmericanFirstName'), '') IS NOT NULL AND nullif(trim(s.fields->>'preferredAmericanLastName'), '') IS NOT NULL
+      THEN s.fields->>'preferredAmericanFirstName' ELSE s.fields->>'firstName' END AS first,
+     CASE WHEN nullif(trim(s.fields->>'preferredAmericanFirstName'), '') IS NOT NULL AND nullif(trim(s.fields->>'preferredAmericanLastName'), '') IS NOT NULL
+      THEN s.fields->>'preferredAmericanLastName' ELSE s.fields->>'lastName' END AS last,
+     coalesce(r."createdAt", a."submittedAt", a."updatedAt") AS at
+    FROM dispatcher_applications a
+    JOIN LATERAL (SELECT fields FROM application_submissions WHERE "applicationId" = a.id ORDER BY version DESC, "createdAt" DESC LIMIT 1) s ON true
+    LEFT JOIN LATERAL (SELECT "createdAt" FROM application_reviews WHERE "applicationId" = a.id AND a.status IN ('CHANGES_REQUESTED', 'APPROVED', 'REJECTED') ORDER BY "createdAt" DESC LIMIT 1) r ON true
+    WHERE a.id = ANY($1)`, [sentIds]) : [];
+  const sentOf = new Map(sentRows.map(row => [row.invitationId, { status: ['SUBMITTED', 'RESUBMITTED'].includes(row.status) ? 'WAITING' : row.status, name: [row.first, row.last].filter(Boolean).join(' ').trim() || null, at: row.at }]));
+  return rows.map(row => ({ ...row, status: invitationStatus(row), applicationReference: referenceOf.get(row.id) ?? null, sent: sentOf.get(row.id) ?? null, alreadyHere: hereOf(row.id), member: memberOf.get(row.id) ?? null, supports: row.supportsMemberId ? { id: row.supportsMemberId, name: names[row.supportsMemberId] ?? 'Dispatcher' } : null, supportsTeam: row.supportsTeamId ? { id: row.supportsTeamId, name: teamNames[row.supportsTeamId] ?? 'a team' } : null }));
  }
  async revoke(user: User, id: string) {
   await this.db.transaction(async em => {

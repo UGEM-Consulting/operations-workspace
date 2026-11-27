@@ -94,6 +94,11 @@ export async function onLeave(em: Pick<EntityManager, 'query'>, memberId: string
  const [row] = await em.query(`SELECT 1 FROM member_leaves WHERE "memberId" = $1 AND "endedAt" IS NULL AND "startedAt" IS NOT NULL`, [memberId]);
  return !!row;
 }
+/** Leave recorded, started or not: a promotion would start IT setup the suspend checklist never lists, as support IT setup is refused then. */
+export async function leaveRecorded(em: Pick<EntityManager, 'query'>, memberId: string) {
+ const [row] = await em.query(`SELECT 1 FROM member_leaves WHERE "memberId" = $1 AND "endedAt" IS NULL`, [memberId]);
+ return !!row;
+}
 /** SQL for "is on leave now" on a member alias, for lists and pickers. */
 const startedLeave = (alias: string) => `FROM member_leaves lv WHERE lv."memberId" = ${alias}.id AND lv."endedAt" IS NULL AND lv."startedAt" IS NOT NULL`;
 export const onLeaveSql = (alias: string) => `EXISTS(SELECT 1 ${startedLeave(alias)})`;

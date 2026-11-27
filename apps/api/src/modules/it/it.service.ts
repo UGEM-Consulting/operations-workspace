@@ -15,6 +15,7 @@ import { photoFor } from '../documents/requirements';
 import { Role, User, UserStatus } from '../users/user.entity';
 import { ItContactDto, ItQueueDto, ItTasksDto, RemovalTaskDto, TaskUpdateDto } from './it.dto';
 import { FORWARDING_NOT_DELETED } from './removal';
+import { accountOwners, formerOwners, previousOwnerConflict, sharedKey } from '../dispatch/shared-accounts';
 import { usDay } from '../safety/screening-rules';
 import { NotificationsService } from '../updates/notifications.service';
 import { ItLeaveActivity, ItLeaveRequest, ItLeaveTask, LEAVE_CHECKLIST, leaveTaskDone } from './it.entity';
@@ -153,6 +154,18 @@ export class ItService {
    if(ringCentral?.status==='COMPLETED'&&!assigned)throw new BadRequestException('A completed RingCentral task requires an assigned number.');
    const workspace=await em.getRepository(ItOnboardingTask).findOneBy({requestId:id,key:'GOOGLE_WORKSPACE'});
    if(workspace?.status==='COMPLETED'&&!companyEmail)throw new BadRequestException('A completed Google Workspace task requires the company email.');
+   // Section 44: a new email or number that was someone's who left (or retired, or closed) needs IT's confirmation it's theirs now.
+   const [owner]=await em.query(`SELECT id FROM dispatch_members WHERE id = $1 OR "applicationId" = $2 LIMIT 1`,[request.memberId,request.applicationId]) as {id:string}[];
+   const firstName=String((request.profile as {proposedDisplayName?:string|null;displayName?:string|null}).proposedDisplayName??(request.profile as {displayName?:string|null}).displayName??'them').split(' ')[0];
+   const confirmedPrevious:string[]=[];
+   for(const [field,kind,value,before,label] of [['companyEmail','EMAIL',companyEmail,request.companyEmail,'company email'],['ringCentralNumber','RINGCENTRAL',assigned,request.assignedRingCentralPhoneNumber,'RingCentral number']] as const){
+    if(!value||sharedKey(kind,value)===sharedKey(kind,before??''))continue;
+    // Only while nobody here holds it now: someone here (them included, through a hand-over) owning it isn’t this question.
+    if((await accountOwners(em,kind,value)).length)continue;
+    const [former]=await formerOwners(em,kind,value,owner?.id??null);
+    if(former&&!input.previousOwnerConfirmed)throw previousOwnerConflict(label,former,firstName);
+    if(former)confirmedPrevious.push(field);
+   }
    const wasVerified=!!request.workPhoneVerifiedAt;
    if(input.workPhoneVerified&&!wasVerified){request.workPhoneVerifiedAt=new Date();request.workPhoneVerifiedBy=user.id;}
    if(!input.workPhoneVerified){request.workPhoneVerifiedAt=null;request.workPhoneVerifiedBy=null;}
@@ -163,7 +176,7 @@ export class ItService {
    request.version+=1;await em.save(request);
    // A load board sign-in IT records becomes a seat until IT moves it to its real account (section 33).
    if(input.datEmail!==undefined||input.truckstopEmail!==undefined){const [member]=await em.query(`SELECT id FROM dispatch_members WHERE id = $1 OR "applicationId" = $2 LIMIT 1`,[request.memberId,request.applicationId]);if(member)await syncRecordedSeats(em,member.id,user.id);}
-   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail}});
+   await em.getRepository(ItOnboardingActivity).save({requestId:id,actorId:user.id,event:'CONTACT_VERIFICATION_UPDATED',metadata:{workPhoneVerified:input.workPhoneVerified,assignedNumberRecorded:!!assigned,companyEmailRecorded:!!companyEmail,extensionRecorded:!!request.ringCentralExtension,datRecorded:!!request.datEmail,truckstopRecorded:!!request.truckstopEmail,...(confirmedPrevious.length?{previousOwnerConfirmed:confirmedPrevious.join(',')}:{})}});
    return this.detail(em,request);
   });
  }
@@ -355,5 +368,12 @@ export class ItService {
   await onboardingLimit(this.db,'notification-read:'+user.id,60,60);
   const notification=await this.db.getRepository(PortalNotification).findOneBy({id,recipientId:user.id});if(!notification)throw new NotFoundException();
   if(!notification.readAt)await this.db.getRepository(PortalNotification).update(id,{readAt:new Date()});return {read:true};
+ }
+ /** Mark all as read (section 44): only the person's own unread notices; nothing else changes. Says how many. */
+ async readAllNotifications(user:User){
+  if(user.status!==UserStatus.ACTIVE||![Role.SYSTEM_ADMIN,Role.DISPATCHER_MANAGER].includes(user.role))throw new ForbiddenException();
+  await onboardingLimit(this.db,'notification-read-all:'+user.id,20,60);
+  const result=await this.db.getRepository(PortalNotification).update({recipientId:user.id,readAt:IsNull()},{readAt:new Date()});
+  return {marked:result.affected??0};
  }
 }

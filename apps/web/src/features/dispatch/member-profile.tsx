@@ -2,9 +2,10 @@
 import Link from 'next/link';
 import { phoneLabel } from '@/lib/phone';
 import { MemberPhotosCard } from './member-photos';
+import { PromoteDialog } from './promote';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, Undo2, UserCheck, UserMinus, UserPlus, Users, type LucideIcon } from 'lucide-react';
+import { Ban, Building2, Calendar, CalendarClock, Ellipsis, FilePenLine, FileText, Link2, Mail, Monitor, Pencil, Phone, Plus, RotateCcw, Route, Send, TrendingUp, Undo2, UserCheck, UserMinus, UserPlus, Users, type LucideIcon } from 'lucide-react';
 import { HistoryTimeline } from './history';
 import { PageCrumb } from '@/components/shell-context';
 import { Button } from '@/components/ui/button';
@@ -97,7 +98,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // People who left and other names (section 33) have their own dialogs.
   const [leftDialog, setLeftDialog] = useState<'names' | 'lastDay' | 'close' | 'record' | null>(null);
   // Bringing back someone who left (section 41).
-  const [bringing, setBringing] = useState<'undo' | 'rehire' | null>(null);
+  const [bringing, setBringing] = useState<'undo' | 'rehire' | null>(null), [promoting, setPromoting] = useState(false);
   const name = fullName(member), open = member.status !== 'LEFT', current = member.current, details = member.details, accounts = member.accounts, photos = memberPhotos(member.id, !!member.photo, !!member.idPhoto, name);
   const badge = memberBadge(member.status);
   // A support works where their dispatcher works and has no IT setup; their dispatcher changes instead of moving.
@@ -194,7 +195,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
     : [{ label: 'Mark as leaving', icon: UserMinus, danger: true, onSelect: () => start('leave') }];
   const otherItems: MenuEntry[] = others.map(key => ({ label: actions[key].label, icon: actions[key].icon, onSelect: actions[key].onClick }));
   // On leave (OnLeaveProfileScreen, OnLeaveUpdaterScreen): the return date first, then the rest, with what ends things last.
-  const more: MenuEntry[] = leave ? [leaveItems[0], ...otherItems, ...leaveItems.slice(1), ...correctItem, ...(existing ? [startAction] : []), { separator: true as const }, ...ending] : [...correctItem, ...otherItems, ...(support && itSetup && open && !onNotice && !leave ? [{ label: itOpen ? 'Ask IT to set up (IT is still working on the last request)' : 'Ask IT to set up', icon: Monitor, disabled: !!itOpen, onSelect: () => { setItItems([]); start('askIt'); } }] : []),
+  // Section 44: a manager promotes a support or updater from here (PromoteFromProfileScreen); not while away or leaving.
+  const promoteItem: MenuEntry[] = support && member.status === 'ACTIVE' && !onNotice ? [{ label: 'Promote to dispatcher', icon: TrendingUp, onSelect: () => setPromoting(true) }] : [];
+  const more: MenuEntry[] = leave ? [leaveItems[0], ...otherItems, ...leaveItems.slice(1), ...correctItem, ...(existing ? [startAction] : []), { separator: true as const }, ...ending] : [...promoteItem, ...correctItem, ...otherItems, ...(support && itSetup && open && !onNotice && !leave ? [{ label: itOpen ? 'Ask IT to set up (IT is still working on the last request)' : 'Ask IT to set up', icon: Monitor, disabled: !!itOpen, onSelect: () => { setItItems([]); start('askIt'); } }] : []),
     ...(support ? [{ label: `Change to ${otherName}`, icon: Users, onSelect: () => start('supportType') }] : []), ...(existing ? [startAction] : []), ...leaveItems, ...(others.length || existing || support || leaveItems.length || correctItem.length ? [{ separator: true as const }] : []), ...ending];
   const mcHistory = !support && <Card>
     <CardHeader title="MC and team history" description={gone ? undefined : 'Every MC and team this dispatcher has worked for. Moves are recorded, never overwritten.'} />
@@ -418,6 +421,7 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
       </div>
     </div>
     {bringing === 'undo' && <UndoLeavingDialog member={member} onClose={() => setBringing(null)} />}
+    {promoting && <PromoteDialog member={member} mcs={mcs} teams={teams} jobTitles={jobTitles} onClose={() => setPromoting(false)} />}
     {bringing === 'rehire' && <RehireDialog member={member} mcs={mcs} teams={teams} jobTitles={jobTitles} dispatchers={dispatchers} onClose={() => setBringing(null)} />}
     {leftDialog === 'names' && <NamesDialog member={member} mcs={mcs} onClose={() => setLeftDialog(null)} />}
     {leftDialog === 'lastDay' && <LeftDayDialog member={member} onClose={() => setLeftDialog(null)} />}

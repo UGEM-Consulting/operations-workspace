@@ -1512,6 +1512,64 @@ integration('Existing dispatchers (disposable PostgreSQL)', () => {
       await runner.release();
     });
   });
+  describe('Suggestions from the Dispatch staging test (section 44)', () => {
+    const profileOf = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
+    const rowOf = async (id: string) => (await agents.manager.get('/api/dispatch/members?status=ALL&pageSize=100').set(headers).expect(200)).body.items.find((item: { id: string }) => item.id === id);
+    const edit = async (id: string, body: Row) => { const current = (await profileOf(id)).version; return agents.manager.patch(`/api/dispatch/members/${id}/existing`).set(headers).send({ version: current, ...body }); };
+
+    it('flags paperwork only when someone has to act: link sent, to review, or time ended', async () => {
+      const dana = await addOne('Dana');
+      expect((await rowOf(dana)).paperworkState).toBeNull();
+      const sent = await link(dana);
+      expect((await rowOf(dana)).paperworkState).toEqual({ state: 'SENT', until: expect.any(String) });
+      const { applicationId } = await open(sent.url, 'dana.home@example.test');
+      expect((await rowOf(dana)).paperworkState).toMatchObject({ state: 'SENT' });
+      await db.query(`UPDATE dispatcher_applications SET status = 'SUBMITTED', "submittedAt" = now() WHERE id = $1`, [applicationId]);
+      expect((await rowOf(dana)).paperworkState).toEqual({ state: 'REVIEW' });
+      await db.query(`UPDATE dispatcher_applications SET status = 'DRAFT', "submittedAt" = NULL, "applicantAccessUntil" = now() - interval '1 day' WHERE id = $1`, [applicationId]);
+      expect((await rowOf(dana)).paperworkState).toEqual({ state: 'TIME_ENDED' });
+    });
+
+    it('asks for IT’s confirmation before recording an email or number of someone who left', async () => {
+      const riley = await addOne('Riley', { companyEmail: 'riley.co@example.test', ringCentralNumber: '+1 469 555 0177' });
+      const rileyVersion = (await profileOf(riley)).version;
+      await agents.manager.post(`/api/dispatch/members/${riley}/leave`).set(headers).send({ version: rileyVersion, leftAt: usDay('latest'), reason: 'Moved on.' }).expect(201);
+      const morgan = await addOne('Morgan');
+      // The form is told whose it was; nobody holds it now.
+      const owners = (await agents.manager.post('/api/dispatch/existing/account-owners').set(headers).send({ memberId: morgan, ringCentralNumber: '(469) 555-0177' }).expect(201)).body;
+      expect(owners).toMatchObject({ ringCentralNumber: [], formerOwners: { ringCentralNumber: [{ id: riley, name: 'Riley Fictional' }] } });
+      expect((await edit(morgan, { ringCentralNumber: '(469) 555-0177' })).status).toBe(409);
+      expect((await edit(morgan, { ringCentralNumber: '(469) 555-0177' })).body).toMatchObject({ reason: 'PREVIOUS_OWNER', message: expect.stringMatching(/was Riley Fictional’s.*IT confirmed it’s Morgan’s now/) });
+      // Riley coming back with their own old email isn't warned about it: a came-back row leaves out their earlier record.
+      const back = { ...base(2, 'Riley', { companyEmail: 'riley.co@example.test' }), alreadyAction: 'CAME_BACK' };
+      expect((await check([back])).body.rows[0]).toMatchObject({ status: 'READY', previous: null });
+      // Filling in Morgan's record with it asks too, and without a choice nothing is written.
+      const fillRow = { ...base(2, 'Morgan', { personalEmail: 'morgan.home@example.test', companyEmail: 'riley.co@example.test' }), alreadyAction: 'FILL' };
+      expect((await check([fillRow])).body.rows[0]).toMatchObject({ previous: [{ field: 'companyEmail', name: 'Riley Fictional' }], previousAction: null });
+      expect((await add([fillRow])).body.filled).toBe(0);
+      expect((await add([{ ...fillRow, previousOwnerAction: 'WITHOUT' }])).body.filled).toBe(0);
+      expect((await profileOf(morgan)).existing.companyEmail).toBeNull();
+      expect((await edit(morgan, { ringCentralNumber: '(469) 555-0177', previousOwnerConfirmed: true })).status).toBe(200);
+      const history = (await profileOf(morgan)).timeline.entries.find((entry: { title: string }) => entry.title === 'Recorded details changed');
+      expect(history.body).toMatch(/IT confirmed the RingCentral number someone who left had is theirs now/);
+      // Their own value sent back unchanged isn't asked about again.
+      expect((await edit(morgan, { ringCentralNumber: '(469) 555-0177' })).status).toBe(200);
+
+      // A file: a row with Riley's old email first asks whether it's Riley coming back (section 33). Said to be someone else, it
+      // waits for a choice; without it, the email stays off; confirmed, it's recorded.
+      expect((await check([base(2, 'Jesse', { companyEmail: 'riley.co@example.test', personalEmail: 'jesse.home@example.test' })])).body.rows[0].status).toBe('ALREADY');
+      const rows = [base(2, 'Jesse', { companyEmail: 'riley.co@example.test', personalEmail: 'jesse.home@example.test', differentPerson: true })];
+      const checked = (await check(rows)).body.rows[0];
+      expect(checked).toMatchObject({ status: 'CHOICE', previous: [{ field: 'companyEmail', name: 'Riley Fictional' }], previousAction: null });
+      expect((await check([{ ...rows[0], previousOwnerAction: 'WITHOUT' }])).body.rows[0].status).toBe('READY');
+      const jesse = (await add([{ ...rows[0], previousOwnerAction: 'WITHOUT' }])).body.members[0].id as string;
+      expect((await profileOf(jesse)).existing.companyEmail).toBeNull();
+      const casey = (await add([base(2, 'Casey', { companyEmail: 'riley.co@example.test', personalEmail: 'casey.home@example.test', differentPerson: true, previousOwnerAction: 'CONFIRMED' })])).body.members[0].id as string;
+      expect((await profileOf(casey)).existing.companyEmail).toBe('riley.co@example.test');
+      expect((await db.query(`SELECT metadata FROM dispatch_events WHERE "memberId" = $1 AND event = 'EXISTING_UPDATED'`, [casey]))[0].metadata).toMatchObject({ previousOwnerConfirmed: ['companyEmail'], from: 'form' });
+    });
+  });
+
   describe('Finishing the record (section 34)', () => {
     const profile = async (id: string) => (await agents.manager.get(`/api/dispatch/members/${id}`).set(headers).expect(200)).body;
     it('adds one person who already left, with other names and where they used them, archived MCs included', async () => {

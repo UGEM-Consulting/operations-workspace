@@ -4,7 +4,7 @@ import { phoneLabel } from '@/lib/phone';
 import { useEffect, useRef, useState } from 'react';
 import { Alert } from '@/components/ui/alert';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
-import { RadioGroup } from '@/components/ui/field';
+import { Checkbox, RadioGroup } from '@/components/ui/field';
 import { mutate } from '@/lib/client-api';
 import type { MemberProfile, SharedKind, SharedUse, SharedUsedBy } from './types';
 
@@ -38,12 +38,32 @@ export function OwnValue({ value, users, mono = false }: { value: string; users:
 }
 
 export interface Owner { id: string; name: string; onRecord: boolean }
+/** Someone who had it before they left, or whose it was until IT retired or closed it (section 44). */
+export interface FormerOwner { id: string; name: string; until: string | null }
+const untilDay = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' });
+/**
+ * An email or number typed that was someone's who left (PreviousOwnerEditScreen): whose, until when, and a tick that IT
+ * confirmed it's theirs now, which saving needs. Numbers aren't reused here, so the number's wording says so.
+ */
+export type PreviousOwnerItem = { kind: 'EMAIL' | 'RINGCENTRAL'; former: FormerOwner };
+export function PreviousOwnerWarning({ firstName, items, confirmed, onChange }: { firstName: string; items: PreviousOwnerItem[]; confirmed: boolean; onChange: (value: boolean) => void }) {
+  if (!items.length) return null;
+  // One tick covers every value named here, so each gets its own warning first.
+  const what = items.length > 1 ? 'email and number' : items[0].kind === 'EMAIL' ? 'email' : 'number';
+  return <div className="space-y-3 sm:col-span-2">
+    {items.map(({ kind, former }) => {
+      const word = kind === 'EMAIL' ? 'email' : 'number', first = former.name.split(' ')[0];
+      return <Alert key={kind} tone="warning" title={`This ${word} was ${former.name}’s`}><p>{former.until ? `${first} had it until ${untilDay(former.until)}. ` : `${first} had it before they left. `}{kind === 'RINGCENTRAL' ? 'Numbers aren’t reused here, so check' : 'Check'} with IT before recording it for {firstName}.</p></Alert>;
+    })}
+    <Checkbox label={`IT confirmed this ${what} ${items.length > 1 ? 'are' : 'is'} ${firstName}’s now`} description={`Needed to save ${items.length > 1 ? 'them' : 'it'}. Recorded with who ticked it, in ${firstName}’s History.`} checked={confirmed} onChange={event => onChange(event.target.checked)} />
+  </div>;
+}
 /**
  * Whose a company email or RingCentral number being typed is (POST, so the value never travels in a URL). Asked a moment
  * after typing stops, and only for a value that looks complete; a late answer for an earlier value is ignored.
  */
 export function useAccountOwners(memberId: string | null, values: { companyEmail: string; ringCentralNumber: string }) {
-  const [found, setOwners] = useState<{ key: string; companyEmail: Owner[]; ringCentralNumber: Owner[] }>({ key: '', companyEmail: [], ringCentralNumber: [] });
+  const [found, setOwners] = useState<{ key: string; companyEmail: Owner[]; ringCentralNumber: Owner[]; former: { companyEmail: FormerOwner[]; ringCentralNumber: FormerOwner[] } }>({ key: '', companyEmail: [], ringCentralNumber: [], former: { companyEmail: [], ringCentralNumber: [] } });
   const asked = useRef(0);
   const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.companyEmail.trim()) ? values.companyEmail.trim() : '', number = values.ringCentralNumber.replace(/\D/g, '').length >= 7 ? values.ringCentralNumber.trim() : '';
   const key = `${email}|${number}`;
@@ -51,15 +71,16 @@ export function useAccountOwners(memberId: string | null, values: { companyEmail
     const ask = ++asked.current;
     if (!email && !number) return;
     const timer = setTimeout(() => {
-      mutate<{ companyEmail: Owner[]; ringCentralNumber: Owner[] }>('dispatch/existing/account-owners', 'POST', { ...(memberId ? { memberId } : {}), ...(email ? { companyEmail: email } : {}), ...(number ? { ringCentralNumber: number } : {}) })
-        .then(answer => { if (ask === asked.current && answer) setOwners({ key: `${email}|${number}`, companyEmail: email ? answer.companyEmail : [], ringCentralNumber: number ? answer.ringCentralNumber : [] }); })
+      mutate<{ companyEmail: Owner[]; ringCentralNumber: Owner[]; formerOwners?: { companyEmail: FormerOwner[]; ringCentralNumber: FormerOwner[] } }>('dispatch/existing/account-owners', 'POST', { ...(memberId ? { memberId } : {}), ...(email ? { companyEmail: email } : {}), ...(number ? { ringCentralNumber: number } : {}) })
+        // formerOwners (section 44): who had it before they left; an older API sends none.
+        .then(answer => { if (ask === asked.current && answer) setOwners({ key: `${email}|${number}`, companyEmail: email ? answer.companyEmail : [], ringCentralNumber: number ? answer.ringCentralNumber : [], former: { companyEmail: email ? answer.formerOwners?.companyEmail ?? [] : [], ringCentralNumber: number ? answer.formerOwners?.ringCentralNumber ?? [] : [] } }); })
         // An older API has no such route: nothing is asked, and saving answers as before.
-        .catch(() => { if (ask === asked.current) setOwners({ key: `${email}|${number}`, companyEmail: [], ringCentralNumber: [] }); });
+        .catch(() => { if (ask === asked.current) setOwners({ key: `${email}|${number}`, companyEmail: [], ringCentralNumber: [], former: { companyEmail: [], ringCentralNumber: [] } }); });
     }, 400);
     return () => clearTimeout(timer);
   }, [memberId, email, number]);
   // Only an answer for what's typed now counts.
-  return found.key === key ? found : { companyEmail: [], ringCentralNumber: [] };
+  return found.key === key ? found : { companyEmail: [], ringCentralNumber: [], former: { companyEmail: [], ringCentralNumber: [] } };
 }
 
 /**

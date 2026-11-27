@@ -96,18 +96,38 @@ const WORK_CONTACTS = `coalesce((SELECT r."assignedRingCentralPhoneNumber" FROM 
  * email and number they use of someone else's (whose, unless it was handed over), who helps them (a lead's row adds those
  * assisting the whole team), the load boards they hold a seat on, and whether IT finished removing a leaver's accounts.
  */
+/** The email and number they use of someone else's, with whose (unless it was handed over). */
+const SHARED_USE = `(SELECT json_agg(json_build_object('kind', s.kind, 'value', s.value, 'owner', CASE WHEN s."handedOverAt" IS NULL THEN o."firstName" || ' ' || o."lastName" END) ORDER BY s.kind)
+      FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId" WHERE s."memberId" = b.id AND s."endedAt" IS NULL) AS shared`;
 const GLANCE = `${WORK_CONTACTS},
     (SELECT o.name FROM member_other_names o WHERE o."memberId" = b.id ORDER BY o."createdAt" DESC, o.id LIMIT 1) AS "otherName",
-    (SELECT json_agg(json_build_object('kind', s.kind, 'value', s.value, 'owner', CASE WHEN s."handedOverAt" IS NULL THEN o."firstName" || ' ' || o."lastName" END) ORDER BY s.kind)
-      FROM member_shared_accounts s LEFT JOIN dispatch_members o ON o.id = s."ownerMemberId" WHERE s."memberId" = b.id AND s."endedAt" IS NULL) AS shared,
+    ${SHARED_USE},
     (SELECT json_agg(json_build_object('id', h.id, 'name', h."firstName" || ' ' || h."lastName", 'supportType', h."supportType", 'wholeTeam', l."teamId" IS NOT NULL)
        ORDER BY l."teamId" IS NOT NULL, lower(h."firstName"), lower(h."lastName"))
       FROM member_support_links l JOIN dispatch_members h ON h.id = l."supportId" WHERE l."endedAt" IS NULL AND h.status <> 'LEFT' AND b.position = 'DISPATCHER'
        AND (l."dispatcherId" = b.id OR (b.lead AND l."teamId" = b."teamId"))) AS helpers,
     (SELECT array_agg(DISTINCT a.provider ORDER BY a.provider) FROM member_load_board_seats s JOIN load_board_accounts a ON a.id = s."accountId"
       WHERE s."memberId" = b.id AND s.status <> 'ENDED') AS "loadBoards",
-    EXISTS (SELECT 1 FROM it_removal_requests r WHERE r."memberId" = b.id AND r."cancelledAt" IS NULL AND r."completedAt" IS NOT NULL) AS "accountsClosed"`;
+    EXISTS (SELECT 1 FROM it_removal_requests r WHERE r."memberId" = b.id AND r."cancelledAt" IS NULL AND r."completedAt" IS NOT NULL) AS "accountsClosed",
+    -- Paperwork someone has to act on (section 44), as the Paperwork tab words it: sent back to review, a link out (until when), or their time ended.
+    -- Not started (no link, or one that expired unused) is null: the Paperwork tab lists it.
+    (SELECT CASE WHEN i."consumedAt" IS NULL THEN CASE WHEN i."expiresAt" > now() THEN json_build_object('state', 'SENT', 'until', i."expiresAt") END
+       WHEN pa.status IN ('SUBMITTED', 'RESUBMITTED') THEN json_build_object('state', 'REVIEW')
+       WHEN pa.status IN ('INVITED', 'DRAFT', 'CHANGES_REQUESTED') AND pa."applicantAccessUntil" <= now() THEN json_build_object('state', 'TIME_ENDED')
+       WHEN pa.status IN ('INVITED', 'DRAFT', 'CHANGES_REQUESTED') THEN json_build_object('state', 'SENT', 'until', pa."applicantAccessUntil") END
+      FROM invitations i LEFT JOIN dispatcher_applications pa ON pa."invitationId" = i.id
+      WHERE b."addedByHand" AND NOT b."paperworkAccepted" AND b.status <> 'LEFT' AND i."catchUpMemberId" = b.id AND i."revokedAt" IS NULL ORDER BY i."createdAt" DESC LIMIT 1) AS "paperworkState"`;
 
+/**
+ * Work contacts for these people as the Dispatchers table reads them (section 44, a team lead's My team): company email,
+ * RingCentral number and extension, Telegram, and an email or number they use of someone else's. Never personal contacts.
+ */
+export async function workContactsOf(db: { query: DataSource['query'] }, ids: string[]): Promise<Map<string, { companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension: string | null; telegram: string | null; shared: { kind: string; value: string; owner: string | null }[] | null }>> {
+ if (!ids.length) return new Map();
+ const rows: { id: string; companyEmail: string | null; ringCentralNumber: string | null; ringCentralExtension: string | null; telegram: string | null; shared: { kind: string; value: string; owner: string | null }[] | null }[] = await db.query(
+  `WITH b AS (${memberRowsSql('$1', '$2')}) SELECT b.id, b."companyEmail", ${WORK_CONTACTS}, ${SHARED_USE} FROM b WHERE b.id = ANY($3)`, [usDay('earliest'), usDay('latest'), ids]);
+ return new Map(rows.map(({ id, ...contacts }) => [id, contacts]));
+}
 /** What a search for this text matches: words anywhere, and a number by its digits whatever the separators (with or without the US 1). */
 export function searchTerms(search: string): { text: string; digits: string | null } {
  const text = search.trim().toLowerCase().replace(/^@/, '');
@@ -181,6 +201,27 @@ export class MemberListService {
   return { items, counts, total, page, pageSize, options, leadOf };
  }
 
+ /**
+  * The dashboard's Dispatch row (DashboardDispatchScreen, section 44): leaving, on leave and missing details as the Dispatchers
+  * tabs count them, with the next last day and the soonest return; IT setups and due removals not finished; promotions to
+  * decide; and catch-up paperwork sent back for review. Counts and dates only.
+  */
+ async summary() {
+  const { counts } = await this.list({ only: 'counts', status: 'ALL' } as MemberListQueryDto) as { counts: Record<string, number> };
+  const [row] = await this.db.query(`SELECT
+    (SELECT min(n."lastDay")::text FROM member_notices n JOIN dispatch_members d ON d.id = n."memberId" WHERE n."cancelledAt" IS NULL AND n."finishedAt" IS NULL AND d.status <> 'LEFT'
+      -- Today or later (US Eastern): a last day that passed while drivers wait to be reassigned isn’t the next one.
+      AND n."lastDay" >= (now() AT TIME ZONE 'America/New_York')::date) AS "nextLastDay",
+    (SELECT min(l."backOn")::text FROM member_leaves l WHERE l."endedAt" IS NULL AND l."startedAt" IS NOT NULL) AS "nextBack",
+    (SELECT count(*)::integer FROM it_onboarding_requests r WHERE r."completedAt" IS NULL AND r."cancelledAt" IS NULL) AS setups,
+    (SELECT count(*)::integer FROM it_removal_requests r WHERE r."completedAt" IS NULL AND r."cancelledAt" IS NULL AND (r."removeNowAt" IS NOT NULL OR r."dueOn" <= $1::date)) AS removals,
+    (SELECT count(*)::integer FROM promotion_requests p WHERE p.status = 'PENDING') AS promotions,
+    (SELECT min(p."createdAt") FROM promotion_requests p WHERE p.status = 'PENDING') AS "oldestPromotion",
+    (SELECT count(*)::integer FROM invitations i JOIN dispatcher_applications a ON a."invitationId" = i.id JOIN dispatch_members d ON d.id = i."catchUpMemberId"
+      JOIN existing_member_records e ON e."memberId" = d.id WHERE i."revokedAt" IS NULL AND a.status IN ('SUBMITTED', 'RESUBMITTED') AND e."acceptedAt" IS NULL AND d.status <> 'LEFT') AS "paperworkToReview"`, [usDay('latest')]);
+  // onboarding: who the Onboarding tab lists (IT setting them up); setups and removals are every open IT checklist.
+  return { leaving: counts.leaving, onLeave: counts.onLeave, missingDetails: counts.missing, onboarding: counts.onboarding, ...row };
+ }
  /** One person's row as the table shows it, with what it shows at a glance (the view-only page reads it, section 39). */
  async row(id: string): Promise<Record<string, unknown> | null> {
   const [row] = await this.db.query(`WITH b AS (${memberRowsSql('$1', '$2')}) SELECT b.*, ${GLANCE} FROM b WHERE b.id = $3`, [usDay('earliest'), usDay('latest'), id]);

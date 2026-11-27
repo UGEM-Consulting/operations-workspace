@@ -1,3 +1,4 @@
+import { workContactsOf } from './member-list';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { DataSource, EntityManager, IsNull, QueryFailedError } from 'typeorm';
 import type { User } from '../users/user.entity';
@@ -6,9 +7,9 @@ import { ApplicationReview, ApplicationSubmission, DispatcherApplication, Invita
 import { createItRequest } from '../it/create-request';
 import { carrySupportSetups, lockSetupRequests, sameSetups } from '../it/removal';
 import { NotificationsService } from '../updates/notifications.service';
-import { CreatePromotionDto, DecidePromotionDto } from './dispatch.dto';
+import { CreatePromotionDto, DecidePromotionDto, PromoteSupportDto } from './dispatch.dto';
 import { DispatchEvent, DispatchEventType, DispatchMember, MemberAssignment, MemberSupportLink, PromotionRequest } from './dispatch.entity';
-import { lastDayPassedSql, lastDaySql, ledTeams, lockTeam, onLeave, onNotice } from './create-member';
+import { lastDayPassedSql, lastDaySql, leaveRecorded, ledTeams, lockTeam, onLeave, onNotice } from './create-member';
 import { usDay } from '../safety/screening-rules';
 
 const name = (alias: string) => `${alias}."firstName" || ' ' || ${alias}."lastName"`;
@@ -49,7 +50,10 @@ export class PromotionsService {
     LEFT JOIN member_support_links l ON l."dispatcherId" = a."memberId" AND l."endedAt" IS NULL AND l."supportId" = s.id
     WHERE a."endedAt" IS NULL AND a."teamId" = ANY($2) AND (a."memberId" = s.id OR l.id IS NOT NULL))
     OR EXISTS (SELECT 1 FROM member_support_links w WHERE w."supportId" = s.id AND w."endedAt" IS NULL AND w."teamId" = ANY($2))) ORDER BY p."createdAt" DESC LIMIT 50`, [user.id, ids]) : [];
-  return { teams, dispatchers, supports, requests };
+  // Section 44: their dispatchers' and helpers' work contacts, as Dispatchers shows them; never personal ones.
+  const contacts = await workContactsOf(this.db, [...dispatchers, ...supports].map((row: { id: string }) => row.id));
+  const withContacts = <T extends { id: string }>(row: T) => ({ ...row, contacts: contacts.get(row.id) ?? null });
+  return { teams, dispatchers: dispatchers.map(withContacts), supports: supports.map(withContacts), requests };
  }
 
  async request(user: User, dto: CreatePromotionDto) {
@@ -102,6 +106,35 @@ export class PromotionsService {
   return row.n as number;
  }
 
+ /**
+  * A dispatch manager or administrator promotes a support or updater from their page (PromoteDialogScreen, section 44): recorded
+  * as a promotion asked and approved by them in one transaction, so Promotions and History show it like any other. Refused
+  * while a team lead's request for them is open (decide that one), and on the same grounds as a request.
+  */
+ async promote(user: User, supportId: string, dto: PromoteSupportDto) {
+  let alerts: string[] = [];
+  const result = await this.write(async em => {
+   const setups = await lockSetupRequests(em, supportId);
+   const support = await em.getRepository(DispatchMember).findOne({ where: { id: supportId }, lock: { mode: 'pessimistic_write' } });
+   if (!support) throw new NotFoundException('This dispatcher record no longer exists.');
+   await sameSetups(em, supportId, setups);
+   if (support.version !== dto.version) throw new ConflictException('Someone else changed this record. Reload and try again.');
+   if (support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('Only an active support or updater can be promoted.');
+   if (await onNotice(em, supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted. Cancel their notice first.');
+   if (await leaveRecorded(em, supportId)) throw new ConflictException('This person has leave recorded. Promote them once they’re back.');
+   if (!support.applicationId) throw new ConflictException('Their paperwork isn’t accepted yet. IT setup starts from their application, so accept their paperwork first.');
+   if (await em.getRepository(PromotionRequest).existsBy({ supportId, status: 'PENDING' })) throw new ConflictException('A team lead asked for this promotion. Decide it in Promotions.');
+   const note = dto.note?.trim() || null;
+   const request = await em.getRepository(PromotionRequest).save({ supportId, requestedBy: user.id, reason: note ?? 'Promoted from their page by a dispatch manager.' });
+   await this.event(em, user, 'PROMOTION_REQUESTED', supportId, { requestId: request.id, byManager: true });
+   const approved = await this.approve(em, user, request, support, { ...dto, note: note ?? undefined });
+   alerts = approved.alerts;
+   return { id: request.id, status: request.status, itRequestId: approved.itRequestId };
+  });
+  this.notifications.dispatch(alerts);
+  return result;
+ }
+
  async decide(user: User, id: string, dto: DecidePromotionDto) {
   let alerts: string[] = [];
   const result = await this.write(async em => {
@@ -115,7 +148,7 @@ export class PromotionsService {
    if (request.version !== dto.version) throw new ConflictException('Someone else changed this request. Reload and try again.');
    if (request.status !== 'PENDING') throw new ConflictException('This request was already decided.');
    if (dto.decision !== 'DECLINE' && await onNotice(em, request.supportId)) throw new ConflictException('This person is leaving, so they can’t be promoted. Cancel their notice first.');
-   if (dto.decision !== 'DECLINE' && await onLeave(em, request.supportId)) throw new ConflictException('This person is on leave. Decide once they’re back.');
+   if (dto.decision !== 'DECLINE' && await leaveRecorded(em, request.supportId)) throw new ConflictException('This person has leave recorded. Decide once they’re back.');
    const now = new Date();
    if (dto.decision === 'DECLINE') {
     if (!dto.note?.trim()) throw new BadRequestException('Say why the request is declined.');
@@ -125,6 +158,21 @@ export class PromotionsService {
     return { id, status: request.status };
    }
    if (!support || support.position !== 'SUPPORT' || support.status !== 'ACTIVE') throw new ConflictException('This person is no longer an active support or updater.');
+   const approved = await this.approve(em, user, request, support, dto);
+   alerts = approved.alerts;
+   return { id, status: request.status, itRequestId: approved.itRequestId };
+  });
+  // The IT setup alert goes out only after the promotion commits.
+  this.notifications.dispatch(alerts);
+  return result;
+ }
+
+ /**
+  * Approving a promotion (a team lead's request, or a manager's own from the support's page), with the support, their setups and the
+  * request locked by the caller: ends the support link, makes them a dispatcher in Onboarding where chosen, starts the IT setup.
+  */
+ private async approve(em: EntityManager, user: User, request: PromotionRequest, support: DispatchMember, dto: { mcId?: string; teamId?: string | null; jobTitleId?: string; note?: string }) {
+   const now = new Date();
    if (!support.applicationId) throw new ConflictException('Promotion needs their approved application for their IT setup.');
    // Where they will work: an active MC, a team of that MC or none (Independent), and a job title.
    const mc = await em.getRepository(Mc).findOneBy({ id: dto.mcId! });
@@ -150,15 +198,11 @@ export class PromotionsService {
    const itRequest = await createItRequest(em, application, approval, submitted?.fields ?? {}, invitation, user.id,
     { mcName: mc.name, teamLead: team ? (lead ? `${lead.firstName} ${lead.lastName}`.trim() : team.name) : 'Independent', jobTitle: title.name });
    await carrySupportSetups(em, itRequest, support.id, user.id);
-   alerts = await this.notifications.queueItSetupWaiting(em, itRequest);
+   const alerts = await this.notifications.queueItSetupWaiting(em, itRequest);
    Object.assign(request, { status: 'APPROVED', note: dto.note?.trim() || null, decidedBy: user.id, decidedAt: now, itRequestId: itRequest.id, version: request.version + 1 });
-   await em.save(request);
-   await this.event(em, user, 'PROMOTION_APPROVED', support.id, { requestId: id, fields: ['position', 'mcId', 'teamId', 'jobTitleId'] });
-   return { id, status: request.status, itRequestId: itRequest.id };
-  });
-  // The IT setup alert goes out only after the promotion commits.
-  this.notifications.dispatch(alerts);
-  return result;
+   await em.getRepository(PromotionRequest).save(request);
+   await this.event(em, user, 'PROMOTION_APPROVED', support.id, { requestId: request.id, fields: ['position', 'mcId', 'teamId', 'jobTitleId'] });
+   return { itRequestId: itRequest.id, alerts };
  }
 
  /** Only a team lead may act through the team routes; their record must still lead a team. */
