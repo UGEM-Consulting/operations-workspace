@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { documentLabels, type DocumentKind } from '@/features/safety/types';
 import { NotAvailable, viewRead, ViewOnlyMark } from '@/features/view/ui';
+import { dayLabel } from '@/lib/navigation';
 export const metadata = { title: 'Expiring documents · view only' };
 
 interface ViewExpiring { today: string; warningDays: number;
@@ -13,7 +14,7 @@ interface ViewExpiring { today: string; warningDays: number;
   units: { unitId: string; number: string; kind: string; document: string; dueOn: string; expired: boolean; responsible: string | null; owner: string | null; driverNow: string | null }[] }
 const OWNER_DOCS: Record<string, string> = { INSURANCE: 'Insurance', REGISTRATION: 'Registration' };
 const UNIT_DOCS: Record<string, string> = { REGISTRATION: 'Registration', INSPECTION: 'Yearly inspection' };
-const day = (value: string) => new Date(`${value}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+const day = (value: string) => dayLabel(value);
 const due = (value: string, expired: boolean) => <span className="flex flex-wrap items-center gap-1.5">{day(value)}{expired && <Badge label="Expired" tone="danger" />}</span>;
 
 /** Safety › Expiring documents read only: what expired or expires soon, for drivers and units. Renewing stays with Safety. */

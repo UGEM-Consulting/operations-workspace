@@ -60,6 +60,8 @@ export function NamesDialog({ member, mcs, onClose }: { member: MemberProfile; m
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
+    // The API reads '' as no place, so a blank company (spaces pass the browser's required check) is stopped here.
+    if (names.some(item => item.name.trim() && item.mcId === OTHER && !item.companyName.trim())) { setError('Enter the company’s name, or choose where the name was used.'); return; }
     setBusy(true); setError('');
     try {
       await mutate(`dispatch/members/${member.id}/names`, 'POST', { version: member.version, ...(handAdded ? { legalFirstName: form.legalFirstName ?? '', legalLastName: form.legalLastName ?? '' } : {}),

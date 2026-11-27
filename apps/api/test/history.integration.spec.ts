@@ -120,6 +120,17 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
     expect(await titles(riley)).not.toContain('IT asked to remove access');
   });
 
+  it('names the last day as it stood when the removal opened, after an earlier change', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
+    await post('manager', `dispatch/members/${riley}/leave`, { version: await version(riley), leftAt: `${addDays(usDay('latest'), 10)}T12:00:00.000Z`, reason: 'Moving to another company.' });
+    const changed = addDays(usDay('latest'), 12);
+    await post('manager', `dispatch/members/${riley}/last-day`, { version: await version(riley), lastDay: `${changed}T12:00:00.000Z`, reason: 'Two more days agreed.' });
+    // As when a support's first company email opens their removal during the notice: opened after the change.
+    await db.query(`UPDATE it_removal_requests SET "createdAt" = now() + interval '1 minute' WHERE "memberId" = $1`, [riley]);
+    const shown = new Date(`${changed}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    expect(await titles(riley)).toContain(`IT removal scheduled for ${shown}`);
+  });
+
   it('records a hand-over on everyone it touches, and keeps the whole notice after they leave', async () => {
     const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
     const drew = await addOne('Drew', 'Calloway'), morgan = await addOne('Morgan', 'Pike');

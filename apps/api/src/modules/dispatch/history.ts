@@ -15,9 +15,10 @@ export interface HistoryEntry { id: string; at: string; category: HistoryCategor
 /**
  * Days picked in forms are stored at midday UTC, or a millisecond after per same-day step when a period starts just after the
  * one it ends. Only columns that hold a picked day (addDay) are read this way, since some of their rows are clicks instead
- * (a period an approval opened); clicks in other columns never are.
+ * (a period an approval opened); clicks in other columns never are. The window is 10 ms, so a click is almost never taken for
+ * a day; a day after more than nine same-day steps shows with its time instead.
  */
-const DAY_ONLY = /T12:00:00\.\d{3}Z$/;
+const DAY_ONLY = /T12:00:00\.00\dZ$/;
 const EASTERN_OFFSET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' });
 /** The last moment of a day in US Eastern time (EST or EDT, whichever applies that day), as an ISO string. */
 function easternDayEnd(day: string) {
@@ -277,7 +278,11 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   const made = new Date(removal.createdAt).getTime();
   const notice = notices.filter(row => new Date(row.createdAt).getTime() <= made + 1000 && (!row.cancelledAt || new Date(row.cancelledAt).getTime() >= made)
    && (!row.finishedAt || new Date(row.finishedAt).getTime() >= made)).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-  return notice ? notice.changes?.[0]?.from ?? notice.lastDay : removal.dueOn;
+  if (!notice) return removal.dueOn;
+  // Its last day as it stood then: the latest change made before it (a change is always a later request, so no slack), else the
+  // day first given.
+  const changes = (notice.changes ?? []) as Row[], before = changes.filter(change => new Date(change.at).getTime() < made);
+  return before.length ? before[before.length - 1].to : changes[0]?.from ?? notice.lastDay;
  };
  for (const row of removals) {
   // Scheduled or not by the day it was scheduled for, not dueOn now, which Remove access now may have moved to that same day.

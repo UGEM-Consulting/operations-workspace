@@ -224,10 +224,13 @@ export class BringBackService {
   */
  private async lastPlace(em: EntityManager, member: DispatchMember): Promise<{ mcId: string; companyName: null } | { mcId: null; companyName: string }> {
   // As of when the link ended: a whole team's MC from the MC periods its people had in that team then (a team may change MC
-  // once nobody is in it), else its MC now; a dispatcher's from their own period then.
+  // once nobody is in it or assists it), else its MC now unless it changed since (then the place isn't known); a dispatcher's
+  // from their own period then.
   const helped: { mcId: string | null }[] = member.position === 'DISPATCHER' ? [] : await em.query(`SELECT CASE WHEN l."teamId" IS NOT NULL THEN coalesce(
      (SELECT a."mcId" FROM member_assignments a WHERE a."teamId" = l."teamId" AND a."startedAt" <= coalesce(l."endedAt", now()) AND (a."endedAt" IS NULL OR a."endedAt" >= coalesce(l."endedAt", now()))
-      ORDER BY a."startedAt" DESC LIMIT 1), t."mcId")
+      ORDER BY a."startedAt" DESC, a."createdAt" DESC LIMIT 1),
+     CASE WHEN l."endedAt" IS NULL OR NOT EXISTS (SELECT 1 FROM dispatch_events e WHERE e."teamId" = l."teamId" AND e.event = 'TEAM_UPDATED'
+      AND e.metadata->'fields' ? 'mcId' AND e."createdAt" >= l."endedAt") THEN t."mcId" END)
     ELSE (SELECT a."mcId" FROM member_assignments a WHERE a."memberId" = l."dispatcherId" AND a."startedAt" <= coalesce(l."endedAt", now()) ORDER BY a."startedAt" DESC, a."createdAt" DESC LIMIT 1) END AS "mcId"
    FROM member_support_links l LEFT JOIN teams t ON t.id = l."teamId" WHERE l."supportId" = $1 ORDER BY l."startedAt" DESC, l."createdAt" DESC LIMIT 1`, [member.id]);
   const [own]: { mcId: string | null }[] = helped[0]?.mcId ? [] : await em.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1 ORDER BY "startedAt" DESC, "createdAt" DESC LIMIT 1`, [member.id]);

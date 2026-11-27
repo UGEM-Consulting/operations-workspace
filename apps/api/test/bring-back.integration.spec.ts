@@ -382,6 +382,23 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect(account).toEqual({ mc: 'Northwind Freight' });
   });
 
+  it('doesn’t guess the MC of an empty team that changed MC after the support left', async () => {
+    const dana = await dispatcher('Dana');
+    const sky = await supportOf(dana.memberId);
+    const [northwind] = await db.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1`, [dana.memberId]);
+    // Nobody was in the team, so only the team row says where it was; it changed MC once Sky had gone.
+    const [team] = await db.query(`INSERT INTO teams (name, "nameKey", "mcId") VALUES ('Blue team', 'blue team', $1) RETURNING id`, [northwind.mcId]);
+    await db.query(`UPDATE member_support_links SET "dispatcherId" = NULL, "teamId" = $2, "endedAt" = now() - interval '1 day' WHERE "supportId" = $1`, [sky, team.id]);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '1 day' WHERE id = $1`, [sky]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail") VALUES ($1,$2,'sky.work@example.test')`, [sky, users.manager.id]);
+    const [lakeside] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`UPDATE teams SET "mcId" = $2 WHERE id = $1`, [team.id, lakeside.id]);
+    await db.query(`INSERT INTO dispatch_events ("teamId", event, "actorId", metadata) VALUES ($1, 'TEAM_UPDATED', $2, '{"fields":["mcId"]}')`, [team.id, users.manager.id]);
+    await act(sky, 'rehire', { firstDay: ahead(0), position: 'SUPPORT', supportsMemberId: dana.memberId, email: 'NONE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    const [account] = await db.query(`SELECT a."mcId", a."companyName" FROM member_company_accounts a WHERE a."memberId" = $1`, [sky]);
+    expect(account).toEqual({ mcId: null, companyName: 'Earlier company' });
+  });
+
   it('keeps an old email that still signs in to a load board seat, and asks IT to close only the number', async () => {
     const rowan = await leftFromFile();
     const dana = await dispatcher('Dana');

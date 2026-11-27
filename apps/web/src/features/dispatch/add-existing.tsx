@@ -18,6 +18,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { existingCsv, MAX_ROWS, readExistingFile, TEMPLATE, type ExistingRow, type SharedAction } from './existing-csv';
 import { useAccountOwners } from './shared-accounts';
 import { supportName } from './types';
+import { dayLabel } from '@/lib/navigation';
 
 export interface ExistingOptions { archivedMcs?: { id: string; name: string }[]; archivedTeams?: { id: string; name: string; mcId: string }[]; loadBoardAccounts?: { id: string; name: string; provider: 'DAT' | 'TRUCKSTOP'; placeholder: boolean }[]; mcs: { id: string; name: string }[]; teams: { id: string; name: string; mcId: string; lead: string | null }[]; jobTitles: { id: string; name: string }[]; dispatchers: { id: string; name: string; mc?: string | null }[] }
 type Status = 'READY' | 'CHOICE' | 'PROBLEM' | 'ALREADY';
@@ -145,7 +146,7 @@ export function AddExisting({ options }: { options: ExistingOptions }) {
       <Table className="mt-3 border-t border-border" caption="People who left" rows={leaving} rowKey={row => String(row.row)} columns={[
         { key: 'row', label: 'Row', nowrap: true, cell: row => row.row },
         { key: 'person', label: 'Person', primary: true, cell: row => <Person name={row.name || 'No name'} secondary={[row.position === 'SUPPORT' ? supportName(row) : 'Dispatcher', fileRow(row.row)?.mc || fileRow(row.row)?.team].filter(Boolean).join(' · ')} /> },
-        { key: 'day', label: 'Last day', nowrap: true, cell: row => row.leftOn ? new Date(`${row.leftOn}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : <span className="text-muted-foreground">Not recorded</span> },
+        { key: 'day', label: 'Last day', nowrap: true, cell: row => row.leftOn ? dayLabel(row.leftOn) : <span className="text-muted-foreground">Not recorded</span> },
         { key: 'why', label: 'Why they left', cell: row => fileRow(row.row)?.leftReason || <span className="text-muted-foreground">—</span> },
         { key: 'it', label: 'Ask IT to close their accounts', cell: row => row.hasAccounts ? <Checkbox label="Ask IT" checked={!!fileRow(row.row)?.askIt} disabled={busy}
           description={[fileRow(row.row)?.companyEmail && 'Company email', fileRow(row.row)?.ringCentralNumber && 'number', (fileRow(row.row)?.datEmail || fileRow(row.row)?.truckstopEmail) && 'load board sign-in'].filter(Boolean).join(', ').replace(/^./, letter => letter.toUpperCase()) + ' recorded'}

@@ -2,7 +2,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { CalendarClock, CalendarDays, CircleAlert, Clock3, Crown, FileWarning, Headset, Mail, Phone, RefreshCw, Route, Send, ShieldCheck, type LucideIcon } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
-import { middayIso } from '@/lib/navigation';
+import { dayLabel } from '@/lib/navigation';
 import { cn } from '@/lib/utils';
 import { CopyIcon } from './glance-columns';
 import { telegramHandle } from './members-csv';
@@ -86,7 +86,7 @@ export function LoadBoardsCell({ row }: { row: MemberRow }) {
   return <span className="flex flex-wrap gap-1">{row.loadBoards.map(board => <span key={board} className="rounded-full bg-muted px-2 text-xs leading-5 text-muted-foreground">{board === 'TRUCKSTOP' ? 'Truckstop' : board}</span>)}</span>;
 }
 
-const shortDay = (day: string) => new Date(middayIso(day)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const shortDay = (day: string) => dayLabel(day, false);
 const FLAG_TONES = { neutral: 'bg-muted text-muted-foreground', warning: 'bg-warning-background text-warning' };
 function Flag({ icon: Icon, label, tone = 'neutral' }: { icon: LucideIcon; label: string; tone?: keyof typeof FLAG_TONES }) {
   return <span className={cn('inline-flex items-center gap-1 rounded-full px-2 text-xs leading-5 font-medium whitespace-nowrap', FLAG_TONES[tone])}><Icon aria-hidden="true" className="size-3" />{label}</span>;

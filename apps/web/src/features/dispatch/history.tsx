@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { Timeline } from '@/components/ui/timeline';
 import { cn } from '@/lib/utils';
+import { dayLabel } from '@/lib/navigation';
 
 /**
  * The complete History (section 38: HistoryTimelineScreen, HistoryAccountsFilterScreen, HistoryViewsScreen, HistoryPhoneScreen;
@@ -23,11 +24,11 @@ const FILTERS: { key: 'ALL' | Exclude<HistoryCategory, 'VIEWS'>; label: string }
 const PAGE = 50;
 const monthOf = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'America/New_York' });
 
-/** viewOnly (section 39, ViewOnlyHistoryScreen): no IT filter or file views, and a line saying where reasons and notes stay. */
 /** A day picked in a form, from its date: read in UTC, so no viewer's time zone (UTC+12, say) shows it as the next day. */
 function PickedDay({ at }: { at: string }) {
-  return <time dateTime={at.slice(0, 10)}>{new Date(`${at.slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}</time>;
+  return <time dateTime={at.slice(0, 10)}>{dayLabel(at)}</time>;
 }
+/** viewOnly (section 39, ViewOnlyHistoryScreen): no IT filter or file views, and a line saying where reasons and notes stay. */
 export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: MemberTimeline; viewOnly?: boolean }) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('ALL'), [views, setViews] = useState(false), [shown, setShown] = useState(PAGE);
   const matching = useMemo(() => timeline.entries.filter(entry => entry.category === 'VIEWS' ? views && (filter === 'ALL' || filter === 'DETAILS') : filter === 'ALL' || entry.category === filter), [timeline.entries, filter, views]);
