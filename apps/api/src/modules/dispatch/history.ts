@@ -10,7 +10,23 @@ import { WITH_LEAVING_MS } from './bring-back';
  * field or the account, never an email, phone number, sign-in, Telegram or legal name; reasons staff wrote show as written.
  */
 export type HistoryCategory = 'WORK' | 'ACCOUNTS' | 'AWAY' | 'DETAILS' | 'IT' | 'VIEWS';
-export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null }
+/** dateOnly: a day picked in a form (stored at midday UTC), shown as a date with no time. */
+export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null; dateOnly?: boolean }
+/**
+ * Days picked in forms are stored at midday UTC, or a millisecond after per same-day step when a period starts just after the
+ * one it ends. Only columns that hold a picked day (addDay) are read this way, since some of their rows are clicks instead
+ * (a period an approval opened); clicks in other columns never are. The window is 10 ms, so a click is almost never taken for
+ * a day; a day after more than nine same-day steps shows with its time instead.
+ */
+const DAY_ONLY = /T12:00:00\.00\dZ$/;
+const EASTERN_OFFSET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' });
+/** The last moment of a day in US Eastern time (EST or EDT, whichever applies that day), as an ISO string. */
+function easternDayEnd(day: string) {
+ const offset = EASTERN_OFFSET.formatToParts(new Date(`${day}T12:00:00Z`)).find(part => part.type === 'timeZoneName')?.value.replace('GMT', '') || '-05:00';
+ return new Date(`${day}T23:59:59.999${offset}`).toISOString();
+}
+/** A day sorts after what was clicked that day (US Eastern), since it's usually recorded later the same day or for an earlier one. */
+const sortKey = (entry: HistoryEntry) => entry.dateOnly ? easternDayEnd(entry.at.slice(0, 10)) : entry.at;
 type Q = Pick<EntityManager, 'query'>;
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -46,7 +62,9 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  const [member]: Row[] = await db.query(`SELECT d.id, d.position, d.status, d."applicationId", d."accountUserId", d."leftReason", d."leftAt" FROM dispatch_members d WHERE d.id = $1`, [memberId]);
  if (!member) return { entries: [], counts: { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 } };
  const out: HistoryEntry[] = [];
- const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null) => { if (at && title) out.push({ id, at: iso(at), category, icon, title, by, body }); };
+ const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null, picked = false) => { if (!at || !title) return; const when = iso(at); out.push({ id, at: when, category, icon, title, by, body, ...(picked && DAY_ONLY.test(when) ? { dateOnly: true } : {}) }); };
+ // An entry from a column that holds a day picked in a form.
+ const addDay = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null) => add(id, at, category, icon, title, by, body, true);
  // A few queries at a time, so one page never takes the whole connection pool (max 10) from other requests.
  const running = new Set<Promise<unknown>>();
  const q = async (sql: string, params: unknown[] = [memberId]): Promise<Row[]> => {
@@ -57,7 +75,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  };
 
  const [record] = await q(`SELECT "periodDateKnown" FROM existing_member_records WHERE "memberId" = $1`);
- const [assignments, events, links, helpers, promotions, asked, drivers, notices, removals, leaves, leaveIt, contacts, corrections, startDates, scans, photos, accounts, seats, shared, ownedBy, ownerChanges, setups, accountRequests, signIns, activity] = await Promise.all([
+ const [assignments, events, links, helpers, promotions, asked, drivers, notices, removals, leaves, leaveIt, contacts, corrections, startDates, scans, photos, accounts, seats, shared, ownedBy, ownerChanges, setups, accountRequests, signIns, activity, returns] = await Promise.all([
   q(`SELECT a.id, a."startedAt", a."endedAt", a.reason, m.name AS mc, t.name AS team, ${actor('u')} AS by FROM member_assignments a LEFT JOIN mcs m ON m.id = a."mcId" LEFT JOIN teams t ON t.id = a."teamId" LEFT JOIN users u ON u.id = a."actorId"
    WHERE a."memberId" = $1 ORDER BY a."startedAt", a."createdAt"`),
   q(`SELECT e.id, e.event, e.metadata, e."createdAt", ${actor('u')} AS by, t.name AS team, jt.name AS "jobTitle", ${person('o')} AS owner, ${person('p')} AS "previousOwner", ${person('x')} AS "toPerson",
@@ -85,7 +103,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    FROM driver_assignments a JOIN drivers dr ON dr.id = a."driverId" LEFT JOIN users u ON u.id = a."actorId"
    LEFT JOIN driver_leave_covers c ON c."coverAssignmentId" = a.id LEFT JOIN member_leaves ml ON ml.id = c."leaveId" LEFT JOIN dispatch_members away ON away.id = ml."memberId"
    WHERE a."memberId" = $1 ORDER BY a."startedAt"`),
-  q(`SELECT n.id, n."lastDay"::text AS "lastDay", n.reason, n.changes, n."createdAt", n."cancelledAt", n."cancelReason", ${actor('r')} AS by, ${actor('c')} AS "cancelledBy"
+  q(`SELECT n.id, n."lastDay"::text AS "lastDay", n.reason, n.changes, n."createdAt", n."cancelledAt", n."finishedAt", n."cancelReason", ${actor('r')} AS by, ${actor('c')} AS "cancelledBy"
    FROM member_notices n LEFT JOIN users r ON r.id = n."recordedBy" LEFT JOIN users c ON c.id = n."cancelledBy" WHERE n."memberId" = $1`),
   q(`SELECT r.id, r."dueOn"::text AS "dueOn", r."createdAt", r."completedAt", r."cancelledAt", r."reversedAt", r."removeNowAt", r."removeNowReason", ${actor('u')} AS by FROM it_removal_requests r LEFT JOIN users u ON u.id = r."createdBy" WHERE r."memberId" = $1`),
   q(`SELECT l.id, l."firstDay"::text AS "firstDay", l."backOn"::text AS "backOn", l.reason, l.changes, l."startedAt", l."endedAt", l."endedHow", l."createdAt", ${actor('r')} AS by, ${actor('e')} AS "endedBy"
@@ -124,6 +142,7 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   // Onboarding: the approved application's invitation, and catch-up links for someone added by hand.
   q(`SELECT a.id, a.event, a."createdAt", ${actor('u')} AS by FROM application_activity a LEFT JOIN users u ON u.id = a."actorId"
    WHERE a."invitationId" IN (SELECT ap."invitationId" FROM dispatcher_applications ap WHERE ap.id = $2 UNION SELECT i.id FROM invitations i WHERE i."catchUpMemberId" = $1)`, [memberId, member.applicationId]),
+  q(`SELECT r.id, r.kind, r."leftReason", r."firstDay"::text AS "firstDay", r.reason, r."createdAt", ${actor('u')} AS by FROM member_returns r LEFT JOIN users u ON u.id = r."actorId" WHERE r."memberId" = $1 ORDER BY r."createdAt"`),
  ]);
  // Notice changes keep who made them by id only.
  const changers = [...new Set(notices.flatMap(row => ((row.changes ?? []) as Row[]).map(change => change.by as string).filter(Boolean)))];
@@ -133,22 +152,26 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  const undated = (row: Row) => row.id === firstPeriod ? ' (start date not recorded)' : '';
 
  // Work: MC and team, job title, team lead, support or updater, who they help, drivers, promotion.
+ // A rehire's first day starts again even when it's the day after they left, which the gap alone can't tell from a move.
+ const rehireDays = new Set(returns.filter(row => row.kind === 'REHIRE').map(row => row.firstDay as string));
  assignments.forEach((row, index) => {
   const place = row.team ? `${row.team} at ${row.mc}` : row.mc ? `${row.mc}, independent` : 'no MC yet';
   // A period after time away (a rehire, section 41) starts again rather than moving.
-  const previous = assignments[index - 1], again = !!previous?.endedAt && new Date(row.startedAt).getTime() - new Date(previous.endedAt).getTime() > WITH_LEAVING_MS;
-  add(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : again ? `Started again in ${place}` : `Moved to ${place}`, row.by, row.reason ?? null);
+  const previous = assignments[index - 1], startDay = new Date(row.startedAt).toISOString().slice(0, 10);
+  // Only the period that ends the time away: a move later that same day ended a period that began that day.
+  const again = !!previous?.endedAt && (new Date(row.startedAt).getTime() - new Date(previous.endedAt).getTime() > WITH_LEAVING_MS || (rehireDays.has(startDay) && new Date(previous.endedAt).toISOString().slice(0, 10) < startDay));
+  addDay(`assignment-${row.id}`, row.startedAt, 'WORK', 'route', index === 0 ? `Started in ${place}${undated(row)}` : again ? `Started again in ${place}` : `Moved to ${place}`, row.by, row.reason ?? null);
  });
  links.forEach((row, index) => {
   const who = row.team ? `the whole ${row.team}` : row.dispatcher ?? 'a dispatcher no longer recorded';
-  add(`link-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.team ? `Now helps ${who}` : `Started helping ${who}`}${undated(row)}`, row.by, row.reason ?? null);
+  addDay(`link-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.team ? `Now helps ${who}` : `Started helping ${who}`}${undated(row)}`, row.by, row.reason ?? null);
   // A reassignment ends one link as the next one starts: that reads as the new one only. Leaving says it on its own.
   const next = links[index + 1];
-  if (row.endedAt && !near(row.endedAt, next?.startedAt, 60000) && !near(row.endedAt, member.leftAt, 60000)) add(`link-end-${row.id}`, row.endedAt, 'WORK', 'headset', `Stopped helping ${who}`);
+  if (row.endedAt && !near(row.endedAt, next?.startedAt, 60000) && !near(row.endedAt, member.leftAt, 60000)) addDay(`link-end-${row.id}`, row.endedAt, 'WORK', 'headset', `Stopped helping ${who}`);
  });
  for (const row of helpers) {
-  add(`helper-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.support} started helping them`, row.by, row.reason ?? null);
-  if (row.endedAt) add(`helper-end-${row.id}`, row.endedAt, 'WORK', 'headset', `${row.support} stopped helping them`);
+  addDay(`helper-${row.id}`, row.startedAt, 'WORK', 'headset', `${row.support} started helping them`, row.by, row.reason ?? null);
+  if (row.endedAt) addDay(`helper-end-${row.id}`, row.endedAt, 'WORK', 'headset', `${row.support} stopped helping them`);
  }
  for (const row of promotions) {
   add(`promotion-${row.id}`, row.createdAt, 'WORK', 'trending-up', row.requestedBy ? `Promotion asked by ${row.requestedBy}` : 'Promotion asked');
@@ -158,15 +181,16 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  }
  for (const row of asked) add(`asked-${row.id}`, row.createdAt, 'WORK', 'trending-up', `Asked to promote ${row.support}`);
  for (const row of drivers) {
-  add(`driver-${row.id}`, row.startedAt, 'WORK', 'truck', row.coverId ? `Covering driver ${row.driver} while ${row.awayFrom ?? 'their dispatcher'} is away` : `Driver ${row.driver} assigned`, row.by, row.coverId ? null : row.reason ?? null);
+  addDay(`driver-${row.id}`, row.startedAt, 'WORK', 'truck', row.coverId ? `Covering driver ${row.driver} while ${row.awayFrom ?? 'their dispatcher'} is away` : `Driver ${row.driver} assigned`, row.by, row.coverId ? null : row.reason ?? null);
   if (!row.endedAt) continue;
-  if (row.next && row.next.memberId !== memberId) add(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} moved to ${row.next.name ?? 'another dispatcher'}`, row.next.by);
-  else if (!row.next) add(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} no longer assigned`);
+  if (row.next && row.next.memberId !== memberId) addDay(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} moved to ${row.next.name ?? 'another dispatcher'}`, row.next.by);
+  else if (!row.next) addDay(`driver-end-${row.id}`, row.endedAt, 'WORK', 'truck', `Driver ${row.driver} no longer assigned`);
  }
 
  // Leave and leaving: notices, access removal, leaving; leave and who covers.
  for (const row of notices) {
-  add(`notice-${row.id}`, row.createdAt, 'AWAY', 'calendar', `Notice given: last day ${day(row.lastDay)}`, row.by, row.reason);
+  // The last day as given: a change keeps the day it replaced, so the first one's from is the original.
+  add(`notice-${row.id}`, row.createdAt, 'AWAY', 'calendar', `Notice given: last day ${day(row.changes?.[0]?.from ?? row.lastDay)}`, row.by, row.reason);
   (row.changes ?? []).forEach((change: Row, index: number) => add(`notice-change-${row.id}-${index}`, change.at, 'AWAY', 'calendar', `Last day changed to ${day(change.to)}`, changerNames.get(change.by) ?? null, change.reason ?? null));
   if (row.cancelledAt) add(`notice-cancel-${row.id}`, row.cancelledAt, 'AWAY', 'calendar', 'Notice cancelled', row.cancelledBy, row.cancelReason ?? null);
  }
@@ -198,14 +222,14 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   const createdClosed = row.status === 'CLOSED' && near(row.closedAt, row.createdAt, 5000);
   add(`account-${row.id}`, row.createdAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} added: ${list(what)}${createdClosed ? ' (closed)' : row.status === 'KEPT_FOR_LOAD_BOARDS' ? ' (kept for load boards)' : ''}`,
    row.sourceName ? `From ${row.sourceName}` : row.by);
-  if (row.closedAt && !createdClosed) add(`account-closed-${row.id}`, row.closedAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} closed`, row.closedBy);
+  if (row.closedAt && !createdClosed) addDay(`account-closed-${row.id}`, row.closedAt, 'ACCOUNTS', 'building-2', `Account at ${row.company} closed`, row.closedBy);
  }
  seats.forEach(row => {
   const movedInto = seats.some(other => other.id !== row.id && other.endedHow === 'MOVED' && near(other.endedAt, row.startedAt, 5000));
-  if (!movedInto) add(`seat-${row.id}`, row.startedAt, 'ACCOUNTS', 'layers', `Seat on ${row.account} added`, row.by ?? 'From their recorded sign-in');
+  if (!movedInto) addDay(`seat-${row.id}`, row.startedAt, 'ACCOUNTS', 'layers', `Seat on ${row.account} added`, row.by ?? 'From their recorded sign-in');
   if (!row.endedAt) return;
   const into = row.endedHow === 'MOVED' ? seats.find(other => other.id !== row.id && near(row.endedAt, other.startedAt, 5000)) : null;
-  add(`seat-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'layers', row.endedHow === 'MOVED' ? `Seat on ${row.account} moved to ${into?.account ?? 'another account'}` : row.endedHow === 'LEFT' ? `Seat on ${row.account} ended when IT removed access` : `Seat on ${row.account} ended`,
+  addDay(`seat-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'layers', row.endedHow === 'MOVED' ? `Seat on ${row.account} moved to ${into?.account ?? 'another account'}` : row.endedHow === 'LEFT' ? `Seat on ${row.account} ended when IT removed access` : `Seat on ${row.account} ended`,
    row.endedHow === 'LEFT' ? 'IT removal' : row.endedBy);
  });
  for (const row of shared) {
@@ -231,7 +255,6 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
  }
 
  // Coming back (section 41): each undone leaving and rehire, with why a leaving was undone.
- const returns = await q(`SELECT r.id, r.kind, r."leftReason", r."firstDay"::text AS "firstDay", r.reason, r."createdAt", ${actor('u')} AS by FROM member_returns r LEFT JOIN users u ON u.id = r."actorId" WHERE r."memberId" = $1 ORDER BY r."createdAt"`);
  for (const row of returns) {
   if (row.kind === 'UNDO') add(`return-${row.id}`, row.createdAt, 'AWAY', 'undo-2', 'Leaving undone', row.by, row.reason);
   else add(`return-${row.id}`, row.createdAt, 'WORK', 'user-plus', `Rehired, back ${day(row.firstDay)}`, row.by);
@@ -247,8 +270,24 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   if (row.completedAt) add(`setup-done-${row.id}`, row.completedAt, 'IT', 'monitor', 'IT finished setting up their accounts');
   if (row.cancelledAt) add(`setup-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', 'IT setup stopped');
  }
+ // The day a removal was scheduled for: the last day of the notice recorded with it, as given (a later change or Remove access
+ // now moves dueOn, and has its own entry); without a notice, its due date.
+ const scheduledFor = (removal: Row) => {
+  // The notice the removal was opened with: the latest given by then (both are written in one transaction, so a second's slack
+  // covers rows saved a moment apart) that was still open then. One cancelled or finished before had its own removal.
+  const made = new Date(removal.createdAt).getTime();
+  const notice = notices.filter(row => new Date(row.createdAt).getTime() <= made + 1000 && (!row.cancelledAt || new Date(row.cancelledAt).getTime() >= made)
+   && (!row.finishedAt || new Date(row.finishedAt).getTime() >= made)).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  if (!notice) return removal.dueOn;
+  // Its last day as it stood then: the latest change made before it (a change is always a later request, so no slack), else the
+  // day first given.
+  const changes = (notice.changes ?? []) as Row[], before = changes.filter(change => new Date(change.at).getTime() < made);
+  return before.length ? before[before.length - 1].to : changes[0]?.from ?? notice.lastDay;
+ };
  for (const row of removals) {
-  add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', row.dueOn && row.dueOn > usDay('latest', new Date(row.createdAt)) ? `IT removal scheduled for ${day(row.dueOn)}` : 'IT asked to remove access', row.by);
+  // Scheduled or not by the day it was scheduled for, not dueOn now, which Remove access now may have moved to that same day.
+  const due = scheduledFor(row);
+  add(`removal-${row.id}`, row.createdAt, 'IT', 'monitor', due && due > usDay('latest', new Date(row.createdAt)) ? `IT removal scheduled for ${day(due)}` : 'IT asked to remove access', row.by);
   if (row.completedAt) add(`removal-done-${row.id}`, row.completedAt, 'IT', 'monitor', 'IT finished removing access');
   if (row.cancelledAt) add(`removal-cancel-${row.id}`, row.cancelledAt, 'IT', 'monitor', row.reversedAt ? 'IT’s removal reversed: they came back' : 'IT removal cancelled');
  }
@@ -316,7 +355,9 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
    case 'SIGNED_COPY_VIEWED': add(id, at, 'VIEWS', 'eye', `Signed ${m.kind === 'CONTACT_LIST' ? 'contact list' : m.kind ?? 'document'} opened (view only)`, row.by); break;
   }
  }
- out.sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+ // Each entry's key is worked out once, not on every comparison.
+ const keys = new Map(out.map(entry => [entry, sortKey(entry)]));
+ out.sort((a, b) => keys.get(b)!.localeCompare(keys.get(a)!) || b.id.localeCompare(a.id));
  const counts = { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 };
  for (const entry of out) { counts[entry.category] += 1; if (entry.category !== 'VIEWS') counts.ALL += 1; }
  return { entries: out, counts };

@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { apiRequest, requirePage } from '@/lib/auth';
 import { memberListSchema, paperworkSchema, readResponse } from '@/lib/api-schemas';
-import { MEMBER_DEFAULTS, middayIso } from '@/lib/navigation';
+import { MEMBER_DEFAULTS, middayIso, dayLabel } from '@/lib/navigation';
 import { Alert } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/feedback';
@@ -44,7 +44,7 @@ function clean(query: Record<string, string | string[] | undefined>) {
 const listQuery = (filters: Record<string, string>, changes: Record<string, string> = {}) => new URLSearchParams(Object.entries({ ...filters, ...changes })
   .filter(([key, value]) => value !== '' && ['status', 'search', 'sort', 'direction', 'page', 'pageSize', ...FILTER_KEYS].includes(key))).toString();
 // A picked day (stored at midday UTC) without its year, as DispatchersOnLeaveScreen shows leave dates.
-const monthDay = (day: string) => new Date(middayIso(day)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const monthDay = (day: string) => dayLabel(day, false);
 const driversText = (member: Row) => member.position === 'SUPPORT' || member.drivers === undefined ? '' : member.drivers === 0 ? 'no drivers' : `${member.drivers} driver${member.drivers === 1 ? '' : 's'}`;
 /** The status badge, or null for the ordinary status of the tab a phone row is on (Active on Active). */
 function statusBadge(member: Row) {

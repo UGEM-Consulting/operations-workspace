@@ -7,13 +7,14 @@ import { Checkbox } from '@/components/ui/field';
 import { LocalTime } from '@/components/ui/local-time';
 import { Timeline } from '@/components/ui/timeline';
 import { cn } from '@/lib/utils';
+import { dayLabel } from '@/lib/navigation';
 
 /**
  * The complete History (section 38: HistoryTimelineScreen, HistoryAccountsFilterScreen, HistoryViewsScreen, HistoryPhoneScreen;
  * approved 2026-11-19). The API words every entry and gives its filter; this shows them newest first by month, 50 at a time.
  */
 export type HistoryCategory = 'WORK' | 'ACCOUNTS' | 'AWAY' | 'DETAILS' | 'IT' | 'VIEWS';
-export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null }
+export interface HistoryEntry { id: string; at: string; category: HistoryCategory; icon: string; title: string; by: string | null; body: string | null; dateOnly?: boolean }
 export interface MemberTimeline { entries: HistoryEntry[]; counts: Record<'ALL' | HistoryCategory, number> }
 
 const ICONS: Record<string, LucideIcon> = { route: Route, crown: Crown, headset: Headset, 'refresh-cw': RefreshCw, 'trending-up': TrendingUp, truck: Truck, 'pen-line': PenLine, 'user-plus': UserPlus, 'user-check': UserCheck,
@@ -23,6 +24,10 @@ const FILTERS: { key: 'ALL' | Exclude<HistoryCategory, 'VIEWS'>; label: string }
 const PAGE = 50;
 const monthOf = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'America/New_York' });
 
+/** A day picked in a form, from its date: read in UTC, so no viewer's time zone (UTC+12, say) shows it as the next day. */
+function PickedDay({ at }: { at: string }) {
+  return <time dateTime={at.slice(0, 10)}>{dayLabel(at)}</time>;
+}
 /** viewOnly (section 39, ViewOnlyHistoryScreen): no IT filter or file views, and a line saying where reasons and notes stay. */
 export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: MemberTimeline; viewOnly?: boolean }) {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('ALL'), [views, setViews] = useState(false), [shown, setShown] = useState(PAGE);
@@ -50,7 +55,7 @@ export function HistoryTimeline({ timeline, viewOnly = false }: { timeline: Memb
         : months.map(group => <section key={group.month} aria-label={group.month}>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.month}</h3>
           <Timeline items={group.entries.map(entry => { const Icon = ICONS[entry.icon] ?? PenLine; return { id: entry.id, icon: <Icon aria-hidden="true" />, title: entry.title,
-            meta: <>{entry.by ? `${entry.by} · ` : ''}<LocalTime iso={entry.at} /></>, body: entry.body ?? undefined }; })} />
+            meta: <>{entry.by ? `${entry.by} · ` : ''}{entry.dateOnly ? <PickedDay at={entry.at} /> : <LocalTime iso={entry.at} />}</>, body: entry.body ?? undefined }; })} />
         </section>)}
       {matching.length > shown && <div className="flex justify-center"><Button variant="outline" className={cn('max-sm:w-full')} onClick={() => setShown(count => count + PAGE)}>Show older ({matching.length - shown})</Button></div>}
     </CardBody>

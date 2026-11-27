@@ -14,13 +14,14 @@ import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate, readApi } from '@/lib/client-api';
 import { coverAll, coversFor, everyoneValue, startingChoices, type CoverOptions } from './cover-rules';
 import type { MemberLeave, MemberProfile } from './types';
+import { dayLabel } from '@/lib/navigation';
 
 /**
  * Drivers while their dispatcher is away (section 34: PutOnLeaveCoverScreen, OnLeaveCoveredScreen, ReturnDriversBackScreen,
  * LeaveToLeavingCoveredScreen; approved 2026-11-16). Who covers each driver is chosen when they're put on leave; the drivers
  * move on the first day away and come back on the return day.
  */
-const shortDay = (day: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const shortDay = (day: string) => dayLabel(day, false);
 const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '' : 's'}`;
 
 /** Their drivers and who may cover them. null while loading; an older API without the route gives an empty list. */

@@ -88,7 +88,7 @@ export function ManagedLists({ list, data, counts, filters, lists, content, canA
           ...(numbers ? [
             { key: 'mc', label: 'MC number', mono: true, nowrap: true, cell: (item: ListItem) => item.mcNumber ?? <span className="font-sans italic text-muted-foreground">Not set</span> },
             { key: 'dot', label: 'DOT number', mono: true, nowrap: true, hideBelow: 'lg' as const, cell: (item: ListItem) => item.dotNumber ?? <span className="font-sans italic text-muted-foreground">Not set</span> }] : []),
-          { key: 'usage', label: 'Used by', muted: true, hideBelow: 'md', cell: item => item.usage ? `${item.usage} approved dispatcher${item.usage === 1 ? '' : 's'}` : 'Not used yet' },
+          { key: 'usage', label: 'Used by', muted: true, hideBelow: 'md', cell: item => item.usage ? `${item.usage} dispatcher${item.usage === 1 ? '' : 's'}` : 'Not used yet' },
           { key: 'status', label: 'Status', cell: item => <Badge label={item.archived ? 'Archived' : 'Active'} tone={item.archived ? 'neutral' : 'success'} /> },
           { key: 'action', label: 'Actions', srOnly: true, action: true, align: 'right', cell: item => <span className="flex justify-end gap-1">
             <Button variant="outline" size="sm" disabled={!!pending} onClick={() => open(item)}>Edit<span className="sr-only"> {item.name}</span></Button>

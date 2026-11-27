@@ -7,7 +7,7 @@ import { Table } from '@/components/ui/table';
 import { Badge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { NotAvailable, viewRead, ViewOnlyMark } from '@/features/view/ui';
-import { middayIso } from '@/lib/navigation';
+import { dayLabel } from '@/lib/navigation';
 export const metadata = { title: 'Drivers · view only' };
 
 interface ViewDriver { id: string; firstName: string; lastName: string; phone: string; driverType: string; licenseType: string | null; clearedAt: string | null; onHold: boolean; gettingReady?: boolean;
@@ -38,7 +38,7 @@ export default async function ViewDispatchDriversPage({ searchParams }: { search
           <span className="text-[13px] text-muted-foreground">{[TYPE[driver.driverType] ?? driver.driverType, driver.licenseType ? LICENSE[driver.licenseType] : null].filter(Boolean).join(' · ')}</span></span> },
         { key: 'phone', label: 'Phone', nowrap: true, cell: driver => <a href={`tel:${driver.phone.replace(/[^\d+]/g, '')}`} className="hover:underline">{driver.phone}</a> },
         { key: 'where', label: 'MC and dispatcher', cell: driver => driver.assignment ? <span className="grid gap-0.5"><span>{driver.assignment.dispatcher}</span><span className="text-[13px] text-muted-foreground">{[driver.assignment.mc, driver.assignment.team].filter(Boolean).join(' · ')}</span>
-          {driver.assignment.covering && <span className="text-xs text-muted-foreground">Covering for {driver.assignment.covering.for} until {new Date(middayIso(driver.assignment.covering.until)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</span>}</span>
+          {driver.assignment.covering && <span className="text-xs text-muted-foreground">Covering for {driver.assignment.covering.for} until {dayLabel(driver.assignment.covering.until, false)}</span>}</span>
           : <span className="text-muted-foreground">Not assigned</span> },
         { key: 'unit', label: 'Unit', hideBelow: 'md', cell: driver => [driver.assignment?.truck, driver.assignment?.trailer].filter(Boolean).join(' · ') || <span className="text-muted-foreground">—</span> },
         { key: 'cleared', label: 'Cleared', nowrap: true, muted: true, hideBelow: 'lg', cell: driver => driver.clearedAt ? <LocalTime iso={driver.clearedAt} format="date" /> : '—' },

@@ -84,7 +84,8 @@ export interface SupportItSetup { open: { id: string; items: string[]; done: num
 /** An NDA or SOP signed on paper, with its current scan and the ones it replaced (section 38; an older API sends neither). */
 export interface PaperScan { id: string; pageCount: number; createdAt: string; uploadedBy: string }
 export interface PaperCopy { kind: 'NDA' | 'SOP'; signedOn: string; createdAt: string; recordedBy: string; scan?: PaperScan | null; earlierScans?: (PaperScan & { replacedAt: string })[] }
-export interface OtherName { id: string; name: string; mcId: string | null; mc: string | null }
+/** Where it was used: an MC, another company typed in (section 43), or neither; and why it's kept. An older API sends neither of the last two. */
+export interface OtherName { id: string; name: string; mcId: string | null; mc: string | null; companyName?: string | null; note?: string | null }
 export interface MemberProfile { /** The complete History (section 38); an older API sends none. */ timeline?: MemberTimeline; sharing?: { uses: SharedUse[]; usedBy: SharedUsedBy[] }; recordChanges?: RecordChange[]; handPhotos?: { profile: { createdAt: string; uploadedBy: string | null } | null; id: { createdAt: string; uploadedBy: string | null } | null; idViews: { createdAt: string; viewedBy: string | null; role: string }[] } | null; accountRequests?: { id: string; kind: 'CLOSE' | 'MOVE'; accountId: string | null; toMc: string | null; createdAt: string }[]; companyAccounts?: CompanyAccount[]; loadBoardSeats?: Seat[]; /** The emails Add seat offers as their sign-in; an older API sends none. */ seatEmails?: SeatEmail[]; otherNames?: OtherName[]; itSetup?: SupportItSetup | null; sharedSignIns?: SharedSignIns; existing?: ExistingRecord | null; id: string; firstName: string; lastName: string; position: 'DISPATCHER' | 'SUPPORT'; supportType?: SupportType; supportTypeChanges?: { id: string; to: string; createdAt: string; changedBy: string | null }[]; status: MemberStatus; version: number; joinedAt: string; leftAt: string | null;
   applicationId: string | null; jobTitle: { id: string; name: string } | null; current: Assignment | null; history: Assignment[]; leadOf: { id: string; name: string } | null;
   accounts: { companyEmail: string | null; workPhone: string | null; ringCentralExtension?: string | null; datEmail?: string | null; truckstopEmail?: string | null; completedAt: string | null; cancelledAt?: string | null; done?: number; total?: number } | null;
@@ -128,7 +129,8 @@ export interface Choice { id: string; name: string; archived: boolean }
 export const fullName = (member: { firstName: string; lastName: string }) => `${member.firstName} ${member.lastName}`.trim();
 
 /** A time someone came back (section 41): their leaving undone, or rehired from a first day back. */
-export interface MemberReturn { id: string; kind: 'UNDO' | 'REHIRE'; leftAt: string; leftKnown: boolean; leftReason?: string | null; previousJoinedAt: string; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: string; by: string | null }
+export interface MemberReturn { id: string; kind: 'UNDO' | 'REHIRE'; leftAt: string; leftKnown: boolean; leftReason?: string | null; previousJoinedAt: string; previousStartKnown: boolean; firstDay: string | null; reason: string | null; createdAt: string; by: string | null;
+  /** The IT checklist it asked for, null when IT wasn't asked; an older API sends none. */ setup?: { done: number; total: number; completedAt: string | null; cancelledAt: string | null } | null }
 /** What the Undo leaving and Rehire dialogs show (GET dispatch/members/:id/bring-back). */
 export interface BringBackOptions {
   undo: { allowed: boolean; why: string | null; until: string | null;
@@ -140,6 +142,6 @@ export interface BringBackOptions {
   rehire: { allowed: boolean; why: string | null; earliest: string; latest: string;
     previous: { position: 'DISPATCHER' | 'SUPPORT' | 'UPDATER'; mcId: string | null; teamId: string | null; jobTitleId: string | null; supportsMemberId: string | null; supportsTeamId: string | null } };
   removal: { open: boolean; completedAt: string | null } | null;
-  email: { value: string; was: 'ARCHIVED' | 'SUSPENDED' | 'DELETED' | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null } | null;
-  ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null } | null;
+  email: { value: string; was: 'ARCHIVED' | 'SUSPENDED' | 'DELETED' | null; deletedOn: string | null; restorableUntil: string | null; restorable: boolean; why: string | null; notClosed?: boolean; keptFor?: string[]; heldAt?: string | null } | null;
+  ringCentral: { number: string; extension: string | null; restorable: boolean; why: string | null; notClosed?: boolean; heldAt?: string | null } | null;
 }

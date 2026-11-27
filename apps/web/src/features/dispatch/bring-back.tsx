@@ -12,7 +12,9 @@ import { PendingHint } from '@/components/ui/pending-hint';
 import { Skeleton } from '@/components/ui/feedback';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage, mutate, readApi } from '@/lib/client-api';
-import { middayIso } from '@/lib/navigation';
+import { middayIso, dayLabel } from '@/lib/navigation';
+import { EmailAfterFields } from '../it/email-choice';
+import type { EmailChoice } from '../it/email-words';
 import { fullName, type BringBackOptions, type Choice, type MemberProfile, type TeamRow } from './types';
 
 /**
@@ -65,9 +67,10 @@ export function rehiredMeta(member: MemberProfile) {
 export function RehiredAlert({ member }: { member: MemberProfile }) {
   const back = lastRehire(member);
   if (!back || member.status !== 'ONBOARDING') return null;
-  const asked = !!member.accounts?.total && !member.accounts.completedAt;
-  return asked ? <Alert tone="info" title={`IT is setting ${member.firstName} up again`}><p>{member.accounts!.done ?? 0} of {member.accounts!.total} tasks done. {member.firstName} becomes Active when IT finishes, as a new hire does.</p></Alert>
-    : <Alert tone="info" title={<>Back <Day day={back.firstDay!} /></>}><p>Nothing was asked of IT, so {member.firstName} becomes Active on their first day back.</p></Alert>;
+  // The rehire's own checklist (an older API sends none: then the newest setup, as before).
+  const setup = back.setup !== undefined ? back.setup : member.accounts?.total ? { done: member.accounts.done ?? 0, total: member.accounts.total, completedAt: member.accounts.completedAt ?? null, cancelledAt: null } : null;
+  if (setup && !setup.completedAt && !setup.cancelledAt) return <Alert tone="info" title={`IT is setting ${member.firstName} up again`}><p>{setup.done} of {setup.total} tasks done. {member.firstName} becomes Active when IT finishes, as a new hire does.</p></Alert>;
+  return <Alert tone="info" title={<>Back <Day day={back.firstDay!} /></>}><p>{setup?.completedAt ? 'IT finished setting them up' : setup?.cancelledAt ? 'IT’s setup checklist was stopped' : 'Nothing was asked of IT'}, so {member.firstName} becomes Active on their first day back.</p></Alert>;
 }
 /** The time away between two stays, for MC and team history: from the day after they left to the day before they came back. */
 export function awayPeriods(member: MemberProfile) {
@@ -153,7 +156,19 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
   const [assisting, setAssisting] = useState<'DISPATCHER' | 'TEAM'>(wholeTeam ? 'TEAM' : 'DISPATCHER'), [helpsTeamId, setHelpsTeamId] = useState(wholeTeam);
   const [helpsId, setHelpsId] = useState(previous.supportsMemberId && dispatchers.some(row => row.id === previous.supportsMemberId) ? previous.supportsMemberId : '');
   const was = member.position === 'DISPATCHER' ? 'NEW' as const : 'NONE' as const;
-  const [email, setEmail] = useState<Account>(options.email?.restorable ? 'RESTORE' : was), [ringCentral, setRingCentral] = useState<Account>(options.ringCentral?.restorable ? 'RESTORE' : was);
+  // One IT never closed may not be theirs any more, so the manager chooses rather than starting at Restore.
+  const start = (old: { restorable: boolean; notClosed?: boolean } | null) => old?.notClosed && old.restorable ? '' as const : old?.restorable ? 'RESTORE' as const : was;
+  const [email, setEmail] = useState<Account | ''>(start(options.email)), [ringCentral, setRingCentral] = useState<Account | ''>(start(options.ringCentral));
+  // What IT does with an old email it never closed that they don't get back; IT usually archives.
+  const [closeEmail, setCloseEmail] = useState<EmailChoice>({ action: 'ARCHIVE', forward: false });
+  // An old account IT never closed that they don't get back may be one IT is asked to close; the API says whether it was. One already
+  // on an open account of theirs at another company (heldAt) stays there, and IT isn't asked.
+  const mayClose = (choice: Account | '', old: { restorable: boolean; notClosed?: boolean; heldAt?: string | null } | null) => !!choice && choice !== 'RESTORE' && !!old?.notClosed && old.restorable && !old.heldAt;
+  // An email that still signs in to a load board seat is kept for it, so IT isn't asked what to do with it.
+  const keptFor = options.email?.keptFor ?? [], closingEmail = mayClose(email, options.email) && !keptFor.length;
+  // The API decides at rehire whether the email is still kept; if the seat ended meanwhile, IT closes it as IT usually does (Archive).
+  const sendEmailAction = mayClose(email, options.email);
+  const seats = `the load board ${keptFor.length > 1 ? 'seats' : 'seat'} on ${new Intl.ListFormat('en-US', { type: 'conjunction' }).format(keptFor)}`;
   const [software, setSoftware] = useState(member.position === 'DISPATCHER'), [equipment, setEquipment] = useState(false), [firstDay, setFirstDay] = useState(options.rehire.earliest);
   const name = fullName(member), first = member.firstName, dispatcher = position === 'DISPATCHER';
   const teamChoices = teams.filter(team => !team.archived && team.mc.id === mcId);
@@ -162,20 +177,28 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
     if (pending) return;
     if (dispatcher && (!mcId || !titleId)) { setError('Choose their MC and job title.'); return; }
     if (!dispatcher && !(assisting === 'TEAM' ? helpsTeamId : helpsId)) { setError(assisting === 'TEAM' ? 'Choose the team they help.' : 'Choose the dispatcher they help.'); return; }
+    if (!email || !ringCentral) { setError(`Choose what happens to their ${!email ? 'company email' : 'RingCentral number'}.`); return; }
     setPending(true); setError('');
     try {
-      await mutate(`dispatch/members/${member.id}/rehire`, 'POST', { version: member.version, firstDay, position, email, ringCentral, businessSoftware: software, equipment,
+      const result = await mutate<{ closeAsked?: boolean }>(`dispatch/members/${member.id}/rehire`, 'POST', { version: member.version, firstDay, position, email, ringCentral, businessSoftware: software, equipment,
+        ...(sendEmailAction ? { closeEmailAction: closeEmail.action } : {}),
         ...(dispatcher ? { mcId, teamId: teamId === INDEPENDENT ? null : teamId, jobTitleId: titleId } : assisting === 'TEAM' ? { supportsTeamId: helpsTeamId } : { supportsMemberId: helpsId }) });
       const asked = email !== 'NONE' || ringCentral !== 'NONE' || software || equipment || dispatcher;
-      toast({ title: `${name} rehired`, description: asked ? 'IT got a setup checklist.' : 'Nothing was asked of IT.' }); onClose(); router.refresh();
+      // An older API doesn't say, so the dialog's own reading stands in.
+      const closing = result?.closeAsked ?? (closingEmail || mayClose(ringCentral, options.ringCentral));
+      toast({ title: `${name} rehired`, description: asked ? `IT got a setup checklist${closing ? ' and a request to close their old accounts' : ''}.` : closing ? 'IT was asked to close their old accounts.' : 'Nothing was asked of IT.' }); onClose(); router.refresh();
     } catch (caught) { setError(errorMessage(caught, 'Unable to rehire them. Your entries have been kept.')); }
     finally { setPending(false); }
   }
   const rehire = options.rehire, oldEmail = options.email, oldNumber = options.ringCentral;
-  const emailOptions = [...(oldEmail?.restorable ? [{ value: 'RESTORE', label: `Restore ${oldEmail.value}`, description: oldEmail.was === 'DELETED' && oldEmail.restorableUntil ? `Deleted, and IT can still restore it until ${new Date(middayIso(oldEmail.restorableUntil)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}.` : `${oldEmail.was ? EMAIL_WAS[oldEmail.was] : 'Closed'}, so their old email and files come back.` }] : []),
-    { value: 'NEW', label: 'A new email', description: oldEmail && !oldEmail.restorable ? oldEmail.why ?? undefined : undefined }, { value: 'NONE', label: 'No company email' }];
-  const numberOptions = [...(oldNumber?.restorable ? [{ value: 'RESTORE', label: 'Enable their user again', description: `${oldNumber.number}${oldNumber.extension ? `, ext ${oldNumber.extension}` : ''}, with SMS and call recording.` }] : []),
-    { value: 'NEW', label: 'A new number', description: oldNumber && !oldNumber.restorable ? oldNumber.why ?? undefined : undefined }, { value: 'NONE', label: 'No RingCentral number' }];
+  const emailOptions = [...(oldEmail?.restorable ? [{ value: 'RESTORE', label: `Restore ${oldEmail.value}`, description: oldEmail.was === 'DELETED' && oldEmail.restorableUntil ? `Deleted, and IT can still restore it until ${dayLabel(oldEmail.restorableUntil)}.` : oldEmail.notClosed ? 'IT was never asked to close it, so IT checks it’s still theirs and turns it back on.' : `${oldEmail.was ? EMAIL_WAS[oldEmail.was] : 'Closed'}, so their old email and files come back.` }] : []),
+    // An account IT never closed that doesn't come back: IT is asked to close it, so it's never left open untracked.
+    ...[{ value: 'NEW', label: 'A new email' }, { value: 'NONE', label: 'No company email' }].map(option => ({ ...option,
+      description: oldEmail?.notClosed && oldEmail.restorable ? (oldEmail.heldAt ? `${oldEmail.value} stays on their account at ${oldEmail.heldAt}; IT isn’t asked to close it.` : keptFor.length ? `${oldEmail.value} stays open for ${seats}; IT isn’t asked to close it.` : `IT is also asked to close ${oldEmail.value}.`)
+        : oldEmail && !oldEmail.restorable && option.value === 'NEW' ? oldEmail.why ?? undefined : undefined }))];
+  const numberOptions = [...(oldNumber?.restorable ? [{ value: 'RESTORE', label: 'Enable their user again', description: `${oldNumber.number}${oldNumber.extension ? `, ext ${oldNumber.extension}` : ''}, with SMS and call recording.${oldNumber.notClosed ? ' IT was never asked to turn it off, so IT checks it’s still theirs first.' : ''}` }] : []),
+    ...[{ value: 'NEW', label: 'A new number' }, { value: 'NONE', label: 'No RingCentral number' }].map(option => ({ ...option,
+      description: oldNumber?.notClosed && oldNumber.restorable ? (oldNumber.heldAt ? `${oldNumber.number} stays on their account at ${oldNumber.heldAt}; IT isn’t asked to turn it off.` : `IT is also asked to turn off ${oldNumber.number}.`) : oldNumber && !oldNumber.restorable && option.value === 'NEW' ? oldNumber.why ?? undefined : undefined }))];
   return <Dialog open onClose={onClose} size="lg" title={`Rehire ${name}`} busy={pending}
     description={`Same record, so their history, documents and names stay together. They’re Onboarding until IT finishes, then Active.`}
     actions={<Button form="rehire" type="submit">{pending ? 'Rehiring…' : 'Rehire'}</Button>}>
@@ -198,6 +221,7 @@ function RehireForm({ member, mcs, teams, jobTitles, dispatchers, onClose, optio
         </>}
         <Card><CardHeader title="Accounts" description="IT gets a setup checklist with what you choose." /><CardBody className="space-y-4">
           <RadioGroup name="email" label="Company email" cards value={email} onChange={value => setEmail(value as Account)} options={emailOptions} />
+          {closingEmail && options.email && <EmailAfterFields email={options.email.value} value={closeEmail} onChange={setCloseEmail} forwarding={false} label={`What IT does with ${options.email.value}`} />}
           <RadioGroup name="ringCentral" label="RingCentral" cards value={ringCentral} onChange={value => setRingCentral(value as Account)} options={numberOptions} />
           <Checkbox label="Business software and load boards" checked={software} onChange={event => setSoftware(event.target.checked)} />
           <Checkbox label="Equipment" description="Laptop and headset." checked={equipment} onChange={event => setEquipment(event.target.checked)} />

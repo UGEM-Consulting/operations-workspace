@@ -156,6 +156,9 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // With seats (section 33) the Load boards card shows the sign-ins, so the IT setup card doesn't repeat them.
   const signIns = member.loadBoardSeats ? { dat: null, truckstop: null } : { dat: accounts?.datEmail ?? existing?.datEmail ?? null, truckstop: accounts?.truckstopEmail ?? existing?.truckstopEmail ?? null }, telegram = details?.telegram ? null : existing?.telegram ?? null;
   const removesAccess = !!accounts || !!recordedAccounts, removal = member.removal ?? null;
+  // The recorded extension belongs to the recorded number: never shown beside a different number IT assigned.
+  const digits = (value: string | null | undefined) => value?.replace(/\D/g, '') ?? '';
+  const extension = accounts?.ringCentralExtension ?? (!accounts?.workPhone || digits(accounts.workPhone) === digits(existing?.ringCentralNumber) ? existing?.ringCentralExtension ?? null : null);
   // A support's or updater's IT setup (section 32): offered once the API knows it (itSetup), never while one is open or they're leaving.
   const itSetup = member.itSetup ?? null, itOpen = itSetup?.open ?? null;
   const removalOpen = !!removal && !removal.completedAt, notice = member.notice ?? null, onNotice = open && !!notice;
@@ -181,6 +184,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
   // Someone who left: the record can't be moved, but a missing last day, their names and (once) closing their accounts still can.
   // Undo leaving waits in More actions for 30 days after the last day; Rehire is the main button (LeftBringBackScreen). An older API offers neither.
   const bringBack = gone ? member.bringBack ?? null : null, rehired = lastRehire(member);
+  // An undone leaving's checklist restores what IT removed; they're already Active, so the IT card says so.
+  const latestReturn = member.returns?.[0], restoring = latestReturn?.kind === 'UNDO' && !!latestReturn.setup && !latestReturn.setup.completedAt && !latestReturn.setup.cancelledAt;
   const leftMenu: MenuEntry[] = [...(bringBack?.canUndo ? [{ label: 'Undo leaving', icon: Undo2, onSelect: () => setBringing('undo') }] : []), ...(existing ? [{ label: 'Edit recorded details', icon: FilePenLine, onSelect: () => setLeftDialog('record') }] : []), { label: 'Edit names', icon: Pencil, onSelect: () => setLeftDialog('names') }, ...(canAskItToClose(member) ? [{ separator: true as const }, { label: 'Ask IT to close their accounts', icon: Monitor, onSelect: () => setLeftDialog('close') }] : [])];
   const leftActions = <div className="flex flex-wrap items-center gap-2 max-sm:w-full">{lastDayMissing(member) && <Button className="max-sm:flex-1" onClick={() => setLeftDialog('lastDay')}><Calendar aria-hidden="true" className="size-4" />Add last day</Button>}
     {bringBack && <Button className="max-sm:flex-1" variant={lastDayMissing(member) ? 'outline' : 'default'} onClick={() => setBringing('rehire')}><UserPlus aria-hidden="true" className="size-4" />Rehire</Button>}<DropdownMenu label="More actions" triggerIcon={Ellipsis} align="end" items={leftMenu} /></div>;
@@ -402,8 +407,8 @@ export function MemberProfileView({ member, mcs, teams, jobTitles, dispatchers =
               : !accounts ? <p className="text-muted-foreground">No IT setup request for this dispatcher.</p>
               : accounts.cancelledAt ? <p>Cancelled <LocalTime iso={accounts.cancelledAt} format="date" />: they left before setup finished.</p>
               : accounts.completedAt ? <p>Setup complete <LocalTime iso={accounts.completedAt} format="date" />.</p>
-              : <><p>In progress. The dispatcher becomes Active when IT finishes.</p>{progress}</>}
-            {accounts && (accounts.ringCentralExtension || existing?.ringCentralExtension || signIns.dat || signIns.truckstop || member.signIn) && <DescriptionList layout="rows" stacked items={[...(accounts.ringCentralExtension || existing?.ringCentralExtension ? [{ label: 'Extension', value: accounts.ringCentralExtension ?? existing?.ringCentralExtension, mono: true }] : []),
+              : <><p>{restoring ? 'IT is restoring their access, since their leaving was undone.' : member.status === 'ONBOARDING' ? 'In progress. The dispatcher becomes Active when IT finishes.' : 'In progress.'}</p>{progress}</>}
+            {accounts && (extension || signIns.dat || signIns.truckstop || member.signIn) && <DescriptionList layout="rows" stacked items={[...(extension ? [{ label: 'Extension', value: extension, mono: true }] : []),
               ...(signIns.dat ? [{ label: 'DAT sign-in', value: <SignIn email={signIns.dat} others={member.sharedSignIns?.dat} /> }] : []), ...(signIns.truckstop ? [{ label: 'Truckstop sign-in', value: <SignIn email={signIns.truckstop} others={member.sharedSignIns?.truckstop} /> }] : []), ...signInItems(member)]} />}
             {member.canOpenApplication && member.applicationId && <Link href={`/onboarding/applications/${member.applicationId}`} className="inline-block text-primary underline-offset-4 hover:underline">Open onboarding record</Link>}
           </CardBody>

@@ -9,14 +9,14 @@ import { PageHeader } from '@/components/workspace-ui';
 import { ContactCell, HelpersCell, NameCell, PhoneDetails } from '@/features/dispatch/glance';
 import { underMc, type MemberRow } from '@/features/dispatch/types';
 import { memberState, NotAvailable, viewRead, ViewOnlyMark } from '@/features/view/ui';
-import { middayIso } from '@/lib/navigation';
+import { dayLabel } from '@/lib/navigation';
 export const metadata = { title: 'Dispatchers · view only' };
 
 interface ViewMembers { items: MemberRow[]; counts: Record<'onboarding' | 'active' | 'onLeave' | 'leaving' | 'left' | 'all', number>; total: number; page: number; pageSize: number }
 const DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '', page: '1' };
 const TABS = ['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'LEAVING', 'LEFT', 'ALL'];
 const BASE = '/view/dispatch/dispatchers';
-const monthDay = (day: string) => new Date(middayIso(day)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const monthDay = (day: string) => dayLabel(day, false);
 const href = (filters: Record<string, string>, changes: Record<string, string>) => `${BASE}?${new URLSearchParams(Object.entries({ ...filters, ...changes }).filter(([, value]) => value !== ''))}`;
 
 /** Dispatch › Dispatchers read only (ViewOnlyDispatchersScreen): the same tabs and search, work contacts, nothing that changes a record. */

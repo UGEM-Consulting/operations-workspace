@@ -14,7 +14,7 @@ import { HistoryTimeline, type MemberTimeline } from '@/features/dispatch/histor
 import { assists, supportName, underMc, type MemberRow } from '@/features/dispatch/types';
 import { MemberFilesView, type MemberFiles } from '@/features/view/files';
 import { LookNote, memberState, NotAvailable, viewRead, ViewOnlyMark } from '@/features/view/ui';
-import { middayIso } from '@/lib/navigation';
+import { middayIso, dayLabel } from '@/lib/navigation';
 export const metadata = { title: 'Dispatcher · view only' };
 
 type ViewMember = Omit<MemberRow, 'drivers'> & {
@@ -71,7 +71,7 @@ export default async function ViewDispatcherPage({ params, searchParams }: { par
   ]} />{(c.emailOwner || c.numberOwner) && <p className="mt-3 text-xs text-muted-foreground">{[c.emailOwner, c.numberOwner].filter(Boolean).join(' and ')}’s, shared</p>}</CardBody></Card>;
   const drivers = !support && <Card>
     <CardHeader title="Drivers" description={member.covered.length ? 'Who they dispatch now, and who covers their drivers while they’re away.' : 'Who they dispatch now.'} />
-    <Table caption="Drivers" className="mt-3 border-t border-border" rows={[...member.drivers.map(driver => ({ ...driver, cover: null as string | null })), ...member.covered.map(driver => ({ id: driver.id, name: driver.name, startedAt: null, unit: null, unitKind: null, onHold: false, covering: null, cover: `Covered by ${driver.cover} until ${new Date(middayIso(driver.until)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}` }))]}
+    <Table caption="Drivers" className="mt-3 border-t border-border" rows={[...member.drivers.map(driver => ({ ...driver, cover: null as string | null })), ...member.covered.map(driver => ({ id: driver.id, name: driver.name, startedAt: null, unit: null, unitKind: null, onHold: false, covering: null, cover: `Covered by ${driver.cover} until ${dayLabel(driver.until, false)}` }))]}
       rowKey={row => row.id} columns={[
         { key: 'name', label: 'Driver', primary: true, cell: row => <span className="flex flex-wrap items-center gap-1.5">{row.name}{row.onHold && <Badge label="On hold" tone="danger" />}
           {row.cover && <Badge label={row.cover} tone="neutral" />}{row.covering && <Badge label={`Covering for ${row.covering.for}`} tone="info" />}</span> },

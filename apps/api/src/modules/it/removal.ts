@@ -5,6 +5,7 @@ import { In, IsNull } from 'typeorm';
 import { removalSeats } from '../load-boards/seats';
 import { removalCompanyAccounts } from '../company-accounts/accounts';
 import { removalSharing } from '../dispatch/shared-accounts';
+import { phoneKey } from '../onboarding/already-here';
 import { ItOnboardingActivity, ItOnboardingRequest, ItOnboardingTask, ItRemovalActivity, ItRemovalRequest, ItRemovalTask, REMOVAL_CHECKLIST, type EmailAction } from './it.entity';
 
 /** A deleted Google account can't forward new email (section 40), so the manager's choice never asks for both. */
@@ -41,10 +42,15 @@ export async function memberSetups(em: EntityManager, memberId: string, include:
   .where(`(r."cancelledAt" IS NULL OR r.id = :include) AND r.id IN (${MEMBER_SETUP_IDS})`, { memberId, include: include ?? '00000000-0000-0000-0000-000000000000' })
   .orderBy('r.createdAt', 'DESC').getMany();
 }
-/** The accounts IT set up across those requests: for each, the newest one recorded. The dispatcher page and IT's removal both use this. */
+/**
+ * The accounts IT set up across those requests: for each, the newest one recorded. The extension comes from a setup with that
+ * same number, never another line's. The dispatcher page and IT's removal both use this.
+ */
 export function setupAccounts(setups: Pick<ItOnboardingRequest, 'companyEmail' | 'assignedRingCentralPhoneNumber' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail'>[]) {
  const first = <K extends 'companyEmail' | 'assignedRingCentralPhoneNumber' | 'ringCentralExtension' | 'datEmail' | 'truckstopEmail'>(key: K) => setups.find(setup => setup[key])?.[key] ?? null;
- return { companyEmail: first('companyEmail'), ringCentralNumber: first('assignedRingCentralPhoneNumber'), ringCentralExtension: first('ringCentralExtension'), datEmail: first('datEmail'), truckstopEmail: first('truckstopEmail') };
+ const ringCentralNumber = first('assignedRingCentralPhoneNumber');
+ const ringCentralExtension = ringCentralNumber ? setups.find(setup => phoneKey(setup.assignedRingCentralPhoneNumber) === phoneKey(ringCentralNumber) && setup.ringCentralExtension)?.ringCentralExtension ?? null : first('ringCentralExtension');
+ return { companyEmail: first('companyEmail'), ringCentralNumber, ringCentralExtension, datEmail: first('datEmail'), truckstopEmail: first('truckstopEmail') };
 }
 
 /**

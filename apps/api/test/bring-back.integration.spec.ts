@@ -233,6 +233,39 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     expect((await profile(taylor.memberId)).status).toBe('ACTIVE');
   });
 
+  it('offers a first day back the rehire takes, shows each return’s IT checklist, and words days picked in forms as dates', async () => {
+    const taylor = await dispatcher('Taylor');
+    // Impossible days are refused as such, never a server error.
+    for (const body of [{ firstDay: '2026-11-31', backOn: ahead(10) }, { firstDay: ahead(1), backOn: '2027-02-30' }])
+      expect((await act(taylor.memberId, 'on-leave', { ...body, reason: 'Family matters.' }, 400)).body.message).toEqual(expect.arrayContaining(['Enter a real date.']));
+    await leave(taylor.memberId, { emailAction: 'ARCHIVE' });
+    const removalId = await finishRemoval(taylor.memberId);
+    const offered = await options(taylor.memberId);
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    const rehire = (firstDay: string, status = 201) => act(taylor.memberId, 'rehire', { firstDay, position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: title.id, email: 'RESTORE', ringCentral: 'NONE', businessSoftware: false, equipment: false }, status);
+    // Left today: the day offered is one the rehire accepts, and any earlier day is refused.
+    expect(offered.rehire.earliest >= usDay('latest')).toBe(true);
+    if (offered.rehire.earliest > usDay('latest')) await rehire(usDay('latest'), 400);
+    await rehire(offered.rehire.earliest);
+    const back = await profile(taylor.memberId);
+    expect(back.returns[0]).toMatchObject({ kind: 'REHIRE', setup: { done: 0, total: expect.any(Number), completedAt: null, cancelledAt: null } });
+    await finishSetup((await returnSetup(taylor.memberId)).id);
+    expect((await profile(taylor.memberId)).returns[0].setup.completedAt).not.toBeNull();
+    // A day picked in a form (the period's start) is a date with no time; History sorts it after that day's clicks.
+    const entries: { title: string; at: string; dateOnly?: boolean }[] = (await profile(taylor.memberId)).timeline.entries;
+    expect(entries.find(entry => /^Started again/.test(entry.title))).toMatchObject({ dateOnly: true });
+    expect(entries.find(entry => entry.title.startsWith('Rehired'))?.dateOnly).toBeUndefined();
+    // A move later on their first day back is a move, and its day (one millisecond after the period it ends) still shows as a date.
+    const [open] = await db.query(`SELECT id, "mcId", "startedAt" FROM member_assignments WHERE "memberId" = $1 AND "endedAt" IS NULL`, [taylor.memberId]);
+    const moved = new Date(new Date(open.startedAt).getTime() + 1);
+    await db.query(`UPDATE member_assignments SET "endedAt" = $2 WHERE id = $1`, [open.id, open.startedAt]);
+    await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt") VALUES ($1,$2,$3)`, [taylor.memberId, open.mcId, moved]);
+    const after: { title: string; dateOnly?: boolean }[] = (await profile(taylor.memberId)).timeline.entries;
+    expect(after.filter(entry => /^Started again/.test(entry.title))).toHaveLength(1);
+    expect(after.find(entry => /^Moved to/.test(entry.title))).toMatchObject({ dateOnly: true });
+    expect(removalId).toBeTruthy();
+  });
+
   it('rehires a support with nothing asked of IT: Active on their first day back', async () => {
     const dana = await dispatcher('Dana');
     const sky = await supportOf(dana.memberId);
@@ -263,6 +296,179 @@ integration('Bringing back someone who left (disposable PostgreSQL)', () => {
     // Leaving again before IT records a new email: nothing old for IT to remove a second time.
     await leave(taylor.memberId);
     expect((await removalOf(taylor.memberId)).profile).toMatchObject({ companyEmail: null, ringCentralNumber: null });
+  });
+
+  it('offers to restore the email and number on their record when IT never removed their access', async () => {
+    // Someone added from a file as Left, with accounts a manager recorded and IT never asked to close them.
+    const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",status,"joinedAt","leftAt") VALUES ('Rowan','Fictional','LEFT',now() - interval '400 days',now() - interval '60 days') RETURNING id`);
+    const [mc] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt","endedAt") VALUES ($1,$2,now() - interval '400 days',now() - interval '60 days')`, [member.id, mc.id]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail","ringCentralNumber","ringCentralExtension") VALUES ($1,$2,'rowan.work@example.test','+1 202 555 0177','177')`, [member.id, users.manager.id]);
+    const offered = await options(member.id);
+    expect(offered.removal).toBeNull();
+    expect(offered.email).toMatchObject({ value: 'rowan.work@example.test', restorable: true, notClosed: true });
+    expect(offered.ringCentral).toMatchObject({ number: '+1 202 555 0177', extension: '177', restorable: true, notClosed: true });
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    const rehire = { firstDay: ahead(0), position: 'DISPATCHER', mcId: mc.id, jobTitleId: title.id, businessSoftware: false, equipment: false };
+    await act(member.id, 'rehire', { ...rehire, email: 'RESTORE', ringCentral: 'RESTORE' });
+    const setup = await returnSetup(member.id);
+    expect(setup).toMatchObject({ purpose: 'REHIRE', companyEmail: 'rowan.work@example.test', assignedRingCentralPhoneNumber: '+1 202 555 0177', ringCentralExtension: '177' });
+    expect(setup.restoreKeys).toEqual(expect.arrayContaining(['GOOGLE_WORKSPACE', 'RINGCENTRAL', 'SMS', 'CALL_RECORDING']));
+    expect(setup.profile.returning.notClosed).toEqual(['EMAIL', 'RINGCENTRAL']);
+    // IT is told to check each account, SMS and call recording included, rather than assume it closed them.
+    const tasks = (await agents.it.get(`/api/it/onboarding/${setup.id}`).set(headers).expect(200)).body.tasks as { key: string; description: string }[];
+    expect(tasks.find(task => task.key === 'GOOGLE_WORKSPACE')!.description).toMatch(/^Their email was never closed through the workspace/);
+    expect(tasks.find(task => task.key === 'RINGCENTRAL')!.description).toMatch(/^Their RingCentral user was never turned off/);
+    for (const key of ['SMS', 'CALL_RECORDING']) expect(tasks.find(task => task.key === key)!.description).toMatch(/never turned off through the workspace/);
+    expect((await profile(member.id)).accounts).toMatchObject({ companyEmail: 'rowan.work@example.test' });
+    expect(await db.query(`SELECT 1 FROM it_account_requests WHERE "memberId" = $1`, [member.id])).toHaveLength(0);
+  });
+
+  it('asks IT to close an account it never closed when a rehire gets a new one or none', async () => {
+    const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",status,"joinedAt","leftAt") VALUES ('Rowan','Fictional','LEFT',now() - interval '400 days',now() - interval '60 days') RETURNING id`);
+    const [mc] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt","endedAt") VALUES ($1,$2,now() - interval '400 days',now() - interval '60 days')`, [member.id, mc.id]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail","ringCentralNumber","ringCentralExtension") VALUES ($1,$2,'rowan.work@example.test','+1 202 555 0177','177')`, [member.id, users.manager.id]);
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    await act(member.id, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: mc.id, jobTitleId: title.id, email: 'NEW', closeEmailAction: 'ARCHIVE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    // Retired from their main accounts, and kept as their account at the MC they left while IT closes it.
+    expect((await profile(member.id)).accounts?.companyEmail ?? null).toBeNull();
+    const [account] = await db.query(`SELECT * FROM member_company_accounts WHERE "memberId" = $1`, [member.id]);
+    expect(account).toMatchObject({ mcId: mc.id, companyEmail: 'rowan.work@example.test', ringCentralNumber: '+1 202 555 0177', ringCentralExtension: '177', status: 'ACTIVE', position: 'DISPATCHER' });
+    const [request] = await db.query(`SELECT * FROM it_account_requests WHERE "memberId" = $1`, [member.id]);
+    expect(request).toMatchObject({ kind: 'CLOSE', accountId: account.id, managerId: users.manager.id, emailAction: 'ARCHIVE', emailAfter: 'SUSPEND' });
+    const keys = (await db.query(`SELECT key FROM it_account_tasks WHERE "requestId" = $1 ORDER BY key`, [request.id])).map((row: { key: string }) => row.key);
+    // IT closes it as any account at another company (account-requests.integration covers finishing one).
+    expect(keys).toEqual(['CLOSE_EMAIL', 'CLOSE_NUMBER', 'SHARED_PASSWORDS']);
+    expect((await db.query(`SELECT metadata FROM dispatch_events WHERE event = 'REHIRED' AND "memberId" = $1`, [member.id]))[0].metadata).toMatchObject({ closeAsked: true });
+  });
+
+  /** Rowan, added from a file as Left at Lakeside Carriers with an email and number a manager recorded and IT never closed. */
+  const leftFromFile = async () => {
+    const [member] = await db.query(`INSERT INTO dispatch_members ("firstName","lastName",status,"joinedAt","leftAt") VALUES ('Rowan','Fictional','LEFT',now() - interval '400 days',now() - interval '60 days') RETURNING id`);
+    const [mc] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`INSERT INTO member_assignments ("memberId","mcId","startedAt","endedAt") VALUES ($1,$2,now() - interval '400 days',now() - interval '60 days')`, [member.id, mc.id]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail","ringCentralNumber","ringCentralExtension") VALUES ($1,$2,'rowan.work@example.test','+1 202 555 0177','177')`, [member.id, users.manager.id]);
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    return { memberId: member.id as string, mcId: mc.id as string, rehire: { firstDay: ahead(0), position: 'DISPATCHER', mcId: mc.id, jobTitleId: title.id, email: 'NEW', closeEmailAction: 'ARCHIVE', ringCentral: 'NONE', businessSoftware: false, equipment: false } };
+  };
+  const closeKeys = async (memberId: string) => (await db.query(`SELECT t.key FROM it_account_tasks t JOIN it_account_requests r ON r.id = t."requestId" WHERE r."memberId" = $1 ORDER BY t.key`, [memberId])).map((row: { key: string }) => row.key);
+
+  it('keeps a support’s old account at the MC of the dispatcher they helped, not a made-up company', async () => {
+    const dana = await dispatcher('Dana');
+    const sky = await supportOf(dana.memberId);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '1 day' WHERE id = $1`, [sky]);
+    await db.query(`UPDATE member_support_links SET "endedAt" = now() - interval '1 day' WHERE "supportId" = $1`, [sky]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail") VALUES ($1,$2,'sky.work@example.test')`, [sky, users.manager.id]);
+    await act(sky, 'rehire', { firstDay: ahead(0), position: 'SUPPORT', supportsMemberId: dana.memberId, email: 'NONE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    const [account] = await db.query(`SELECT a."companyName", m.name AS mc, a.position FROM member_company_accounts a LEFT JOIN mcs m ON m.id = a."mcId" WHERE a."memberId" = $1`, [sky]);
+    expect(account).toEqual({ companyName: null, mc: 'Northwind Freight', position: 'SUPPORT' });
+  });
+
+  it('keeps the old account of a support who helped a whole team at that team’s MC when they left, not its MC now', async () => {
+    const dana = await dispatcher('Dana');
+    const sky = await supportOf(dana.memberId);
+    const [northwind] = await db.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1`, [dana.memberId]);
+    const [team] = await db.query(`INSERT INTO teams (name, "nameKey", "mcId") VALUES ('Blue team', 'blue team', $1) RETURNING id`, [northwind.mcId]);
+    await db.query(`UPDATE member_assignments SET "teamId" = $2, "endedAt" = now() - interval '2 hours' WHERE "memberId" = $1`, [dana.memberId, team.id]);
+    await db.query(`UPDATE member_support_links SET "dispatcherId" = NULL, "teamId" = $2, "endedAt" = now() - interval '1 day' WHERE "supportId" = $1`, [sky, team.id]);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '1 day' WHERE id = $1`, [sky]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail") VALUES ($1,$2,'sky.work@example.test')`, [sky, users.manager.id]);
+    // Emptied, the team moved to another MC after Sky left.
+    const [lakeside] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`UPDATE teams SET "mcId" = $2 WHERE id = $1`, [team.id, lakeside.id]);
+    await act(sky, 'rehire', { firstDay: ahead(0), position: 'SUPPORT', supportsTeamId: team.id, email: 'NONE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    const [account] = await db.query(`SELECT m.name AS mc FROM member_company_accounts a LEFT JOIN mcs m ON m.id = a."mcId" WHERE a."memberId" = $1`, [sky]);
+    expect(account).toEqual({ mc: 'Northwind Freight' });
+  });
+
+  it('doesn’t guess the MC of an empty team that changed MC after the support left', async () => {
+    const dana = await dispatcher('Dana');
+    const sky = await supportOf(dana.memberId);
+    const [northwind] = await db.query(`SELECT "mcId" FROM member_assignments WHERE "memberId" = $1`, [dana.memberId]);
+    // Nobody was in the team, so only the team row says where it was; it changed MC once Sky had gone.
+    const [team] = await db.query(`INSERT INTO teams (name, "nameKey", "mcId") VALUES ('Blue team', 'blue team', $1) RETURNING id`, [northwind.mcId]);
+    await db.query(`UPDATE member_support_links SET "dispatcherId" = NULL, "teamId" = $2, "endedAt" = now() - interval '1 day' WHERE "supportId" = $1`, [sky, team.id]);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '1 day' WHERE id = $1`, [sky]);
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail") VALUES ($1,$2,'sky.work@example.test')`, [sky, users.manager.id]);
+    const [lakeside] = await db.query(`INSERT INTO mcs (name,"nameKey") VALUES ('Lakeside Carriers','lakeside carriers') RETURNING id`);
+    await db.query(`UPDATE teams SET "mcId" = $2 WHERE id = $1`, [team.id, lakeside.id]);
+    await db.query(`INSERT INTO dispatch_events ("teamId", event, "actorId", metadata) VALUES ($1, 'TEAM_UPDATED', $2, '{"fields":["mcId"]}')`, [team.id, users.manager.id]);
+    await act(sky, 'rehire', { firstDay: ahead(0), position: 'SUPPORT', supportsMemberId: dana.memberId, email: 'NONE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    const [account] = await db.query(`SELECT a."mcId", a."companyName" FROM member_company_accounts a WHERE a."memberId" = $1`, [sky]);
+    expect(account).toEqual({ mcId: null, companyName: 'Earlier company' });
+  });
+
+  it('keeps the extension with its number when IT and the manager typed the number differently', async () => {
+    const rowan = await leftFromFile();
+    await db.query(`INSERT INTO it_onboarding_requests (purpose, "memberId", "managerId", "requestedBy", profile, "assignedRingCentralPhoneNumber", "completedAt") VALUES ('SUPPORT', $1, $2, $2, '{}', '+1 (202) 555-0177', now())`, [rowan.memberId, users.manager.id]);
+    await db.query(`UPDATE existing_member_records SET "ringCentralNumber" = '202-555-0177' WHERE "memberId" = $1`, [rowan.memberId]);
+    expect((await options(rowan.memberId)).ringCentral).toMatchObject({ number: '+1 (202) 555-0177', extension: '177' });
+  });
+
+  it('keeps an old email that still signs in to a load board seat, and asks IT to close only the number', async () => {
+    const rowan = await leftFromFile();
+    const dana = await dispatcher('Dana');
+    const [dat] = await db.query(`INSERT INTO load_board_accounts (provider, name, "nameKey") VALUES ('DAT', 'Lakeside DAT', 'lakeside dat') RETURNING id`);
+    await db.query(`INSERT INTO member_load_board_seats ("memberId","accountId","signInEmail","startedAt") VALUES ($1,$2,'rowan.work@example.test',now() - interval '5 days')`, [dana.memberId, dat.id]);
+    // The dialog is told, so it doesn't ask what IT does with an email IT won't be asked to close.
+    expect((await options(rowan.memberId)).email.keptFor).toEqual(['Lakeside DAT']);
+    const body = (await act(rowan.memberId, 'rehire', rowan.rehire)).body;
+    expect(body.closeAsked).toBe(true);
+    expect(await db.query(`SELECT "companyEmail", "ringCentralNumber", status FROM member_company_accounts WHERE "memberId" = $1 ORDER BY status`, [rowan.memberId])).toEqual([
+      { companyEmail: null, ringCentralNumber: '+1 202 555 0177', status: 'ACTIVE' },
+      { companyEmail: 'rowan.work@example.test', ringCentralNumber: null, status: 'KEPT_FOR_LOAD_BOARDS' }]);
+    expect(await closeKeys(rowan.memberId)).toEqual(['CLOSE_NUMBER']);
+  });
+
+  it('leaves an old email already on one of their accounts at another company where it is, instead of failing the rehire', async () => {
+    const rowan = await leftFromFile();
+    await db.query(`INSERT INTO member_company_accounts ("memberId","companyName","companyEmail",status,"createdBy") VALUES ($1,'Harbor Logistics','rowan.work@example.test','KEPT_FOR_LOAD_BOARDS',$2)`, [rowan.memberId, users.manager.id]);
+    // The dialog is told where it stays, so it doesn't promise IT closes it.
+    expect((await options(rowan.memberId)).email).toMatchObject({ heldAt: 'Harbor Logistics' });
+    expect((await options(rowan.memberId)).ringCentral).toMatchObject({ heldAt: null });
+    await act(rowan.memberId, 'rehire', rowan.rehire);
+    expect(await db.query(`SELECT "companyEmail", "ringCentralNumber", status FROM member_company_accounts WHERE "memberId" = $1 ORDER BY "createdAt"`, [rowan.memberId])).toEqual([
+      { companyEmail: 'rowan.work@example.test', ringCentralNumber: null, status: 'KEPT_FOR_LOAD_BOARDS' },
+      { companyEmail: null, ringCentralNumber: '+1 202 555 0177', status: 'ACTIVE' }]);
+    expect(await closeKeys(rowan.memberId)).toEqual(['CLOSE_NUMBER']);
+  });
+
+  it('reads IT’s setup before the manager’s record, and lets a new email replace one that is someone else’s now', async () => {
+    const taylor = await dispatcher('Taylor');
+    // IT's setup has the number without an extension; the manager's record has an older email and another line's extension.
+    await db.query(`INSERT INTO existing_member_records ("memberId","addedBy","companyEmail","ringCentralNumber","ringCentralExtension") VALUES ($1,$2,'taylor.old@example.test','+1 202 555 0100','190')`, [taylor.memberId, users.manager.id]);
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '10 days' WHERE id = $1`, [taylor.memberId]);
+    await db.query(`UPDATE member_assignments SET "endedAt" = now() - interval '10 days' WHERE "memberId" = $1`, [taylor.memberId]);
+    let offered = await options(taylor.memberId);
+    expect(offered.email).toMatchObject({ value: 'taylor.work@example.test', restorable: true, notClosed: true });
+    // The extension comes with its number, never another line's.
+    expect(offered.ringCentral).toMatchObject({ number: '+1 202 555 0190', extension: null, notClosed: true });
+    await db.query(`UPDATE existing_member_records SET "ringCentralNumber" = '+1 202 555 0190' WHERE "memberId" = $1`, [taylor.memberId]);
+    expect((await options(taylor.memberId)).ringCentral).toMatchObject({ number: '+1 202 555 0190', extension: '190' });
+    // Their email went to someone else meanwhile: it isn't theirs to restore, and a new one doesn't need IT to close it.
+    const sam = await dispatcher('Sam');
+    await db.query(`UPDATE it_onboarding_requests SET "companyEmail" = 'taylor.work@example.test', "assignedRingCentralPhoneNumber" = '+1 202 555 0191' WHERE id = $1`, [sam.setupId]);
+    offered = await options(taylor.memberId);
+    expect(offered.email).toMatchObject({ restorable: false, why: expect.stringMatching(/taylor\.work@example\.test is someone else’s now \(Sam Fictional\)/) });
+    expect((await act(taylor.memberId, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: (await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`))[0].id,
+      email: 'RESTORE', ringCentral: 'RESTORE', businessSoftware: false, equipment: false }, 400)).body.message).toMatch(/someone else’s now/);
+    await act(taylor.memberId, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: (await db.query(`SELECT id FROM job_titles WHERE "nameKey" = 'dispatcher'`))[0].id,
+      email: 'NEW', ringCentral: 'RESTORE', businessSoftware: false, equipment: false });
+    expect((await returnSetup(taylor.memberId)).profile.returning.notClosed).toEqual(['RINGCENTRAL']);
+    // Sam's email isn't Taylor's to close.
+    expect(await db.query(`SELECT 1 FROM it_account_requests WHERE "memberId" = $1`, [taylor.memberId])).toHaveLength(0);
+  });
+
+  it('asks IT to close an IT-setup number a rehire doesn’t get back, with no manager’s record and no removal', async () => {
+    const taylor = await dispatcher('Taylor');
+    await db.query(`UPDATE dispatch_members SET status = 'LEFT', "leftAt" = now() - interval '10 days' WHERE id = $1`, [taylor.memberId]);
+    await db.query(`UPDATE member_assignments SET "endedAt" = now() - interval '10 days' WHERE "memberId" = $1`, [taylor.memberId]);
+    const offered = await options(taylor.memberId);
+    const [title] = await db.query(`INSERT INTO job_titles (name, "nameKey") VALUES ('Dispatcher', 'dispatcher') RETURNING id`);
+    await act(taylor.memberId, 'rehire', { firstDay: ahead(0), position: 'DISPATCHER', mcId: offered.rehire.previous.mcId, jobTitleId: title.id, email: 'RESTORE', ringCentral: 'NONE', businessSoftware: false, equipment: false });
+    const [request] = await db.query(`SELECT r.kind, a."ringCentralNumber", a."companyEmail" FROM it_account_requests r JOIN member_company_accounts a ON a.id = r."accountId" WHERE r."memberId" = $1`, [taylor.memberId]);
+    expect(request).toMatchObject({ kind: 'CLOSE', ringCentralNumber: '+1 202 555 0190', companyEmail: null });
   });
 
   it('undoes a leaving that interrupted a rehire: the rehire checklist carries on with what IT had removed added to it', async () => {

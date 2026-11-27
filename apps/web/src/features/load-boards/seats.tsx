@@ -54,7 +54,7 @@ export function LoadBoardsCard({ memberId, name, seats, accounts, companyEmails,
   return <Card>
     <CardHeader title="Load boards" description="Which DAT and Truckstop accounts they use." actions={canChange && <Button size="sm" variant="outline" onClick={() => setAdding(true)}><Plus aria-hidden="true" className="size-4" />Add seat</Button>} />
     <Table caption="Load board seats" className="mt-3 border-t border-border" rows={seats} rowKey={seat => seat.id} columns={[
-      { key: 'account', label: 'Account and sign-in', primary: true, cell: seat => <span className="block min-w-0"><span className="block">{seat.account}</span><span className="block break-all text-[13px] text-muted-foreground">{seat.signInEmail}</span></span> },
+      { key: 'account', label: 'Account and sign-in', primary: true, cell: seat => <span className="block min-w-0"><span className="block">{seat.account}{seat.placeholder ? null : <span className="text-muted-foreground"> · {PROVIDER[seat.provider]}</span>}</span><span className="block break-all text-[13px] text-muted-foreground">{seat.signInEmail}</span></span> },
       { key: 'status', label: 'Status', cell: seat => <SeatBadge status={seat.status} /> },
       { key: 'since', label: 'Since', nowrap: true, muted: true, hideBelow: 'md', cell: seat => <SeatDates seat={seat} /> },
       { key: 'note', label: 'Note', muted: true, hideBelow: 'lg', cell: seat => seatNote(seat) },

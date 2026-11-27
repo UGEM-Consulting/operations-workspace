@@ -76,8 +76,8 @@ export class UpdateExistingDto {
  @text() @ValidateIf(blankOr) @Matches(EXTENSION, { message: 'The extension should be digits, up to 6.' }) ringCentralExtension?: string;
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) datEmail?: string;
  @text() @ValidateIf(blankOr) @IsEmail({}, { message: 'A load board sign-in takes the sign-in email only, never a password.' }) @MaxLength(254) truckstopEmail?: string;
- @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) ndaSignedOn?: string;
- @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) sopSignedOn?: string;
+ @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) ndaSignedOn?: string;
+ @text() @ValidateIf(blankOr) @Matches(/^\d{4}-\d{2}-\d{2}$/) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) sopSignedOn?: string;
  // The company email or RingCentral number is someone else's and this person uses it too (section 35): recorded as shared.
  @IsOptional() @IsBoolean() shareCompanyEmail?: boolean;
  @IsOptional() @IsBoolean() shareRingCentral?: boolean;
@@ -164,7 +164,7 @@ export class PlaceMemberDto {
 /** A start date a manager found, or a correction of one, which needs a reason. */
 export class StartDateDto {
  @IsInt() @Min(1) version!: number;
- @Matches(/^\d{4}-\d{2}-\d{2}$/) startedOn!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) startedOn!: string;
  @text() @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 /** What a dispatch manager asks IT to set up for a support or updater (section 32), and a note for IT (never passwords). */
@@ -198,7 +198,7 @@ export class NoticeActionDto {
 }
 export class LeaveMemberDto {
  @IsInt() @Min(1) version!: number;
- @IsDateString({ strict: true }) leftAt!: string;
+ @IsDateString({ strict: true }, { message: 'Enter a real date.' }) leftAt!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the dispatcher left.' }) @MaxLength(500) reason!: string;
  // What IT does with their company email: forward new mail to the manager marking them as left for 30 days, or just
  // suspend it. An older page sends nothing, which suspends.
@@ -286,15 +286,15 @@ export class LeaveDto {
  @IsInt() @Min(1) version!: number;
  // Every driver they have, each with who covers them; an older page sends none and the drivers stay with them.
  @IsOptional() @IsArray() @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => CoverDto) covers?: CoverDto[];
- @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) firstDay!: string;
- @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the first day away.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) firstDay!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) backOn!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why they’re away.' }) @MaxLength(1000) reason!: string;
  @IsOptional() @IsIn(['FORWARD', 'AUTO_REPLY']) emailWhileAway?: 'FORWARD' | 'AUTO_REPLY';
  @IsOptional() @IsIn(['FORWARD', 'VOICEMAIL']) callsWhileAway?: 'FORWARD' | 'VOICEMAIL';
 }
 export class BackOnDto {
  @IsInt() @Min(1) version!: number;
- @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) backOn!: string;
+ @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Choose the day they’re back.' }) @IsDateString({ strict: true }, { message: 'Enter a real date.' }) backOn!: string;
  @text() @IsString() @MinLength(1, { message: 'Say why the return date changed.' }) @MaxLength(1000) reason!: string;
 }
 export class LeaveReasonDto {
@@ -319,12 +319,21 @@ export class OtherNameDto {
  @text() @IsString() @MinLength(1, { message: 'Enter the name.' }) @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) name!: string;
  @IsOptional() @IsUUID() mcId?: string;
 }
+/**
+ * One other name on Edit names (section 43): also a company that isn't one of our MCs, typed in (never with mcId), and why the
+ * name is needed (staff text). '' clears either; left out, an older page's, keeps what's recorded for that name. A file row or
+ * Add one person takes OtherNameDto only, so a company or note there is refused, never dropped.
+ */
+export class MemberOtherNameDto extends OtherNameDto {
+ @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z0-9][A-Za-z0-9 .,&'()/-]*$/, { message: 'Company names use Latin letters, digits and common punctuation.' }) companyName?: string;
+ @IsOptional() @text() @IsString() @MaxLength(200, { message: 'Keep the note to 200 characters.' }) note?: string;
+}
 /** Edit names: the legal name of someone added by hand ('' clears it), and the whole list of other names. */
 export class MemberNamesDto {
  @IsInt() @Min(1) version!: number;
  @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalFirstName?: string;
  @IsOptional() @text() @ValidateIf(blankOr) @IsString() @MaxLength(100) @Matches(/^[A-Za-z][A-Za-z .'-]*$/, { message: 'Names use Latin letters only.' }) legalLastName?: string;
- @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => OtherNameDto) otherNames!: OtherNameDto[];
+ @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => MemberOtherNameDto) otherNames!: MemberOtherNameDto[];
 }
 /** The last day of someone added as Left without one. */
 export class LeftDayDto {
@@ -359,6 +368,8 @@ export class RehireDto {
  @IsOptional() @IsUUID() supportsTeamId?: string;
  @IsIn(['RESTORE', 'NEW', 'NONE']) email!: 'RESTORE' | 'NEW' | 'NONE';
  @IsIn(['RESTORE', 'NEW', 'NONE']) ringCentral!: 'RESTORE' | 'NEW' | 'NONE';
+ /** What IT does with an old email it never closed that they don't get back (asked to close it): Archive, Suspend or Delete; an older page sends none (Suspend). */
+ @IsOptional() @IsIn(EMAIL_ACTIONS) closeEmailAction?: EmailAction;
  @IsBoolean() businessSoftware!: boolean;
  @IsBoolean() equipment!: boolean;
 }

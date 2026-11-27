@@ -41,6 +41,8 @@ export const TEAM_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search:
 export const MEMBER_DEFAULTS: Record<string, string> = { status: 'ACTIVE', search: '', mcId: '', teamId: '', leadId: '', position: '', jobTitleId: '', source: '', drivers: '', loadBoardAccountId: '', sort: '', direction: '', page: '1', pageSize: '20' };
 /** A date picked in a form as a moment that shows as the same calendar day everywhere. */
 export const middayIso = (day: string) => `${day}T12:00:00Z`;
+/** A picked day (YYYY-MM-DD, or an ISO time stored at its midday) as Nov 27, 2026, or Nov 27 with year false: read in UTC, so no viewer's time zone shows the next day. */
+export const dayLabel = (day: string, year = true) => new Date(middayIso(day.slice(0, 10))).toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(year ? { year: 'numeric' } : {}), timeZone: 'UTC' });
 export const IT_TASK_DEFAULTS: Record<string, string> = { view: 'open', search: '' };
 export const DRIVER_DEFAULTS: Record<string, string> = { status: 'OPEN', search: '' };
 export const PROMOTION_DEFAULTS: Record<string, string> = { status: 'PENDING', search: '' };

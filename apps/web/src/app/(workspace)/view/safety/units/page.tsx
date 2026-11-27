@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { OpenFile } from '@/features/view/files';
 import { NotAvailable, viewRead, ViewOnlyMark } from '@/features/view/ui';
+import { dayLabel } from '@/lib/navigation';
 export const metadata = { title: 'Units · view only' };
 
 interface ViewUnit { id: string; number: string; kind: 'SEMI' | 'PICKUP' | 'TRAILER'; trailerType: string | null; year: number | null; make: string | null; ownerKind: 'COMPANY' | 'OWNER' | 'DRIVER'; owner: string | null;
@@ -15,7 +16,7 @@ interface ViewUnit { id: string; number: string; kind: 'SEMI' | 'PICKUP' | 'TRAI
 const DEFAULTS: Record<string, string> = { status: 'TRUCKS', search: '' };
 const KIND: Record<string, string> = { SEMI: 'Semi truck', PICKUP: 'Pickup', TRAILER: 'Trailer' };
 const FILE: Record<string, string> = { REGISTRATION: 'Registration', INSPECTION: 'Inspection', PERMITS: 'Permits', OTHER: 'Other paper' };
-const day = (value: string) => new Date(`${value}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+const day = (value: string) => dayLabel(value);
 
 /** Safety › Units read only: trucks and trailers, whose they are, their dates and who drives them; unit papers when given. */
 export default async function ViewUnitsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {

@@ -85,8 +85,10 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
       ['WORK', 'Job title changed to Senior dispatcher'], ['DETAILS', 'Phone number added'], ['DETAILS', 'Phone number removed'], ['WORK', 'Sue Support started helping them'], ['DETAILS', 'Added by hand']]));
     expect(rileyTimeline.entries.find(entry => entry.title === 'Moved to Blue team at Northwind Freight')).toMatchObject({ by: 'Avery Quinn', body: 'Team change after the merge.' });
     // Newest first, counts follow the categories, and nothing names a value.
-    const times = rileyTimeline.entries.map(entry => entry.at);
+    // A day picked in a form shows as a date and sorts after what was clicked that day (US Eastern).
+    const times = rileyTimeline.entries.map(entry => (entry as { dateOnly?: boolean }).dateOnly ? new Date(`${entry.at.slice(0, 10)}T23:59:59.999-05:00`).toISOString() : entry.at);
     expect([...times].sort().reverse()).toEqual(times);
+    expect(rileyTimeline.entries.filter(entry => entry.at.endsWith('T12:00:00.000Z')).every(entry => (entry as { dateOnly?: boolean }).dateOnly)).toBe(true);
     expect(rileyTimeline.counts.WORK).toBe(rileyTimeline.entries.filter(entry => entry.category === 'WORK').length);
     // Random ids may hold any digits, so only what History shows is checked.
     expect(JSON.stringify(rileyTimeline.entries.map((entry: Row) => [entry.title, entry.by, entry.body]))).not.toMatch(/@|555|Work cell/);
@@ -108,6 +110,27 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
     expect(JSON.stringify(history)).not.toMatch(/@|Used for YouPro/);
   });
 
+  it('keeps a removal scheduled for the last day after Remove access now makes it due today', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
+    const lastDay = addDays(usDay('latest'), 10);
+    await post('manager', `dispatch/members/${riley}/leave`, { version: await version(riley), leftAt: `${lastDay}T12:00:00.000Z`, reason: 'Moving to another company.' });
+    await post('manager', `dispatch/members/${riley}/remove-access`, { version: await version(riley), reason: 'Asked to stop working today.' });
+    const shown = new Date(`${lastDay}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    expect(await titles(riley)).toEqual(expect.arrayContaining([`IT removal scheduled for ${shown}`]));
+    expect(await titles(riley)).not.toContain('IT asked to remove access');
+  });
+
+  it('names the last day as it stood when the removal opened, after an earlier change', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
+    await post('manager', `dispatch/members/${riley}/leave`, { version: await version(riley), leftAt: `${addDays(usDay('latest'), 10)}T12:00:00.000Z`, reason: 'Moving to another company.' });
+    const changed = addDays(usDay('latest'), 12);
+    await post('manager', `dispatch/members/${riley}/last-day`, { version: await version(riley), lastDay: `${changed}T12:00:00.000Z`, reason: 'Two more days agreed.' });
+    // As when a support's first company email opens their removal during the notice: opened after the change.
+    await db.query(`UPDATE it_removal_requests SET "createdAt" = now() + interval '1 minute' WHERE "memberId" = $1`, [riley]);
+    const shown = new Date(`${changed}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    expect(await titles(riley)).toContain(`IT removal scheduled for ${shown}`);
+  });
+
   it('records a hand-over on everyone it touches, and keeps the whole notice after they leave', async () => {
     const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
     const drew = await addOne('Drew', 'Calloway'), morgan = await addOne('Morgan', 'Pike');
@@ -122,7 +145,10 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
       'Their company email handed over to Drew Calloway', 'IT asked to remove access']));
     expect((await timeline(riley)).entries.find(entry => entry.title === 'Left')).toMatchObject({ category: 'AWAY', body: 'Moved to another company.' });
     expect((await timeline(riley)).entries.find(entry => entry.title.startsWith('Last day changed to'))?.by).toBeTruthy();
-    expect(rileyTitles).toEqual(expect.arrayContaining([expect.stringMatching(/^IT removal scheduled for /)]));
+    // The notice and its removal keep the last day as given, not the one it was changed to.
+    const given = rileyTitles.find(title => title.startsWith('Notice given: last day '))!.slice('Notice given: last day '.length);
+    expect(rileyTitles).toContain(`IT removal scheduled for ${given}`);
+    expect(rileyTitles).not.toContain(`Last day changed to ${given}`);
     // Morgan's use stays on Riley's History from when it began, and reaches Drew's only when Drew became the owner.
     expect(rileyTitles).toEqual(expect.arrayContaining(['Morgan Pike started using their company email']));
     const drewTitles = await titles(drew);

@@ -16,7 +16,7 @@ import { Table } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
-import { DISPATCH_DRIVER_DEFAULTS } from '@/lib/navigation';
+import { DISPATCH_DRIVER_DEFAULTS, dayLabel } from '@/lib/navigation';
 import { useToday } from '@/features/safety/driver-documents';
 import { driverTypes, licenseTypes, type DriverType, type LicenseType } from '@/features/safety/types';
 
@@ -101,7 +101,7 @@ export function DispatchDrivers({ items, filters, options, teamLead }: { items: 
       <Table caption={filters.status === 'READY' ? 'Drivers ready to assign' : 'Drivers'} className="border-t border-border" rows={visible} rowKey={row => row.id} columns={[
         { key: 'driver', label: 'Driver', primary: true, cell: row => <Person name={name(row)} secondary={row.phone} /> },
         { key: 'type', label: 'Type', hideBelow: 'lg', cell: row => `${driverTypes[row.driverType] ?? row.driverType}${row.licenseType ? ` · ${licenseTypes[row.licenseType] ?? row.licenseType}` : ''}` },
-        { key: 'work', label: 'MC and dispatcher', hideBelow: 'md', cell: row => row.assignment ? <>{row.assignment.dispatcher}{row.assignment.covering && <span className="block text-[13px] text-muted-foreground">Covering for {row.assignment.covering.for} until {new Date(`${row.assignment.covering.until}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</span>}<span className="block text-[13px] text-muted-foreground">{row.assignment.mc}{row.assignment.team ? ` · ${row.assignment.team}` : ''}</span></>
+        { key: 'work', label: 'MC and dispatcher', hideBelow: 'md', cell: row => row.assignment ? <>{row.assignment.dispatcher}{row.assignment.covering && <span className="block text-[13px] text-muted-foreground">Covering for {row.assignment.covering.for} until {dayLabel(row.assignment.covering.until, false)}</span>}<span className="block text-[13px] text-muted-foreground">{row.assignment.mc}{row.assignment.team ? ` · ${row.assignment.team}` : ''}</span></>
           : <span className="text-muted-foreground">Not assigned</span> },
         { key: 'truck', label: 'Truck', hideBelow: 'xl', muted: true, cell: row => row.assignment?.truck ? `${row.assignment.truck}${row.assignment.trailer ? ` · ${row.assignment.trailer}` : ''}` : '—' },
         { key: 'cleared', label: 'Cleared', muted: true, nowrap: true, hideBelow: 'lg', cell: row => <><LocalTime iso={row.clearedAt} format="date" />{row.clearedBy ? ` by ${row.clearedBy}` : ''}</> },

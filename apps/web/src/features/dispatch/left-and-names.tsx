@@ -41,44 +41,59 @@ export function NamesCard({ member, onEdit }: { member: MemberProfile; onEdit?: 
     <CardBody><DescriptionList layout="rows" items={[
       { label: 'American name', value: `${member.firstName} ${member.lastName}` },
       ...(handAdded ? [{ label: 'Legal name', value: legalName(member) || null, emptyLabel: 'Not recorded' }] : []),
-      { label: 'Other names', value: others.length ? <ul className="grid gap-1.5">{others.map(item => <li key={item.id} className="flex flex-wrap items-baseline gap-x-2"><span>{item.name}</span><span className="text-[13px] text-muted-foreground">{item.mc ?? 'earlier name'}</span></li>)}</ul> : null, emptyLabel: 'None recorded' }]} />
+      // Where each was used (OtherNamesWhereScreen): many are still in use, so a name with no place isn't called an earlier one.
+      { label: 'Other names', value: others.length ? <ul className="grid gap-2.5">{others.map(item => <li key={item.id} className="grid gap-0.5">
+        <span className="flex flex-wrap items-baseline gap-x-2"><span>{item.name}</span><span className="text-[13px] text-muted-foreground">{item.mc ? `at ${item.mc}` : item.companyName ? `at ${item.companyName} · another company` : 'Place not recorded'}</span></span>
+        {item.note && <span className="text-[13px] text-muted-foreground">{item.note}</span>}</li>)}</ul> : null, emptyLabel: 'None recorded' }]} />
     </CardBody></Card>;
 }
 
-/** Edit names (OtherNamesEditScreen): legal name for someone added by hand, and the whole list of other names. */
+const OTHER = 'OTHER';
+interface NameDraft { name: string; mcId: string; companyName: string; note: string }
+/** Edit names (OtherNamesEditScreen, section 43): legal name for someone added by hand, and the whole list of other names. */
 export function NamesDialog({ member, mcs, onClose }: { member: MemberProfile; mcs: Choice[]; onClose: () => void }) {
   const router = useRouter(), toast = useToast(), handAdded = !!member.existing;
-  const [names, setNames] = useState(() => (member.otherNames ?? []).map(item => ({ name: item.name, mcId: item.mcId ?? '' })));
+  // Used at: '' for not recorded, an MC's id, or OTHER for another company typed in (section 43).
+  const [names, setNames] = useState(() => (member.otherNames ?? []).map(item => ({ name: item.name, mcId: item.mcId ?? (item.companyName ? OTHER : ''), companyName: item.companyName ?? '', note: item.note ?? '' })));
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const change = (index: number, patch: Partial<{ name: string; mcId: string }>) => setNames(list => list.map((item, at) => at === index ? { ...item, ...patch } : item));
+  const change = (index: number, patch: Partial<NameDraft>) => setNames(list => list.map((item, at) => at === index ? { ...item, ...patch } : item));
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return;
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
+    // The API reads '' as no place, so a blank company (spaces pass the browser's required check) is stopped here.
+    if (names.some(item => item.name.trim() && item.mcId === OTHER && !item.companyName.trim())) { setError('Enter the company’s name, or choose where the name was used.'); return; }
     setBusy(true); setError('');
     try {
       await mutate(`dispatch/members/${member.id}/names`, 'POST', { version: member.version, ...(handAdded ? { legalFirstName: form.legalFirstName ?? '', legalLastName: form.legalLastName ?? '' } : {}),
-        otherNames: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId ? { mcId: item.mcId } : {}) })) });
+        // Company and note always go, '' to clear, since one left out keeps what's recorded (the API reads an older page that way).
+        otherNames: names.filter(item => item.name.trim()).map(item => ({ name: item.name.trim(), ...(item.mcId && item.mcId !== OTHER ? { mcId: item.mcId } : {}),
+          companyName: item.mcId === OTHER ? item.companyName.trim() : '', note: item.note.trim() })) });
       toast({ title: 'Names saved' }); onClose(); router.refresh();
     } catch (failure) { setError(errorMessage(failure, 'Unable to save the names. Your entries have been kept.')); }
     finally { setBusy(false); }
   }
-  const usedAt = [{ value: '', label: 'Not known' }, ...mcs.map(mc => ({ value: mc.id, label: mc.archived ? `${mc.name} (archived)` : mc.name }))];
+  const usedAt = [{ value: '', label: 'Place not recorded' }, ...mcs.map(mc => ({ value: mc.id, label: mc.archived ? `${mc.name} (archived)` : mc.name })), { value: OTHER, label: 'Another company…' }];
   return <Dialog open onClose={onClose} busy={busy} size="lg" title={`Edit ${member.firstName} ${member.lastName}’s names`} description="What you know now. Nobody is messaged."
     actions={<Button type="submit" form="member-names" disabled={busy}>{busy ? 'Saving…' : 'Save names'}</Button>}>
     <form id="member-names" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
       {handAdded ? <><div className="grid gap-4 sm:grid-cols-2"><Input name="legalFirstName" label="Legal first name" optional maxLength={100} defaultValue={member.existing?.legalFirstName ?? ''} width="full" /><Input name="legalLastName" label="Legal last name" optional maxLength={100} defaultValue={member.existing?.legalLastName ?? ''} width="full" /></div>
         <p className="text-[13px] text-muted-foreground">{member.firstName} was added by hand, so the legal name is edited here. For someone who came through onboarding it comes from their application, and only an administrator changes it, with Correct details and a reason.</p></>
         : <p className="text-[13px] text-muted-foreground">Their legal name comes from their application. An administrator changes it with Correct details, with a reason.</p>}
-      <Card><CardHeader title="Other names" description="Other American names they use or used, so search finds them." />
+      <Card><CardHeader title="Other names" description="Other American names they use or used, here or at another company, so search finds them." />
         <ul className="mt-3 divide-y divide-border border-t border-border">
-          {names.map((item, index) => <li key={index} className="flex flex-wrap items-end gap-3 px-4 py-3 sm:px-5">
-            <Input label="Name" value={item.name} maxLength={100} required onChange={event => change(index, { name: event.target.value })} width="full" className="min-w-0 flex-[2_1_200px]" />
-            <Select label="Used at" value={item.mcId} onChange={event => change(index, { mcId: event.target.value })} options={usedAt} width="full" className="min-w-0 flex-[1_1_160px]" />
-            <Button type="button" size="sm" variant="ghost" onClick={() => setNames(list => list.filter((_, at) => at !== index))}><X aria-hidden="true" className="size-4" />Remove<span className="sr-only"> {item.name}</span></Button>
+          {/* OtherNamesAnotherCompanyScreen: name and where side by side, the company when it's another one, then why. */}
+          {names.map((item, index) => <li key={index} className="grid gap-3 px-4 py-3 sm:px-5">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+              <Input label="Name" value={item.name} maxLength={100} required onChange={event => change(index, { name: event.target.value })} width="full" />
+              <Select label="Used at" value={item.mcId} onChange={event => change(index, { mcId: event.target.value })} options={usedAt} width="full" />
+            </div>
+            {item.mcId === OTHER && <Input label="Company name" value={item.companyName} maxLength={100} required hint="A company that isn’t one of our MCs." onChange={event => change(index, { companyName: event.target.value })} width="full" />}
+            <Input label="Why this name" optional value={item.note} maxLength={200} hint={item.mcId === OTHER ? 'For example, the name on a load board account, or the name brokers know them by.' : undefined} onChange={event => change(index, { note: event.target.value })} width="full" />
+            <div className="flex justify-end"><Button type="button" size="sm" variant="ghost" onClick={() => setNames(list => list.filter((_, at) => at !== index))}><X aria-hidden="true" className="size-4" />Remove<span className="sr-only"> {item.name}</span></Button></div>
           </li>)}
-          <li className="px-4 py-3 sm:px-5"><Button type="button" size="sm" variant="outline" disabled={names.length >= 10} onClick={() => setNames(list => [...list, { name: '', mcId: '' }])}><Plus aria-hidden="true" className="size-4" />Add another name</Button></li>
+          <li className="px-4 py-3 sm:px-5"><Button type="button" size="sm" variant="outline" disabled={names.length >= 10} onClick={() => setNames(list => [...list, { name: '', mcId: '', companyName: '', note: '' }])}><Plus aria-hidden="true" className="size-4" />Add another name</Button></li>
         </ul></Card>
-      <p className="text-[13px] text-muted-foreground">Latin letters only. A change is recorded with who made it, never in alerts.</p>
+      <p className="text-[13px] text-muted-foreground">Latin letters only. The note is for staff: never health, family or other private details. A change is recorded with who made it.</p>
       <Notice message={error} error />
     </fieldset></form>
   </Dialog>;

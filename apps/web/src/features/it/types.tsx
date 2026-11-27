@@ -5,7 +5,7 @@ export type TaskStatus=typeof taskStatuses[number];
 export const taskOutcomes=[...taskStatuses,'NOT_NEEDED'] as const;
 export type TaskOutcome=typeof taskOutcomes[number];
 // Someone coming back (section 41): what IT restores and why.
-export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:'ARCHIVED'|'SUSPENDED'|'DELETED'|null;emailDeletedOn:string|null;by:string;}
+export interface ReturningProfile {kind:'UNDO'|'REHIRE';leftOn:string|null;firstDay:string|null;emailWas:'ARCHIVED'|'SUSPENDED'|'DELETED'|null;emailDeletedOn:string|null;by:string;notClosed?:('EMAIL'|'RINGCENTRAL')[];}
 export interface ItProfile {returning?:ReturningProfile;assists?:string|null;legalFirstName:string|null;legalLastName:string|null;preferredAmericanFirstName:string|null;preferredAmericanLastName:string|null;proposedDisplayName:string|null;personalPhoneNumber:string|null;workPhoneNumber:string|null;personalEmail:string|null;mcName:string;teamLead:string;jobTitle:string;}
 // purpose SUPPORT: a support's or updater's setup (section 32), with only the tasks asked for, who asked and their note.
 export interface ItRequest {id:string;applicationId:string|null;purpose?:'DISPATCHER'|'SUPPORT'|'REHIRE'|'RESTORE';restoreKeys?:string[];retiredCompanyEmail?:string|null;retiredRingCentralNumber?:string|null;note?:string|null;requestedByName?:string|null;profile:ItProfile;version:number;status:TaskStatus;assignedRingCentralPhoneNumber:string|null;companyEmail:string|null;ringCentralExtension?:string|null;datEmail?:string|null;truckstopEmail?:string|null;profilePhoto?:boolean;workPhoneVerifiedAt:string|null;completedAt:string|null;cancelledAt?:string|null;updatedAt:string;}

@@ -62,9 +62,9 @@ async function lastPlace(em: EntityManager, id: string): Promise<{ mcName: strin
 /** Stored at midday UTC, as dates picked in forms are, so it shows as the same day in every US time zone. */
 const midday = (date: string) => new Date(`${date}T12:00:00Z`);
 /** Other names in the order given: each a millisecond after the one before, since rows saved together would share a time. */
-async function saveOtherNames(em: EntityManager, memberId: string, names: { name: string; mcId: string | null }[], addedBy: string) {
+async function saveOtherNames(em: EntityManager, memberId: string, names: { name: string; mcId: string | null; companyName?: string | null; note?: string | null }[], addedBy: string) {
  const at = Date.now();
- for (const [index, item] of names.entries()) await em.getRepository(MemberOtherName).save({ memberId, name: item.name, mcId: item.mcId, addedBy, createdAt: new Date(at + index) });
+ for (const [index, item] of names.entries()) await em.getRepository(MemberOtherName).save({ memberId, name: item.name, mcId: item.mcId, companyName: item.companyName ?? null, note: item.note ?? null, addedBy, createdAt: new Date(at + index) });
 }
 /**
  * The last day of someone added as Left without one, for Add last day and for a file that fills it in. Their last MC and team
@@ -1003,17 +1003,22 @@ export class ExistingDispatchersService {
     if (!record) { if (first || last) throw new BadRequestException('Their legal name comes from their application. An administrator changes it with Correct details, with a reason.'); }
     else if (first !== record.legalFirstName || last !== record.legalLastName) { record.legalFirstName = first; record.legalLastName = last; await em.save(record); fields.push('legalName'); }
    }
-   const own = listNameKey(`${member.firstName} ${member.lastName}`), wanted: { name: string; mcId: string | null }[] = [];
+   const current = await em.getRepository(MemberOtherName).findBy({ memberId: id });
+   const own = listNameKey(`${member.firstName} ${member.lastName}`), wanted: { name: string; mcId: string | null; companyName: string | null; note: string | null }[] = [];
    for (const item of dto.otherNames) {
     const name = item.name.replace(/\s+/g, ' ').trim();
     if (listNameKey(name) === own || wanted.some(other => listNameKey(other.name) === listNameKey(name))) continue;
-    wanted.push({ name, mcId: item.mcId ?? null });
+    // Used at one of our MCs or at another company typed in (section 43), never both. A company or note the request leaves out
+    // (an older page), or sends as null, keeps what's recorded for that name; an MC chosen instead replaces a company.
+    const recorded = current.find(row => listNameKey(row.name) === listNameKey(name));
+    const companyName = item.companyName != null ? item.companyName.replace(/\s+/g, ' ').trim() || null : item.mcId ? null : recorded?.companyName ?? null;
+    if (item.mcId && companyName) throw new BadRequestException('Choose one of our MCs or type another company, not both.');
+    wanted.push({ name, mcId: item.mcId ?? null, companyName, note: item.note != null ? item.note.trim() || null : recorded?.note ?? null });
    }
    const mcIds = [...new Set(wanted.flatMap(item => item.mcId ?? []))];
    if (mcIds.length && (await em.query(`SELECT count(*)::integer AS n FROM mcs WHERE id = ANY($1)`, [mcIds]))[0].n !== mcIds.length) throw new BadRequestException('Choose an MC from the list.');
    // Names saved together share a time, so their order isn't fixed: the same names in any order are the same list.
-   const listKey = (items: { name: string; mcId: string | null }[]) => items.map(item => `${item.name}|${item.mcId ?? ''}`).sort().join('\n');
-   const current = await em.getRepository(MemberOtherName).findBy({ memberId: id });
+   const listKey = (items: { name: string; mcId: string | null; companyName: string | null; note: string | null }[]) => items.map(item => [item.name, item.mcId ?? '', item.companyName ?? '', item.note ?? ''].join('|')).sort().join('\n');
    const sameList = listKey(current) === listKey(wanted);
    if (!sameList) {
     if (current.length) await em.getRepository(MemberOtherName).delete({ memberId: id });
