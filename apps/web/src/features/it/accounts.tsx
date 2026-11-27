@@ -18,7 +18,7 @@ import { Badge, StatusBadge, statusLabel } from '@/components/ui/status-badge';
 import { PageHeader } from '@/components/workspace-ui';
 import { errorMessage, mutate } from '@/lib/client-api';
 import { readApi } from '@/features/onboarding/types';
-import { actionWord, doneFor, EMAIL_DONE_OPTIONS, emailStepText, type EmailAction, type EmailDone } from './email-words';
+import { actionWord, emailDoneOptions, startDone, emailStepText, type EmailAction, type EmailDone } from './email-words';
 
 // IT requests about company accounts (Design System section 33: ItCloseAccountTaskScreen, and a move's new accounts).
 export interface AccountRequestDetail {
@@ -69,7 +69,7 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
     description: task.key === 'CLOSE_EMAIL' && request.emailAction && closedEmail ? emailStepText(closedEmail, request.emailAction, request.emailAfter === 'FORWARD', request.forwardToName)
       : task.key === 'CLOSE_EMAIL' && request.emailAfter === 'FORWARD' ? `${task.description} Forward new email to ${request.forwardToName ?? 'the manager'} for 30 days.` : task.description,
     meta: task.status !== 'PENDING' && <>Updated <LocalTime iso={task.updatedAt} /></>,
-    action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setEditing(task); setStatus(task.status); setEmailDone(request.emailDone ?? (request.emailAction ? doneFor(request.emailAction) : '')); setError(''); }}>Update<span className="sr-only">: {task.label}</span></Button> }));
+    action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => { setEditing(task); setStatus(task.status); setEmailDone(startDone(request.emailDone, request.emailAction, request.emailAfter === 'FORWARD')); setError(''); }}>Update<span className="sr-only">: {task.label}</span></Button> }));
   const title = move ? `New accounts for ${profile.displayName}` : `Close ${profile.displayName}’s ${profile.fromMc ?? ''} account`.replace('  ', ' ');
   return <div className="space-y-6">
     <PageCrumb label={profile.displayName} />
@@ -103,7 +103,7 @@ export function ItAccountRequestView({ initial }: { initial: AccountRequestDetai
     {editing && <Dialog open onClose={() => setEditing(null)} title={`Update ${editing.label}`} description="Record the outcome of your manual work." busy={pending === 'task'} actions={<Button form="it-account-editor" type="submit">{pending === 'task' ? 'Saving…' : 'Save task'}</Button>}>
       <form id="it-account-editor" onSubmit={update} className="space-y-4">
         <Select label="Status" name="status" value={status} onChange={event => setStatus(event.target.value)} width="sm" options={OUTCOMES.map(value => ({ value, label: statusLabel(value) }))} />
-        {needsEmailDone && request.emailAction && <RadioGroup name="emailDone" label="What you did with the email" value={emailDone} onChange={value => setEmailDone(value as EmailDone)} options={EMAIL_DONE_OPTIONS}
+        {needsEmailDone && request.emailAction && <RadioGroup name="emailDone" label="What you did with the email" value={emailDone} onChange={value => setEmailDone(value as EmailDone)} options={emailDoneOptions(request.emailAfter === 'FORWARD')}
           hint={`${request.managerName ?? 'The manager'} chose ${actionWord(request.emailAction)}. Needed to mark the task completed.`} />}
         <Textarea label="Notes" name="notes" optional defaultValue={editing.notes} rows={3} hint="Never passwords." />
         <Notice message={error} error />

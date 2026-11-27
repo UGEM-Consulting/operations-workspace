@@ -14,6 +14,8 @@ export function Pagination({ page, pageCount, pageSize, total, href, label }: { 
   const first = total ? (page - 1) * pageSize + 1 : 0;
   const last = Math.min(page * pageSize, total);
   const count = Math.max(pageCount, 1);
+  // An empty list says so on its own; nothing to page through.
+  if (!total) return null;
   return <nav aria-label={label} className="flex flex-wrap items-center justify-between gap-3">
     <p className="text-[13px] text-muted-foreground">Showing <strong className="font-medium tabular-nums text-foreground">{first}–{last}</strong> of <strong className="font-medium tabular-nums text-foreground">{total}</strong></p>
     {count > 1 && <ul className="flex items-center gap-0.5">

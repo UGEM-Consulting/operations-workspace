@@ -198,6 +198,8 @@ integration('Shared accounts and search (disposable PostgreSQL)', () => {
     const everywhere = (await agents.manager.get('/api/search').query({ q: 'rile' }).set(headers).expect(200)).body;
     expect(everywhere.groups.map((group: Row) => group.key)).toEqual(['dispatchers']);
     expect(everywhere.groups[0].items[0]).toEqual({ id: riley, name: 'Riley Santos', meta: 'Dispatcher · team lead · Red team', status: { label: 'Active', tone: 'success' }, href: `/dispatch/dispatchers/${riley}` });
+    // A name, a page and a status only: never the detail that matched (Jesse matched by another name).
+    expect(JSON.stringify(everywhere)).not.toMatch(/Other name|Riley Lin/);
     await agents.it.get('/api/search').query({ q: 'rile' }).set(headers).expect(403);
   });
 

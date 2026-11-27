@@ -24,7 +24,7 @@ import { errorMessage, mutate } from '@/lib/client-api';
 import { SignIn } from '@/features/dispatch/sign-in';
 import { readApi } from '@/features/onboarding/types';
 import { type ItTask, type NumberOutcome, RINGCENTRAL_OFF, type RemovalDetail, type RingCentralOff, taskDone, taskOutcomes, type TaskOutcome } from './types';
-import { actionWord, doneFor, doneWord, EMAIL_DONE_OPTIONS, emailAfterText, emailStepText, type EmailDone } from './email-words';
+import { actionWord, doneWord, emailDoneOptions, startDone, emailAfterText, emailStepText, type EmailDone } from './email-words';
 
 // Before section 40 IT recorded what happened to the number; an older API still asks for it, and finished removals show it.
 const NUMBER_OUTCOMES:{value:NumberOutcome;label:string}[]=[{value:'KEPT',label:'Kept for the next dispatcher'},{value:'FORWARDED',label:'Forwarded to the team'},{value:'RELEASED',label:'Released'}];
@@ -64,7 +64,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
  const needsTicks=current&&!scheduled&&editing?.key==='RINGCENTRAL'&&!!profile.ringCentralNumber&&!numberHanded;
  const due=!closed&&!scheduled&&request.dueOn<=today();
  async function refresh(){setPending('refresh');try{setData(await readApi<RemovalDetail>(`it/removals/${request.id}`));toast({title:'Request refreshed'});}catch(error){toast({tone:'danger',title:'Request not refreshed',description:errorMessage(error,'Unable to refresh.')});}finally{setPending(null);}}
- function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setOutcome(request.numberOutcome??'');setEmailDone(request.emailDone??(request.emailAction?doneFor(request.emailAction):''));setTurnedOff(request.ringCentralOff??[]);setTaskError('');}
+ function open(task:ItTask){setEditing(task);setTaskStatus(task.status);setOutcome(request.numberOutcome??'');setEmailDone(startDone(request.emailDone,request.emailAction,request.emailAfter==='FORWARD'));setTurnedOff(request.ringCentralOff??[]);setTaskError('');}
  async function update(event:React.FormEvent<HTMLFormElement>){
   event.preventDefault();if(!editing||busy)return;
   const notes=String(new FormData(event.currentTarget).get('notes')??'');
@@ -174,7 +174,7 @@ export function ItRemoval({initial}:{initial:RemovalDetail}){
    options={taskOutcomes.filter(status=>(status!=='NOT_NEEDED'||editing.optional)&&(!scheduled||PLANNING.includes(status))).map(status=>({value:status,label:statusLabel(status)}))}/>
   {needsEmailDone&&request.emailAction&&<>
    <p className="rounded-md border border-border bg-muted px-4 py-3 text-[13px] leading-5"><span className="font-semibold">{recordedBy??'The manager'} chose {actionWord(request.emailAction)}</span>{request.emailAfter==='FORWARD'?', and to get new email for 30 days.':'.'}</p>
-   <RadioGroup name="emailDone" label="What you did with the account" value={emailDone} onChange={value=>setEmailDone(value as EmailDone)} options={EMAIL_DONE_OPTIONS} hint={`Starts at what the manager chose. Needed to mark the task completed.${request.emailDone?` Recorded so far: ${doneWord(request.emailDone)}.`:''}`}/>
+   <RadioGroup name="emailDone" label="What you did with the account" value={emailDone} onChange={value=>setEmailDone(value as EmailDone)} options={emailDoneOptions(request.emailAfter==='FORWARD')} hint={`Starts at what the manager chose. Needed to mark the task completed.${request.emailDone?` Recorded so far: ${doneWord(request.emailDone)}.`:''}`}/>
   </>}
   {needsTicks&&<fieldset className="grid gap-2"><legend className="mb-1 text-sm font-medium">Turned off</legend>
    {RINGCENTRAL_OFF.map(item=><Checkbox key={item.value} name="ringCentralOff" value={item.value} label={item.label} checked={turnedOff.includes(item.value)} onChange={event=>setTurnedOff(list=>event.target.checked?[...list,item.value]:list.filter(value=>value!==item.value))}/>)}

@@ -245,7 +245,7 @@ export const LEAVE_CHECKLIST: readonly {key:string;label:string;suspend:string;r
  {key:'BUSINESS_SOFTWARE',label:'Business software',suspend:'Sign them out of business apps they use alone. Shared sign-ins stay as they are. Never store credentials in notes.',restore:'Give back the app access you signed out.',optional:true},
 ];
 export type LeaveKind='SUSPEND'|'RESTORE';
-export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;}
+export interface LeaveProfile {displayName:string;position:string;companyEmail:string|null;ringCentralNumber:string|null;mcName:string|null;teamName:string|null;firstDay:string;backOn:string;emailWhileAway:'FORWARD'|'AUTO_REPLY'|null;callsWhileAway:'FORWARD'|'VOICEMAIL'|null;forwardToName:string|null;datEmail:string|null;truckstopEmail:string|null;teamLead?:boolean;/** Others who use their email or number (section 35), so IT keeps it on instead of suspending it. Older rows have none. */sharedWith?:{email:string[];number:string[]};}
 export function leaveTaskDone(task:Pick<ItLeaveTask,'key'|'status'>){return task.status==='COMPLETED'||(task.status==='NOT_NEEDED'&&LEAVE_CHECKLIST.some(item=>item.key===task.key&&item.optional));}
 @Entity('it_leave_requests')
 export class ItLeaveRequest {

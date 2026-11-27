@@ -44,7 +44,7 @@ export function Applications({data,summary,filters}:{data:ApplicationList;summar
    ]} empty={filtered
     ?<EmptyState compact title="Nothing matches these filters" description="Try another status or search." action={<Button asChild variant="outline"><Link href={PATH}>Clear filters</Link></Button>}/>
     :<EmptyState compact title="Nothing is waiting for review" description="New submissions and resubmissions appear here. See All for every application."/>}
-   footer={<Pagination label="Application pages" page={data.page} pageCount={data.pageCount} pageSize={data.pageSize} total={data.total} href={pageLink}/>}/>
+   footer={data.total>0&&<Pagination label="Application pages" page={data.page} pageCount={data.pageCount} pageSize={data.pageSize} total={data.total} href={pageLink}/>}/>
   </Card>
  </div>;
 }

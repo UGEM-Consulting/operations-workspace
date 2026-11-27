@@ -12,6 +12,7 @@ import { BackOnDto, CoversDto, LeaveDto, LeaveReasonDto, LeaveVersionDto } from 
 import { changeCovers, coverOptions, endCovers, leaveCovers, lockLeaveDrivers, planCovers, sameLeaveDrivers, startCovers } from './leave-covers';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord, type LeaveEnd, MemberLeave, positionLabel, Team } from './dispatch.entity';
 import { memberPlace, onNotice } from './create-member';
+import { memberSharing } from './shared-accounts';
 export { onLeave, onLeaveSql } from './create-member';
 import { lockAccount, syncSignIns, turnOffAccount } from './lead-sign-in';
 
@@ -251,11 +252,13 @@ export class LeaveService {
   return { companyEmail, ringCentralNumber, datEmail, truckstopEmail, keys };
  }
  private async profile(em: EntityManager, member: DispatchMember, leave: MemberLeave, accounts: Awaited<ReturnType<LeaveService['accounts']>>, recorder: User): Promise<LeaveProfile> {
-  const place = await memberPlace(em, member.id);
+  const [place, sharing] = await Promise.all([memberPlace(em, member.id), memberSharing(em, member.id)]);
+  const usedBy = (kind: 'EMAIL' | 'RINGCENTRAL') => sharing.usedBy.filter(item => item.kind === kind).flatMap(item => item.users.map(user => user.name));
   return { displayName: `${member.firstName} ${member.lastName}`.trim(), position: positionLabel(member), companyEmail: accounts.companyEmail, ringCentralNumber: accounts.ringCentralNumber,
    mcName: place.mcName, teamName: place.teamName, firstDay: leave.firstDay, backOn: leave.backOn, emailWhileAway: leave.emailWhileAway, callsWhileAway: leave.callsWhileAway,
    forwardToName: leave.forwardTo ? `${recorder.firstName} ${recorder.lastName}` : null, datEmail: accounts.datEmail, truckstopEmail: accounts.truckstopEmail,
-   teamLead: await em.getRepository(Team).existsBy({ leadMemberId: member.id, archivedAt: IsNull() }) };
+   teamLead: await em.getRepository(Team).existsBy({ leadMemberId: member.id, archivedAt: IsNull() }),
+   ...(sharing.usedBy.length ? { sharedWith: { email: usedBy('EMAIL'), number: usedBy('RINGCENTRAL') } } : {}) };
  }
  private openLeave(em: EntityManager, memberId: string, lock = false) {
   return em.getRepository(MemberLeave).findOne({ where: { memberId, endedAt: IsNull() }, ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}) });

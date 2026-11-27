@@ -12,7 +12,7 @@ export default async function AddExistingPage() {
   const options = await readResponse<ExistingOptions>(response, 'lists', existingOptionsSchema);
   return <div className="space-y-6">
     <PageCrumb label="Add existing dispatchers" />
-    <PageHeader title="Add existing dispatchers" description="For people already working here. They become Active straight away, with no application and no IT setup, and nobody is messaged." />
+    <PageHeader title="Add existing dispatchers" description="For people who work here now, added as Active, and for people who left, added as Left. No application and no IT setup, and nobody is messaged." />
     <AddExisting options={options} />
   </div>;
 }

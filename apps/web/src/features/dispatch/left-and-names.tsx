@@ -1,5 +1,6 @@
 'use client';
 import { useRouter } from 'next/navigation';
+import { phoneLabel } from '@/lib/phone';
 import { useState } from 'react';
 import { Pencil, Plus, X } from 'lucide-react';
 import { Alert, Notice } from '@/components/ui/alert';
@@ -144,7 +145,7 @@ export function CloseAccountsDialog({ member, onClose }: { member: MemberProfile
   return <Dialog open onClose={onClose} busy={busy} title={`Ask IT to close ${member.firstName} ${member.lastName}’s accounts`} description="IT gets a removal checklist, due today, and you get a portal notice when it’s done."
     actions={<Button type="submit" form="close-accounts" disabled={busy}>{busy ? 'Sending…' : 'Ask IT'}</Button>}>
     <form id="close-accounts" onSubmit={submit} className="space-y-4"><fieldset disabled={busy} className="min-w-0 space-y-4">
-      <DescriptionList layout="rows" items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: 'Not recorded' }, { label: 'RingCentral number', value: existing.ringCentralNumber, mono: true, emptyLabel: 'Not recorded' },
+      <DescriptionList layout="rows" items={[{ label: 'Company email', value: existing.companyEmail, emptyLabel: 'Not recorded' }, { label: 'RingCentral number', value: phoneLabel(existing.ringCentralNumber), mono: true, emptyLabel: 'Not recorded' },
         { label: 'Load board sign-ins', value: signIns || null, emptyLabel: 'None recorded' }]} />
       {existing.companyEmail && <EmailAfterFields email={existing.companyEmail} label="Their company email" value={emailChoice} onChange={setEmailChoice} />}
       <Textarea name="note" label="Note for IT" optional maxLength={500} rows={2} hint="Never passwords." />

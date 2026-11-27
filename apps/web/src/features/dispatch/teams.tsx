@@ -36,7 +36,7 @@ export function Teams({ data, mcs, filters }: { data: TeamList; mcs: Choice[]; f
         // The link covers the whole row, so it's one thing to click.
         { key: 'team', label: 'Team', primary: true, cell: row => <Link href={`/dispatch/teams/${row.id}`} className="block rounded-sm after:absolute after:inset-0 hover:underline focus-visible:outline-2"><Person name={row.name} secondary={row.lead ? `Team lead ${row.lead.name}` : 'No team lead yet'} /></Link> },
         { key: 'mc', label: 'MC', cell: row => row.mc.name },
-        { key: 'members', label: 'Dispatchers', align: 'right', cell: row => <span className="tabular-nums">{row.members}{row.onboarding ? <span className="ml-1 text-[13px] text-muted-foreground">+{row.onboarding} onboarding</span> : null}</span> },
+        { key: 'members', label: 'Dispatchers', align: 'right', cell: row => <span className="tabular-nums">{row.members}{row.onboarding ? <span className="block text-[13px] text-muted-foreground">and {row.onboarding} onboarding</span> : null}</span> },
         { key: 'helpers', label: 'Supports and updaters', align: 'right', hideBelow: 'lg', cell: row => <span className="tabular-nums">{row.helpers ?? row.wholeTeam ?? 0}</span> },
         { key: 'status', label: 'Status', hideBelow: 'md', cell: row => <Badge label={row.archived ? 'Archived' : 'Active'} tone={row.archived ? 'neutral' : 'success'} /> },
         { key: 'open', label: 'Open', srOnly: true, align: 'right', cell: () => <ChevronRight aria-hidden="true" className="ml-auto size-4 text-muted-foreground" /> },

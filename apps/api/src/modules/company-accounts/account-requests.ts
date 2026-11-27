@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager, IsNull } from 'typeorm';
 import { DispatchEvent, DispatchMember, ExistingMemberRecord } from '../dispatch/dispatch.entity';
 import { ItOnboardingActivity, ItOnboardingRequest, PortalNotification, itStatus, type EmailAction, type EmailDone } from '../it/it.entity';
-import { checkEmailChoice, memberSetups, setupAccounts } from '../it/removal';
+import { checkEmailChoice, FORWARDING_NOT_DELETED, memberSetups, setupAccounts } from '../it/removal';
 import { phoneKey } from '../onboarding/already-here';
 import { onboardingLimit } from '../onboarding/rate-limit';
 import { Role, UserStatus, type User } from '../users/user.entity';
@@ -145,6 +145,8 @@ export class AccountRequestsService {
    if (dto.status === 'BLOCKED' && !notes.trim()) throw new BadRequestException('Provide a reason for a blocked task.');
    if (dto.status === 'COMPLETED' && key === 'NEW_EMAIL' && !request.newCompanyEmail) throw new BadRequestException('Record the new company email first.');
    if (dto.status === 'COMPLETED' && key === 'NEW_NUMBER' && !request.newRingCentralNumber) throw new BadRequestException('Record the new RingCentral number first.');
+   // What's saved too, so one recorded Deleted earlier can't be finished by a page that doesn't send it.
+   if (key === 'CLOSE_EMAIL' && (dto.emailDone ?? request.emailDone) === 'DELETED' && request.emailAfter === 'FORWARD') throw new BadRequestException(FORWARDING_NOT_DELETED);
    if (dto.emailDone) request.emailDone = dto.emailDone;
    if (dto.status === 'COMPLETED' && key === 'CLOSE_EMAIL' && !request.emailDone) throw new BadRequestException('Choose what you did with the email first.');
    const previous = task.status; Object.assign(task, { status: dto.status, notes, updatedBy: user.id }); await em.save(task);

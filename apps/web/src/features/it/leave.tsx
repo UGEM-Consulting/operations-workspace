@@ -60,10 +60,15 @@ export function ItLeave({ initial }: { initial: LeaveDetail }) {
    toast(updated.request.completedAt ? { title: suspend ? 'Access suspended' : 'Access restored', description: 'The manager who recorded the leave has been notified.' } : { title: 'Checklist task updated' });
   } catch (error) { setTaskError(errorMessage(error, 'Unable to update. Your entries have been kept.')); } finally { setPending(null); }
  }
- // What the manager chose for email and calls, said in the task itself.
- const describe = (task: ItTask) => suspend && task.key === 'GOOGLE_WORKSPACE' ? `Suspend the account and sign it out everywhere. ${profile.emailWhileAway === 'AUTO_REPLY' ? 'Turn on an auto-reply that they’re away until they return.' : `Forward new email to ${forward} until they return.`} Keep the mailbox.`
+ // What the manager chose for email and calls, said in the task itself. An email or number others use too stays on: suspending
+ // it would cut them off as well.
+ const names = (list: string[]) => new Intl.ListFormat('en-US', { type: 'conjunction' }).format(list);
+ const sharedEmail = profile.sharedWith?.email ?? [], sharedNumber = profile.sharedWith?.number ?? [];
+ const describe = (task: ItTask) => suspend && task.key === 'GOOGLE_WORKSPACE' && sharedEmail.length ? `${names(sharedEmail)} also ${sharedEmail.length === 1 ? 'uses' : 'use'} this email, so don’t suspend it or sign it out. ${profile.emailWhileAway === 'AUTO_REPLY' ? 'Turn on an auto-reply that they’re away until they return.' : `Forward new email to ${forward} until they return.`}`
+  : suspend && task.key === 'GOOGLE_WORKSPACE' ? `Suspend the account and sign it out everywhere. ${profile.emailWhileAway === 'AUTO_REPLY' ? 'Turn on an auto-reply that they’re away until they return.' : `Forward new email to ${forward} until they return.`} Keep the mailbox.`
+  : suspend && task.key === 'RINGCENTRAL' && sharedNumber.length ? `${names(sharedNumber)} also ${sharedNumber.length === 1 ? 'uses' : 'use'} this number, and forwarding or voicemail changes it for them too, so check with the manager first. Then ${profile.callsWhileAway === 'VOICEMAIL' ? 'send calls and texts to voicemail' : `forward calls and texts to ${forward}’s number`}, and keep the user and the number.`
   : suspend && task.key === 'RINGCENTRAL' ? `${profile.callsWhileAway === 'VOICEMAIL' ? 'Send calls and texts to voicemail.' : `Forward calls and texts to ${forward}’s number.`} Keep the user and the number.`
-  : !suspend && task.key === 'GOOGLE_WORKSPACE' ? `Restore the account and remove the ${profile.emailWhileAway === 'AUTO_REPLY' ? 'auto-reply' : `forwarding to ${forward}`}.` : task.description;
+  : !suspend && task.key === 'GOOGLE_WORKSPACE' ? `${sharedEmail.length ? 'Remove' : 'Restore the account and remove'} the ${profile.emailWhileAway === 'AUTO_REPLY' ? 'auto-reply' : `forwarding to ${forward}`}.` : task.description;
  const toChecklist = (task: ItTask): ChecklistItem => ({ id: task.key, title: task.label, optional: task.optional, status: task.status, note: task.notes || undefined, description: describe(task),
   meta: task.status !== 'PENDING' && <>Updated <LocalTime iso={task.updatedAt}/></>,
   action: !closed && <Button variant="outline" size="sm" disabled={busy} onClick={() => open(task)}>{scheduled ? 'Add note' : 'Update'}<span className="sr-only">: {task.label}</span></Button> });

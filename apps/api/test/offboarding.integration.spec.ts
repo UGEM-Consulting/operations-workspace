@@ -152,6 +152,12 @@ integration('Dispatcher offboarding and manager hand-over (disposable PostgreSQL
     await task('GOOGLE_WORKSPACE', { status: 'IN_PROGRESS', ringCentralOff: ['SMS'] }).expect(400);
     await task('RINGCENTRAL', { status: 'IN_PROGRESS', emailDone: 'ARCHIVED' }).expect(400);
     await task('RINGCENTRAL', { status: 'IN_PROGRESS', ringCentralOff: ['FORWARDED'] }).expect(400);
+    // The manager asked for forwarding, so IT can't record the email as deleted.
+    expect((await task('GOOGLE_WORKSPACE', { status: 'IN_PROGRESS', emailDone: 'DELETED' }).expect(400)).body.message).toMatch(/can’t forward/);
+    // Nor finish one saved Deleted earlier by a page that doesn't send it.
+    await db.query(`UPDATE it_removal_requests SET "emailDone" = 'DELETED' WHERE id = $1`, [removal.id]);
+    await task('GOOGLE_WORKSPACE', { status: 'COMPLETED' }).expect(400);
+    await db.query(`UPDATE it_removal_requests SET "emailDone" = NULL WHERE id = $1`, [removal.id]);
     // Ticks saved part way are kept; completing needs all four. An older page's number outcome is accepted and not recorded.
     detail = (await task('RINGCENTRAL', { status: 'IN_PROGRESS', ringCentralOff: ['SMS', 'USER'], numberOutcome: 'KEPT' }).expect(200)).body;
     expect(detail.request).toMatchObject({ ringCentralOff: ['USER', 'SMS'], numberOutcome: null });

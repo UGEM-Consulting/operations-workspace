@@ -131,6 +131,26 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
     expect(await titles(riley)).toContain(`IT removal scheduled for ${shown}`);
   });
 
+  it('tells IT who else uses an email on leave, and tells its users when the owner’s access is removed early', async () => {
+    const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
+    const drew = await addOne('Drew', 'Calloway');
+    const drewVersion = await version(drew);
+    await agents.manager.patch(`/api/dispatch/members/${drew}/existing`).set(headers).send({ version: drewVersion, companyEmail: 'riley.santos@example.test', shareCompanyEmail: true }).expect(200);
+    await post('manager', `dispatch/members/${riley}/on-leave`, { version: await version(riley), firstDay: addDays(usDay('latest'), 2), backOn: addDays(usDay('latest'), 9), reason: 'Vacation.', emailWhileAway: 'AUTO_REPLY' });
+    expect((await db.query(`SELECT profile->'sharedWith' AS shared FROM it_leave_requests WHERE "memberId" = $1`, [riley]))[0].shared).toEqual({ email: ['Drew Calloway'], number: [] });
+    await post('manager', `dispatch/members/${riley}/on-leave/cancel`, { version: await version(riley) });
+    // Not yet removed: nothing said. Removed now, before the last day: Drew's page says so; handed to Morgan, Drew is told it carries on as Morgan's.
+    const morgan = await addOne('Morgan', 'Pike'), morganVersion = await version(morgan);
+    await agents.manager.patch(`/api/dispatch/members/${morgan}/existing`).set(headers).send({ version: morganVersion, companyEmail: 'riley.santos@example.test', shareCompanyEmail: true }).expect(200);
+    await post('manager', `dispatch/members/${riley}/leave`, { version: await version(riley), leftAt: `${addDays(usDay('latest'), 10)}T12:00:00.000Z`, reason: 'Moving to another company.' });
+    expect((await profile(drew)).sharing.uses[0].ownerRemoval).toBeNull();
+    await post('manager', `dispatch/members/${riley}/remove-access`, { version: await version(riley), reason: 'Asked to stop working today.' });
+    expect((await profile(drew)).sharing.uses[0].ownerRemoval).toEqual({ done: false, toThem: false, handOverTo: null });
+    await db.query(`UPDATE it_removal_requests SET profile = jsonb_set(profile, '{shared,handOverToId}', to_jsonb($2::text)) WHERE "memberId" = $1`, [riley, morgan]);
+    expect((await profile(drew)).sharing.uses[0].ownerRemoval).toEqual({ done: false, toThem: false, handOverTo: 'Morgan Pike' });
+    expect((await profile(morgan)).sharing.uses[0].ownerRemoval).toEqual({ done: false, toThem: true, handOverTo: null });
+  });
+
   it('records a hand-over on everyone it touches, and keeps the whole notice after they leave', async () => {
     const riley = await addOne('Riley', 'Santos', { companyEmail: 'riley.santos@example.test' });
     const drew = await addOne('Drew', 'Calloway'), morgan = await addOne('Morgan', 'Pike');
@@ -150,10 +170,10 @@ integration('Complete dispatcher History (disposable PostgreSQL)', () => {
     expect(rileyTitles).toContain(`IT removal scheduled for ${given}`);
     expect(rileyTitles).not.toContain(`Last day changed to ${given}`);
     // Morgan's use stays on Riley's History from when it began, and reaches Drew's only when Drew became the owner.
-    expect(rileyTitles).toEqual(expect.arrayContaining(['Morgan Pike started using their company email']));
+    expect(rileyTitles).toEqual(expect.arrayContaining(['Morgan Pike started using Riley’s company email']));
     const drewTitles = await titles(drew);
-    expect(drewTitles).toEqual(expect.arrayContaining(['Morgan Pike now uses their company email']));
-    expect(drewTitles).not.toContain('Morgan Pike started using their company email');
+    expect(drewTitles).toEqual(expect.arrayContaining(['Morgan Pike now uses Drew’s company email']));
+    expect(drewTitles).not.toContain('Morgan Pike started using Drew’s company email');
     expect(await titles(drew)).toEqual(expect.arrayContaining(['Now owns Riley Santos’s company email (handed over when Riley Santos left)']));
     expect(await titles(morgan)).toEqual(expect.arrayContaining(['Started using Riley Santos’s company email (shared)', 'Now uses Drew Calloway’s company email, handed over when Riley Santos left']));
     expect(JSON.stringify(await db.query(`SELECT metadata FROM dispatch_events`))).not.toMatch(/@/);

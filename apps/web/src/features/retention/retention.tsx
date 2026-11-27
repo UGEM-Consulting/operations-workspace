@@ -93,7 +93,7 @@ export function DueRecords({ data }: { data: DueList }) {
       { key: 'actions', label: 'Actions', srOnly: true, align: 'right', action: true, cell: row => row.holdId
         ? <div className="flex items-center justify-end gap-2"><Badge label={`Held until ${new Date(middayIso(row.heldUntil!)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`} tone="warning" /><Button size="sm" variant="ghost" onClick={() => setEnding(row)}>End hold</Button></div>
         : <Button size="sm" variant="outline" onClick={() => setHolding(row)}><Shield aria-hidden="true" className="size-4" />Hold</Button> }]}
-      footer={<Pagination label="Due record pages" page={data.page} pageCount={Math.ceil(data.total / data.pageSize)} pageSize={data.pageSize} total={data.total} href={page => `/retention/due?page=${page}`} />} />
+      footer={data.total > 0 && <Pagination label="Due record pages" page={data.page} pageCount={Math.ceil(data.total / data.pageSize)} pageSize={data.pageSize} total={data.total} href={page => `/retention/due?page=${page}`} />} />
       : <CardBody><p className="text-sm text-muted-foreground">Nothing is due in the next 14 days.</p></CardBody>}</Card>
     {holding && <HoldDialog record={holding} onClose={() => setHolding(null)} />}
     {ending && <EndHoldDialog record={ending} onClose={() => setEnding(null)} />}

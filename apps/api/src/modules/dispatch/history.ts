@@ -59,7 +59,7 @@ const IT_ITEMS: Record<string, string> = { GOOGLE_WORKSPACE: 'company email', RI
 
 /** Every history entry for one person, newest first, and how many each filter has (views counted apart). */
 export async function memberHistory(db: Q, memberId: string): Promise<{ entries: HistoryEntry[]; counts: Record<'ALL' | HistoryCategory, number> }> {
- const [member]: Row[] = await db.query(`SELECT d.id, d.position, d.status, d."applicationId", d."accountUserId", d."leftReason", d."leftAt" FROM dispatch_members d WHERE d.id = $1`, [memberId]);
+ const [member]: Row[] = await db.query(`SELECT d.id, d."firstName", d.position, d.status, d."applicationId", d."accountUserId", d."leftReason", d."leftAt" FROM dispatch_members d WHERE d.id = $1`, [memberId]);
  if (!member) return { entries: [], counts: { ALL: 0, WORK: 0, ACCOUNTS: 0, AWAY: 0, DETAILS: 0, IT: 0, VIEWS: 0 } };
  const out: HistoryEntry[] = [];
  const add = (id: string, at: Date | string | null, category: HistoryCategory, icon: string, title: string, by: string | null = null, body: string | null = null, picked = false) => { if (!at || !title) return; const when = iso(at); out.push({ id, at: when, category, icon, title, by, body, ...(picked && DAY_ONLY.test(when) ? { dateOnly: true } : {}) }); };
@@ -241,17 +241,19 @@ export async function memberHistory(db: Q, memberId: string): Promise<{ entries:
   if (row.handedOverAt) add(`shared-owner-${row.id}`, row.handedOverAt, 'ACCOUNTS', 'users', `Now owns ${what} (handed over when ${row.owner ?? 'its owner'} left)`, row.by);
   if (row.endedAt && row.endedHow !== 'LEFT') add(`shared-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'users', row.endedHow === 'OWNER_LEFT' ? `Stopped using ${what}: ${row.owner ?? 'its owner'} left` : row.endedHow === 'MOVED' ? `The ${kindWords(row.kind)} they used is now theirs` : `Stopped using ${what}`, row.endedBy);
  }
+ // Whose it is, by name: "their" here read as the other person’s (the staging test, 2026-11-25).
+ const ownersOwn = (kind: string) => `${member.firstName}’s ${kindWords(kind)}`;
  // Rows that became theirs start when they did; rows they gave up still started with them, when they were the first owner.
  const becameMine = ownerChanges.filter(row => row.metadata?.ownerId === memberId), gaveUp = ownerChanges.filter(row => row.metadata?.previousOwnerId === memberId);
- for (const row of becameMine) add(`owner-change-${row.id}`, row.createdAt, 'ACCOUNTS', 'users', `${row.user} now uses their ${kindWords(row.metadata.kind)}`, row.by,
+ for (const row of becameMine) add(`owner-change-${row.id}`, row.createdAt, 'ACCOUNTS', 'users', `${row.user} now uses ${ownersOwn(row.metadata.kind)}`, row.by,
   row.metadata.why === 'handed-over' ? `Handed over when ${row.previousOwner ?? 'its owner'} left.` : `Moved from ${row.previousOwner ?? 'another record'}.`);
  for (const row of gaveUp) {
   if (!row.rowId || becameMine.some(other => other.rowId === row.rowId && new Date(other.createdAt) <= new Date(row.createdAt))) continue;
-  add(`owned-${row.rowId}`, row.rowCreatedAt, 'ACCOUNTS', 'users', `${row.user} started using their ${kindWords(row.metadata.kind)}`, row.rowBy);
+  add(`owned-${row.rowId}`, row.rowCreatedAt, 'ACCOUNTS', 'users', `${row.user} started using ${ownersOwn(row.metadata.kind)}`, row.rowBy);
  }
  for (const row of ownedBy) {
-  if (!row.handedOverAt && !becameMine.some(change => change.rowId === row.id)) add(`owned-${row.id}`, row.createdAt, 'ACCOUNTS', 'users', `${row.user} started using their ${kindWords(row.kind)}`, row.by);
-  if (row.endedAt && row.endedHow === 'STOPPED') add(`owned-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'users', `${row.user} stopped using their ${kindWords(row.kind)}`, row.endedBy);
+  if (!row.handedOverAt && !becameMine.some(change => change.rowId === row.id)) add(`owned-${row.id}`, row.createdAt, 'ACCOUNTS', 'users', `${row.user} started using ${ownersOwn(row.kind)}`, row.by);
+  if (row.endedAt && row.endedHow === 'STOPPED') add(`owned-end-${row.id}`, row.endedAt, 'ACCOUNTS', 'users', `${row.user} stopped using ${ownersOwn(row.kind)}`, row.endedBy);
  }
 
  // Coming back (section 41): each undone leaving and rehire, with why a leaving was undone.

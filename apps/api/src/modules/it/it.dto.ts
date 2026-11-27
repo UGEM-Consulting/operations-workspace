@@ -13,7 +13,7 @@ export class ItContactDto {
  @IsInt() @Min(0) version!:number;
  @IsBoolean() workPhoneVerified!:boolean;
  @ValidateIf((_object:unknown,value:unknown)=>value!==undefined) @trim() @IsString() @MaxLength(40)
- @Matches(new RegExp(`^(?:$|${INTERNATIONAL_PHONE_PATTERN.source.slice(1,-1)})$`)) assignedRingCentralPhoneNumber?:string;
+ @Matches(new RegExp(`^(?:$|${INTERNATIONAL_PHONE_PATTERN.source.slice(1,-1)})$`),{message:'The RingCentral number should have 7 to 15 digits.'}) assignedRingCentralPhoneNumber?:string;
  // Omitted keeps the recorded value; an empty string clears it.
  @Transform(({value}:{value:unknown})=>typeof value==='string'?value.trim().toLowerCase():value)
  @ValidateIf((_object:unknown,value:unknown)=>value!==undefined&&value!=='') @IsEmail() @MaxLength(254) companyEmail?:string;
