@@ -205,7 +205,7 @@ Dispatchers table (designed as the Dispatchers table group and approved by the u
   - **Position colours** (globals.css --position-*): Dispatcher violet, Support teal, Updater pink, each with its icon and name; never a status colour.
   - **Columns** (features/dispatch/glance-columns.tsx): each browser remembers what shows (localStorage, defaults when storage fails). Load boards, Job title and Since are off by default; Name and Status always show. Hidden columns are hidden with CSS (data-hidden-columns on the wrapper, data-column on cells), so the server renders the table once; only the at-a-glance tabs apply them, and keys no longer offered are ignored. Copy buttons share one status region (announce).
   - **Phones:** each row is a card with Call, Email and Telegram buttons, dashed when missing.
-  - Phone numbers show through phoneLabel (lib/phone.ts): a US number (area code and exchange starting 2–9) as (202) 555-0201, anything else as typed; display only, never what's stored or dialled. The Contact cell keeps room for a whole email from 1024px.
+  - Phone numbers show through phoneLabel (lib/phone.ts): a US number (area code and exchange starting 2–9) as (202) 555-0201, anything else as typed; display only, never what's stored or dialled. The Contact cell keeps room (14.5rem) for a whole email of usual length from 1024px; a longer one ends in … with the full address on hover, so a 1366px laptop needs no sideways scroll.
   - Personal email and phone never show in the list or the export. Deploy the API first: an older API sends none of these fields, and the Contact cell would say nothing is recorded.
 
 ## Dispatcher offboarding and manager hand-over

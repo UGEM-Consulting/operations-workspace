@@ -60,7 +60,7 @@ export function ContactCell({ row }: { row: MemberRow }) {
   const c = workContacts(row), left = row.status === 'LEFT';
   const owners = [...new Set([c.emailOwner, c.numberOwner].filter(Boolean))];
   // At laptop widths the table squeezes its columns; the contact keeps room for a whole email (the staging test, 2026-11-25).
-  return <div className={cn('grid gap-0.5 text-[13px] leading-5 lg:min-w-[16rem]', left && 'text-muted-foreground')}>
+  return <div className={cn('grid gap-0.5 text-[13px] leading-5 lg:min-w-[14.5rem]', left && 'text-muted-foreground')}>
     {c.number ? <span className={line}><Phone aria-hidden="true" className={lineIcon} />
       {left ? <span className="font-mono">{phoneLabel(c.number)}</span> : <a href={tel(c.number)} className="font-mono text-foreground hover:underline">{phoneLabel(c.number)}</a>}
       {c.extension && <span className="text-muted-foreground">ext {c.extension}</span>}{!left && <CopyIcon text={c.extension ? `${c.number} ext ${c.extension}` : c.number} label="number" />}</span>
